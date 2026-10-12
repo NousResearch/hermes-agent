@@ -36,13 +36,13 @@ class _Row:
         return self.entry is None
 
 
-def _build_rows() -> List[_Row]:
+def _build_rows() -> list[_Row]:
     """Return catalog rows + any custom (non-catalog) MCPs found in config."""
     catalog_entries = list_catalog()
     catalog_names = {e.name for e in catalog_entries}
     servers = installed_servers()
 
-    rows: List[_Row] = []
+    rows: list[_Row] = []
     for entry in catalog_entries:
         cfg = servers.get(entry.name)
         if entry.name not in servers:
@@ -158,7 +158,7 @@ def _handle_row(row: _Row) -> None:
          lambda: _install(row.entry, "reinstall"))])
 
 
-def _print_rows_text(rows: List[_Row]) -> None:
+def _print_rows_text(rows: list[_Row]) -> None:
     """Plain-text catalog dump: `hermes mcp catalog` output and the non-curses fallback."""
     print()
     if not rows:
@@ -218,25 +218,3 @@ def install_by_name(identifier: str) -> int:
         )
         return 1
     return 0 if _install(entry, "install") else 1
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'color': ('hermes_cli.colors', 'color'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

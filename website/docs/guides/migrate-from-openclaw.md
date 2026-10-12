@@ -13,7 +13,7 @@ Coming from **Claude Code** or **OpenAI Codex CLI** instead? Use [`hermes import
 :::
 
 :::tip
-If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](/integrations/nous-portal).
+If your OpenClaw setup was multi-provider, `hermes setup --portal` collapses it to one OAuth — 300+ models plus the Tool Gateway in a single login. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## Quick start
@@ -171,7 +171,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | `HEARTBEAT.md` | `archive/workspace/HEARTBEAT.md` | Use cron jobs for periodic tasks |
 | `BOOTSTRAP.md` | `archive/workspace/BOOTSTRAP.md` | Use context files or skills |
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
-| Plugins | `archive/plugins-config.json` | See [plugins guide](/user-guide/features/hooks) |
+| Plugins | `archive/plugins-config.json` | See [plugins guide](../user-guide/features/hooks.md) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
 | Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |

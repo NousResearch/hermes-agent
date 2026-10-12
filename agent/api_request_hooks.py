@@ -32,7 +32,7 @@ def _model_dump(value: Any) -> Any:
 class ApiRequestHooksMixin:
     """Hook payload sanitising + ``api_request_error`` dispatch (see module docstring)."""
 
-    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
+    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
         if response is None:
             return None
@@ -86,7 +86,7 @@ class ApiRequestHooksMixin:
             )
 
         if isinstance(value, dict):
-            out: Dict[str, Any] = {}
+            out: dict[str, Any] = {}
             for idx, (key, item) in enumerate(value.items()):
                 if idx >= max_sequence:
                     out["_truncated_items"] = len(value) - max_sequence
@@ -131,7 +131,7 @@ class ApiRequestHooksMixin:
             "_truncated": True, "original_type": type(value).__name__, "preview": encoded[:limit]
         }
 
-    def _api_request_payload_for_hook(self, api_kwargs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _api_request_payload_for_hook(self, api_kwargs: Optional[dict[str, Any]]) -> dict[str, Any]:
         body = {
             key: value
             for key, value in (api_kwargs or {}).items()
@@ -141,13 +141,15 @@ class ApiRequestHooksMixin:
 
     def _api_response_payload_for_hook(
         self, response: Any, assistant_message: Any, *, finish_reason: Optional[str]
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         # Raw provider SDK tool_call objects are handed to the sanitizer on purpose; `_hook_jsonable` must
         # keep normalising them (model_dump / __dict__ / dataclass) or subscribers get str() blobs.
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
         return self._sanitize_hook_payload(
             {
                 "model": getattr(response, "model", None),
+                # Downstream that served the call (relays re-roll it per request; #90216).
+                "upstream_provider": getattr(response, "provider", None),
                 "finish_reason": finish_reason,
                 "assistant_message": {
                     "role": getattr(assistant_message, "role", "assistant"),
@@ -160,7 +162,7 @@ class ApiRequestHooksMixin:
 
     def _invoke_api_request_error_hook(
         self, *, task_id: str, turn_id: str, api_request_id: str, api_call_count: int,
-        api_start_time: float, api_kwargs: Optional[Dict[str, Any]], error_type: str,
+        api_start_time: float, api_kwargs: Optional[dict[str, Any]], error_type: str,
         error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
         reason: Optional[str] = None,

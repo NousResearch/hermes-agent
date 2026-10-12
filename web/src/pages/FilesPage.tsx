@@ -14,6 +14,7 @@ import {
   FolderPlus,
   RefreshCw,
   Trash2,
+  Unlink,
   Upload,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -36,6 +37,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -108,7 +110,7 @@ export default function FilesPage() {
         setCurrentPath(result.path);
         setPathInput(result.path);
       } catch (e) {
-        setError(String(e));
+        setError(errorMessage(e));
       } finally {
         setLoading(false);
       }
@@ -182,7 +184,7 @@ export default function FilesPage() {
       showToast("Folder created", "success");
       await load();
     } catch (e) {
-      showToast(`Create failed: ${e}`, "error");
+      showToast(`Create failed: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -198,7 +200,7 @@ export default function FilesPage() {
       showToast(`${files.length} file${files.length === 1 ? "" : "s"} uploaded`, "success");
       await load();
     } catch (e) {
-      showToast(`Upload failed: ${e}`, "error");
+      showToast(`Upload failed: ${errorMessage(e)}`, "error");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -236,12 +238,12 @@ export default function FilesPage() {
   };
 
   const downloadFile = async (entry: ManagedFileEntry) => {
-    if (entry.is_directory) return;
+    if (entry.is_directory || entry.broken_link) return;
     try {
       const file = await api.readFile(entry.path);
       downloadDataUrl(file.data_url, file.name);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(`Download failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -254,7 +256,7 @@ export default function FilesPage() {
       setPendingDelete(null);
       await load();
     } catch (e) {
-      showToast(`Delete failed: ${e}`, "error");
+      showToast(`Delete failed: ${errorMessage(e)}`, "error");
     } finally {
       setDeleting(false);
     }
@@ -403,18 +405,29 @@ export default function FilesPage() {
                 <button
                   type="button"
                   onClick={() => (entry.is_directory ? openDirectory(entry) : void downloadFile(entry))}
-                  className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground"
+                  disabled={entry.broken_link}
+                  title={entry.broken_link ? "Broken symbolic link" : undefined}
+                  className="flex min-w-0 items-center gap-2 text-left font-mono text-foreground disabled:cursor-not-allowed disabled:text-text-tertiary"
                 >
                   {entry.is_directory ? (
                     <Folder className="h-4 w-4 shrink-0 text-warning" />
+                  ) : entry.broken_link ? (
+                    <Unlink className="h-4 w-4 shrink-0 text-destructive" />
                   ) : (
                     <FileIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
                   )}
                   <span className="truncate">{entry.name}</span>
+                  {entry.broken_link && (
+                    <Badge tone="destructive" className="shrink-0 text-xs">
+                      Broken link
+                    </Badge>
+                  )}
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {Number.isFinite(entry.mtime) ? DATE_FORMAT.format(entry.mtime * 1000) : "-"}
+                  {entry.mtime !== null && Number.isFinite(entry.mtime)
+                    ? DATE_FORMAT.format(entry.mtime * 1000)
+                    : "-"}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (
@@ -433,6 +446,7 @@ export default function FilesPage() {
                       size="icon"
                       type="button"
                       onClick={() => void downloadFile(entry)}
+                      disabled={entry.broken_link}
                       aria-label={`Download ${entry.name}`}
                     >
                       <Download />

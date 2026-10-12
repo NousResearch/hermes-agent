@@ -10,6 +10,7 @@ tries QQ's free ``asr_refer_text`` first, then the configured STT provider.
 
 from __future__ import annotations
 
+from pm import install_hint
 import asyncio
 import contextlib
 import json
@@ -18,7 +19,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -39,11 +40,13 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
@@ -94,12 +97,13 @@ _STT_PROVIDER_BASE_URLS = {
 _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
 
-class QQAdapter(BasePlatformAdapter):
+class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    ALLOW_ALL_ENV_PREFIX = "QQ"
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
@@ -158,11 +162,11 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
-        self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
-        self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
-        self._seen_messages: Dict[str, float] = {}
-        self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
-        self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
+        self._chat_type_map: dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        self._pending_responses: dict[str, asyncio.Future] = {}  # request/response correlation
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
+        self._last_msg_id: dict[str, str] = {}  # last inbound message ID per chat (send_typing)
+        self._typing_sent_at: dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
@@ -179,19 +183,15 @@ class QQAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "QQBot"
 
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
     # ── Connection lifecycle ──
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Authenticate, obtain gateway URL, and open the WebSocket. ``is_reconnect``
         is accepted for interface conformance only (QQBot has no server-side update queue)."""
         for ok, code, what, hint in (
-            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed", ". Run: pip install aiohttp"),
-            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: pip install httpx"),
+            (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed",
+             f". Run: {install_hint('messaging')}"),
+            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: hermes pm repair"),
             (self._app_id and self._client_secret, "qq_missing_credentials",
              "QQ_APP_ID and QQ_CLIENT_SECRET are required", "")):
             if not ok:
@@ -230,20 +230,12 @@ class QQAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._running = False
         self._mark_disconnected()
-        self._listen_task = await self._cancel_task(self._listen_task)
-        self._heartbeat_task = await self._cancel_task(self._heartbeat_task)
+        await cancel_task(self._listen_task)
+        await cancel_task(self._heartbeat_task)
+        self._listen_task = self._heartbeat_task = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
-
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        """Cancel and await *task* (if any); always returns None for reassignment."""
-        if task:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        return None
 
     async def _close_ws(self) -> None:
         """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
@@ -264,7 +256,7 @@ class QQAdapter(BasePlatformAdapter):
 
     # ── Token management ──
 
-    async def _fetch_json(self, what: str, request: Callable[[], Awaitable[Any]]) -> Dict[str, Any]:
+    async def _fetch_json(self, what: str, request: Callable[[], Awaitable[Any]]) -> dict[str, Any]:
         """Run an httpx request and return its JSON; any failure → RuntimeError."""
         try:
             resp = await request()
@@ -467,7 +459,7 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
 
-    async def _send_ws_auth(self, name: str, payload: Dict[str, Any], sent_msg: str, *log_args) -> bool:
+    async def _send_ws_auth(self, name: str, payload: dict[str, Any], sent_msg: str, *log_args) -> bool:
         """Send an Identify/Resume payload; returns False if the send raised."""
         try:
             if self._ws and not self._ws.closed:
@@ -515,7 +507,7 @@ class QQAdapter(BasePlatformAdapter):
         if self._ws and not self._ws.closed:
             self._create_task(self._ws.close())
 
-    def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
+    def _dispatch_payload(self, payload: dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
         op, t, s, d = payload.get("op"), payload.get("t"), payload.get("s"), payload.get("d")
         if isinstance(s, int) and (self._last_seq is None or s > self._last_seq):
@@ -561,7 +553,7 @@ class QQAdapter(BasePlatformAdapter):
     # ── JSON helpers ──
 
     @staticmethod
-    def _parse_json(raw: Any) -> Optional[Dict[str, Any]]:
+    def _parse_json(raw: Any) -> Optional[dict[str, Any]]:
         try:
             payload = json.loads(raw)
         except Exception:
@@ -588,7 +580,7 @@ class QQAdapter(BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
+        if not msg_id or self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
@@ -649,10 +641,16 @@ class QQAdapter(BasePlatformAdapter):
     _APPROVAL_BUTTON_TO_CHOICE = {"allow-once": "once", "allow-always": "always", "deny": "deny"}
 
     @staticmethod
-    def _parse_gateway_session_key(session_key: str) -> Optional[Dict[str, str]]:
-        """Parse ``agent:main:<platform>:<chat_type>:<chat_id>[:<user_id>]``."""
+    def _parse_gateway_session_key(session_key: str) -> Optional[dict[str, str]]:
+        """Parse ``agent:<namespace>:<platform>:<chat_type>:<chat_id>[:<user_id>]``.
+
+        The namespace slot carries the multiplex profile ("main" for the
+        default profile — see ``gateway.session._session_key_namespace``);
+        it takes no part in any authorization decision, so any non-empty
+        value is accepted and every later slot keeps its position.
+        """
         parts = str(session_key or "").split(":")
-        if len(parts) < 5 or parts[0] != "agent" or parts[1] != "main":
+        if len(parts) < 5 or parts[0] != "agent" or not parts[1]:
             return None
         parsed = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if len(parts) > 5:
@@ -678,6 +676,12 @@ class QQAdapter(BasePlatformAdapter):
             session_user = str(parsed.get("user_id", "")).strip()
             return bool(session_user) and operator == session_user
         return False
+
+    def _update_prompt_session_key(self, event: InteractionEvent, chat: str) -> str:
+        """Session key an update-prompt click is authorized against, built by the ONE key builder so
+        it carries the profile namespace (a hard-coded ``agent:main:`` prefix never matched a
+        multiplexed secondary bot's lane). No participant: ``c2c`` authorizes on chat == operator."""
+        return self._source_session_key(self.build_source(chat_id=chat, chat_type=event.scene))
 
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
@@ -712,7 +716,7 @@ class QQAdapter(BasePlatformAdapter):
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
             chat = event.group_openid or event.guild_id or event.user_openid
-            if not self._is_authorized_interaction_for_session(event, f"agent:main:qqbot:{event.scene}:{chat}"):
+            if not self._is_authorized_interaction_for_session(event, self._update_prompt_session_key(event, chat)):
                 logger.warning(
                     "[%s] Rejected unauthorized update prompt click (operator=%s)", self._log_tag, event.operator_openid
                 )
@@ -814,7 +818,7 @@ class QQAdapter(BasePlatformAdapter):
         return (text + "\n\n" + block).strip() if text.strip() else block
 
     async def _ingest(
-        self, d: Dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
+        self, d: dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
         chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
@@ -848,7 +852,7 @@ class QQAdapter(BasePlatformAdapter):
 
     # ── Quoted-message handling ──
 
-    async def _process_quoted_context(self, d: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_quoted_context(self, d: dict[str, Any]) -> dict[str, Any]:
         """Process the quoted message a user is replying to (``message_type == 103``;
         referenced content + attachments live in ``msg_elements``). Quoted attachments
         go through _process_attachments so quoted voice gets STT and quoted images are
@@ -870,7 +874,7 @@ class QQAdapter(BasePlatformAdapter):
         att_result = await self._process_attachments(all_attachments)
         quoted_images = att_result.get("image_urls") or []
 
-        lines: List[str] = [" ".join(quoted_text_parts)] if quoted_text_parts else []
+        lines: list[str] = [" ".join(quoted_text_parts)] if quoted_text_parts else []
         lines.extend(att_result.get("voice_transcripts") or [])
         if att_result.get("attachment_info"):
             lines.append(att_result["attachment_info"])
@@ -907,14 +911,14 @@ class QQAdapter(BasePlatformAdapter):
         logger.debug("Unknown media content_type '%s', defaulting to TEXT", first_type)
         return MessageType.TEXT
 
-    async def _process_attachments(self, attachments: Any) -> Dict[str, Any]:
+    async def _process_attachments(self, attachments: Any) -> dict[str, Any]:
         """Process inbound attachments uniformly. Returns ``{"image_urls",
         "image_media_types", "voice_transcripts", "attachment_info"}`` (cached image
         paths + MIME types, "[Voice] ..." transcripts, text description of other files)."""
-        image_urls: List[str] = []
-        image_media_types: List[str] = []
-        voice_transcripts: List[str] = []
-        other_attachments: List[str] = []
+        image_urls: list[str] = []
+        image_media_types: list[str] = []
+        voice_transcripts: list[str] = []
+        other_attachments: list[str] = []
 
         for att in attachments if isinstance(attachments, list) else ():
             if not isinstance(att, dict):
@@ -1005,7 +1009,7 @@ class QQAdapter(BasePlatformAdapter):
             return False
         return filename.strip().lower().endswith(_VOICE_EXTENSIONS)
 
-    def _qq_media_headers(self) -> Dict[str, str]:
+    def _qq_media_headers(self) -> dict[str, str]:
         """Authorization header for QQ multimedia CDN downloads (required, else non-200)."""
         return {"Authorization": f"QQBot {self._access_token}"} if self._access_token else {}
 
@@ -1069,7 +1073,7 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript
-        except (httpx.HTTPStatusError, httpx.TransportError, IOError) as exc:
+        except (OSError, httpx.HTTPStatusError, httpx.TransportError) as exc:
             logger.warning("[%s] STT failed for voice attachment: %s: %s", self._log_tag, type(exc).__name__, exc)
             return None
 
@@ -1093,7 +1097,7 @@ class QQAdapter(BasePlatformAdapter):
         return Path(wav_path).exists() and Path(wav_path).stat().st_size > 44
 
     @classmethod
-    def _temp_pair(cls, audio_data: bytes, ext: str) -> Tuple[str, str]:
+    def _temp_pair(cls, audio_data: bytes, ext: str) -> tuple[str, str]:
         """Write *audio_data* to a temp ``<x>{ext}`` and return ``(src_path, sibling .wav path)``."""
         src_path = cls._write_temp(audio_data, ext)
         return src_path, src_path.rsplit(".", 1)[0] + ".wav"
@@ -1132,7 +1136,8 @@ class QQAdapter(BasePlatformAdapter):
         try:
             import pilk
         except ImportError:
-            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: pip install pilk", self._log_tag)
+            logger.warning("[%s] pilk not installed — cannot decode SILK audio. Run: "
+                           f"{install_hint('silk')}", self._log_tag)
             return None
 
         silk_path = src_path.rsplit(".", 1)[0] + ".silk"
@@ -1183,7 +1188,7 @@ class QQAdapter(BasePlatformAdapter):
                     "[%s] ffmpeg failed for %s: %s",
                     self._log_tag, Path(src_path).name, stderr[:200].decode(errors="replace"))
                 return None
-        except (asyncio.TimeoutError, FileNotFoundError) as exc:
+        except (TimeoutError, FileNotFoundError) as exc:
             logger.warning("[%s] ffmpeg conversion error: %s", self._log_tag, exc)
             return None
 
@@ -1195,28 +1200,35 @@ class QQAdapter(BasePlatformAdapter):
             self._log_tag, Path(src_path).name, Path(wav_path).stat().st_size)
         return wav_path
 
-    def _resolve_stt_config(self) -> Optional[Dict[str, str]]:
+    def _resolve_stt_config(self) -> Optional[dict[str, Any]]:
         """Resolve STT backend: ``extra["stt"]`` config first, then ``QQ_STT_*`` env
-        vars; None when unconfigured (QQ's built-in ASR still works)."""
+        vars; None when unconfigured (QQ's built-in ASR still works). ``timeout`` (seconds,
+        default 60) follows the shared STT client default so a self-hosted model's cold start
+        is not cut off at 30s (#112939)."""
+        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
         stt_cfg = (self.config.extra or {}).get("stt")
         if isinstance(stt_cfg, dict) and stt_cfg.get("enabled") is not False:
             base_url = stt_cfg.get("baseUrl") or stt_cfg.get("base_url", "")
             api_key = stt_cfg.get("apiKey") or stt_cfg.get("api_key", "")
             model = stt_cfg.get("model", "")
+            timeout = _config_number(stt_cfg, "timeout", DEFAULT_STT_TIMEOUT)
             if base_url and api_key:
-                return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model or "whisper-1"}
+                return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model or "whisper-1",
+                        "timeout": timeout}
             if api_key:  # provider-only config
                 provider = stt_cfg.get("provider", "zai")
                 base_url = _STT_PROVIDER_BASE_URLS.get(provider, "")
                 if base_url:
                     default_model = "glm-asr" if provider in {"zai", "glm"} else "whisper-1"
-                    return {"base_url": base_url, "api_key": api_key, "model": model or default_model}
+                    return {"base_url": base_url, "api_key": api_key, "model": model or default_model,
+                            "timeout": timeout}
 
         qq_stt_key = _resolve_qq_secret("QQ_STT_API_KEY", "")
         if qq_stt_key:
             base_url = _resolve_qq_secret("QQ_STT_BASE_URL", _STT_PROVIDER_BASE_URLS["zai"])
             model = _resolve_qq_secret("QQ_STT_MODEL", "glm-asr")
-            return {"base_url": base_url.rstrip("/"), "api_key": qq_stt_key, "model": model}
+            return {"base_url": base_url.rstrip("/"), "api_key": qq_stt_key, "model": model,
+                    "timeout": DEFAULT_STT_TIMEOUT}
         return None
 
     async def _call_stt(self, wav_path: str) -> Optional[str]:
@@ -1228,20 +1240,20 @@ class QQAdapter(BasePlatformAdapter):
 
         base_url, api_key, model = stt_cfg["base_url"], stt_cfg["api_key"], stt_cfg["model"]
         try:
-            with open(wav_path, "rb") as f:
+            with open(wav_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 resp = await self._http_client.post(
                     f"{base_url}/audio/transcriptions",
                     headers={"Authorization": f"Bearer {api_key}"},
                     files={"file": (Path(wav_path).name, f, "audio/wav")},
                     data={"model": model},
-                    timeout=30.0)
+                    timeout=stt_cfg["timeout"])
             resp.raise_for_status()
             result = resp.json()
             # Zhipu/GLM: {"choices": [{"message": {"content": ...}}]}; OpenAI/Whisper: {"text": ...}
             choices = result.get("choices", [])
             content = choices[0].get("message", {}).get("content", "") if choices else ""
             return content.strip() or result.get("text", "").strip() or None
-        except (httpx.HTTPStatusError, IOError) as exc:
+        except (OSError, httpx.HTTPStatusError) as exc:
             logger.warning("[%s] STT API call failed (model=%s, base=%s): %s", self._log_tag, model, base_url[:50], exc)
             return None
 
@@ -1273,14 +1285,14 @@ class QQAdapter(BasePlatformAdapter):
 
     # ── Outbound messaging — REST API ──
 
-    def _require_http_client(self) -> "httpx.AsyncClient":
+    def _require_http_client(self) -> httpx.AsyncClient:
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized — not connected?")
         return self._http_client
 
     async def _api_request(
-        self, method: str, path: str, body: Optional[Dict[str, Any]] = None, timeout: float = DEFAULT_API_TIMEOUT,
-    ) -> Dict[str, Any]:
+        self, method: str, path: str, body: Optional[dict[str, Any]] = None, timeout: float = DEFAULT_API_TIMEOUT,
+    ) -> dict[str, Any]:
         client = self._require_http_client()
         headers = await self._auth_headers()
         try:
@@ -1292,7 +1304,7 @@ class QQAdapter(BasePlatformAdapter):
         except httpx.TimeoutException as exc:
             raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
 
-    async def _auth_headers(self) -> Dict[str, str]:
+    async def _auth_headers(self) -> dict[str, str]:
         """JSON REST headers with a fresh bot token."""
         token = await self._ensure_token()
         return {"Authorization": f"QQBot {token}", "Content-Type": "application/json", "User-Agent": build_user_agent()}
@@ -1300,9 +1312,9 @@ class QQAdapter(BasePlatformAdapter):
     async def _upload_media(
         self, target_type: str, target_id: str, file_type: int, url: Optional[str] = None,
         file_data: Optional[str] = None, srv_send_msg: bool = False, file_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         path = self._rest_path(target_type, target_id, "files")
-        body: Dict[str, Any] = {"file_type": file_type, "srv_send_msg": srv_send_msg}
+        body: dict[str, Any] = {"file_type": file_type, "srv_send_msg": srv_send_msg}
         if url:
             body["url"] = url
         elif file_data:
@@ -1345,7 +1357,7 @@ class QQAdapter(BasePlatformAdapter):
         return self.is_connected or await self._wait_for_reconnection()
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send text/markdown: format, split via truncate_message(), retry transient failures."""
         del metadata
@@ -1397,7 +1409,7 @@ class QQAdapter(BasePlatformAdapter):
     def _messages_path(cls, chat_type: str, target_id: str) -> str:
         return cls._rest_path(chat_type, target_id, "messages")
 
-    async def _post_message(self, path: str, body: Dict[str, Any]) -> SendResult:
+    async def _post_message(self, path: str, body: dict[str, Any]) -> SendResult:
         """POST a message body and wrap the response as a successful SendResult."""
         data = await self._api_request("POST", path, body)
         return SendResult(success=True, message_id=str(data.get("id", uuid.uuid4().hex[:12])), raw_response=data)
@@ -1430,7 +1442,7 @@ class QQAdapter(BasePlatformAdapter):
         return getattr(self, name) if name else None
 
     async def _send_guild_text(self, channel_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
-        body: Dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
+        body: dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
         if reply_to:
             body["msg_id"] = reply_to
         return await self._post_message(f"/channels/{channel_id}/messages", body)
@@ -1469,41 +1481,39 @@ class QQAdapter(BasePlatformAdapter):
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Button-based exec-approval prompt (called by gateway/run.py while the
-        agent blocks on approval); clicks resolve via _default_interaction_dispatch."""
-        del metadata  # QQ has no thread_id / DM targeting overrides.
-        del allow_session  # QQ's 3-button keyboard has no session tier.
-        if smart_denied:
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Keyboard-card approval (called while the agent blocks on approval); clicks resolve via
+        _default_interaction_dispatch. QQ's 3-button keyboard has no session tier and no thread /
+        DM targeting, so only the ``always`` choice and the raw command/reason are used."""
+        description = prompt.description
+        if prompt.smart_denied:
             description += " Owner override applies to this one operation only."
         req = ApprovalRequest(
-            session_key=session_key, title="Execute this command?", description=description,
-            command_preview=command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent=allow_permanent and not smart_denied)
+            session_key=prompt.session_key, title="Execute this command?", description=description,
+            command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent="always" in prompt.choices)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
-        return await self.send_approval_request(chat_id, req, reply_to=self._last_msg_id.get(chat_id))
+        return await self.send_approval_request(
+            prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n``)
         are written to ``~/.hermes/.update_response`` by the interaction callback."""
         del session_key, metadata  # present for contract parity only.
         default_hint = f" (default: {default})" if default else ""
-        content = f"⚕ **Update Needs Your Input**\n\n{prompt}{default_hint}"
+        content = f"☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"
         return await self.send_with_keyboard(
             chat_id, content, build_update_prompt_keyboard(), reply_to=self._last_msg_id.get(chat_id)
         )
 
-    def _build_text_body(self, content: str, reply_to: Optional[str] = None) -> Dict[str, Any]:
+    def _build_text_body(self, content: str, reply_to: Optional[str] = None) -> dict[str, Any]:
         msg_seq = self._next_msg_seq(reply_to or "default")
         text = content[: self.MAX_MESSAGE_LENGTH]
         if self._markdown_support:
             return {"markdown": {"content": text}, "msg_type": MSG_TYPE_MARKDOWN, "msg_seq": msg_seq}
-        body: Dict[str, Any] = {"content": text, "msg_type": MSG_TYPE_TEXT, "msg_seq": msg_seq}
+        body: dict[str, Any] = {"content": text, "msg_type": MSG_TYPE_TEXT, "msg_seq": msg_seq}
         if reply_to:
             body["message_reference"] = {"message_id": reply_to}
         return body
@@ -1512,7 +1522,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an image natively via QQ Bot API upload; URL sources fall back to text."""
         del metadata
         result = await self._send_media(chat_id, image_url, MEDIA_TYPE_IMAGE, "image", caption, reply_to)
@@ -1561,7 +1571,7 @@ class QQAdapter(BasePlatformAdapter):
             file_info = upload.get("file_info") or (upload.get("data", {}) or {}).get("file_info")
             if not file_info:
                 return SendResult(success=False, error=f"Upload returned no file_info: {upload}")
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "msg_type": MSG_TYPE_MEDIA, "media": {"file_info": file_info}, "msg_seq": self._next_msg_seq(chat_id)}
             if caption:
                 body["content"] = caption[: self.MAX_MESSAGE_LENGTH]
@@ -1587,7 +1597,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _upload_local_file(
         self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Chunked-upload a local file; returns the complete response whose ``file_info`` goes
         into the RichMedia body. Raises UploadDailyLimitExceededError / UploadFileTooLargeError
         from the uploader, ValueError for placeholder paths like ``<path>``, FileNotFoundError."""
@@ -1634,7 +1644,7 @@ class QQAdapter(BasePlatformAdapter):
         """Pass markdown through when supported, else strip it (as BlueBubbles/SMS do)."""
         return content if self._markdown_support else strip_markdown(content)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         chat_type = self._guess_chat_type(chat_id)
         return {"name": chat_id, "type": "group" if chat_type in {"group", "guild"} else "dm"}
 
@@ -1650,33 +1660,7 @@ class QQAdapter(BasePlatformAdapter):
     def _strip_at_mention(content: str) -> str:
         return re.sub(r"^@\S+\s*", "", content.strip())
 
-    def _open_dm_opted_in(self) -> bool:
-        truthy = {"true", "1", "yes"}
-        return (os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in truthy
-                or _resolve_qq_secret("QQ_ALLOW_ALL_USERS", "").lower() in truthy)
-
-    def _is_dm_allowed(self, user_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return self._entry_matches(self._allow_from, user_id)
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, user_id: str) -> bool:
-        principal = str(user_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "pairing":
-            return True
-        return self._is_dm_allowed(principal)
-
-    def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
-        if self._group_policy == "allowlist":
-            return self._entry_matches(self._group_allow_from, group_id)
-        return self._group_policy == "open"
-
-    @staticmethod
-    def _entry_matches(entries: List[str], target: str) -> bool:
+    def _entry_matches(self, entries: list[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()
         return any(str(e).strip().lower() in ("*", normalized_target) for e in entries)
 
@@ -1686,24 +1670,5 @@ class QQAdapter(BasePlatformAdapter):
             with contextlib.suppress(ValueError, TypeError):
                 return datetime.fromisoformat(raw)
             with contextlib.suppress(ValueError, TypeError):
-                return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
-        return datetime.now(tz=timezone.utc)
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: ts for k, ts in self._seen_messages.items() if ts > cutoff}
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import base64  # noqa: F401,E402
-import mimetypes  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----
+                return datetime.fromtimestamp(int(raw) / 1000, tz=UTC)
+        return datetime.now(tz=UTC)

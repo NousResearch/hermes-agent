@@ -10,10 +10,14 @@ import {
   toggleOverlaySection
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
+import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import { messages } from '../i18n/runtime.js'
+import type { Translations } from '../i18n/types.js'
+import { useT } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
@@ -35,6 +39,7 @@ import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
 import { AgentLiveTail, AgentSteerForm, rosterViewport } from './agentControls.js'
+import { buildProcessBlock, ProcessRowLine, processSummary } from './agentsPanel.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
@@ -47,19 +52,32 @@ type Status = SubagentProgress['status']
 const SORT_ORDER: readonly SortMode[] = ['depth-first', 'tools-desc', 'duration-desc', 'status']
 const FILTER_ORDER: readonly FilterMode[] = ['all', 'running', 'failed', 'leaf']
 
-const SORT_LABEL: Record<SortMode, string> = {
-  'depth-first': 'spawn order',
-  'duration-desc': 'slowest',
+type AgentsMessages = Translations['hubs']['agents']
+
+// Mode → catalog leaf. Labels are resolved against the active language at
+// render time (`sortLabel` / `filterLabel`), never at import time.
+const SORT_KEY: Record<SortMode, keyof AgentsMessages['sort']> = {
+  'depth-first': 'depthFirst',
+  'duration-desc': 'durationDesc',
   status: 'status',
-  'tools-desc': 'busiest'
+  'tools-desc': 'toolsDesc'
 }
 
-const FILTER_LABEL: Record<FilterMode, string> = {
+const FILTER_KEY: Record<FilterMode, keyof AgentsMessages['filter']> = {
   all: 'all',
   failed: 'failed',
-  leaf: 'leaves',
+  leaf: 'leaf',
   running: 'running'
 }
+
+export const sortLabel = (mode: SortMode, m: AgentsMessages = messages().hubs.agents): string => m.sort[SORT_KEY[mode]]
+
+export const filterLabel = (mode: FilterMode, m: AgentsMessages = messages().hubs.agents): string =>
+  m.filter[FILTER_KEY[mode]]
+
+/** Agent state values are compared in code; only the display label is localised. */
+const statusLabel = (status: string, m: AgentsMessages): string =>
+  (m.status as Record<string, string>)[status] ?? status
 
 const STATUS_RANK: Record<Status, number> = {
   error: 0,
@@ -144,6 +162,8 @@ function GanttStrip({
   now: number
   t: Theme
 }) {
+  const T = useT().hubs.agents
+
   const spans = flatNodes
     .map((node, idx) => {
       const started = node.item.startedAt ?? now
@@ -218,7 +238,7 @@ function GanttStrip({
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={t.color.muted}>
-        Timeline · {fmtElapsedLabel(Math.max(0, totalSeconds))}
+        {T.timeline} · {fmtElapsedLabel(Math.max(0, totalSeconds))}
         {windowLabel}
       </Text>
 
@@ -268,21 +288,24 @@ function OverlaySection({
   children,
   count,
   defaultOpen = false,
+  id,
   title,
   t
 }: {
   children: ReactNode
   count?: number
   defaultOpen?: boolean
+  /** Locale-independent key for the open/closed store; `title` is the display label. */
+  id: string
   title: string
   t: Theme
 }) {
   const openMap = useStore($overlaySectionsOpen)
-  const open = title in openMap ? openMap[title]! : defaultOpen
+  const open = id in openMap ? openMap[id]! : defaultOpen
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box onClick={() => toggleOverlaySection(title, defaultOpen)}>
+      <Box onClick={() => toggleOverlaySection(id, defaultOpen)}>
         <Text color={t.color.label}>
           <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
           {title}
@@ -291,6 +314,29 @@ function OverlaySection({
       </Box>
 
       {open ? <Box flexDirection="column">{children}</Box> : null}
+    </Box>
+  )
+}
+
+/** Background processes owned by this session, listed under the spawn tree. They are
+ * not part of the cursor roster (no per-row steer/tail); `/stop` ends them all. */
+function ProcessesSection({ cols, rows, t }: { cols: number; rows: readonly ProcessRow[]; t: Theme }) {
+  const T = useT().hubs.agents
+
+  if (rows.length === 0) {
+    return null
+  }
+
+  const block = buildProcessBlock(rows, 0)
+
+  return (
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
+      <Text bold color={t.color.accent} wrap="truncate-end">
+        {`${T.processes} · ${processSummary(block)}`}
+      </Text>
+      {block.rows.map(row => (
+        <ProcessRowLine cols={cols} key={row.id} row={row} t={t} />
+      ))}
     </Box>
   )
 }
@@ -305,6 +351,8 @@ function Field({ name, t, value }: { name: string; t: Theme; value: ReactNode })
 }
 
 function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) {
+  const T = useT().hubs.agents
+  const D = T.detail
   const { aggregate: agg, item } = node
   const { color, glyph } = statusGlyph(item, t)
 
@@ -331,41 +379,45 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
-        {item.model ? <Field name="model" t={t} value={item.model} /> : null}
-        {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
-        <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
+        <Field name={D.depth} t={t} value={`${item.depth} · ${statusLabel(item.status, T)}`} />
+        {item.model ? <Field name={D.model} t={t} value={item.model} /> : null}
+        {item.toolsets?.length ? <Field name={D.toolsets} t={t} value={item.toolsets.join(', ')} /> : null}
+        <Field name={D.tools} t={t} value={D.toolsValue(item.toolCount ?? 0, agg.totalTools)} />
         <Field
-          name="subtree"
+          name={D.subtree}
           t={t}
-          value={`${agg.descendantCount} agent${agg.descendantCount === 1 ? '' : 's'} · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
+          value={(agg.descendantCount === 1 ? D.subtreeValueOne : D.subtreeValueOther)(
+            agg.descendantCount,
+            agg.maxDepthFromHere,
+            agg.activeCount
+          )}
         />
-        {item.durationSeconds ? <Field name="elapsed" t={t} value={fmtDur(item.durationSeconds)} /> : null}
-        {item.iteration != null ? <Field name="iteration" t={t} value={String(item.iteration)} /> : null}
-        {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
+        {item.durationSeconds ? <Field name={D.elapsed} t={t} value={fmtDur(item.durationSeconds)} /> : null}
+        {item.iteration != null ? <Field name={D.iteration} t={t} value={String(item.iteration)} /> : null}
+        {item.apiCalls ? <Field name={D.apiCalls} t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
       {localTokens > 0 ? (
-        <OverlaySection defaultOpen t={t} title="Budget">
+        <OverlaySection defaultOpen id="budget" t={t} title={T.section.budget}>
           {localTokens > 0 ? (
             <Field
-              name="tokens"
+              name={D.tokens}
               t={t}
               value={
                 <>
-                  {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
-                  {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
+                  {D.tokensValue(fmtTokens(inputTokens), fmtTokens(outputTokens))}
+                  {item.reasoningTokens ? D.reasoningSuffix(fmtTokens(item.reasoningTokens)) : ''}
                 </>
               }
             />
           ) : null}
 
-          {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
+          {subtreeTokens > 0 ? <Field name={D.subtreeTokens} t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
         </OverlaySection>
       ) : null}
 
       {filesRead.length > 0 || filesWritten.length > 0 ? (
-        <OverlaySection count={filesRead.length + filesWritten.length} t={t} title="Files">
+        <OverlaySection count={filesRead.length + filesWritten.length} id="files" t={t} title={T.section.files}>
           {filesWritten.slice(0, 8).map((p, i) => (
             <Text color={t.color.statusGood} key={`w-${i}`} wrap="truncate-end">
               +{p}
@@ -378,12 +430,12 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
             </Text>
           ))}
 
-          {filesOverflow > 0 ? <Text color={t.color.muted}>…+{filesOverflow} more</Text> : null}
+          {filesOverflow > 0 ? <Text color={t.color.muted}>{D.filesMore(filesOverflow)}</Text> : null}
         </OverlaySection>
       ) : null}
 
       {toolLines.length > 0 ? (
-        <OverlaySection count={toolLines.length} defaultOpen t={t} title="Tool calls">
+        <OverlaySection count={toolLines.length} defaultOpen id="toolCalls" t={t} title={T.section.toolCalls}>
           {toolLines.map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.muted}>·</Text> {line}
@@ -393,7 +445,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {outputTail.length > 0 ? (
-        <OverlaySection count={outputTail.length} defaultOpen t={t} title="Output">
+        <OverlaySection count={outputTail.length} defaultOpen id="output" t={t} title={T.section.output}>
           {outputTail.map((entry, i) => (
             <Text color={entry.isError ? t.color.error : t.color.text} key={i} wrap="wrap">
               <Text bold color={entry.isError ? t.color.error : t.color.accent}>
@@ -406,7 +458,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.notes.length ? (
-        <OverlaySection count={item.notes.length} t={t} title="Progress">
+        <OverlaySection count={item.notes.length} id="progress" t={t} title={T.section.progress}>
           {item.notes.slice(-6).map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.label}>·</Text> {line}
@@ -416,7 +468,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {item.summary ? (
-        <OverlaySection defaultOpen t={t} title="Summary">
+        <OverlaySection defaultOpen id="summary" t={t} title={T.section.summary}>
           <Text color={t.color.text} wrap="wrap">
             {item.summary}
           </Text>
@@ -441,12 +493,13 @@ function ListRow({
   t: Theme
   width: number
 }) {
+  const T = useT().hubs.agents
   const { color, glyph } = statusGlyph(node.item, t)
   const palette = heatPalette(t)
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const goal = compactPreview(node.item.goal || T.subagentFallback, width - 28 - node.item.depth * 2)
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -487,6 +540,8 @@ function DiffPane({
   totals: ReturnType<typeof treeTotals>
   width: number
 }) {
+  const T = useT().hubs.agents
+
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.text}>
@@ -511,7 +566,7 @@ function DiffPane({
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">
-                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'}
+                <Text color={color}>{glyph}</Text> {s.goal || T.subagentFallback}
               </Text>
             )
           })}
@@ -531,6 +586,7 @@ function DiffView({
   pair: { baseline: SpawnSnapshot; candidate: SpawnSnapshot }
   t: Theme
 }) {
+  const T = useT().hubs.agents.diff
   const aTotals = useMemo(() => treeTotals(buildSubagentTree(pair.baseline.subagents)), [pair.baseline])
   const bTotals = useMemo(() => treeTotals(buildSubagentTree(pair.candidate.subagents)), [pair.candidate])
   const paneWidth = Math.floor((cols - 4) / 2)
@@ -548,33 +604,33 @@ function DiffView({
     <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
         <Text bold color={t.color.border}>
-          Replay diff
+          {T.title}
         </Text>
-        <Text color={t.color.muted}>baseline vs candidate · esc/q close</Text>
+        <Text color={t.color.muted}>{T.subtitle}</Text>
       </Box>
 
       <Box flexDirection="row" marginBottom={1}>
-        <DiffPane label="A · baseline" snapshot={pair.baseline} t={t} totals={aTotals} width={paneWidth} />
+        <DiffPane label={T.baseline} snapshot={pair.baseline} t={t} totals={aTotals} width={paneWidth} />
         <Box width={2} />
-        <DiffPane label="B · candidate" snapshot={pair.candidate} t={t} totals={bTotals} width={paneWidth} />
+        <DiffPane label={T.candidate} snapshot={pair.candidate} t={t} totals={bTotals} width={paneWidth} />
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
         <Text bold color={t.color.accent}>
-          Δ
+          {T.delta}
         </Text>
 
         <Text color={t.color.text}>
-          {diffMetricLine('agents', aTotals.descendantCount, bTotals.descendantCount, round)}
+          {diffMetricLine(T.agents, aTotals.descendantCount, bTotals.descendantCount, round)}
         </Text>
-        <Text color={t.color.text}>{diffMetricLine('tools', aTotals.totalTools, bTotals.totalTools, round)}</Text>
+        <Text color={t.color.text}>{diffMetricLine(T.tools, aTotals.totalTools, bTotals.totalTools, round)}</Text>
         <Text color={t.color.text}>
-          {diffMetricLine('depth', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
+          {diffMetricLine(T.depth, aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
         </Text>
         <Text color={t.color.text}>
-          {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
+          {diffMetricLine(T.duration, aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
-        <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
+        <Text color={t.color.text}>{diffMetricLine(T.tokens, sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
       </Box>
     </Box>
   )
@@ -583,6 +639,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+  const T = useT().hubs.agents
   const liveSubagents = useAgentRoster()
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -604,6 +661,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
   const [mode, setMode] = useState<'detail' | 'list' | 'steer' | 'tail'>('list')
   const { sid } = useStore($uiState)
+  const processRows = useProcessRows(now)
 
   const detailScrollRef = useRef<null | ScrollBoxHandle>(null)
   const prevLiveCountRef = useRef(liveSubagents.length)
@@ -663,7 +721,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     if (historyIndex === 0 && prev > 0 && liveSubagents.length === 0 && history.length > 0) {
       setHistoryIndex(1)
       setCursor(0)
-      setFlash('turn finished · inspect freely · q to close')
+      setFlash(messages().hubs.agents.flash.turnFinished)
     }
   }, [history.length, historyIndex, liveSubagents.length])
 
@@ -699,7 +757,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const guardLive = (action: () => void) => {
     if (replayMode) {
-      setFlash('replay mode — controls disabled')
+      setFlash(T.flash.replayLocked)
     } else {
       action()
     }
@@ -713,16 +771,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       interrupt(id)
         .then(raw => {
           const r = asRpcResult<SubagentInterruptResponse>(raw)
-          setFlash(r?.found ? `killing ${id}` : `not found: ${id}`)
+          setFlash(r?.found ? T.flash.killing(id) : T.flash.notFound(id))
         })
-        .catch(() => setFlash(`kill failed: ${id}`))
+        .catch(() => setFlash(T.flash.killFailed(id)))
     })
 
   const killSubtree = (node: SubagentNode) =>
     guardLive(() => {
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
-      setFlash(`killing subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
+      setFlash((ids.length === 1 ? T.flash.killingSubtreeOne : T.flash.killingSubtreeOther)(ids.length))
     })
 
   const togglePause = () =>
@@ -731,9 +789,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)
           applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+          setFlash(r?.paused ? T.flash.spawningPaused : T.flash.spawningResumed)
         })
-        .catch(() => setFlash('pause failed'))
+        .catch(() => setFlash(T.flash.pauseFailed))
     })
 
   const stepHistory = (delta: -1 | 1) =>
@@ -742,7 +800,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       if (next !== idx) {
         setCursor(0)
-        setFlash(next === 0 ? 'live turn' : `replay · ${next}/${history.length}`)
+        setFlash(next === 0 ? T.flash.liveTurn : T.flash.replay(next, history.length))
       }
 
       return next
@@ -883,7 +941,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const mix = Object.entries(
     subagents.reduce<Record<string, number>>((acc, it) => {
-      const key = it.model ? it.model.split('/').pop()! : 'inherit'
+      const key = it.model ? it.model.split('/').pop()! : T.inheritModel
       acc[key] = (acc[key] ?? 0) + 1
 
       return acc
@@ -895,21 +953,21 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     .join(' · ')
 
   const capsLabel = delegation.maxSpawnDepth
-    ? `caps d${delegation.maxSpawnDepth}/${delegation.maxConcurrentChildren ?? '?'}`
+    ? T.caps(delegation.maxSpawnDepth, String(delegation.maxConcurrentChildren ?? '?'))
     : ''
 
   const title =
     replayMode && effectiveSnapshot
-      ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
-          effectiveSnapshot.finishedAt
-        ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+      ? `${historyIndex > 0 ? T.title.replay(historyIndex, history.length) : T.title.lastTurn}${T.title.finishedAt(
+          new Date(effectiveSnapshot.finishedAt).toLocaleTimeString()
+        )}`
+      : `${T.title.spawnTree}${delegation.paused ? T.title.pausedSuffix : ''}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 
   const controlsHint = replayMode
-    ? ' · controls locked'
-    : ` · e steer · t tail · x stop · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    ? T.hint.controlsLocked
+    : T.hint.controls(delegation.paused ? T.hint.resume : T.hint.pause)
 
   // ── Rendering ──────────────────────────────────────────────────────
 
@@ -937,7 +995,8 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         <AgentSteerForm cols={cols} gw={gw} id={selected.item.id} onClose={() => setMode('detail')} sid={sid} t={t} />
       ) : rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>{T.empty}</Text>
+          <ProcessesSection cols={cols - 2} rows={processRows} t={t} />
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
@@ -958,6 +1017,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
               />
             ))}
           </Box>
+          <ProcessesSection cols={cols - 2} rows={processRows} t={t} />
         </Box>
       ) : (
         <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
@@ -985,7 +1045,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       <Box flexDirection="column" flexShrink={0} marginTop={1}>
         <Text color={t.color.accent} wrap="truncate-end">
-          {replayMode ? 'Enter/d detail' : 'Enter/t tail · d detail'} · e steer · x stop · Esc back
+          {replayMode ? T.hint.footerReplay : T.hint.footerLive}
         </Text>
         {flash ? (
           <Text color={t.color.accent} wrap="truncate-end">
@@ -995,15 +1055,17 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
         {mode === 'list' ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            ↑↓/jk move · g/G top/bottom · {replayMode ? 'Enter/→ detail' : 'Enter tail · d/→ detail'}
-            {controlsHint} · s sort:{SORT_LABEL[sort]} · f filter:
-            {FILTER_LABEL[filter]}
-            {history.length > 0 ? ` · [ / ] history ${historyIndex}/${history.length}` : ''}
-            {' · q close'}
+            {T.hint.list(
+              replayMode ? T.hint.listNavReplay : T.hint.listNavLive,
+              controlsHint,
+              sortLabel(sort, T),
+              filterLabel(filter, T),
+              history.length > 0 ? T.hint.history(historyIndex, history.length) : ''
+            )}
           </Text>
         ) : (
           <Text color={t.color.muted} wrap="truncate-end">
-            ↑↓/jk scroll · PgUp/PgDn page · g/G top/bottom · Esc/← back to list{controlsHint} · q close
+            {T.hint.detail(controlsHint)}
           </Text>
         )}
       </Box>

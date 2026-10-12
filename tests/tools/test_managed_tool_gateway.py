@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
@@ -85,7 +85,7 @@ def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
 def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
     (tmp_path / "auth.json").write_text(json.dumps({
         "providers": {
             "nous": {
@@ -106,7 +106,7 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
 def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    expired_at = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    expired_at = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
     (tmp_path / "auth.json").write_text(json.dumps({
         "providers": {
             "nous": {
@@ -208,3 +208,32 @@ def test_default_bearer_gate_accepts_both_deployed_hosts_only():
             "http://tool-gateway.nousresearch.com/api/vendorx/generations",
         ):
             assert not managed_gateway_auth.is_managed_nous_gateway_url(untrusted)
+
+
+def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profiles(tmp_path, monkeypatch):
+    # A profile created with ``share_auth`` has no auth.json of its own; it signs in with the
+    # root identity. The connector gate must see that identity, or manage_connections vanishes
+    # from the profile's tool list while every other credential reader still works.
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "hermes-setup"
+    profile.mkdir(parents=True)
+    (root / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"nous": {"auth_method": "anonymous", "access_token": "tok"}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    import hermes_constants
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(auth_mod, "get_hermes_home", lambda: profile)
+    monkeypatch.setattr(auth_mod, "_global_auth_store_cache", None)
+    monkeypatch.setattr(auth_mod, "_auth_file_path", lambda: profile / "auth.json")
+
+    state = managed_tool_gateway._read_nous_provider_state()
+
+    assert state is not None
+    assert state["auth_method"] == "anonymous"

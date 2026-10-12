@@ -22,7 +22,7 @@ import pytest
 from gateway.platforms.base import SendResult
 from gateway.relay.egress import EGRESS_DECLINE_CODE
 
-CODE_ONLY_DECLINE: Dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
+CODE_ONLY_DECLINE: dict[str, Any] = {"success": False, "code": EGRESS_DECLINE_CODE}
 
 
 # ── exec approval ───────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ class _Adapter:
 
     def __init__(self, approval_result: SendResult) -> None:
         self._approval_result = approval_result
-        self.text_sends: List[str] = []
+        self.text_sends: list[str] = []
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
@@ -120,7 +120,7 @@ def _busy(adapter: _ConfirmAdapter):
     from gateway.run_busy import GatewayBusySessionMixin
 
     busy = object.__new__(GatewayBusySessionMixin)
-    busy._adapter_for_source = lambda _s: adapter
+    busy._delivery_adapter_for = lambda _s: adapter
     busy._thread_metadata_for_source = lambda _s, _a: {}
     busy._reply_anchor_for_event = lambda _e: None
     busy._session_key_for_source = lambda _s: "sk1"
@@ -180,7 +180,7 @@ def test_slash_confirm_ORDINARY_failure_returns_the_text_fallback():
 class _CardAdapter:
     def __init__(self, progress_result: SendResult) -> None:
         self._progress_result = progress_result
-        self.fallbacks: List[str] = []
+        self.fallbacks: list[str] = []
 
     async def send_native_task_card_progress(self, **k: Any) -> SendResult:
         return self._progress_result
@@ -207,6 +207,7 @@ def _card_state(adapter: _CardAdapter):
     return SimpleNamespace(
         tasks=[{"text": "step"}],
         native_failed=False,
+        publication_suppressed=False,
         visible_tasks=lambda: [{"text": "step"}],
         fallback_text=lambda: "step",
         adapter=adapter,
@@ -278,7 +279,7 @@ class _EditAdapter:
     """Records every op; the edit is refused with a code-only decline."""
 
     def __init__(self) -> None:
-        self.ops: List[str] = []
+        self.ops: list[str] = []
 
     @staticmethod
     def extract_media(text):
@@ -355,11 +356,11 @@ def test_task_card_fallback_edit_decline_does_not_send_progress_text():
         fallback_msg_id="m0",
         fallback_text=lambda: "task text",
         adapter=adapter,
-        egress_declined=False,
+        publication_suppressed=False,
     )
 
     asyncio.run(runner._task_card_send_or_edit_fallback(st))
 
     assert adapter.ops == ["edit"]
     assert sent == []
-    assert st.egress_declined is True
+    assert st.publication_suppressed is True

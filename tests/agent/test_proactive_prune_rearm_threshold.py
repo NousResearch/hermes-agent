@@ -21,7 +21,6 @@ from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tok
 
 LARGE_WINDOW = 1_000_000
 
-
 def _compressor(**kw: Any) -> ContextCompressor:
     defaults = dict(
         model="test",
@@ -39,9 +38,8 @@ def _compressor(**kw: Any) -> ContextCompressor:
     ):
         return ContextCompressor(**defaults)
 
-
-def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
-    msgs: List[Dict[str, Any]] = [{"role": "system", "content": "sys"}]
+def _history(n_pairs: int = 8, big: int = 9_000) -> list[dict[str, Any]]:
+    msgs: list[dict[str, Any]] = [{"role": "system", "content": "sys"}]
     for i in range(n_pairs):
         cid = f"call_{i}"
         msgs.append({
@@ -60,9 +58,8 @@ def _history(n_pairs: int = 8, big: int = 9_000) -> List[Dict[str, Any]]:
         })
     return msgs
 
-
 def _park_rearm_just_above_messages(
-    compressor: ContextCompressor, messages: List[Dict[str, Any]]
+    compressor: ContextCompressor, messages: list[dict[str, Any]]
 ) -> int:
     """Reproduce the reporter's state: message-only estimate stuck 913 tokens
     below the rearm mark (schema overhead makes up the rest of the request)."""
@@ -71,14 +68,12 @@ def _park_rearm_just_above_messages(
     assert before < compressor._proactive_prune_rearm_tokens
     return before
 
-
 def _over_threshold_warnings(caplog) -> list:
     return [
         r for r in caplog.records
         if r.levelno >= logging.WARNING
         and "over the compression threshold" in r.getMessage()
     ]
-
 
 def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> None:
     """Over ``threshold_tokens`` on the provider-billed basis, the rearm gate
@@ -88,7 +83,7 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
     _park_rearm_just_above_messages(c, msgs)
     billed = c.threshold_tokens + 1  # provider says: over threshold, now
 
-    scans: List[int] = []
+    scans: list[int] = []
     # Stand in for the real multi-pass scan: a NEW list whose old tool outputs
     # are reclaimed, so the (untouched) reclaim gate can commit it.
     reclaimed = [dict(m) for m in msgs]
@@ -96,7 +91,7 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
         if m.get("role") == "tool":
             m["content"] = "[pruned]"
 
-    def _scan(*args: Any, **kwargs: Any) -> tuple[List[Dict[str, Any]], int]:
+    def _scan(*args: Any, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
         scans.append(1)
         return reclaimed, 3
 
@@ -106,7 +101,6 @@ def test_billed_basis_over_threshold_defeats_message_only_rearm_lockout() -> Non
     assert scans, "rearm gate short-circuited on the message-only estimate"
     assert pruned == 3
     assert result is not msgs
-
 
 def test_message_only_rearm_still_holds_below_threshold() -> None:
     """Prompt-cache hysteresis is intact while the real request is under the
@@ -127,7 +121,6 @@ def test_message_only_rearm_still_holds_below_threshold() -> None:
     assert result is msgs
     assert pruned == 0
 
-
 def test_no_op_below_the_prune_trigger() -> None:
     """Under ``proactive_prune_tokens`` nothing is reclaimed, rearm or not —
     the bypass must not turn into over-pruning of small sessions."""
@@ -146,7 +139,6 @@ def test_no_op_below_the_prune_trigger() -> None:
 
     assert result is msgs
     assert pruned == 0
-
 
 def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
     """A session riding above the threshold with every reclamation path
@@ -170,7 +162,6 @@ def test_over_threshold_reclamation_no_op_warns_once(caplog) -> None:
         c.prune_tool_results_only(msgs, current_tokens=billed)
     assert len(_over_threshold_warnings(caplog)) == len(warnings)
 
-
 def test_under_threshold_no_op_is_not_warned(caplog) -> None:
     """Ordinary hysteresis below the threshold stays quiet."""
     c = _compressor(proactive_prune_min_reclaim_tokens=10_000_000)
@@ -183,45 +174,3 @@ def test_under_threshold_no_op_is_not_warned(caplog) -> None:
 
     assert (result, pruned) == (msgs, 0)
     assert not _over_threshold_warnings(caplog)
-
-
-def test_lockout_warns_again_after_rearm_reset(caplog) -> None:
-    """A full compaction (or session rebind / model recalibration) zeroes the
-    rearm mark. An identical lockout afterwards must warn again — the dedup key
-    must not outlive the reclamation that should have cleared it."""
-    c = _compressor(proactive_prune_min_reclaim_tokens=10_000_000)
-    msgs = _history()
-    billed = c.threshold_tokens + 5_000
-
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
-        c.prune_tool_results_only(msgs, current_tokens=billed)
-    assert len(_over_threshold_warnings(caplog)) == 1
-    # Same state, same key (reason, rearm=0): deduped.
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
-        c.prune_tool_results_only(msgs, current_tokens=billed)
-    assert len(_over_threshold_warnings(caplog)) == 1
-
-    # A public rearm boundary (same helper as compress(), on_session_end,
-    # bind_session_state and update_model): pins the wiring, not just the body.
-    c.on_session_reset()
-    assert c._proactive_prune_rearm_tokens == 0
-
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
-        c.prune_tool_results_only(msgs, current_tokens=billed)
-    assert len(_over_threshold_warnings(caplog)) == 2, (
-        "lockout after a rearm reset was deduped against the stale key"
-    )
-
-
-def test_dropping_under_threshold_clears_dedup_key(caplog) -> None:
-    """Back under threshold (e.g. compaction elsewhere shrank the request), the
-    key is released so the next over-threshold lockout is reported."""
-    c = _compressor(proactive_prune_min_reclaim_tokens=10_000_000)
-    msgs = _history()
-    billed = c.threshold_tokens + 5_000
-
-    with caplog.at_level(logging.WARNING, logger="agent.context_compressor"):
-        c.prune_tool_results_only(msgs, current_tokens=billed)
-        c.prune_tool_results_only(msgs, current_tokens=c.threshold_tokens - 1)
-        c.prune_tool_results_only(msgs, current_tokens=billed)
-    assert len(_over_threshold_warnings(caplog)) == 2

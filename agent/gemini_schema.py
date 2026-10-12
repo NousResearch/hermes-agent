@@ -1,11 +1,21 @@
-"""Helpers for translating OpenAI-style tool schemas to Gemini's schema subset."""
+"""Tool-schema preparation for Gemini's native API.
+
+Two wire shapes: ``parametersJsonSchema`` (plain JSON Schema, v1beta only) gets a light
+normalizer (``prepare_gemini_tool_parameters``); the legacy ``parameters`` field accepts
+only the OpenAPI ``Schema`` subset and keeps the lossy translator
+(``sanitize_gemini_tool_parameters``) for API versions without the JSON Schema field.
+"""
 
 from __future__ import annotations
 
+import copy
+import logging
 import math
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from tools.schema_sanitizer import _normalize_type_array
+
+logger = logging.getLogger(__name__)
 
 # Gemini's ``FunctionDeclaration.parameters`` accepts only a subset of OpenAPI 3.0 /
 # JSON Schema (the ``Schema`` object); everything else is stripped.
@@ -31,9 +41,9 @@ def _stringify_enum_value(item: Any) -> Any:
     return item if isinstance(item, str) else None
 
 
-def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> None:
+def _normalize_gemini_type_array(type_array: list, cleaned: dict[str, Any]) -> None:
     """Keep union alternatives and their branch-local structural constraints."""
-    derived: Dict[str, Any] = {}
+    derived: dict[str, Any] = {}
     _normalize_type_array(type_array, derived)
     if "anyOf" in derived:
         constraints = {"anyOf": cleaned["anyOf"]} if "anyOf" in cleaned else {}
@@ -55,13 +65,13 @@ def _normalize_gemini_type_array(type_array: list, cleaned: Dict[str, Any]) -> N
         cleaned["nullable"] = True
 
 
-def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
+def sanitize_gemini_schema(schema: Any) -> dict[str, Any]:
     """Gemini-compatible copy of a tool parameter schema: keeps only the documented subset
     (drops e.g. ``$schema`` / ``additionalProperties``) and recursively sanitizes nested
     ``properties`` / ``items`` / ``anyOf``."""
     if not isinstance(schema, dict):
         return {}
-    cleaned: Dict[str, Any] = {}
+    cleaned: dict[str, Any] = {}
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
             continue
@@ -109,6 +119,80 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     return cleaned
 
 
-def sanitize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
+def sanitize_gemini_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Normalize tool parameters to a valid Gemini object schema."""
     return sanitize_gemini_schema(parameters) or {"type": "object", "properties": {}}
+
+
+# ── parametersJsonSchema (full JSON Schema) ─────────────────────────────────
+#
+# The legacy translator is lossy: anyOf unions without an outer type, bare arrays,
+# $ref/$defs and additionalProperties had to be stripped or repaired, and one
+# unrepresentable construct 400s the ENTIRE request. Through parametersJsonSchema the
+# schema goes as-is; only same-document $refs are inlined (MCP pydantic / zod emit
+# them and Google rejects reference indirection) and root ``$schema`` is dropped.
+
+_EMPTY_OBJECT_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+# Real tool schemas hold a handful of refs; the cap stops circular pydantic models
+# from expanding forever.
+_MAX_REF_EXPANSIONS = 256
+
+
+def _resolve_local_ref(root: dict[str, Any], ref: str) -> Optional[dict[str, Any]]:
+    """Resolve a same-document JSON pointer (``#/$defs/Foo``) against *root*."""
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    node: Any = root
+    for raw_part in ref[2:].split("/"):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, dict) else None
+
+
+def _inline_refs(node: Any, root: dict[str, Any], budget: list[int], stack: tuple = ()) -> Any:
+    """Recursively inline same-document ``$ref`` nodes; ``ValueError`` on an unresolvable
+    or circular reference or an exhausted budget (the caller then keeps the original)."""
+    if isinstance(node, list):
+        return [_inline_refs(item, root, budget, stack) for item in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if not isinstance(ref, str):
+        return {key: _inline_refs(value, root, budget, stack) for key, value in node.items()}
+    if ref in stack:
+        raise ValueError(f"circular $ref {ref!r}")
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ValueError("$ref expansion budget exhausted")
+    target = _resolve_local_ref(root, ref)
+    if target is None:
+        raise ValueError(f"unresolvable $ref {ref!r}")
+    inlined = _inline_refs(target, root, budget, stack + (ref,))
+    # JSON Schema: siblings of $ref (description, default, ...) apply alongside the
+    # referenced schema and win over it.
+    siblings = {k: v for k, v in node.items() if k != "$ref"}
+    return {**inlined, **_inline_refs(siblings, root, budget, stack)} if siblings else inlined
+
+
+def prepare_gemini_tool_parameters(parameters: Any) -> dict[str, Any]:
+    """Full JSON Schema for ``parametersJsonSchema``: deep-copied, root ``$schema`` dropped,
+    same-document ``$ref`` inlined, object root guaranteed. A schema whose references
+    cannot all be resolved is sent untouched so the provider names the real problem."""
+    if not isinstance(parameters, dict) or not parameters:
+        return dict(_EMPTY_OBJECT_SCHEMA)
+    schema = copy.deepcopy(parameters)
+    schema.pop("$schema", None)
+    try:
+        schema = _inline_refs(schema, schema, [_MAX_REF_EXPANSIONS])
+    except ValueError as exc:
+        logger.debug("Gemini tool schema kept as-is ($ref inlining skipped): %s", exc)
+        return schema
+    schema.pop("$defs", None)
+    schema.pop("definitions", None)
+    if not schema:
+        return dict(_EMPTY_OBJECT_SCHEMA)
+    if schema.get("type") == "object" and "properties" not in schema:
+        schema["properties"] = {}
+    return schema

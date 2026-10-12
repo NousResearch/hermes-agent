@@ -20,6 +20,7 @@ import {
   $reviewIsRepo,
   $reviewLoading,
   $reviewRevertTarget,
+  $reviewScope,
   $reviewSelectedPath,
   $reviewTreeMode,
   cancelRevert,
@@ -37,6 +38,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
 // Compact header/diff action buttons — micro hit targets packed tight, matching
@@ -55,9 +57,15 @@ export function ReviewPane() {
   const diffLoading = useStore($reviewDiffLoading)
   const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
+  const scope = useStore($reviewScope)
+  // Stage / unstage / revert and the ship bar act on the working tree, so they
+  // only apply to the uncommitted scope; branch / last-turn are read-only.
+  const isUncommitted = scope === 'uncommitted'
 
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
+  // A repo (or a load that may reveal one) gets the header + scope chrome.
+  const showChrome = loading || isRepo
   // `{ path: null }` → revert all; `{ path: '…' }` → revert one file.
   const revertingAll = revertTarget?.path == null
   // Delay the skeletons so fast loads (most project switches) just blank → content
@@ -75,7 +83,7 @@ export function ReviewPane() {
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      {(loading || isRepo) && (
+      {showChrome && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
             {/* Pure self-naming label — redundant under a zone tab that already
@@ -98,7 +106,7 @@ export function ReviewPane() {
             <Button
               aria-label={c.stageAll}
               className={ACTION_BTN}
-              disabled={!hasFiles}
+              disabled={!hasFiles || !isUncommitted}
               onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
               size="icon-xs"
               variant="ghost"
@@ -110,7 +118,7 @@ export function ReviewPane() {
             <Button
               aria-label={c.revertAll}
               className={ACTION_BTN}
-              disabled={!hasFiles}
+              disabled={!hasFiles || !isUncommitted}
               onClick={() => requestRevert(null)}
               size="icon-xs"
               variant="ghost"
@@ -135,7 +143,9 @@ export function ReviewPane() {
         </RightSidebarSectionHeader>
       )}
 
-      {loading || isRepo ? (
+      {showChrome && <ReviewScopeRow />}
+
+      {showChrome ? (
         hasFiles ? (
           <ReviewFileTree />
         ) : showTreeSkeleton ? (
@@ -161,21 +171,23 @@ export function ReviewPane() {
               {displayPath(selectedFile.path)}
             </span>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
-            <Tip label={selectedFile.staged ? c.unstage : c.stage}>
-              <Button
-                aria-label={selectedFile.staged ? c.unstage : c.stage}
-                className={ACTION_BTN}
-                onClick={() =>
-                  void (
-                    selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
-                  ).catch(err => notifyError(err, c.stage))
-                }
-                size="icon-xs"
-                variant="ghost"
-              >
-                <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
-              </Button>
-            </Tip>
+            {isUncommitted && (
+              <Tip label={selectedFile.staged ? c.unstage : c.stage}>
+                <Button
+                  aria-label={selectedFile.staged ? c.unstage : c.stage}
+                  className={ACTION_BTN}
+                  onClick={() =>
+                    void (
+                      selectedFile.staged ? unstageReviewFile(selectedFile.path) : stageReviewFile(selectedFile.path)
+                    ).catch(err => notifyError(err, c.stage))
+                  }
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
+                </Button>
+              </Tip>
+            )}
             <Button
               aria-label={c.close}
               className={ACTION_BTN}

@@ -1,10 +1,26 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
+import { $onBattery } from '@/store/power'
 import { $activeSessionId } from '@/store/session'
+import {
+  $sessionStates,
+  $workingSessionIds,
+  clearAllSessionStates,
+  LIVE_TURN_EVENT_SILENCE_MS,
+  noteSessionEvent,
+  publishSessionState
+} from '@/store/session-states'
+import { loadArchivedSessions } from '@/store/sidebar-archive'
 
 import { useBackgroundSync } from './use-background-sync'
+
+vi.mock('@/store/sidebar-archive', () => ({
+  loadArchivedSessions: vi.fn()
+}))
 
 const noop = () => undefined
 const requestGateway = async () => ({ sessions: [] })
@@ -45,6 +61,8 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
     $changeEventsAvailable.set(false)
     $cronChangeTick.set(0)
     $sessionsChangeTick.set(0)
+    $sidebarShowArchived.set(false)
+    vi.mocked(loadArchivedSessions).mockReset()
   })
 
   afterEach(() => {
@@ -102,5 +120,121 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
 
     await act(async () => undefined)
     expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads archived sessions after an external session change while the Archived view is open', async () => {
+    $changeEventsAvailable.set(true)
+    $sidebarShowArchived.set(true)
+    render('default', 'local', async () => undefined)
+
+    await act(async () => {
+      $sessionsChangeTick.set(1)
+    })
+
+    expect(loadArchivedSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useBackgroundSync keeps a quiet working turn live', () => {
+  // A foreground tool emits nothing between tool.start and tool.complete; the
+  // backend is the only witness that the turn is still running.
+  const LONG_TOOL_MS = LIVE_TURN_EVENT_SILENCE_MS * 4
+
+  const working = async () => ({
+    sessions: [{ id: 'rt-quiet', last_active: Date.now() / 1000, session_key: 's-quiet', status: 'working' }]
+  })
+
+  function startQuietTurn() {
+    publishSessionState('rt-quiet', {
+      ...createClientSessionState('s-quiet'),
+      awaitingResponse: true,
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true,
+      turnStartedAt: Date.now()
+    })
+    noteSessionEvent('rt-quiet')
+  }
+
+  const cardShown = () => Boolean($sessionStates.get()['rt-quiet']?.messages.some(message => message.errorSurface))
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearAllSessionStates()
+    $activeSessionId.set(null)
+    $changeEventsAvailable.set(true)
+    $onBattery.set(false)
+    $sessionsChangeTick.set(0)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    clearAllSessionStates()
+    $onBattery.set(false)
+    vi.useRealTimers()
+  })
+
+  it('while the window is not focused', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    render('default', 'local', async () => undefined, working)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_TOOL_MS)
+    })
+
+    expect($workingSessionIds.get()).toContain('s-quiet')
+    expect($sessionStates.get()['rt-quiet']?.interrupted).toBeFalsy()
+    expect(cardShown()).toBe(false)
+  })
+
+  it('on battery, where the backstop poll is slower than the silence window', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    $onBattery.set(true)
+    startQuietTurn()
+    render('default', 'local', async () => undefined, working)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_TOOL_MS)
+    })
+
+    expect($workingSessionIds.get()).toContain('s-quiet')
+    expect(cardShown()).toBe(false)
+  })
+
+  it('while the gateway stops answering', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    const request = vi.fn(working)
+    render('default', 'local', async () => undefined, request)
+    await act(async () => undefined)
+    request.mockImplementation(async () => {
+      throw new Error('Hermes gateway unavailable')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_TOOL_MS)
+    })
+
+    // No answer is not an ending: the stall hint and Stop stay available.
+    expect($workingSessionIds.get()).toContain('s-quiet')
+    expect(cardShown()).toBe(false)
+  })
+
+  it('and settles it once the backend reports it over', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    const request = vi.fn(working)
+    render('default', 'local', async () => undefined, request)
+    await act(async () => undefined)
+    request.mockImplementation(async () => ({ sessions: [] }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_TURN_EVENT_SILENCE_MS)
+    })
+
+    expect($workingSessionIds.get()).not.toContain('s-quiet')
+    expect($sessionStates.get()['rt-quiet']?.interrupted).toBeFalsy()
   })
 })

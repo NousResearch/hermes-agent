@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -15,15 +16,14 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
+from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
+    _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
 
 logger = logging.getLogger(__name__)
 
-# Hermes session ids are timestamps (20260812_135332_ab12cd): the strongest sentinel for schema-less rows.
-SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 # Values observed in sessions.source across gateway platforms and tooling.
@@ -84,7 +84,7 @@ SQLITE3_CLI_GUIDANCE = (
 # The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "
@@ -103,7 +103,7 @@ class LostAndFoundError(RuntimeError):
 def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
     """Version of the sqlite3 CLI at *binary* via ``--version``, or None when it cannot run or be parsed."""
     try:
-        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
@@ -172,7 +172,7 @@ def _cli_supports_recover(binary: str) -> bool:
             conn.commit()
         finally:
             conn.close()
-        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30, check=False)
         return probe.returncode == 0 and b"sqlite_dbpage" not in probe.stderr
     except (OSError, subprocess.SubprocessError, sqlite3.Error):
         return False
@@ -180,30 +180,70 @@ def _cli_supports_recover(binary: str) -> bool:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
+SQLITE_HEADER_LENGTH = 100
+
+
 def run_cli_lost_and_found_recover(
     source: Path, lf_path: Path, sqlite3_bin: str, *, timeout: float = 3600.0,
 ) -> dict[str, Any]:
-    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB."""
+    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB.
+
+    A file whose page-1 header is garbage (SIGKILL mid-write) is refused outright by the shell
+    (``file is not a database``, rc 26) although the data pages after it survive. ``.recover``
+    walks pages via sqlite_dbpage and only trips on the magic check, so on that refusal the
+    100-byte header of the private snapshot is zeroed and the attempts rerun; a zeroed header
+    makes .recover infer page size and layout from the pages themselves (a spliced donor header
+    would instead report a database size/freelist that contradicts the file). ``source`` is
+    the caller's snapshot copy, never the user's file (#106667).
+    """
+    attempts = _cli_recover_attempts(source, lf_path, sqlite3_bin, timeout=timeout)
+    if attempts[-1]["usable"]:
+        return {"binary": sqlite3_bin, "attempts": attempts}
+    if any("not a database" in a["dump_stderr_tail"] for a in attempts):
+        with source.open("r+b") as handle:
+            handle.write(bytes(SQLITE_HEADER_LENGTH))
+        attempts += _cli_recover_attempts(source, lf_path, sqlite3_bin, timeout=timeout)
+        if attempts[-1]["usable"]:
+            return {"binary": sqlite3_bin, "attempts": attempts, "header_zeroed": True}
+    details = "; ".join(
+        f"[{a['command']}] dump rc={a['dump_returncode']} load rc={a['load_returncode']} "
+        f"{a['dump_stderr_tail'] or a['load_stderr_tail']}".strip()
+        for a in attempts
+    )
+    raise LostAndFoundError(f"sqlite3 .recover did not produce a usable lost_and_found database: {details}")
+
+
+def _cli_recover_attempts(source: Path, lf_path: Path, sqlite3_bin: str, *, timeout: float) -> list[dict[str, Any]]:
+    """``--ignore-freelist`` first (no resurrected deleted rows), plain ``.recover`` for older shells."""
     attempts: list[dict[str, Any]] = []
     for command in (".recover --ignore-freelist", ".recover"):
         if lf_path.exists():
             lf_path.unlink()
-        dump = subprocess.Popen(
-            [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        load = subprocess.Popen(
-            [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        assert dump.stdout is not None
-        dump.stdout.close()  # let dump receive SIGPIPE if load dies
-        try:
-            _, load_err = load.communicate(timeout=timeout)
-            dump_err = dump.stderr.read() if dump.stderr is not None else b""
-            dump.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            dump.kill()
-            load.kill()
-            raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
+        # .recover reports per-page diagnostics on stderr; a heavily damaged source can emit
+        # far more than a pipe buffer holds, so stderr drains to a temp file — an undrained
+        # PIPE would block the dump child, stall load's stdin, and burn the whole timeout.
+        with tempfile.TemporaryFile(prefix="hermes-recover-dump-stderr-") as dump_stderr:
+            dump = subprocess.Popen(
+                [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=dump_stderr
+            )
+            load = subprocess.Popen(
+                [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            assert dump.stdout is not None
+            dump.stdout.close()  # let dump receive SIGPIPE if load dies
+            try:
+                _, load_err = load.communicate(timeout=timeout)
+                dump.wait(timeout=60)
+                dump_stderr.seek(0, os.SEEK_END)
+                tail_size = min(dump_stderr.tell(), 65536)
+                dump_stderr.seek(-tail_size, os.SEEK_END)
+                dump_err = dump_stderr.read()
+            except subprocess.TimeoutExpired:
+                dump.kill()
+                load.kill()
+                dump.wait()  # reap: kill() alone leaves returncode None and a zombie until GC
+                load.wait()
+                raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
         attempts.append({
             "command": command, "dump_returncode": dump.returncode, "load_returncode": load.returncode,
             "dump_stderr_tail": dump_err.decode("utf-8", "replace")[-2000:],
@@ -211,13 +251,8 @@ def run_cli_lost_and_found_recover(
             "usable": _lost_and_found_db_usable(lf_path),
         })
         if attempts[-1]["usable"]:
-            return {"binary": sqlite3_bin, "attempts": attempts}
-    details = "; ".join(
-        f"[{a['command']}] dump rc={a['dump_returncode']} load rc={a['load_returncode']} "
-        f"{a['dump_stderr_tail'] or a['load_stderr_tail']}".strip()
-        for a in attempts
-    )
-    raise LostAndFoundError(f"sqlite3 .recover did not produce a usable lost_and_found database: {details}")
+            break
+    return attempts
 
 
 def _lost_and_found_db_usable(lf_path: Path) -> bool:
@@ -262,7 +297,8 @@ def _parse_sql_default(text: str) -> Any:
 
 
 def _is_session_id(value: Any) -> bool:
-    return isinstance(value, str) and bool(SESSION_ID_PATTERN.match(value))
+    """A cell that can be a session id: any shape in ``SESSION_ID_RECOGNIZERS``."""
+    return isinstance(value, str) and is_known_session_id(value)
 
 
 def _looks_like_source(value: Any) -> bool:
@@ -795,6 +831,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             "UPDATE sessions SET system_prompt_hash = NULL WHERE system_prompt_hash IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)"
         )
+        dest.execute(f"UPDATE sessions SET tool_names = NULL WHERE {_DANGLING_TOOL_PIN}")
     return result
 
 

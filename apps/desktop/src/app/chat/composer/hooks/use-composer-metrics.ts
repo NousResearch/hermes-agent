@@ -125,20 +125,6 @@ export function useComposerMetrics({
       return
     }
 
-    // Floating composer is out of the thread's flow — it must not reserve any
-    // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // Read through a ref so the callback stays stable, and read THIS surface's
-    // own state: pop-out is per layout zone, so a float in the left split must
-    // not zero the right split's clearance.
-    if (poppedOutRef.current) {
-      lastBucketedHeightRef.current = 0
-      lastBucketedSurfaceHeightRef.current = 0
-      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
-      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
-
-      return
-    }
-
     const { height } = dock.getBoundingClientRect()
     const { width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
@@ -162,6 +148,17 @@ export function useComposerMetrics({
 
     if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
       setExpanded(true)
+    }
+
+    // Floats still need their width-driven controls, but no pane reserves
+    // bottom clearance while the shared composer is detached.
+    if (poppedOutRef.current) {
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
+      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
+
+      return
     }
 
     if (height > 0) {
@@ -193,6 +190,7 @@ export function useComposerMetrics({
     syncComposerMetrics()
   }, [poppedOut, syncComposerMetrics])
 
+  // eslint-disable-next-line no-restricted-syntax -- resets a publish-dedupe cache in cleanup, not a mirrored atom
   useEffect(() => {
     // Resolve the owning surface while the composer is still attached; the
     // unmount cleanup runs after React detached the node, where closest() can
@@ -202,6 +200,16 @@ export function useComposerMetrics({
     return () => {
       clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
       clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
+      // The bucket refs mirror what is published, so clearing the vars must
+      // clear them too. This cleanup also runs on a non-final unmount (a
+      // StrictMode effect replay, a Suspense hide); the re-mount then
+      // re-measures the same dock, and with the refs still holding the old
+      // bucket the unchanged-skip check swallowed the republish. The thread
+      // fell back to the :root estimate (~62px) under a dock that could be
+      // 200px tall, and the status stack sat on top of the last turn until a
+      // real resize happened to fire.
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
     }
   }, [composerRef])
 

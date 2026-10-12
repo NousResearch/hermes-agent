@@ -1,7 +1,8 @@
 """skill_view repeat-view dedup registry: per-task cache of (skill name, file_path) ->
 (skill file mtime+size). A repeat view of an UNCHANGED file returns a short stub — the earlier
-tool result already carries the content verbatim. Cleared on context compression via
-``reset_skill_view_dedup()`` because the original content is summarized away.
+tool result already carries the content verbatim. Cleared via ``reset_skill_view_dedup()`` on
+context compression AND on a committed proactive tool-result prune, because both replace the
+original content with a one-line marker.
 """
 
 import json
@@ -9,7 +10,7 @@ import os
 import threading
 from typing import Dict
 
-_skill_view_tracker: Dict[str, Dict[tuple, tuple]] = {}
+_skill_view_tracker: dict[str, dict[tuple, tuple]] = {}
 _skill_view_tracker_lock = threading.Lock()
 _SKILL_VIEW_DEDUP_CAP = 200
 

@@ -141,10 +141,12 @@ test('ensureLoginShellPath is single-flight — concurrent callers share one she
 test('applyLoginShellPath kills the probe child and force-settles when its callback does not fire', async () => {
   const env: any = { SHELL: '/bin/zsh', PATH: '/usr/bin' }
   const kills: string[] = []
+
   const execFileFn = () => ({
     stdin: { end() {} },
     kill(signal) {
       kills.push(signal)
+
       return true
     }
   })

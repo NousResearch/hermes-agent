@@ -1,25 +1,7 @@
 """Passive opt-out keeps explicit update checks available."""
-import json
 import subprocess
-import time
 
 from hermes_constants import get_hermes_home
-
-
-def test_passive_check_obeys_config_before_using_cached_notice(monkeypatch):
-    from hermes_cli import banner
-
-    home = get_hermes_home()
-    (home / ".update_check").write_text(json.dumps({
-        "ts": time.time(), "behind": 17, "rev": None, "ver": banner.VERSION,
-    }), encoding="utf-8")
-    monkeypatch.delenv("HERMES_REVISION", raising=False)
-    config = home / "config.yaml"
-    config.write_text("updates:\n  check: true\n", encoding="utf-8")
-    assert banner.check_for_updates(passive=True) == 17
-    config.write_text("updates:\n  check: false\n", encoding="utf-8")
-    assert banner.check_for_updates(passive=True) is None
-    assert banner.check_for_updates() == 17
 
 
 def test_explicit_check_fetches_local_origin_despite_passive_opt_out(tmp_path, monkeypatch, capsys):

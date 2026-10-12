@@ -532,7 +532,10 @@ def _get_gateway_direct_credentials() -> dict[str, bool]:
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
-        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
+        "web": _any_env(
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY",
+            "SEARXNG_URL", "BRAVE_SEARCH_API_KEY",
+        ),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
         # with no stored selection (the autodetect cascade in tools/web_tools.py picks it up), so it must
         # not be classified "unconfigured" and pre-checked (#92647).

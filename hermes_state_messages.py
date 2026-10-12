@@ -1875,6 +1875,67 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
             (session_id, platform_message_id)) is not None
 
+    def stamp_latest_assistant_platform_message_id(
+        self,
+        session_id: str,
+        platform_message_id: str,
+        *,
+        content: str | None = None,
+    ) -> bool:
+        """Stamp *platform_message_id* onto the newest matching active assistant row.
+
+        Used after a successful outbound platform send so live delivery and session
+        history share one public id (phone proactive × history merge). Prefer a
+        content match when *content* is provided; otherwise take the newest active
+        assistant whose ``platform_message_id`` is empty or already equals *platform_message_id*.
+        Never overwrites a different existing platform id. Returns True when a row
+        already held the id or was updated.
+        """
+        pid = str(platform_message_id or "").strip()
+        if not session_id or not pid:
+            return False
+        want = None if content is None else str(content).strip()
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id, content, platform_message_id FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' AND active = 1 "
+                "ORDER BY id DESC LIMIT 40",
+                (session_id,),
+            ).fetchall()
+            target_id = None
+            already = False
+            for row in rows:
+                existing = row["platform_message_id"]
+                if existing is not None and str(existing).strip() and str(existing).strip() != pid:
+                    continue
+                if want is not None:
+                    decoded = self._decode_content(row["content"])
+                    text = decoded if isinstance(decoded, str) else (
+                        "" if decoded is None else str(decoded)
+                    )
+                    if text.strip() != want:
+                        continue
+                target_id = row["id"]
+                already = (
+                    existing is not None
+                    and str(existing).strip() == pid
+                )
+                break
+            if target_id is None:
+                return False
+            if already:
+                return True
+            cur = conn.execute(
+                "UPDATE messages SET platform_message_id = ? "
+                "WHERE id = ? AND session_id = ? "
+                "AND (platform_message_id IS NULL OR platform_message_id = '')",
+                (pid, target_id, session_id),
+            )
+            return cur.rowcount > 0
+
+        return bool(self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S))
+
     def _is_explicit_fork_child_row(self, session: dict[str, Any], *, include_reset: bool = False) -> bool:
         """True when *session* is a branch, delegate, or tool child of its parent (``include_reset``: also a
         reset fork). Markers only count when they point at ``parent_session_id``: compression copies

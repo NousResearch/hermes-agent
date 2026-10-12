@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from typing import Callable
 
 from .format_adapters import FormatLimits, FormatResult, adapt_format, detect_format
 from .unicode_profile import profile_text, unicode_safety_counts
@@ -138,6 +139,8 @@ def industrial_preprocess(
     text: str,
     query: str,
     limits: IndustrialLimits | None = None,
+    *,
+    gap_marker: Callable[[int, int], str] | None = None,
 ) -> IndustrialResult:
     value = str(text or "")
     resolved = limits or IndustrialLimits()
@@ -178,6 +181,7 @@ def industrial_preprocess(
         query,
         resolved.format_limits(),
         format_name=profile.format,
+        gap_marker=gap_marker,
     )
     if not format_result.structurally_valid:
         return IndustrialResult(

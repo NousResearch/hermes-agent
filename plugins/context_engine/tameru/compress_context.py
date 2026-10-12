@@ -19,13 +19,23 @@ import time
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
+from .agent_formats import (
+    GUTTER_RE as _AGENT_GUTTER_RE,
+    apply_agent_adapters,
+    detect_test_runner,
+    is_numbered_code,
+    preprocess_test_output,
+    rejects_table,
+)
 from .contract_gates import (
     GENERIC_WORDS,
     distinctive_query_terms,
     query_has_distinctive_selectors,
 )
+from .folding import fold_lossless, json_brief, mask_template  # noqa: F401 (fold_lossless re-exported)
+from .format_adapters import FILLER_WORDS
 from .industrial import IndustrialLimits, IndustrialResult, industrial_preprocess
 from .supersession import apply_supersession
 from .unicode_profile import (
@@ -46,6 +56,9 @@ try:
 except Exception:
     import tempfile
     DEFAULT_CCR_DIR = Path(tempfile.gettempdir()) / ".tameru" / "cache" / "context-compress-ccr"
+# Engine release this module ships in; the release bump keeps it in step with
+# pyproject.toml and src/tameru/__init__.py.
+ENGINE_VERSION = "1.4.0"
 CCR_TTL_SECONDS = 6 * 60 * 60
 CCR_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 FREEZE_MAX_DECISIONS = 4096
@@ -82,6 +95,31 @@ _SECRETS_RE = re.compile(
     r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     r"|(?i:\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b"
     r"\s*[:=]\s*[\"'][^\"'\s]{16,}[\"'])"
+    r"|\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
+    r"|\b(?:sk|rk)_live_[A-Za-z0-9]{16,}"
+    r"|(?i:\b(?:authorization\s*:\s*)?bearer\s+[A-Za-z0-9._~+/=-]{20,})"
+    r"|(?i:\b(?:[A-Za-z0-9_]+_)?(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b"
+    r"\s*[:=]\s*"
+    # 1.4.1 red-team: an unquoted value that is code (a call, an index, a
+    # ``${...}`` / ``<...>`` placeholder, an attribute chain, a snake_case
+    # variable such as ``api_key=fallback_api_key,``) names no credential.
+    r"(?![^\s\"']*[(\[{<$])(?!(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*(?![^\s,;)\]}]))"
+    r"(?![a-z_](?=[a-z0-9_]*_)[a-z0-9_]*(?![^\s,;)\]}]))"
+    r"[^\s\"']{16,})"
+    # 1.4.1 fix-all: the code exclusions above also let through unquoted
+    # snake_case passphrases and dotted passwords. A whole-line ``.env`` /
+    # shell assignment (``DB_PASSWORD=correct_horse_battery_staple``, no
+    # spaces around ``=``) or a YAML ``key: value`` line still names one: the
+    # value runs to the end of the line and does not end in ``,`` ``;`` ``)``
+    # (a keyword argument on its own line). YAML keeps the attribute-chain
+    # exclusion (``api_key: pydantic.types.SecretStr`` is an annotation).
+    r"|(?im:^[ \t]*(?:export[ \t]+)?(?:[A-Za-z0-9_]+_)?"
+    r"(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
+    r"=(?![^\s\"']*[(\[{<$])[^\s\"']{15,}[^\s\"',;)][ \t]*$)"
+    r"|(?im:^[ \t]*(?:[A-Za-z0-9_]+_)?"
+    r"(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
+    r":[ \t]+(?![^\s\"']*[(\[{<$])(?!(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*[ \t]*$)"
+    r"[^\s\"']{15,}[^\s\"',;)][ \t]*$)"
 )
 
 # Recursion guard markers: output Tameru itself produced.
@@ -90,6 +128,18 @@ _RECURSION_MARKERS = ("<compressed_context", "[CC-Retrieve:")
 
 def _contains_secret(text: str) -> bool:
     return bool(text) and _SECRETS_RE.search(text) is not None
+
+
+def contains_secret(text: str) -> bool:
+    """Public alias of :func:`_contains_secret` (v1.4.0).
+
+    True when ``text`` carries probable credential material (private-key
+    headers, well-known token prefixes, JWTs, long quoted assignments).
+    Callers that persist or forward text — the CCR store, a host plugin's
+    recovery store — use it to refuse to keep secrets. Conservative and
+    deterministic; never raises on non-string input.
+    """
+    return _contains_secret(text if isinstance(text, str) else str(text or ""))
 
 _STOP = {
     "what", "how", "does", "do", "the", "is", "are", "was", "were", "why",
@@ -111,11 +161,15 @@ _TOKEN_RE = re.compile(
 _CAMEL_RE = re.compile(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b")
 # Slash is required between segments. `(?:/?[\w.-]+){2,}` is catastrophic
 # on long hyphenated ids (acmecorp-genesis-v14-focused-node22-raw).
-_PATH_RE = re.compile(r"(?:[\w.-]+/){2,}[\w.-]+")
+# v1.4.0 (E2): segments are bounded and a match may only start at the start of
+# a run, so a 20k-char run without separators is linear instead of quadratic.
+# Segments over 255 chars are not paths (hash blobs); normal inputs match as
+# before.
+_PATH_RE = re.compile(r"(?<![\w.-])(?:[\w.-]{1,255}/){2,}[\w.-]{1,255}")
 _DOTTED_RE = re.compile(r"\b[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+\b")
 _QUOTED_RE = re.compile(r"[\"']([^\"']{2,64})[\"']")
 _CAPS_RE = re.compile(r"\b[A-Z]{2,24}\b")
-_URI_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+")
+_URI_RE = re.compile(r"\b[a-z][a-z0-9+.-]{0,31}://\S+")
 _FAST_ACCOUNTING_PUNCT = frozenset("§…×–—“”‘’")
 
 
@@ -195,12 +249,16 @@ def _receipt_hashes(
     }
 
 
+# v1.4.0 (E2): deleting the accounting punctuation and testing isascii() is the
+# same predicate as the old per-character generator, but runs at C speed — the
+# generator cost ~0.6 s per call on a 650 KB output that contains one "[…]".
+_FAST_ACCOUNTING_DELETE = {ord(ch): None for ch in _FAST_ACCOUNTING_PUNCT}
+
+
 def estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    if text.isascii() or all(
-        ord(char) < 128 or char in _FAST_ACCOUNTING_PUNCT for char in text
-    ):
+    if text.isascii() or text.translate(_FAST_ACCOUNTING_DELETE).isascii():
         return max(1, len(_TOKEN_RE.findall(text)))
     return max(1, len(token_units(text)))
 
@@ -306,14 +364,25 @@ def _log_fingerprint(line: str) -> str | None:
     Returns None for marker lines ([\u00d7N] ...) so re-running preprocessing
     never re-collapses its own output markers (NTK idempotency invariant).
     """
-    if line.lstrip().startswith("[\u00d7"):
+    if line.lstrip().startswith(("[\u00d7", "[last] ")):
         return None
     stripped = _PROGRESS_RE.match(line.strip())
     if stripped:
         return None
-    s = re.sub(r"\d+", "#", line.lower())
-    s = re.sub(r"\s+", " ", s).strip()
+    # v1.4.0 (E10): volatile fields (ids, ips, timestamps, durations, quoted
+    # strings, paths) are masked before the digits, by the same function the
+    # error fingerprint uses.
+    s = mask_template(line[:_RX_LINE_CAP].lower())
     return s[:240] or None
+
+
+def _template_long_enough(line: str) -> bool:
+    """A line is worth collapsing only if its digit-masked form is >12 chars.
+
+    Measured on the digit mask, not on the E10 template (``<ts> info ok`` is
+    short only because its timestamp became one token).
+    """
+    return len(_DIGITS_RE.sub("#", " ".join(line[:_RX_LINE_CAP].lower().split()))) > 12
 
 
 def _is_progress_bar(line: str) -> bool:
@@ -323,6 +392,168 @@ def _is_progress_bar(line: str) -> bool:
     if re.search(r"(\[[=#>\-. ]*\]\s*)?\d{1,3}\s*(%|/\s*\d+)", t):
         return True
     return bool(re.match(r"^Compiling [\w-]+ ", t))
+
+
+# ---------------------------------------------------------------------------
+# v1.4.0 shared line helpers (E1/E3): leading timestamps and error lines.
+# ---------------------------------------------------------------------------
+
+# Regex scans of a single line look at its first 2000 chars only: a 20k-char
+# run (base64 blob, minified bundle) must not make backtracking regexes
+# quadratic. The full line is still kept/emitted by callers.
+_RX_LINE_CAP = 2000
+
+# A leading log timestamp is a prefix, not a fact: ISO / RFC3339, syslog
+# ("Mar 14 12:00:03") and bare "HH:MM:SS[.mmm]", optionally bracketed. It
+# must not by itself make a line "critical" (E1) or a "critical line" for the
+# verifier (E3).
+_LEAD_TS_RE = re.compile(
+    r"^\s*[\[(]?(?:"
+    r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?"
+    r"|[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}"
+    r"|\d{2}:\d{2}:\d{2}(?:[.,]\d+)?"
+    r")[\])]?[ \t]*"
+)
+
+
+# Critical-line pre-computation (Baseline RAG-style): lines that carry
+# operational facts — errors, config assignments, key-value pairs, dates,
+# versions. Blocks holding them get a floor boost in score_blocks.
+#
+# The date alternative does not match a date that opens the line (optionally
+# after up to two blanks and a "[" or "("): a line-leading timestamp is a log
+# prefix, not a fact. _is_critical_line() widens that to every leading
+# timestamp form and chat role labels.
+_CRIT_LINE_RE = re.compile(
+    r"\b(?:error|exception|traceback|fatal|critical)\b"   # error keywords
+    r"|\bconfig(?:uration)?\s*[=:]"                       # config assignments
+    r"|\b(?:port|host|user|password|url|token|key)\s*[=:]"  # key-value pairs
+    r"|(?<!^)(?<!^[ \t])(?<!^[ \t][ \t])(?<!^[\[(])(?<!^[ \t][\[(])"
+    r"\b20[2-3]\d-\d{2}-\d{2}\b"                          # dates (not line-leading)
+    r"|\b\d+\.\d+\.\d+(?:\.\d+)?\b",                      # version numbers
+    re.IGNORECASE,
+)
+
+
+# A leading chat role label ("User: ...", "Tool: ...") is a speaker tag, not a
+# `user:` key-value fact. The old buggy call (pos=2, case-sensitive) never
+# matched it either; IGNORECASE would, and boost every user turn.
+_LEAD_ROLE_RE = re.compile(r"[ \t]*(?:User|Assistant|System|Tool|Developer)[ \t]*:[ \t]*")
+
+
+def _lead_ts_end(line: str) -> int:
+    """Index just past a leading timestamp prefix (0 when there is none)."""
+    m = _LEAD_TS_RE.match(line)
+    return m.end() if m else 0
+
+
+def _crit_scan_start(line: str) -> int:
+    """Where a critical-line scan starts: after a leading timestamp and/or
+    chat role label, which are line prefixes rather than facts."""
+    pos = _lead_ts_end(line)
+    m = _LEAD_ROLE_RE.match(line, pos)
+    return m.end() if m else pos
+
+
+def _is_critical_line(line: str) -> bool:
+    """Does ``line`` carry an operational fact (error keyword, config or
+    key-value assignment, date, version)? A bare leading timestamp or chat
+    role label does not count (E1)."""
+    return _CRIT_LINE_RE.search(line, _crit_scan_start(line)) is not None
+
+
+# Level-tagged error lines. Case-sensitive on purpose: "error" in prose is not
+# a log level, ERROR is.
+_ERR_LEVEL_RE = re.compile(r"\b(?:ERROR|FATAL|CRITICAL|PANIC|FAIL(?:ED|URE)?)\b")
+_ERR_EXC_RE = re.compile(r"^\s*(?:\w+\.)*\w*(?:Error|Exception):")
+_ERR_PANIC_RE = re.compile(r"\bpanic:")
+_ERR_TRACEBACK = "Traceback (most recent call last)"
+# "0 errors", "errors: 0", "failed=0" report success; they are not errors. Only
+# a literal zero count negates: "no error body" / "no error handler" are the
+# TEXT of a real ERROR line, and a decimal ("ERROR: 0.5 exceeds ...") is not a
+# count.
+_ERR_NEGATED_RE = re.compile(
+    r"\b0\s+(?:errors?|failures?|failed|fatals?)\b"
+    r"|\b(?:errors?|failures?|failed|fatals?|critical)\s*[=:]\s*0(?!\w|\.\d)",
+    re.IGNORECASE,
+)
+_COUNT_PREFIX_RE = re.compile(r"^\s*\[(?:\u00d7\d+|last)\]\s*")
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_HEXRUN_RE = re.compile(r"[0-9a-f]{6,}")
+_DIGITS_RE = re.compile(r"\d+")
+_FINGERPRINT_CAP = 160
+
+
+def _without_zero_counts(s: str) -> str:
+    """``s`` with its literal-zero count phrases ("0 errors", "errors: 0",
+    "failed=0") removed. A line is negated only when nothing else in it signals
+    a failure: Maven's ``[ERROR] Tests run: 5, Failures: 2, Errors: 0`` reports
+    a failure *and* a zero count, and must stay an error line."""
+    return _ERR_NEGATED_RE.sub(" ", s)
+
+
+def _is_level_error_line(line: str) -> bool:
+    """A level-tagged ERROR/FATAL/CRITICAL/PANIC/FAIL* log line."""
+    return _ERR_LEVEL_RE.search(_without_zero_counts(line[:_RX_LINE_CAP])) is not None
+
+
+def _is_error_line(line: str) -> bool:
+    """Level-tagged error, ``XxxError:``/``Exception:`` head, traceback head or
+    Go panic — the lines :func:`error_fingerprints` keys on."""
+    s = _without_zero_counts(line[:_RX_LINE_CAP])
+    # The exception head is anchored at the line start: look past a "[×N] "
+    # collapse prefix so the same failure keeps its key after a fold.
+    head = s
+    prefix = _COUNT_PREFIX_RE.match(s)
+    if prefix:
+        head = s[prefix.end():]
+    return bool(
+        _ERR_LEVEL_RE.search(s)
+        or _ERR_EXC_RE.match(head)
+        or _ERR_TRACEBACK in s
+        or _ERR_PANIC_RE.search(s)
+    )
+
+
+def _error_fp(line: str) -> str:
+    """Stable fingerprint of an error line: volatile fields are masked.
+
+    A leading ``[×N] `` collapse marker is stripped, the line lowercased,
+    UUIDs -> ``<uuid>``, hex runs of 6+ -> ``<hex>`` (before digits, so ids
+    that differ only in digit placement still collide), digits -> ``#``,
+    whitespace collapsed, capped at 160 chars.
+    """
+    s = _COUNT_PREFIX_RE.sub("", line[:_RX_LINE_CAP], count=1).lower()
+    return mask_template(s)[:_FINGERPRINT_CAP]
+
+
+def error_fingerprints(text: str) -> dict[str, str]:
+    """Map error fingerprint -> first exemplar line, in original order (v1.4.0).
+
+    An error line is a level-tagged ``ERROR``/``FATAL``/``CRITICAL``/``PANIC``/
+    ``FAIL``/``FAILED``/``FAILURE`` line (uppercase tokens, case-sensitive), an
+    ``XxxError:`` / ``Exception:`` head line, a ``Traceback (most recent call
+    last)`` line or a Go ``panic:`` line. Lines that report zero errors
+    ("0 errors", "errors: 0", "failed=0") are not errors.
+
+    The fingerprint masks everything volatile (see :func:`_error_fp`), so 500
+    repeats of one failure share a key and the first one is the exemplar.
+    Deterministic and stable under compaction: for compressed text ``c`` that
+    kept an exemplar of every failure, ``error_fingerprints(x).keys() <=
+    error_fingerprints(c).keys()`` — a host can use that as a retention check.
+    """
+    found: dict[str, str] = {}
+    if not text:
+        return found
+    for line in _norm_newlines(text).split("\n"):
+        if not _is_error_line(line):
+            continue
+        fp = _error_fp(line)
+        if fp and fp not in found:
+            found[fp] = line
+    return found
 
 
 def preprocess_logs(lines: list[str], query: str = "") -> list[str]:
@@ -338,24 +569,34 @@ def preprocess_logs(lines: list[str], query: str = "") -> list[str]:
       preserving first user frame (N3)
     """
     out: list[str] = []
+    # v1.4.0 (N6): out_src[k] is the index in `lines` that out[k] came from, so
+    # restored error lines can go back to their original relative position.
+    out_src: list[int] = []
     trace: list[str] = []
+    trace_src: list[int] = []
     query_match_indices: set[int] = set()
     query_selectors = distinctive_query_terms(query or "")
 
     def flush_trace() -> None:
-        nonlocal trace
+        nonlocal trace, trace_src
         if not trace:
             return
         if len(trace) <= 4:
             out.extend(trace)
+            out_src.extend(trace_src)
         else:
             out.append(trace[0])
+            out_src.append(trace_src[0])
             out.append(f"  ... {len(trace) - 2} frames omitted")
+            out_src.append(trace_src[1])
             out.append(trace[-1])
+            out_src.append(trace_src[-1])
         trace = []
+        trace_src = []
 
     # First pass: drop progress bars but remember whether we saw any.
-    kept_lines = [ln for ln in lines if not _is_progress_bar(ln)]
+    kept_src = [i for i, ln in enumerate(lines) if not _is_progress_bar(ln)]
+    kept_lines = [lines[i] for i in kept_src]
 
     query_match_source_indices: set[int] = set()
     if query_selectors:
@@ -381,6 +622,7 @@ def preprocess_logs(lines: list[str], query: str = "") -> list[str]:
 
     seen: dict[str, int] = {}
     exemplar_idx: dict[str, int] = {}
+    last_seen: dict[str, str] = {}  # v1.4.0 (E10): last instance of each template
 
     i = 0
     n = len(kept_lines)
@@ -392,6 +634,7 @@ def preprocess_logs(lines: list[str], query: str = "") -> list[str]:
         )
         if is_trace_like:
             trace.append(line)
+            trace_src.append(kept_src[i])
             i += 1
             continue
         flush_trace()
@@ -400,47 +643,89 @@ def preprocess_logs(lines: list[str], query: str = "") -> list[str]:
             # Keep the exact matching record outside numeric-template collapse.
             query_match_indices.add(len(out))
             out.append(line)
+            out_src.append(kept_src[i])
             i += 1
             continue
         fp = _log_fingerprint(line)
-        if fp and len(fp) > 12:
+        if fp and _template_long_enough(line):
             if fp in exemplar_idx:
                 seen[fp] += 1
+                last_seen[fp] = line
                 i += 1
                 continue
             exemplar_idx[fp] = len(out)
             seen[fp] = 1
         out.append(line)
+        out_src.append(kept_src[i])
         i += 1
     flush_trace()
 
     # Attach counts: replace exemplar line with counted variant.
+    # v1.4.0 (E10): a template seen >=3 times keeps its LAST instance verbatim
+    # on the next line ("[last] ..."), so the end state of a repeating failure
+    # survives next to the first one.
     counted_out: list[str] = []
+    counted_src: list[int] = []
     for idx, ln in enumerate(out):
         if idx in query_match_indices:
             counted_out.append(ln)
+            counted_src.append(out_src[idx])
             continue
         fp = _log_fingerprint(ln)
         cnt = seen.get(fp, 1) if fp else 1
         if fp and cnt > 1 and not ln.lstrip().startswith("[\u00d7"):
             counted_out.append(f"[\u00d7{cnt}] {ln}")
+            counted_src.append(out_src[idx])
+            last = last_seen.get(fp)
+            if cnt >= 3 and last is not None and last != ln:
+                counted_out.append(f"[last] {last}")
+                counted_src.append(out_src[idx])
         else:
             counted_out.append(ln)
+            counted_src.append(out_src[idx])
     result = counted_out
+    out_src = counted_src
 
     # N6 error-signal invariant: original error lines that are missing from
-    # the output must be restored.
+    # the output must be restored. v1.4.0: a line counts as present when an
+    # exemplar of its template is present (possibly prefixed "[×N] "), so the
+    # 499 copies a "[×500] ..." exemplar already stands for are NOT re-added;
+    # genuinely missing lines go back at their ORIGINAL relative position, not
+    # at the top.
     def has_error_signal(text: str) -> bool:
         return bool(_ERROR_RE.search(text))
 
-    orig_errors = [ln for ln in lines if has_error_signal(ln)]
+    orig_errors = [(i, ln) for i, ln in enumerate(lines) if has_error_signal(ln)]
     if orig_errors:
-        out_text = "\n".join(result)
-        missing = [ln for ln in orig_errors if ln not in result and ln not in out_text]
+        present_lines = set(result)
+        present_fps: set[str] = set()
+        for ln in result:
+            if has_error_signal(ln):
+                fp = _log_fingerprint(_COUNT_PREFIX_RE.sub("", ln, count=1))
+                if fp:
+                    present_fps.add(fp)
+        missing: list[tuple[int, str]] = []
+        for src_idx, ln in orig_errors:
+            if ln in present_lines:
+                continue
+            fp = _log_fingerprint(ln)
+            if fp and fp in present_fps:
+                continue
+            if fp:
+                present_fps.add(fp)  # one restored exemplar stands for the template
+            missing.append((src_idx, ln))
         if missing:
-            # Restore missing error lines right after the head (or at top).
-            insert_at = min(1, len(result))
-            result = result[:insert_at] + missing + result[insert_at:]
+            merged: list[str] = []
+            mi = 0
+            for pos, ln in enumerate(result):
+                # Restored lines go after every kept line that precedes them
+                # in the original (ties: the kept line first), before the next.
+                while mi < len(missing) and missing[mi][0] < out_src[pos]:
+                    merged.append(missing[mi][1])
+                    mi += 1
+                merged.append(ln)
+            merged.extend(ln for _, ln in missing[mi:])
+            result = merged
 
     return _collapse_blanks(result)
 
@@ -551,7 +836,7 @@ def preprocess_json(text: str, query: str) -> str:
     needles = _json_query_needles(query)
     try:
         parsed = json.loads(stripped)
-    except (json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):  # JSONDecodeError + the 4300-digit int limit
         return text
     try:
         crushed = _crush_value(parsed, 0, needles)
@@ -571,7 +856,12 @@ def _looks_like_csv(text: str) -> bool:
     if len(lines) < 6 or lines[0].count(",") < 2:
         return False
     similar = sum(1 for ln in lines[1:40] if ln.count(",") >= 2)
-    return similar >= 4
+    if similar < 4:
+        return False
+    # v1.4.0 (E4): code is not CSV. A numbered read, code lines, or an unstable
+    # column count (a JS file whose first line happens to hold commas) is not a
+    # table, however many commas it has.
+    return not rejects_table(lines)
 
 
 def _selector_patterns(terms: Iterable[str]) -> list[re.Pattern[str]]:
@@ -581,8 +871,15 @@ def _selector_patterns(terms: Iterable[str]) -> list[re.Pattern[str]]:
     ]
 
 
-def preprocess_csv(text: str, query: str) -> str:
-    """Keep header + distinctive-matching rows. No first-N cliff."""
+def preprocess_csv(
+    text: str,
+    query: str,
+    gap_marker: Callable[[int, int], str] | None = None,
+) -> str:
+    """Keep header + distinctive-matching rows. No first-N cliff.
+
+    ``gap_marker(omitted_chars, total_chars)`` marks each run of dropped rows
+    (v1.4.0); ``None`` keeps the output byte-identical to earlier releases."""
     if not query_has_distinctive_selectors(query) or not _looks_like_csv(text):
         return text
     terms = [t for t in distinctive_query_terms(query) if not t.startswith("script:")]
@@ -591,12 +888,33 @@ def preprocess_csv(text: str, query: str) -> str:
     selectors = _selector_patterns(terms)
     lines = text.split("\n")
     kept = [lines[0]]
-    for line in lines[1:]:
+    flags = [False] * len(lines)
+    flags[0] = True
+    for idx, line in enumerate(lines[1:], 1):
         if any(selector.search(line) for selector in selectors):
             kept.append(line)
+            flags[idx] = True
     if len(kept) == 1 or len(kept) == len(lines):
         return text
-    return "\n".join(kept)
+    if gap_marker is None:
+        return "\n".join(kept)
+    out: list[str] = []
+    run: list[str] = []
+    for line, keep in zip(lines, flags):
+        if keep:
+            if run:
+                dropped = "\n".join(run)
+                if dropped.strip():
+                    out.append(str(gap_marker(len(dropped), len(text))))
+                run = []
+            out.append(line)
+        else:
+            run.append(line)
+    if run:
+        dropped = "\n".join(run)
+        if dropped.strip():
+            out.append(str(gap_marker(len(dropped), len(text))))
+    return "\n".join(out)
 
 
 _FLAT_RECORD_RE = re.compile(r"^[^\s:#][^:\n]{0,200}:\s+\S.*$")
@@ -634,11 +952,27 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def preprocess_test_runner(text: str, query: str) -> str:
+def preprocess_test_runner(
+    text: str,
+    query: str,
+    content_hint: str | None = None,
+    gap_marker: Callable[[int, int], str] | None = None,
+) -> str:
     """Keep suite summary; drop per-file ticks and node warnings.
 
     Super does this on vitest dumps. Skip if the query names a test file.
+
+    v1.4.0 (E5): pytest, jest, go test and cargo test output is reduced to its
+    failure blocks and summary lines (``agent_formats.preprocess_test_output``);
+    passing per-test lines become a count marker (or ``gap_marker``). Applied
+    when the runner is recognised, or when ``content_hint == "test"``.
     """
+    if content_hint in (None, "test"):
+        reduced = preprocess_test_output(
+            text, query, gap_marker=gap_marker, force=content_hint == "test"
+        )
+        if reduced is not None:
+            return reduced
     plain = strip_ansi(text)
     if not _TEST_SUMMARY_RE.search(plain):
         return text
@@ -656,6 +990,8 @@ def preprocess_test_runner(text: str, query: str) -> str:
     return "\n".join(kept)
 
 
+# A reduced test run at most this long is final (never re-scored).
+_TEST_REDUCTION_FINAL_CHARS = 16000
 _FILLER_COMMENT_RE = re.compile(r"^(--|#)\s*filler\b", re.I)
 _TRUST_RISK_RE = re.compile(
     r"\b(?:untrusted|not\s+operational)\b"
@@ -684,7 +1020,13 @@ _TRUST_EXCLUDE_CUE_RE = re.compile(
 
 def _normalise_instruction_text(text: str) -> str:
     """Normalise width and remove invisible formatting before classification."""
-    normalised = unicodedata.normalize("NFKC", str(text or ""))
+    text = str(text or "")
+    if text.isascii():
+        # Perf (v1.4.0): NFKC is the identity on ASCII and ASCII has no Cf
+        # (format) characters, so the per-character scan below cannot change
+        # anything — it cost ~0.4 s per 850 KB of ASCII log text.
+        return text
+    normalised = unicodedata.normalize("NFKC", text)
     return "".join(
         char for char in normalised if unicodedata.category(char) != "Cf"
     )
@@ -705,25 +1047,160 @@ def preprocess_filler_comments(text: str, query: str) -> str:
 
 def unwrap_hermes_tool(text: str) -> str:
     """Score the inner payload of a Hermes tool JSON wrapper."""
+    return unwrap_tool_payload(text).inner
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+@dataclass(frozen=True)
+class ToolPayload:
+    """A tool result split into its text payload and its envelope (v1.4.0).
+
+    ``inner``   the payload text (the whole input when it was not wrapped)
+    ``field``   ``"content"`` or ``"output"`` when unwrapped, else ``None``
+    ``meta``    the OTHER top-level keys whose values are scalars
+                (str/int/float/bool/None), in original key order — for Hermes
+                tools that is ``exit_code``, ``error``, ``total_lines``, ...
+    ``wrapped`` True when the input was a JSON object wrapper
+    ``order``   every top-level key of the original object, in order (lets
+                :func:`rewrap_tool_payload` put the payload back where it was);
+                not part of equality or repr, so ``ToolPayload(inner, field,
+                meta, wrapped)`` built by hand compares equal to an unwrapped one
+    """
+
+    inner: str
+    field: str | None
+    meta: dict
+    wrapped: bool
+    order: tuple[str, ...] = field(default=(), compare=False, repr=False)
+
+
+def unwrap_tool_payload(text: str) -> ToolPayload:
+    """Split a Hermes tool result into payload and envelope.
+
+    Detection mirrors :func:`unwrap_hermes_tool`: a JSON object with a string
+    ``content`` or ``output`` longer than 200 chars (``content`` first).
+    Anything else comes back as ``ToolPayload(text, None, {}, False)``.
+    """
+    unwrapped = ToolPayload(inner=text, field=None, meta={}, wrapped=False)
+    if not isinstance(text, str):
+        return unwrapped
     stripped = text.strip()
     if not stripped.startswith("{"):
-        return text
+        return unwrapped
     try:
         parsed = json.loads(stripped)
-    except (json.JSONDecodeError, RecursionError):
-        return text
+    except (ValueError, RecursionError):  # JSONDecodeError + the 4300-digit int limit
+        return unwrapped
     if not isinstance(parsed, dict):
-        return text
+        return unwrapped
     for key in ("content", "output"):
         val = parsed.get(key)
         if isinstance(val, str) and len(val) > 200:
-            return val
-    return text
+            meta = {
+                k: v
+                for k, v in parsed.items()
+                if k != key and (v is None or isinstance(v, (str, int, float, bool)))
+            }
+            return ToolPayload(
+                inner=val, field=key, meta=meta, wrapped=True, order=tuple(parsed)
+            )
+    return unwrapped
 
 
-def preprocess(text: str, query: str) -> tuple[list[str], str]:
+def rewrap_tool_payload(payload: ToolPayload, new_inner: str) -> str:
+    """Rebuild a tool-result JSON object around a replacement payload.
+
+    ``new_inner`` goes back under ``payload.field`` and the scalar ``meta``
+    keys keep their original order; non-scalar keys the unwrap dropped are not
+    restored. An unwrapped payload returns ``new_inner`` unchanged. Compact
+    separators, so the result is one line of JSON that Hermes' own
+    ``"exit_code"\\s*:\\s*N`` matchers still read.
+    """
+    if not payload.wrapped or payload.field is None:
+        return new_inner
+    out: dict[str, Any] = {}
+    for key in payload.order:
+        if key == payload.field:
+            out[key] = new_inner
+        elif key in payload.meta:
+            out[key] = payload.meta[key]
+    if payload.field not in out:
+        out[payload.field] = new_inner
+    for key, value in payload.meta.items():
+        out.setdefault(key, value)
+    return _compact_json(out)
+
+
+# v1.4.0 (E8): caller-supplied routing hints. diff/grep/test are recorded in
+# the receipt only (their adapters arrive later); they route like None.
+_CONTENT_HINTS = frozenset(
+    {"code", "numbered_code", "log", "json", "text", "diff", "grep", "test"}
+)
+_CODE_HINTS = frozenset({"code", "numbered_code"})
+# Hints whose content must never be read as a table: source code (commas and
+# colons are syntax) and logs (a Java "12:00:00,123" timestamp makes every line
+# look like a two-column CSV row).
+_NO_TABLE_HINTS = frozenset({"code", "numbered_code", "log"})
+_HINT_ROUTES = {
+    "code": "code",
+    "numbered_code": "code",
+    "log": "log",
+    "json": "json",
+    "text": "text",
+}
+# Line-number gutter of numbered code: `cat -n` ("   12\t...") or `N|`.
+_GUTTER_RE = _AGENT_GUTTER_RE  # `N\t` (cat -n), `N|` (Hermes read_file), `N: `
+
+
+def _marker_tuple(markers: Iterable[str] | str | None) -> tuple[str, ...]:
+    """Materialise ``recursion_markers`` once: a bare string is ONE marker (not
+    a set of characters), non-strings and empty strings are dropped (an empty
+    marker would match every line)."""
+    if not markers:
+        return ()
+    if isinstance(markers, str):
+        markers = (markers,)
+    return tuple(m for m in markers if isinstance(m, str) and m)
+
+
+def _has_anchored_marker(text: str, markers: tuple[str, ...]) -> bool:
+    """True when some line of ``text`` starts with one of ``markers`` (after
+    ``lstrip``). Explicit and anchored: a marker merely mentioned mid-line,
+    or text that resembles a marker without being one, does not count."""
+    if not markers:
+        return False
+    if any(m in text for m in markers) and any(
+        line.lstrip().startswith(markers) for line in text.splitlines()
+    ):  # (the substring test is a cheap reject before the line scan)
+        return True
+    return _marker_in_tool_payload(text, markers)
+
+
+def _marker_in_tool_payload(text: str, markers: tuple[str, ...]) -> bool:
+    """A Hermes tool result is a JSON object around ONE payload string, so a
+    marker that opens a line of the payload is escaped inside the JSON text and
+    never opens a line of it. Judge the unwrapped payload as well, otherwise a
+    host that re-wraps its compacted output (``rewrap_tool_payload``) would see
+    that output compressed a second time."""
+    if text.lstrip()[:1] != "{":
+        return False
+    escaped = [json.dumps(m, ensure_ascii=a)[1:-1] for m in markers for a in (False, True)]
+    if not any(e in text for e in escaped):
+        return False
+    inner = unwrap_tool_payload(text).inner
+    if inner is text:
+        return False
+    return any(line.lstrip().startswith(markers) for line in inner.splitlines())
+
+
+def preprocess(
+    text: str, query: str, content_hint: str | None = None
+) -> tuple[list[str], str]:
     lines = _norm_newlines(text).split("\n")
-    kind = route_content_type(lines)
+    kind = _HINT_ROUTES.get(content_hint) or route_content_type(lines)
     if kind == "log":
         return preprocess_logs(lines, query), kind
     if kind == "code":
@@ -803,7 +1280,31 @@ _WEAK_NEXT_CHAT = frozenset(
         "final",
         "begin",
     }
+) | FILLER_WORDS | frozenset(
+    # v1.4.0 (E6): conversational filler — a reply made only of these names
+    # nothing in the document ("continue", "thanks", "go ahead", "keep going",
+    # "carry on", "sounds good"). FILLER_WORDS (format_adapters.py) supplies
+    # continue/thanks/thank/ahead/proceed/okay/sure/lgtm/sounds/good/great/
+    # yes/yeah/yep/cool/done/again/retry/going/carry/nice/perfect/…
+    {"sounds", "looks", "works"}
 )
+
+# Words that, alone or together, make a query "filler only": the reply to the
+# agent rather than a question about the text ("fix it", "ok thanks", "LGTM").
+# Such a query is treated as an EMPTY query on every path (see
+# _is_filler_query) — adapters, destructive preprocess, selection, fail-open.
+_FILLER_QUERY_WORDS = frozenset(_WEAK_NEXT_CHAT | _STOP | {"fix", "fixes", "do", "so", "now", "then"})
+
+
+def _is_filler_query(query: str) -> bool:
+    """True when every word of the query is conversational filler.
+
+    Uppercase variants count ("OK", "LGTM" would otherwise pass the
+    distinctive-identifier gate as CAPS tokens). A query with any other word —
+    a digit-bearing token, an identifier, a topical noun — is not filler.
+    """
+    words = re.findall(r"[^\W_]+", (query or "").casefold())
+    return bool(words) and all(w in _FILLER_QUERY_WORDS for w in words)
 
 
 def _topic_terms(query: str) -> list[str]:
@@ -974,7 +1475,12 @@ def _term_in_text(term: str, lower: str) -> bool:
     return re.search(rf"\b{re.escape(term)}\b", lower) is not None
 
 
-def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+def score_blocks(
+    blocks: list[dict[str, Any]],
+    query: str,
+    *,
+    content_type: str | None = None,
+) -> list[dict[str, Any]]:
     terms = _extract_terms(query)
     entities = _extract_entities(query)
     n = max(1, len(blocks))
@@ -1044,14 +1550,24 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
                 candidate_blocks[cand] = 0
     for cand in seen_candidates:
         c_lower = cand.lower()
-        if re.fullmatch(r"\w{4,}", c_lower):
-            df = token_counter.get(c_lower, 0)
-        else:
-            df = sum(1 for lt in lower_texts if c_lower in lt)
+        # Perf (v1.4.0): only single-token candidates can ever match the
+        # per-block token sets in the boost loop below; dotted / multi-word /
+        # quoted candidates never could, and their df was an O(candidates x
+        # blocks) substring scan (thousands of unique `abc123.json` names in a
+        # log). Skipping them changes no score.
+        if not re.fullmatch(r"\w{4,}", c_lower):
+            continue
+        df = token_counter.get(c_lower, 0)
         # Require the entity to be in at least 2 but at most n/2 blocks
         # (if it's in every block, it's a filler word, not a bridge)
         if 2 <= df <= n // 2:
             bridge_entities[cand] = df
+    # Index by lowercase token so the per-block boost is O(tokens in block),
+    # not O(bridge entities). Boost values are multiples of 0.5, so summation
+    # order cannot change a score.
+    bridge_by_lower: dict[str, list[int]] = {}
+    for ent, span in bridge_entities.items():
+        bridge_by_lower.setdefault(ent.lower(), []).append(span)
     for b in blocks:
         fp = re.sub(r"\s+", " ", b["text"].lower())[:240]
         if len(fp) > 20:
@@ -1109,20 +1625,34 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
     # config assignments, key-value pairs, dates, versions, large numbers.
     # Blocks containing these lines get a floor boost so they survive
     # compression even without query overlap.
-    _CRIT_LINE_RE = re.compile(
-        r"\b(?:error|exception|traceback|fatal|critical)\b"   # error keywords
-        r"|\bconfig(?:uration)?\s*[=:]"                       # config assignments
-        r"|\b(?:port|host|user|password|url|token|key)\s*[=:]"  # key-value pairs
-        r"|\b20[2-3]\d-\d{2}-\d{2}\b"                         # dates
-        r"|\b\d+\.\d+\.\d+(?:\.\d+)?\b"                       # version numbers
-    )
+    # v1.4.0 (E1): the regex is module-level and compiled with IGNORECASE; the
+    # old call `.search(line, re.IGNORECASE)` passed the flag as `pos=2`, so it
+    # matched case-sensitively and skipped the first two characters of a line.
+    # A bare LEADING timestamp is a log prefix, not a fact: the search starts
+    # after it, so timestamped INFO lines are not all "critical".
     crit_lines_per_block: list[int] = []
     for b in blocks:
         cnt = 0
         for line in b["text"].splitlines():
-            if _CRIT_LINE_RE.search(line, re.IGNORECASE):
+            if _is_critical_line(line):
                 cnt += 1
         crit_lines_per_block.append(cnt)
+
+    # v1.4.0 (E3): for content routed as a log, the first block carrying each
+    # level-tagged error fingerprint (ERROR/FATAL/CRITICAL/PANIC/FAIL*) is an
+    # "error exemplar". It is exempt from the stale-error penalty/cap, and the
+    # selectors keep it even when the floor-saturated path reduces to
+    # `_important`. Tracebacks and non-log content are unaffected.
+    error_exemplar_ids: set[int] = set()
+    if content_type == "log":
+        seen_error_fps: set[str] = set()
+        for b in blocks:
+            for line in b["text"].splitlines():
+                if _is_level_error_line(line):
+                    fp = _error_fp(line)
+                    if fp not in seen_error_fps:
+                        seen_error_fps.add(fp)
+                        error_exemplar_ids.add(b["id"])
 
     # Weak-query adaptive floor (rate-distortion H(Q) theory):
     # When the query has low information content, raise the novelty floor
@@ -1193,11 +1723,13 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
         # hits deep inside a large document are handled history — the fact of
         # the error survives via citations; the bulk shouldn't. Only applies
         # when there are enough blocks that recency is meaningful.
+        error_exemplar = b["id"] in error_exemplar_ids
         if (
             n >= 12
             and idx < n - 6
             and entity_hits == 0
             and term_hits == 0
+            and not error_exemplar
             and (
                 b["type"] == "trace"
                 or (
@@ -1247,9 +1779,10 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
         # entity for every block (O(n·e) substring scans → O(n + e)).
         bridge_boost = 0.0
         block_tokens = block_token_sets[idx]
-        for ent, span in bridge_entities.items():
-            if ent.lower() in block_tokens:
-                bridge_boost += 1.5 + 0.5 * min(span, 5)
+        if bridge_by_lower:
+            for tok in block_tokens:
+                for span in bridge_by_lower.get(tok, ()):
+                    bridge_boost += 1.5 + 0.5 * min(span, 5)
         if bridge_boost > 0:
             score += bridge_boost
             if reason == "context":
@@ -1332,6 +1865,8 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
         # floor minimum so it drops to citations instead of re-inflating.
         if reason == "stale error":
             score = min(score, 1.8)
+        if error_exemplar and reason in ("context", "log error", "critical lines"):
+            reason = "error exemplar"
         scored.append(
             {
                 **b,
@@ -1341,6 +1876,7 @@ def score_blocks(blocks: list[dict[str, Any]], query: str) -> list[dict[str, Any
                 "term_hits": term_hits,
                 "rare_term_hits": rare_term_hits,
                 "trust_risk": trust_risk,
+                "error_exemplar": error_exemplar,
             }
         )
     return scored
@@ -1370,7 +1906,8 @@ def _important(blocks: list[dict[str, Any]]) -> set[int]:
     ids: set[int] = set()
     for b in blocks:
         # v0.7.0: stale-error heads are handled history — not "important".
-        if b.get("reason") == "stale error":
+        # v1.4.0 (E3): a level-tagged log error exemplar is never "stale".
+        if b.get("reason") == "stale error" and not b.get("error_exemplar"):
             continue
         # v0.6.0: trust-risk blocks are never "important" — previously the
         # trace/high-score/definition passes ignored the flag, letting an
@@ -1891,13 +2428,20 @@ def select_adaptive(
         for b in blocks
         if b.get("rare_term_hits") or b["entity_hits"]
     }
+    # v1.4.0 (E3): one exemplar block per level-tagged log error fingerprint
+    # survives every selector path (stale-error cap, floor saturation, needle).
+    err_keep = {
+        b["id"]
+        for b in blocks
+        if b.get("error_exemplar") and not b.get("trust_risk")
+    }
     if needle_only and hits:
         use = rare if rare else hits
         safe_use = {bid for bid in use if not blocks[bid].get("trust_risk")}
         if not safe_use:
             return _ret({b["id"] for b in blocks}, True, "high", "needle-all-trust")
         use = safe_use
-        kept = set(use)
+        kept = set(use) | err_keep
         if not blocks[0].get("trust_risk") or blocks[0].get("pinned"):
             kept.add(blocks[0]["id"])
         if (
@@ -1917,7 +2461,7 @@ def select_adaptive(
         # "needle" keep-set approaches the whole document. Cap it back to
         # the query-hit core — the needle path's contract is a tight set.
         if len(kept) > max(len(use) * 2, 16) and len(kept) / len(blocks) > 0.6:
-            kept = set(use)
+            kept = set(use) | err_keep
             if not blocks[0].get("trust_risk") or blocks[0].get("pinned"):
                 kept.add(blocks[0]["id"])
         kept = _stitch_neighbors(blocks, kept)
@@ -1939,7 +2483,7 @@ def select_adaptive(
     # Rate-distortion insight: lossy schemes compound under repeated
     # compaction; a single high scorer shouldn't create a cascade.
     floor = max(2.2, min(11.5, 0.38 * top))
-    kept = set(important)
+    kept = set(important) | err_keep
     for b in safe_blocks:
         if b["score"] >= floor:
             kept.add(b["id"])
@@ -1954,7 +2498,7 @@ def select_adaptive(
     )
     path = "floor"
     if floor_ratio > 0.9 and len(safe_blocks) > 64 and not needle_only:
-        kept = set(important)
+        kept = set(important) | err_keep
         path = "floor-saturated"
     # Keep the head. A trust-risk tail is not a safe recency sink.
     # Exception (leanctx old-error purge): a stale-error head is handled
@@ -1998,6 +2542,7 @@ def select_adaptive(
         }
         if not kept:
             return _ret({b["id"] for b in blocks}, True, "high", "line-records-empty")
+        kept |= err_keep
         if not blocks[0].get("trust_risk") or blocks[0].get("pinned"):
             kept.add(blocks[0]["id"])
         if (
@@ -2020,7 +2565,9 @@ def select_adaptive(
     if keep_ratio > 0.8:
         risk = "medium"
     if not important and signal < 0.1:
-        risk = "high"
+        # No query signal and nothing important: a guess. Retained log error
+        # exemplars (E3) make it a defensible one, not a certain one.
+        risk = "medium" if err_keep else "high"
     return _ret(kept, False, risk, path)
 
 
@@ -2028,6 +2575,8 @@ def select_fixed(
     blocks: list[dict[str, Any]],
     budget_ratio: float,
     out: dict[str, Any] | None = None,
+    *,
+    reserve_tokens: int = 0,
 ) -> tuple[set[int], bool, str]:
     if out is not None:
         out["path"] = "fixed"
@@ -2044,12 +2593,22 @@ def select_fixed(
         )
     else:
         budget = max(1, int(round(total * budget_ratio)))
+    if reserve_tokens > 0:
+        # v1.4.0 (E8): tokens the caller's gap markers will occupy are not
+        # available to content.
+        budget = max(1, budget - int(reserve_tokens))
     important = _important(blocks)
     ranked = sorted(
         (b for b in blocks if not b.get("trust_risk")),
         key=lambda b: (-b["score"], b["start"]),
     )
-    kept: set[int] = set(important) | pinned_ids
+    # v1.4.0 (E3): log error exemplars are forced into the keep-set.
+    err_keep = {
+        b["id"]
+        for b in blocks
+        if b.get("error_exemplar") and not b.get("trust_risk")
+    }
+    kept: set[int] = set(important) | pinned_ids | err_keep
     used = sum(b["tokens"] for b in blocks if b["id"] in kept)
     for b in ranked:
         if b["id"] in kept:
@@ -2094,24 +2653,49 @@ def _entity_recall(original: str, compressed: str, query: str) -> float:
     return hit / len(keys)
 
 
+# Substring-scan work allowed per verification (characters examined).
+_RECALL_SCAN_BUDGET_CHARS = 40_000_000
+
+_CRITICAL_ERROR_RE = re.compile(
+    r"\b(?:error|exception|traceback|fail|fatal|timeout|denied|invalid)\b", re.IGNORECASE
+)
+# v1.4.0 (E2): the key is bounded ({1,64}) — `[\w]+[=:]` rescanned a 20k-char
+# word run from every start position (quadratic). A longer key still matches
+# through its last 64 characters, so the boolean result is unchanged.
+_CRITICAL_KV_RE = re.compile(r"\w{1,64}[=:]\s*\w[\w.-]*")
+_CRITICAL_NUM_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}\b|\b\d+\.\d+\.\d+\b|\b\d{6,}\b"
+    r"|\b\d+\s*(?:ms|s|sec|bytes|kb|mb|gb)\b"
+)
+
+
 def _extract_critical_lines(text: str) -> list[str]:
     """Extract lines that look like critical facts: error lines, key-value
     pairs with identifiers, tracebacks, and lines containing numbers + words.
     Mirrors Baseline RAG's critical_lines_total/kept/dropped reporting.
+
+    v1.4.0: a bare leading timestamp is a prefix, not a fact — previously
+    `12:03:45` satisfied the key-value rule and the date satisfied the number
+    rule, so EVERY timestamped log line was "critical" and the verifier could
+    not see error loss in the crowd. Error lines still are. (A chat role label
+    keeps counting here, as it always did; only scoring skips it.)
     """
     critical: list[str] = []
     for line in text.split("\n"):
         t = line.strip()
         if not t:
             continue
+        scan = t[:_RX_LINE_CAP]
         # Error/exception/traceback lines
-        if re.search(r"\b(error|exception|traceback|fail|fatal|timeout|denied|invalid)\b", t, re.I):
+        if _CRITICAL_ERROR_RE.search(scan):
             critical.append(t)
+            continue
+        start = _lead_ts_end(scan)
         # Lines with key-value patterns (config, settings, identifiers)
-        elif re.search(r"[\w]+[=:]\s*[\w][\w.-]*", t) and len(t) > 15:
+        if len(t) > 15 and _CRITICAL_KV_RE.search(scan, start):
             critical.append(t)
         # Lines containing specific numbers (dates, IDs, versions, counts)
-        elif re.search(r"\b\d{4}-\d{2}-\d{2}\b|\b\d+\.\d+\.\d+\b|\b\d{6,}\b|\b\d+\s*(ms|s|sec|bytes|kb|mb|gb)\b", t):
+        elif _CRITICAL_NUM_RE.search(scan, start):
             critical.append(t)
     return critical
 
@@ -2123,12 +2707,37 @@ def _critical_line_recall(original: str, compressed: str) -> tuple[int, int]:
     if not critical:
         return 0, 0
     kept = 0
+    # Perf (v1.4.0, E2): lowercase the compressed text ONCE. Lowering it inside
+    # the per-line loop was O(lines x output) — 30 s of a 35 s run on a 650 KB
+    # log (and ~10x worse again when the output holds a non-ASCII "[…]").
+    compressed_lower = compressed.lower()
+    # Whole-line fast path: the engine emits original lines (optionally with a
+    # "[×N] " collapse prefix), so nearly every kept critical line is a line of
+    # the output and a set lookup answers it. Only lines the sets cannot place
+    # fall back to the substring scan, under a work budget so the scan stays
+    # linear on big outputs; with small outputs the budget never binds and the
+    # result is exactly "core is a substring of the compressed text".
+    out_lines: set[str] = set()
+    out_prefixes: set[str] = set()
+    for out_line in compressed_lower.split("\n"):
+        out_line = out_line.strip()
+        out_lines.add(out_line)
+        out_prefixes.add(out_line[:80])
+        bare = _COUNT_PREFIX_RE.sub("", out_line, count=1)
+        if bare is not out_line:
+            out_lines.add(bare)
+            out_prefixes.add(bare[:80])
+    scan_budget = _RECALL_SCAN_BUDGET_CHARS
     for line in critical:
         # A critical line is "kept" if its core content (first 80 chars,
         # lowercased) appears in the compressed text.
         core = line.lower()[:80]
-        if core in compressed.lower():
+        if core in out_lines or core in out_prefixes:
             kept += 1
+        elif scan_budget > 0:
+            scan_budget -= len(compressed_lower)
+            if core in compressed_lower:
+                kept += 1
     return kept, len(critical)
 
 
@@ -2197,16 +2806,48 @@ def verify_compression(
     }
 
 
+def _span_chars(lines: list[str], lo: int, hi: int) -> int:
+    """Length of ``"\\n".join(lines[lo:hi])`` without building the string."""
+    if hi <= lo:
+        return 0
+    return sum(len(ln) for ln in lines[lo:hi]) + (hi - lo - 1)
+
+
+class InliningGapMarker:
+    """Wrap a gap marker so renderers may inline short dropped spans.
+
+    Renderers which see it emit a dropped span verbatim when the rendered
+    marker is not shorter than the span.
+    """
+
+    __slots__ = ("fn",)
+    inline_short = True
+
+    def __init__(self, fn: Callable[[int, int], str]) -> None:
+        self.fn = fn
+
+    def __call__(self, omitted: int, total: int) -> str:
+        return self.fn(omitted, total)
+
+
+def _inlines_short(marker) -> bool:
+    return bool(getattr(marker, "inline_short", False))
+
+
 def _render(
     lines: list[str],
     blocks: list[dict[str, Any]],
     kept: set[int],
     citations: bool = False,
     reorder_best: bool = False,
+    gap_marker: Callable[[int, int], str] | None = None,
+    total_chars: int | None = None,
+    content_lines: list[str] | None = None,
 ) -> str:
     chronological_blocks = sorted(blocks, key=lambda block: block["start"])
     block_starts = [block["start"] for block in chronological_blocks]
     order = sorted((b for b in blocks if b["id"] in kept), key=lambda b: b["start"])
+    chronological = True
     if reorder_best and len(order) >= 3:
         # Lost-in-the-middle mitigation (LongLLMLingua / twotrim): models
         # attend hardest to window edges. Best-scoring block anchors the
@@ -2215,10 +2856,52 @@ def _render(
         best, second = ranked[0], ranked[1]
         rest = [b for b in order if b["id"] not in {best["id"], second["id"]}]
         order = [best, *rest, second]
+        chronological = False
+    # v1.4.0 (E8): a caller-supplied gap marker replaces EVERY gap marker
+    # (citations=False only): leading, internal and trailing. It is called as
+    # gap_marker(omitted_chars, total_chars) with the length of the dropped
+    # span (its lines joined with "\n") and the length of the caller's input.
+    # Spans of blank lines only are not content and get no marker, and one
+    # dropped span yields exactly one marker however many blocks it holds.
+    # gap_marker=None keeps the historical "[…]" behaviour byte for byte.
+    marker_fn = gap_marker if (gap_marker is not None and not citations) else None
+    total = total_chars if total_chars is not None else _span_chars(lines, 0, len(lines))
+    # "Is this span blank?" is judged on the lines the scorer read: a
+    # numbered-code gutter ("75|", "    75\t") makes an empty source line
+    # non-empty in `lines`, and would earn a bogus marker between two
+    # adjacent kept blocks.
+    probe_lines = content_lines if content_lines is not None else lines
+    inline_short = _inlines_short(marker_fn) if marker_fn is not None else False
+
+    def _gap(lo: int, hi: int) -> list[str] | None:
+        if marker_fn is None:
+            return None
+        if not any(ln.strip() for ln in probe_lines[lo:hi]):
+            return None
+        span_text = "\n".join(lines[lo:hi]) if inline_short else None
+        text = marker_fn(_span_chars(lines, lo, hi), total)
+        marker = str(text) if text is not None else ""
+        if not marker:
+            return None
+        # 1.4.1 opt-in: only InliningGapMarker emits the dropped lines
+        # verbatim when the rendered marker is not shorter than the span.
+        if inline_short and span_text is not None and len(marker) >= len(span_text):
+            return lines[lo:hi]
+        return [marker]
+
     parts: list[str] = []
     prev_end = -1
     for b in order:
-        if prev_end >= 0 and b["start"] > prev_end + 1:
+        if marker_fn is not None:
+            if prev_end < 0 and chronological and b["start"] > 0:
+                lead = _gap(0, b["start"])
+                if lead is not None:
+                    parts.extend(lead)
+            elif prev_end >= 0 and b["start"] > prev_end + 1:
+                between = _gap(prev_end + 1, b["start"])
+                if between is not None:
+                    parts.extend(between)
+        elif prev_end >= 0 and b["start"] > prev_end + 1:
             if citations:
                 # ARC-style citation: name every dropped block so the model
                 # knows it can recall the exact head/tail by hash later.
@@ -2278,7 +2961,48 @@ def _render(
                 j += 1
         parts.extend(lines[start : end + 1])
         prev_end = end
+    if marker_fn is not None and chronological and parts and prev_end < len(lines) - 1:
+        trail = _gap(prev_end + 1, len(lines))
+        if trail is not None:
+            parts.extend(trail)
     return "\n".join(parts)
+
+
+def _gap_marker_reserve(
+    lines: list[str],
+    blocks: list[dict[str, Any]],
+    kept: set[int],
+    gap_marker: Callable[[int, int], str],
+    total_chars: int,
+    content_lines: list[str] | None = None,
+) -> int:
+    """Tokens the caller's gap markers will take for this keep-set: the number
+    of dropped spans that hold content (leading, internal, trailing) times the
+    size of a marker. Mirrors _render's gap rules."""
+    spans = sorted((b["start"], b["end"]) for b in blocks if b["id"] in kept)
+    if not spans:
+        return 0
+    n = len(lines)
+    probe_lines = content_lines if content_lines is not None else lines
+
+    def content(lo: int, hi: int) -> bool:
+        return any(ln.strip() for ln in probe_lines[lo:hi])
+
+    gaps = 1 if spans[0][0] > 0 and content(0, spans[0][0]) else 0
+    prev_end = spans[0][1]
+    for start, end in spans[1:]:
+        if start > prev_end + 1 and content(prev_end + 1, start):
+            gaps += 1
+        prev_end = max(prev_end, end)
+    if prev_end < n - 1 and content(prev_end + 1, n):
+        gaps += 1
+    if not gaps:
+        return 0
+    # One probe call sizes a marker at its widest (a span as long as the
+    # whole input); callers that count gap_marker calls see exactly one extra
+    # call in fixed mode, none in adaptive mode.
+    sample = str(gap_marker(total_chars, total_chars) or "")
+    return gaps * estimate_tokens(sample)
 
 
 def cache_wrap(compressed: str, query: str) -> str:
@@ -2449,8 +3173,9 @@ def sweep_ccr_cache(
 ) -> int:
     """Delete expired valid CCR records and return the removal count.
 
-    Malformed or unreadable files are left untouched: retention maintenance is
-    best-effort and must not destroy data it cannot validate.
+    Files that cannot be read or parsed are left untouched: retention
+    maintenance is best-effort. A file that parses but is not a valid record
+    (bad metadata, a non-object payload) is removed like an expired one.
     """
     global _CCR_SWEEP_CURSOR
     root = Path(ccr_dir)
@@ -2794,8 +3519,12 @@ def _summarise_with_llm(
     return None
 
 
+# v1.4.0 (E2): the two class runs are bounded ({0,127}); the unbounded form
+# re-scanned the rest of a long separator-rich run (`a.a.a.…`, 20k chars) from
+# every word boundary — quadratic. Tokens up to 256 chars match as before.
 _SUMMARY_STRUCTURED_TOKEN_RE = re.compile(
-    r"\b(?:[A-Za-z][A-Za-z0-9_.:/-]*\d[A-Za-z0-9_.:/-]*|\d+(?:[.:/-]\d+)*)\b"
+    r"\b(?:[A-Za-z][A-Za-z0-9_.:/-]{0,127}\d[A-Za-z0-9_.:/-]{0,127}"
+    r"|\d+(?:[.:/-]\d+)*)\b"
 )
 
 
@@ -2805,7 +3534,11 @@ def _summary_preserves_required_facts(
     """Conservative factual gate for the optional model-summary strategy."""
     source_fold = source.casefold()
     summary_fold = summary.casefold()
+    # Perf (v1.4.0, E2): `required` stays a list (order is part of the
+    # contract) but membership is answered by a set — `token not in list` made
+    # this loop quadratic (92 s on a 3.7 MB history).
     required: list[str] = []
+    required_set: set[str] = set()
     candidates = (
         _SUMMARY_STRUCTURED_TOKEN_RE.findall(query or "")
         + _extract_entities(query or "")
@@ -2813,8 +3546,9 @@ def _summary_preserves_required_facts(
     )
     for item in candidates:
         token = str(item).strip().casefold()
-        if token and token in source_fold and token not in required:
+        if token and token in source_fold and token not in required_set:
             required.append(token)
+            required_set.add(token)
 
     # Values answering the question often appear only in the matching source
     # line, not in the question itself (for example query host db-prod-01 and
@@ -2839,8 +3573,9 @@ def _summary_preserves_required_facts(
             continue
         for item in _SUMMARY_STRUCTURED_TOKEN_RE.findall(segment):
             token = item.casefold()
-            if token not in required:
+            if token not in required_set:
                 required.append(token)
+                required_set.add(token)
         # Plain-text scalar answers are not necessarily identifiers (for
         # example "paint color is ultraviolet"). Require the first content
         # term after a queried field and a simple relation verb; do not require
@@ -2857,18 +3592,24 @@ def _summary_preserves_required_facts(
             answer_terms = _extract_terms(match.group(1))
             if answer_terms:
                 token = answer_terms[0].casefold()
-                if token not in query_terms and token not in required:
+                if token not in query_terms and token not in required_set:
                     required.append(token)
+                    required_set.add(token)
             break
-    kept = sum(1 for token in required if token in summary_fold)
-    recall = kept / len(required) if required else 1.0
-
     source_ids = {
         token.casefold() for token in _SUMMARY_STRUCTURED_TOKEN_RE.findall(source)
     }
     summary_ids = {
         token.casefold() for token in _SUMMARY_STRUCTURED_TOKEN_RE.findall(summary)
     }
+    # Perf (v1.4.0): a required token that is itself a token of the summary is
+    # found by a set lookup; only the others pay the substring scan (which is
+    # what decides the same question, since a token of the summary is a
+    # substring of it). Same answer, linear when the summary kept its facts.
+    kept = sum(
+        1 for token in required if token in summary_ids or token in summary_fold
+    )
+    recall = kept / len(required) if required else 1.0
     no_novel_ids = summary_ids.issubset(source_ids)
     return recall == 1.0 and no_novel_ids, recall
 
@@ -3046,7 +3787,7 @@ def _crush_json_items(payload: str, query: str, max_keep: int = 50) -> str | Non
     """
     try:
         data = json.loads(payload)
-    except (json.JSONDecodeError, RecursionError):
+    except (ValueError, RecursionError):  # JSONDecodeError + the 4300-digit int limit
         return None
 
     # Find arrays to crush: top-level list, or dicts with list values
@@ -3195,6 +3936,363 @@ def inspect_compressibility(text: str, query: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# v1.4.0 public helpers: brief_context / extract_evidence_lines
+#
+# Deterministic, stdlib-only, query-optional "what is in here" views for hosts
+# that need a small, honest stand-in for a big tool result (a plugin's last
+# rung after the query-aware extract was rejected or too big). Both return
+# ORIGINAL lines only — nothing is paraphrased — and both treat a level-tagged
+# error as the most important thing in a log.
+# ---------------------------------------------------------------------------
+
+_WARN_LEVEL_RE = re.compile(r"\b(?:WARN|WARNING)\b")
+_EVID_VERSION_RE = re.compile(r"\bv?\d+\.\d+(?:\.\d+)+\b")
+_EVID_SHA_RE = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
+_EVID_KV_RE = re.compile(r"\b[A-Za-z_][\w.-]{0,63}=\S")
+_EVID_FILE_RE = re.compile(
+    r"\b[\w-]{1,64}\.(?:py|js|ts|tsx|go|rs|java|c|h|cpp|json|ya?ml|toml|md|txt|log|sh|sql|cfg|ini)\b"
+)
+_EVIDENCE_LINE_CAP = 2000
+
+
+def _query_hit_terms(query: str) -> list[str]:
+    """Lowercase, deduplicated query terms worth searching lines for."""
+    if not query or _is_filler_query(query):
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in [
+        t for t in distinctive_query_terms(query) if not t.startswith("script:")
+    ] + _topic_terms(query):
+        key = term.casefold()
+        if key and key not in seen:
+            seen.add(key)
+            terms.append(key)
+    return terms
+
+
+def brief_context(
+    text: str,
+    *,
+    budget_chars: int = 1200,
+    query: str = "",
+    gap_marker: Callable[[int, int], str] | None = None,
+) -> str:
+    """Deterministic, query-independent structural brief of ``text`` (v1.4.0).
+
+    Keeps ORIGINAL lines, in original order, within ``budget_chars`` (newlines
+    and gap markers included):
+
+    1. the first ``h`` lines;
+    2. every error-fingerprint exemplar line (one per fingerprint, see
+       :func:`error_fingerprints`);
+    3. warning (WARN/WARNING) exemplars, one per template, if they fit;
+    4. lines holding distinctive terms of ``query``, if one is given;
+    5. the last ``t`` lines.
+
+    Head and tail are given about 30% of the budget each and the rest goes to
+    the exemplars; if the errors do not fit that way the head/tail shrink so
+    they do, and whatever budget the exemplars leave over goes back to the
+    head and tail. When the budget cannot hold everything, errors outrank
+    query-term lines, which outrank warnings.
+
+    Each omitted span is marked with ``gap_marker(omitted_chars, total_chars)``
+    — or ``[… N chars omitted …]`` when it is ``None`` — and a span of blank
+    lines only is not marked. ``gap_marker`` is called once per marker that is
+    emitted, plus one probe with ``(total_chars, total_chars)`` that sizes the
+    widest marker for the budget. A line is never cut, except one that is
+    itself as long as the budget: it is truncated, with a marker. ``text`` is
+    returned unchanged when it already fits. A ``gap_marker`` wrapped in
+    :class:`InliningGapMarker` keeps a dropped span verbatim instead when its
+    marker would not be shorter than the span (1.4.1).
+    """
+    text = text if isinstance(text, str) else str(text or "")
+    budget = max(1, int(budget_chars))
+    if len(text) <= budget:
+        return text
+    # v1.4.0 (E11): JSON arrays of objects get a valid-JSON brief, not a
+    # line-cut that would leave unparseable fragments.
+    if text.lstrip()[:1] in ("[", "{"):
+        briefed = json_brief(text, budget_chars=budget, query=query)
+        if briefed is not None:
+            return briefed
+    total = len(text)
+    lines = text.split("\n")
+    n = len(lines)
+
+    def mark(omitted: int) -> str:
+        if gap_marker is not None:
+            made = gap_marker(omitted, total)
+            return str(made) if made else ""
+        return f"[… {omitted} chars omitted …]"
+
+    # Markers are sized at the widest count a span can have: ONE probe call,
+    # gap_marker(total, total), before any real span is known. (Every later call
+    # is for a span that is actually emitted.)
+    marker_len = len(mark(total))
+
+    eff_cache: dict[int, str] = {}
+
+    def eff(i: int) -> str:
+        cached = eff_cache.get(i)
+        if cached is None:
+            line = lines[i]
+            if len(line) + 1 >= budget:
+                cut = max(1, budget // 3)
+                line = line[:cut] + mark(len(lines[i]) - cut)
+            eff_cache[i] = cached = line
+        return cached
+
+    nonblank = [0] * (n + 1)
+    for i, line in enumerate(lines):
+        nonblank[i + 1] = nonblank[i] + (1 if line.strip() else 0)
+
+    def has_content(lo: int, hi: int) -> int:
+        return 1 if nonblank[hi] - nonblank[lo] > 0 else 0
+
+    # Candidate lines by priority class (indices, original order).
+    err_idx: list[int] = []
+    warn_idx: list[int] = []
+    seen_err: set[str] = set()
+    seen_warn: set[str] = set()
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if _is_error_line(line):
+            fp = _error_fp(line)
+            if fp not in seen_err:
+                seen_err.add(fp)
+                err_idx.append(i)
+        elif _WARN_LEVEL_RE.search(line[:_RX_LINE_CAP]):
+            fp = _error_fp(line)
+            if fp not in seen_warn:
+                seen_warn.add(fp)
+                warn_idx.append(i)
+    hit_idx: list[int] = []
+    terms = _query_hit_terms(query)
+    if terms:
+        ranked: list[tuple[int, int]] = []
+        seen_hit: set[str] = set()
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            low = line[:_RX_LINE_CAP].casefold()
+            hits = sum(1 for t in terms if _term_in_text(t, low))
+            if hits:
+                ranked.append((-hits, i))
+        for _, i in sorted(ranked):
+            fp = _error_fp(lines[i])
+            if fp not in seen_hit:
+                seen_hit.add(fp)
+                hit_idx.append(i)
+
+    def build(head_cap: int, tail_cap: int, errors_first: bool) -> tuple[list[int], bool]:
+        sel: list[int] = []
+        chosen_set: set[int] = set()
+        state = {"raw": 0, "gaps": 0}
+
+        def gap_delta(p: int | None, q: int | None, i: int) -> int:
+            if p is None and q is None:
+                return has_content(0, i) + has_content(i + 1, n)
+            if p is None:
+                return has_content(0, i) + has_content(i + 1, q) - has_content(0, q)
+            if q is None:
+                return has_content(p + 1, i) + has_content(i + 1, n) - has_content(p + 1, n)
+            return has_content(p + 1, i) + has_content(i + 1, q) - has_content(p + 1, q)
+
+        def try_add(i: int) -> bool:
+            if i in chosen_set:
+                return True
+            pos = bisect.bisect_left(sel, i)
+            p = sel[pos - 1] if pos > 0 else None
+            q = sel[pos] if pos < len(sel) else None
+            raw = state["raw"] + len(eff(i)) + 1
+            gaps = state["gaps"] + gap_delta(p, q, i)
+            if raw - 1 + gaps * (marker_len + 1) > budget:
+                return False
+            sel.insert(pos, i)
+            chosen_set.add(i)
+            state["raw"], state["gaps"] = raw, gaps
+            return True
+
+        def add_head() -> None:
+            used = 0
+            for i in range(n):
+                if not lines[i].strip():
+                    continue
+                c = len(eff(i)) + 1
+                if i > 0 and used + c > head_cap:
+                    break
+                if not try_add(i):
+                    break
+                used += c
+
+        def add_tail() -> None:
+            used = 0
+            for i in range(n - 1, -1, -1):
+                if i in chosen_set and used:  # met the head
+                    break
+                if not lines[i].strip():
+                    continue
+                c = len(eff(i)) + 1
+                if used + c > tail_cap:
+                    break
+                if not try_add(i):
+                    break
+                used += c
+
+        def add_exemplars() -> bool:
+            all_errors = True
+            for i in err_idx:
+                if not try_add(i):
+                    all_errors = False
+            # When the budget cannot hold everything, lines that answer the
+            # caller's query outrank warning exemplars.
+            for group in (hit_idx, warn_idx):
+                for i in group:
+                    try_add(i)
+            return all_errors
+
+        def fill_edges() -> None:
+            """Spend what is left on more head and tail, alternately."""
+            hi, ti = 0, n - 1
+            head_open = tail_open = True
+            while (head_open or tail_open) and hi <= ti:
+                if head_open:
+                    while hi < n and (hi in chosen_set or not lines[hi].strip()):
+                        hi += 1
+                    if hi >= n or not try_add(hi):
+                        head_open = False
+                if tail_open:
+                    while ti >= 0 and (ti in chosen_set or not lines[ti].strip()):
+                        ti -= 1
+                    if ti < 0 or not try_add(ti):
+                        tail_open = False
+
+        if errors_first:
+            all_errors = add_exemplars()
+            add_head()
+            add_tail()
+        else:
+            add_head()
+            add_tail()
+            all_errors = add_exemplars()
+        fill_edges()
+        return sel, all_errors
+
+    chosen: list[int] = []
+    for share, errors_first in ((0.30, False), (0.15, False), (0.0, True)):
+        cap = int(budget * share)
+        chosen, all_errors = build(cap, cap, errors_first)
+        if all_errors:
+            break
+
+    # 1.4.1 (fix-all): an InliningGapMarker gets the dropped lines verbatim
+    # when its marker would not be shorter than them, as in compress_context.
+    inline_short = _inlines_short(gap_marker)
+
+    def gap_parts(lo: int, hi: int) -> list[str]:
+        if not has_content(lo, hi):
+            return []
+        span_chars = _span_chars(lines, lo, hi)
+        made = mark(span_chars)
+        if not made:
+            return []
+        if inline_short and len(made) >= span_chars:
+            return lines[lo:hi]
+        return [made]
+
+    parts: list[str] = []
+    prev = -1
+    for i in chosen:
+        lo = prev + 1
+        if prev < 0 and i > 0:
+            parts.extend(gap_parts(0, i))
+        elif prev >= 0 and i > prev + 1:
+            parts.extend(gap_parts(lo, i))
+        parts.append(eff(i))
+        prev = i
+    if chosen and prev < n - 1:
+        parts.extend(gap_parts(prev + 1, n))
+    out = "\n".join(parts)
+    if not out:
+        # Not even one line (with its marker) fits a budget this small: the
+        # plain prefix is the only honest brief left.
+        return text[:budget]
+    if len(out) > budget:  # only a gap_marker that outgrew its probe can get here
+        out = out[:budget]
+    return out
+
+
+def extract_evidence_lines(text: str, query: str = "", limit: int = 20) -> list[str]:
+    """Exact original lines most likely to matter, deduplicated, capped (v1.4.0).
+
+    Ranking, most important first:
+
+    1. error exemplars — one line per :func:`error_fingerprints` fingerprint;
+    2. lines holding terms of ``query`` (more distinct terms first);
+    3. identifier-dense lines — at least two of: file paths, versions, SHAs,
+       ``key=value`` pairs.
+
+    Lines are returned unmodified, in original order, at most ``limit`` of
+    them. Lines that differ only in volatile fields (ids, numbers, timestamps)
+    count as duplicates, so a thousand repeats cannot fill the list. Blank
+    lines are never returned. Deterministic.
+    """
+    if not text or limit <= 0:
+        return []
+    lines = _norm_newlines(text).split("\n")
+    picked: set[int] = set()
+    seen_tpl: set[str] = set()
+
+    def take(i: int) -> bool:
+        if len(picked) >= limit:
+            return False
+        fp = _error_fp(lines[i])
+        if fp in seen_tpl or i in picked:
+            return True
+        seen_tpl.add(fp)
+        picked.add(i)
+        return True
+
+    for i, line in enumerate(lines):
+        if line.strip() and _is_error_line(line):
+            if not take(i):
+                break
+    terms = _query_hit_terms(query)
+    if terms and len(picked) < limit:
+        ranked = []
+        for i, line in enumerate(lines):
+            if not line.strip() or i in picked:
+                continue
+            low = line[:_RX_LINE_CAP].casefold()
+            hits = sum(1 for t in terms if _term_in_text(t, low))
+            if hits:
+                ranked.append((-hits, i))
+        for _, i in sorted(ranked):
+            if not take(i):
+                break
+    if len(picked) < limit:
+        dense = []
+        for i, line in enumerate(lines):
+            if not line.strip() or i in picked or len(line) > _EVIDENCE_LINE_CAP:
+                continue
+            score = (
+                len(_PATH_RE.findall(line))
+                + len(_EVID_FILE_RE.findall(line))
+                + len(_EVID_VERSION_RE.findall(line))
+                + len(_EVID_SHA_RE.findall(line))
+                + len(_EVID_KV_RE.findall(line))
+            )
+            if score >= 2:
+                dense.append((-score, i))
+        for _, i in sorted(dense):
+            if not take(i):
+                break
+    return [lines[i] for i in sorted(picked)]
+
+
 def compress_context(
     context: str,
     query: str | Iterable[str],
@@ -3221,12 +4319,70 @@ def compress_context(
     summary_allow_remote: bool | None = None,
     limits: IndustrialLimits | None = None,
     derive_query: bool = False,
+    gap_marker: Callable[[int, int], str] | None = None,
+    recursion_markers: Iterable[str] = (),
+    content_hint: str | None = None,
+    inline_short_gaps: bool = False,
 ) -> CompressResult:
+    """Query-aware extractive compression of ``context``.
+
+    New in 1.4.0 (all optional, defaults keep 1.3.x behaviour):
+
+    ``gap_marker(omitted_chars, total_chars) -> str``
+        Replaces every gap marker the renderer emits when ``citations=False``
+        — including a leading gap (kept text starts after line 0) and a
+        trailing gap — with the caller's own marker text. ``omitted_chars`` is
+        the length of the dropped span (its lines joined with ``"\\n"``),
+        ``total_chars`` the length of ``context``. Adjacent dropped blocks
+        yield exactly one marker. ``None`` keeps the historical ``[…]``.
+    ``recursion_markers``
+        Extra strings that mark input as already compressed: if any line of
+        the input starts with one (after ``lstrip``) the call is a no-op with
+        ``policy_name="local-noop-recursion"``. Matching is explicit and
+        anchored; nothing is guessed (a host's own marker text only counts if
+        the caller passes it).
+    ``content_hint``
+        One of ``None, "code", "numbered_code", "log", "json", "text",
+        "diff", "grep", "test"`` (anything else raises ``ValueError``).
+        ``"code"``/``"numbered_code"`` skip the CSV/TSV/YAML paths and route
+        as code so function bodies survive (``"log"`` skips them too: a log is
+        never a table); ``"numbered_code"`` additionally
+        means each line carries a ``N\\t`` or ``N|`` gutter, which stays in the
+        output and is ignored for scoring. ``"log"``/``"json"``/``"text"``
+        force that routing. ``"diff"``/``"grep"``/``"test"`` are recorded in
+        the receipt and otherwise behave like ``None``. The hint is always
+        recorded in ``receipt["content_hint"]``.
+
+    ``inline_short_gaps`` (1.4.1)
+        With ``gap_marker`` set, a dropped span whose marker would not be
+        shorter than the span itself is kept verbatim instead. Off by
+        default: 1.4.0 output is unchanged byte for byte.
+    """
     caller_text = str(context or "")
     if not isinstance(query, str):
         # PAACE-style plan awareness: a sequence of upcoming-task strings is
         # scored as a union — a term from any planned step counts.
         query = " ".join(str(part) for part in (query or []) if part)
+    if content_hint is not None and (
+        not isinstance(content_hint, str) or content_hint not in _CONTENT_HINTS
+    ):
+        raise ValueError(
+            f"unknown content_hint {content_hint!r} "
+            f"(expected None or one of {', '.join(sorted(_CONTENT_HINTS))})"
+        )
+    if gap_marker is not None and not callable(gap_marker):
+        raise TypeError("gap_marker must be callable as gap_marker(omitted_chars, total_chars)")
+    if inline_short_gaps and gap_marker is not None and not _inlines_short(gap_marker):
+        gap_marker = InliningGapMarker(gap_marker)
+    code_hint = content_hint in _CODE_HINTS
+    no_table = content_hint in _NO_TABLE_HINTS
+    recursion_markers = _marker_tuple(recursion_markers)  # a generator is read once
+    # v1.4.0 (E6): a reply made only of conversational filler ("continue",
+    # "thanks", "go ahead", "fix it", "OK") is an EMPTY query on every path.
+    # The receipt/cache wrapper still show the caller's words.
+    query_as_given = query
+    if _is_filler_query(query):
+        query = ""
     # TPC-style derived objective (opt-in): an empty/generic query normally
     # fails open. With derive_query=True the engine first tries to infer a
     # conservative task descriptor from the document's own recurring rare
@@ -3263,7 +4419,9 @@ def compress_context(
     # back as input would nest wrappers and could drop the CCR pointer
     # that makes earlier drops recoverable. Refuse to compact our own
     # output — the caller already has the compacted form.
-    if any(marker in caller_text for marker in _RECURSION_MARKERS):
+    if any(marker in caller_text for marker in _RECURSION_MARKERS) or (
+        _has_anchored_marker(caller_text, recursion_markers)
+    ):
         tokens = estimate_tokens(caller_text)
         return CompressResult(
             compressed_text=caller_text,
@@ -3283,7 +4441,29 @@ def compress_context(
     secret_in_input = _contains_secret(caller_text)
     savings_gate = False
     degraded = False
-    industrial = industrial_preprocess(caller_text, query or "", limits)
+    # content_hint code/numbered_code (and log): the caller says what this is,
+    # so the format adapters (CSV/TSV/YAML row and subtree selection, which
+    # treat code with commas or colons — or a log with "12:00:00,123"
+    # timestamps — as a table) must not run. An empty selector query makes the
+    # adapter decline; the query-size limit is still enforced by passing the
+    # real query when it is over the limit.
+    industrial_query = query or ""
+    if no_table and len(industrial_query) <= (limits or IndustrialLimits()).max_query_chars:
+        industrial_query = ""
+    # v1.4.0 (E8 completion): adapter cuts carry the caller's marker; the
+    # total they report is always the caller's original length.
+    adapter_gap = (
+        None
+        if gap_marker is None
+        else (
+            InliningGapMarker(lambda omitted, _total: gap_marker(omitted, len(caller_text)))
+            if _inlines_short(gap_marker)
+            else (lambda omitted, _total: gap_marker(omitted, len(caller_text)))
+        )
+    )
+    industrial = industrial_preprocess(
+        caller_text, industrial_query, limits, gap_marker=adapter_gap
+    )
     if (
         industrial.hard_fail_open
         and degraded_view
@@ -3336,10 +4516,11 @@ def compress_context(
                 "engine": "tameru",
                 "policy": "local-fail-open",
                 "query_hash": hashlib.sha256(
-                    (query or "").encode("utf-8")
+                    (query_as_given or "").encode("utf-8")
                 ).hexdigest()[:12],
                 "savings_pct": 0.0,
                 "risk": "high",
+                "content_hint": content_hint,
                 "industrial": industrial.to_dict(),
             },
         )
@@ -3359,8 +4540,61 @@ def compress_context(
     original_text = _norm_newlines(caller_text)
     industrial_text = industrial.text if industrial.applied else caller_text
     text = strip_ansi(_norm_newlines(industrial_text))
-    text = unwrap_hermes_tool(text)
-    text = preprocess_test_runner(text, query or "")
+    # v1.4.0 (G9): keep the wrapper's scalar metadata (exit_code, error,
+    # total_lines, ...) so it can be re-emitted ahead of the compressed body.
+    tool_payload = unwrap_tool_payload(text)
+    text = tool_payload.inner
+    tool_meta_line = ""
+    if tool_payload.wrapped and tool_payload.meta:
+        tool_meta_line = _compact_json(tool_payload.meta) + "\n"
+    # v1.4.0 (E4): an un-hinted numbered read (`cat -n`, Hermes `N|`) is code,
+    # judged on the unwrapped payload: no table detector, no supersession, the
+    # gutter kept in the output but out of the scorer's view. `route_hint` is
+    # what the engine routes by; the receipt still records the caller's hint.
+    # A "code" hint on a numbered read means the same thing: the gutter must
+    # not count as code (it made blank source lines non-blank and split
+    # function bodies at the cut).
+    route_hint = content_hint
+    if route_hint in (None, "code") and is_numbered_code(text):
+        route_hint = "numbered_code"
+        code_hint = True
+        no_table = True
+    _pre_test_text = text
+    text = preprocess_test_runner(
+        text, query or "", content_hint=content_hint, gap_marker=adapter_gap
+    )
+    # v1.4.0 (E5): diff and grep/rg output get their own adapters (whole hunks,
+    # grouped matches) ahead of generic segmentation. The adapter's output is
+    # the selection: scoring below must not undo it (see `adapter_info`).
+    adapter_info: dict[str, Any] | None = None
+    if (
+        text is not _pre_test_text
+        and content_hint in (None, "test")
+        and len(text) <= _TEST_REDUCTION_FINAL_CHARS
+        and detect_test_runner(_pre_test_text) is not None
+    ):
+        # Same for a reduced test run (v1.4.0): block scoring must not drop
+        # the failing test's name/file line that the reduction kept (jest
+        # "FAIL f.test.js" / "● suite › case" vs "which tests failed?").
+        # Larger reductions still go through scoring and its budget.
+        adapter_info = {
+            "name": "test_output",
+            "total_records": None,
+            "kept_records": None,
+            "reason": "failure blocks and summaries kept",
+        }
+    if (
+        adapter_info is None
+        and route_hint not in _CODE_HINTS
+        and route_hint not in ("log", "json", "text")
+    ):
+        text, adapter_info = apply_agent_adapters(
+            text,
+            query or "",
+            hint=content_hint,
+            gap_marker=adapter_gap,
+            weak_query=not query_has_distinctive_selectors(query or ""),
+        )
     if not text.strip():
         return CompressResult(
             compressed_text="", policy_name="noop", mode=requested_mode
@@ -3370,10 +4604,13 @@ def compress_context(
     # Destructive preprocess (JSON crush / later log collapse) only when
     # the query names something specific. Generic/empty queries must not
     # delete array tails or fingerprint-collapse logs before scoring.
-    if query_has_distinctive_selectors(query or ""):
+    if query_has_distinctive_selectors(query or "") and not code_hint and not adapter_info:
+        # (content_hint code/numbered_code: source code with commas or JSON
+        # literals is not a table to crush; function bodies must survive.)
         if route_content_type(_norm_newlines(text).split("\n")) != "json":
             text = _preprocess_json(text, query or "")
-        text = preprocess_csv(text, query or "")
+        if not no_table:
+            text = preprocess_csv(text, query or "", gap_marker=adapter_gap)
         text = preprocess_filler_comments(text, query or "")
 
     # Strategy ladder:
@@ -3415,13 +4652,16 @@ def compress_context(
             degraded_view=degraded_view,
             limits=limits,
             derive_query=derive_query,
+            gap_marker=gap_marker,
+            recursion_markers=recursion_markers,
+            content_hint=content_hint,
         )
-        base = compress_context(caller_text, query, strategy="extract", **ladder_kwargs)
+        base = compress_context(caller_text, query_as_given, strategy="extract", **ladder_kwargs)
         if not base.fail_open:
             return base
         return compress_context(
             caller_text,
-            query,
+            query_as_given,
             strategy="summarise",
             summary_endpoint=summary_endpoint,
             summary_models=summary_models,
@@ -3463,7 +4703,7 @@ def compress_context(
                     ccr_info = None
                 if ccr_info is not None:
                     ccr_marker = f"\n[CC-Retrieve: {ccr_info['hash']}]"
-            result_text = summary + ccr_marker
+            result_text = tool_meta_line + summary + ccr_marker
             original_tokens = estimate_tokens(original_text)
             kept_tokens = estimate_tokens(result_text)
             keep_ratio = kept_tokens / max(1, original_tokens)
@@ -3506,10 +4746,11 @@ def compress_context(
                     "engine": "tameru",
                     "policy": "summarise-llm",
                     "query_hash": hashlib.sha256(
-                        (query or "").encode("utf-8")
+                        (query_as_given or "").encode("utf-8")
                     ).hexdigest()[:12],
                     "savings_pct": round((1.0 - keep_ratio) * 100.0, 2),
                     "risk": summary_risk,
+                    "content_hint": content_hint,
                     "industrial": industrial.to_dict(),
                     **_receipt_hashes(
                         caller_text,
@@ -3525,14 +4766,23 @@ def compress_context(
         # LLM failed or returned a longer result — fall through to extract.
         strategy_norm = "extract"
 
-    lines, content_type = preprocess(text, query or "")
-    if industrial.applied:
-        content_type = industrial.profile.format
-    if not query_has_distinctive_selectors(query or ""):
+    if query_has_distinctive_selectors(query or "") and not adapter_info:
+        lines, content_type = preprocess(text, query or "", content_hint=route_hint)
+        if industrial.applied:
+            content_type = industrial.profile.format
+    else:
         # Do not fingerprint-collapse logs or crush JSON on a generic query.
+        # (Perf, v1.4.0: preprocess() output was computed and then discarded
+        # on this path — ~0.4 s of log collapsing per 650 KB — so it is not
+        # run at all; the result is identical.)
         lines = text.split("\n")
-        content_type = route_content_type(lines)
-    blocks = segment_blocks(lines)
+        content_type = _HINT_ROUTES.get(route_hint) or route_content_type(lines)
+    # numbered_code: the "N\t" / "N|" gutter stays in the output (_render emits
+    # `lines`) but is not part of the code the scorer should read.
+    score_lines = lines
+    if route_hint == "numbered_code":
+        score_lines = [_GUTTER_RE.sub("", ln, count=1) for ln in lines]
+    blocks = segment_blocks(score_lines)
     if len(blocks) > industrial.limits.max_blocks:
         tokens = estimate_tokens(caller_text)
         reason = (
@@ -3544,10 +4794,11 @@ def compress_context(
             "engine": "tameru",
             "policy": "local-fail-open",
             "query_hash": hashlib.sha256(
-                (query or "").encode("utf-8")
+                (query_as_given or "").encode("utf-8")
             ).hexdigest()[:12],
             "savings_pct": 0.0,
             "risk": "high",
+            "content_hint": content_hint,
             "industrial": industrial.to_dict(),
         }
         receipt.update(
@@ -3592,7 +4843,7 @@ def compress_context(
                     f"[… {omitted} chars omitted …]\n"
                     f"{full[-_DEGRADED_VIEW_TAIL:]}"
                 )
-    scored = score_blocks(blocks, query or "")
+    scored = score_blocks(blocks, query or "", content_type=content_type)
 
     # v0.10.0 (G2, KVzip sink semantics): pinned blocks are exempt from
     # dropping in every selector path. Applied by boosting score and marking;
@@ -3633,6 +4884,17 @@ def compress_context(
         if not (0.0 < ratio <= 1.0):
             raise ValueError(f"budget_ratio must be in (0, 1], got {ratio!r}")
         kept, fail_open, risk = select_fixed(scored, ratio, out=selection)
+        if gap_marker is not None and not citations and not fail_open:
+            # Marker text costs tokens too: reserve them out of the budget and
+            # select once more (gap count may shift slightly; one pass is
+            # enough to keep the rendered output near the requested ratio).
+            reserve = _gap_marker_reserve(
+                lines, scored, kept, gap_marker, len(caller_text), content_lines=score_lines
+            )
+            if reserve:
+                kept, fail_open, risk = select_fixed(
+                    scored, ratio, out=selection, reserve_tokens=reserve
+                )
     else:
         kept, fail_open, risk = select_adaptive(
             scored,
@@ -3648,12 +4910,32 @@ def compress_context(
         # Temporal supersession: a later kept block that explicitly marks an
         # earlier kept block stale (now/obsolete/override/newer date) prunes
         # it after cache replay, so a frozen keep cannot revive stale data.
-        kept = apply_supersession(scored, kept)
+        # v1.4.0: not for content the caller says is source code. The markers
+        # are prose ("override", "deprecated", " disabled" are ordinary code
+        # words) and two functions share identifiers by construction, so a
+        # comment in a LATER function would evict the very function asked
+        # about — and the hint exists so function bodies survive.
+        if not code_hint:
+            kept = apply_supersession(scored, kept)
+        # v1.4.0 (E3) safety net: neither a frozen drop nor supersession may
+        # evict the one exemplar block of a level-tagged log error.
+        kept |= {
+            b["id"]
+            for b in scored
+            if b.get("error_exemplar") and not b.get("trust_risk")
+        }
         if pin_recent_ids:
             # Pins are never touched: a score-999 boost alone cannot reach
             # kept when a selector path ignores raw scores (needle-only),
             # and neither freeze nor supersession may evict a pin.
             kept |= pin_recent_ids
+    if adapter_info is not None and scored and not ambiguity_fail_open:
+        # v1.4.0 (E5): the format adapter already chose what to keep (every
+        # header, whole hunks, grouped matches); block scoring must not drop a
+        # file header or half a hunk. Risk reflects how the adapter chose.
+        kept = {b["id"] for b in scored}
+        fail_open = False
+        risk = "low" if query_has_distinctive_selectors(query or "") else "medium"
     if ambiguity_fail_open:
         fail_open = True
         risk = "high"
@@ -3675,11 +4957,16 @@ def compress_context(
             if not any(t in blob for t in latin_terms):
                 fail_open = True
                 risk = "high"
-    if not query_has_distinctive_selectors(q) and _looks_like_csv(original_text):
+    if (
+        not query_has_distinctive_selectors(q)
+        and not no_table
+        and _looks_like_csv(original_text)
+    ):
         fail_open = True
         risk = "high"
 
     collapsed = "\n".join(lines)
+    structural_collapse_only = False
     if fail_open:
         annotated_ids = {
             b["id"] for b in scored if b.get("trust_risk") and not b.get("pinned")
@@ -3689,7 +4976,9 @@ def compress_context(
             # annotation. Explicitly pinned blocks remain eligible.
             kept = {b["id"] for b in scored if b["id"] not in annotated_ids}
             compressed = _render(
-                lines, scored, kept, citations=citations, reorder_best=_reorder
+                lines, scored, kept, citations=citations, reorder_best=_reorder,
+                gap_marker=gap_marker, total_chars=len(caller_text),
+                content_lines=score_lines,
             )
             fail_open = False
             risk = "high"
@@ -3704,11 +4993,19 @@ def compress_context(
             fail_open = False
             compressed = collapsed
             kept = {b["id"] for b in scored}
+            # v1.4.0 (E7): the query never selected anything here; what is
+            # returned is the structural collapse alone (repeat folding,
+            # frame runs), not an answer-driven extract. Say so.
+            structural_collapse_only = True
         else:
             compressed = original_text
             kept = {b["id"] for b in scored}
     else:
-        compressed = _render(lines, scored, kept, citations=citations, reorder_best=_reorder)
+        compressed = _render(
+            lines, scored, kept, citations=citations, reorder_best=_reorder,
+            gap_marker=gap_marker, total_chars=len(caller_text),
+            content_lines=score_lines,
+        )
 
     recall = _entity_recall(text, compressed, query or "")
     if recall < 0.66 and not fail_open:
@@ -3721,7 +5018,11 @@ def compress_context(
                 kept.add(b["id"])
         if decision_cache is not None:
             kept = _enforce_frozen_decisions(scored, kept)
-        compressed = _render(lines, scored, kept, citations=citations, reorder_best=_reorder)
+        compressed = _render(
+            lines, scored, kept, citations=citations, reorder_best=_reorder,
+            gap_marker=gap_marker, total_chars=len(caller_text),
+            content_lines=score_lines,
+        )
         recall = _entity_recall(text, compressed, query or "")
         trust_risks = {
             b["id"]
@@ -3736,7 +5037,11 @@ def compress_context(
             kept = {bid for bid in kept if bid not in trust_risks}
             if decision_cache is not None:
                 kept = _enforce_frozen_decisions(scored, kept)
-            compressed = _render(lines, scored, kept, citations=citations, reorder_best=_reorder)
+            compressed = _render(
+                lines, scored, kept, citations=citations, reorder_best=_reorder,
+                gap_marker=gap_marker, total_chars=len(caller_text),
+                content_lines=score_lines,
+            )
             risk = "high"
         elif recall < 0.5:
             compressed = original_text
@@ -3747,6 +5052,30 @@ def compress_context(
     if fail_open:
         risk = "high"
         compressed = caller_text
+
+    # v1.4.0 (E3): for content routed as a log, report how many level-tagged
+    # error fingerprints survive. The engine keeps one exemplar per
+    # fingerprint, so a loss means something upstream broke the invariant:
+    # say so in the risk instead of leaving the verifier blind to it.
+    log_error_retention: dict[str, int] | None = None
+    if content_type == "log" and not fail_open and compressed:
+        want = {
+            fp for fp, ex in error_fingerprints(text).items() if _is_level_error_line(ex)
+        }
+        if want:
+            have = set(error_fingerprints(compressed))
+            log_error_retention = {"total": len(want), "kept": len(want & have)}
+            if log_error_retention["kept"] < log_error_retention["total"]:
+                lost_all = log_error_retention["kept"] == 0
+                risk = "high" if lost_all else (risk if risk == "high" else "medium")
+
+    # v1.4.0 (G9): a Hermes tool wrapper ({"output": ..., "exit_code": 1, ...})
+    # was reduced to its inner text above; re-emit its scalar metadata as one
+    # compact JSON line so exit codes, errors and line counts survive. Only for
+    # a compressed (not fail-open) result — fail-open returns the caller's
+    # wrapper byte for byte.
+    if tool_meta_line and not fail_open:
+        compressed = tool_meta_line + compressed
 
     original_tokens = estimate_tokens(original_text)
     kept_tokens = estimate_tokens(compressed)
@@ -3806,10 +5135,19 @@ def compress_context(
     reasons = sorted({scored[i]["reason"] for i in kept if i < len(scored)})
     if industrial.applied:
         reasons.append(f"industrial adapter: {industrial.profile.format}")
+    if adapter_info is not None and not fail_open:
+        reasons.append(f"format adapter: {adapter_info['name']}")
     if freeze_cache_saturated:
         reasons.append("freeze cache capacity reached")
     if savings_gate:
         reasons.append("savings below min_savings_ratio")
+    if structural_collapse_only and not fail_open:
+        reasons.append("structural collapse only (query terms absent)")
+    if log_error_retention and log_error_retention["kept"] < log_error_retention["total"]:
+        reasons.append(
+            f"log error fingerprints lost: {log_error_retention['kept']}"
+            f"/{log_error_retention['total']} kept"
+        )
     if degraded:
         reasons.append("degraded scoring view")
         if risk == "low":
@@ -3820,7 +5158,7 @@ def compress_context(
     result_text = compressed
     cache_applied = False
     if cache_prefix and not fail_open:
-        result_text = cache_wrap(compressed, query or "")
+        result_text = cache_wrap(compressed, query_as_given or "")
         cache_applied = True
 
     ccr_info = None
@@ -3871,7 +5209,15 @@ def compress_context(
     # a different strategy or expand dropped blocks.
     verifier = None
     if not fail_open and compressed and original_tokens > 50:
-        verifier = verify_compression(text, compressed, query or "")
+        if route_hint == "numbered_code":
+            # the gutter ("12: ") is not content: it must not read as key: value
+            verifier = verify_compression(
+                "\n".join(_GUTTER_RE.sub("", ln, count=1) for ln in text.split("\n")),
+                "\n".join(_GUTTER_RE.sub("", ln, count=1) for ln in compressed.split("\n")),
+                query or "",
+            )
+        else:
+            verifier = verify_compression(text, compressed, query or "")
         risk_order = {"low": 0, "medium": 1, "high": 2}
         verifier_risk = str(verifier.get("risk", "high"))
         if risk_order.get(verifier_risk, 2) > risk_order.get(risk, 2):
@@ -3903,7 +5249,7 @@ def compress_context(
     )
 
     # v0.10.0 (G5 memorix receipt): machine-readable provenance.
-    query_hash = hashlib.sha256((query or "").encode("utf-8")).hexdigest()[:12]
+    query_hash = hashlib.sha256((query_as_given or "").encode("utf-8")).hexdigest()[:12]
     receipt = {
         "schema_version": "1",
         "engine": "tameru",
@@ -3931,6 +5277,14 @@ def compress_context(
         # not supplied — a derived query is advisory context, not intent.
         "query_source": "derived" if derived_terms else "caller",
         "derived_terms": derived_terms,
+        # v1.4.0: E7 — the keep-set came from structural collapse alone.
+        "structural_collapse_only": bool(structural_collapse_only and not fail_open),
+        # v1.4.0: E8 — the caller's routing hint, always recorded.
+        "content_hint": content_hint,
+        # v1.4.0: E5 — which diff/grep adapter shaped the text (None: none did).
+        "adapter": adapter_info,
+        # v1.4.0: E3 — level-tagged error fingerprints kept/total (logs only).
+        "log_error_fingerprints": log_error_retention,
         "industrial": industrial.to_dict(),
     }
     receipt.update(

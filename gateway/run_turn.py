@@ -433,33 +433,10 @@ class GatewayTurnMixin:
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
-            # The recheck below asks the in-memory store, which cannot see an ended row
-            # or an empty transcript.  Prove the persisted context first so a dead session
-            # never reaches delivery -- and prove it BEFORE the recheck, so the database
-            # has the last word rather than the cache.
-            if not await self._prove_live_persisted_context(pinned_session_id):
-                return
-            session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
-            if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
-                logger.warning(
-                    "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
-                    pinned_session_id or "missing", expected_session_key or "missing",
-                )
-                return
-            # A newer run may have superseded this one while the recheck was awaited.
-            # Check the run generation here, after the recheck and before any side effect
-            # below (source cache, Telegram topic binding, heartbeat owner), so a stale
-            # strict event drops without touching state. Later run-generation checks in the
-            # turn would drop it too, but only after those side effects.
-            # ``run_generation`` is None only for direct callers outside a turn (tests, evals);
-            # the turn handler always passes it.
-            if run_generation is not None and not self._is_session_run_current(
-                    session_entry.session_key, run_generation):
-                logger.warning(
-                    "strict_session_run_superseded: pinned=%s key=%s",
-                    pinned_session_id or "missing",
-                    expected_session_key or "missing",
-                )
+            from gateway.run_turn_strict_lane import strict_lane_session_entry
+            session_entry = await strict_lane_session_entry(
+                self, expected_session_key, pinned_session_id, run_generation)
+            if session_entry is None:
                 return
         else:
             # Internal wakes observe reset policy without counting as user activity, or periodic
@@ -480,59 +457,6 @@ class GatewayTurnMixin:
         if not await resolve_heartbeat_owner(self, event, session_entry):
             return
         return source, session_entry, session_key
-
-    async def _prove_live_persisted_context(self, pinned_session_id: str) -> bool:
-        """Prove a live persisted context exists before internal delivery.
-
-        The strict lane already refuses to create a session and already rechecks the
-        route, but it asks the in-memory store, which cannot see that the row was
-        ended or that the transcript is empty.  Absence, an ended session, an empty
-        transcript or a failed read all fail closed, so an internal lane never opens
-        a fresh conversation on a dead one.  Bounded metadata read only.
-        """
-        if not pinned_session_id:
-            return False
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
-            logger.warning("strict_session_no_session_db: pinned=%s", pinned_session_id)
-            return False
-        reader = getattr(session_db, "get_session_context_state", None)
-        if not callable(reader):
-            logger.warning(
-                "strict_session_context_reader_missing on %s", type(session_db).__name__
-            )
-            return False
-        try:
-            if inspect.iscoroutinefunction(reader):
-                context_state = await reader(pinned_session_id)
-            else:
-                # A synchronous reader runs in a thread: never block the event loop on SQLite.
-                context_state = await asyncio.to_thread(reader, pinned_session_id)
-            if inspect.isawaitable(context_state):
-                # Neither known shape (sync SessionDB, AsyncSessionDB offloading). A sync
-                # callable returning an awaitable is not caught by iscoroutinefunction;
-                # fail closed rather than guess.
-                logger.warning(
-                    "strict_session_context_reader_unexpected_awaitable: pinned=%s reader=%r",
-                    pinned_session_id, getattr(reader, "__qualname__", reader),
-                )
-                return False
-        except Exception as exc:
-            logger.warning(
-                "strict_session_context_lookup_failed: pinned=%s error_type=%s",
-                pinned_session_id, type(exc).__name__,
-            )
-            logger.debug("strict_session_context_lookup_traceback", exc_info=True)
-            return False
-        if (
-            not context_state
-            or context_state.get("id") != pinned_session_id
-            or context_state.get("ended_at")
-            or int(context_state.get("message_count") or 0) <= 0
-        ):
-            logger.warning("strict_session_no_live_context: pinned=%s", pinned_session_id)
-            return False
-        return True
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
         """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record

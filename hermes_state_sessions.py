@@ -875,7 +875,7 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
-    def get_session_context_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_session_context_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """Bounded metadata read proving an existing live context, for delivery gates.
 
         Deliberately not :meth:`get_session`: that resolves the system prompt through a
@@ -900,6 +900,7 @@ class SessionSessionsMixin:
             "end_reason": row["end_reason"],
             "parent_session_id": row["parent_session_id"],
         }
+
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).

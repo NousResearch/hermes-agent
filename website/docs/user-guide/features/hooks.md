@@ -474,6 +474,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
+| `pre_subagent_route` | Directive/control | Once per `delegate_task` child, before its runtime is resolved; first valid route wins (run-all-then-pick-first). Return `None` or a dict with `provider` (requires `model`), `model`, `reasoning_effort`. | `parent_session_id`, `parent_subagent_id`, `task_index`, `task_count`, `child_goal`, `child_context`, `child_role`, `default_provider`, `default_model`, `default_reasoning_effort` | Goal and context may contain user/project content; a remote router receives whatever the plugin sends it. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
@@ -1180,6 +1181,50 @@ def register(ctx):
 :::info
 `subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_task` tool call.
 :::
+
+---
+
+### `pre_subagent_route`
+
+Fires **once per child agent** inside `delegate_task`, on the main thread, **before** the child's provider, model and reasoning effort are resolved. A plugin can return a per-child route, so one batch can mix models and providers — for example a cheap model for mechanical tasks and a frontier model for reviews — without changing `delegation.*` config.
+
+**Callback signature:**
+
+```python
+def my_router(parent_session_id: str | None,
+              parent_subagent_id: str | None,
+              task_index: int,
+              task_count: int,
+              child_goal: str,
+              child_context: str | None,
+              child_role: str,
+              default_provider: str | None,
+              default_model: str | None,
+              default_reasoning_effort,
+              **kwargs) -> dict | None:
+```
+
+**Return value:** `None` keeps the batch route. Otherwise a dict with any of:
+
+| Key | Meaning |
+|-----|---------|
+| `provider` | Provider name resolved through the runtime provider system (same path as `delegation.provider`). Requires `model`; a provider without a model is ignored. The batch's `base_url`/`api_key`/`api_mode`/`command` are not carried over to a different provider. |
+| `model` | Child model. Without `provider`, the child keeps the batch provider and endpoint. |
+| `reasoning_effort` | Same values as `delegation.reasoning_effort` (`low`, `high`, ..., or `false`); overrides it for this child only. Unknown values are ignored. |
+
+Dispatch is run-all-then-pick-first: the first valid route in registration order wins and conflicting routes are logged. The hook is fail-open: a callback error, an invalid return, or a provider that cannot be resolved keeps the batch route with a warning, so a broken router never blocks a spawn. Shell hooks cannot return routes. The hook does not fire when the caller pins its own route (for example `/review`, which runs on `auxiliary.review`).
+
+**Example — route reviews to a stronger model:**
+
+```python
+def route(child_goal, **kwargs):
+    if "review" in child_goal.lower():
+        return {"provider": "anthropic", "model": "claude-opus-4-8", "reasoning_effort": "high"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_subagent_route", route)
+```
 
 ---
 

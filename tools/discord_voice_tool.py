@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import weakref
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from typing import Optional
 
+from agent.secret_scope import get_secret
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,9 @@ _TIMEOUT_S = 45
 def _runner():
     try:
         from gateway.run import _gateway_runner_ref
-        return _gateway_runner_ref()
-    except Exception:
+    except ImportError:  # gateway extras not installed: no runner can exist in this process
         return None
+    return _gateway_runner_ref()
 
 
 def _session_source():
@@ -62,18 +63,16 @@ def _session_source():
 
 
 def _adapter_for(runner, source):
-    try:
-        resolve = getattr(runner, "_authorization_adapter", None)
-        if callable(resolve):
-            return resolve(source.platform, source.profile)
-        return runner.adapters.get(source.platform)
-    except Exception:
-        return None
+    resolve = getattr(runner, "_authorization_adapter", None)
+    if callable(resolve):
+        return resolve(source.platform, source.profile)
+    return runner.adapters.get(source.platform)
 
 
-def _home_channel_source(adapter, source):
-    """DM fallback: bind to DISCORD_HOME_CHANNEL (and its guild) so a DM 'join voice' still works."""
-    home = (os.getenv("DISCORD_HOME_CHANNEL") or "").strip()
+def _home_channel_source(adapter, source, home: str):
+    """DM fallback: bind to DISCORD_HOME_CHANNEL (and its guild) so a DM 'join voice' still works.
+    ``home`` is read by the caller on the tool thread, where the turn's profile secret scope is bound
+    (``_do`` runs on the gateway loop, whose task context does not carry that scope)."""
     client = getattr(adapter, "_client", None)
     if not home.isdigit() or client is None:
         return None
@@ -89,21 +88,18 @@ def _connected_guilds(adapter) -> list:
     clients = getattr(adapter, "_voice_clients", None) or {}
     out = []
     for gid, vc in list(clients.items()):
-        try:
-            if vc is not None and vc.is_connected():
-                out.append(gid)
-        except Exception:
-            continue
+        if vc is not None and vc.is_connected():
+            out.append(gid)
     return out
 
 
-async def _do(runner, adapter, source, action: str) -> dict:
+async def _do(runner, adapter, source, action: str, home: str = "") -> dict:
     from gateway.session import SessionSource
 
     guild_id: Optional[int] = int(source.scope_id) if (source.scope_id or "").isdigit() else None
     if action == "join":
         if guild_id is None:
-            fallback = _home_channel_source(adapter, source)
+            fallback = _home_channel_source(adapter, source, home)
             if fallback is None:
                 return {"error": "Not in a server channel and DISCORD_HOME_CHANNEL is not resolvable."}
             source, guild_id = fallback, int(fallback.scope_id)
@@ -129,7 +125,7 @@ async def _do(runner, adapter, source, action: str) -> dict:
     if isinstance(bound_source, dict):
         try:
             target = SessionSource.from_dict(bound_source)
-        except Exception:
+        except (KeyError, TypeError, ValueError):  # malformed binding: fall back to the requester's chat
             target = source
     target._transport_adapter_ref = weakref.ref(adapter)
     was_in = bool(guild_id) and adapter.is_in_voice_channel(guild_id)
@@ -151,11 +147,7 @@ def discord_voice(action: str) -> str:
     if adapter is None or not hasattr(adapter, "join_voice_channel"):
         return tool_error("No live Discord adapter with voice support.")
     source._transport_adapter_ref = weakref.ref(adapter)
-    try:
-        authorized = bool(runner._is_user_authorized(source))
-    except Exception:
-        authorized = False
-    if not authorized:
+    if not runner._is_user_authorized(source):
         return tool_error("Requester is not an allowed user for this gateway.")
     loop = getattr(runner, "_gateway_loop", None)
     if loop is None or not loop.is_running():
@@ -165,16 +157,21 @@ def discord_voice(action: str) -> str:
             return tool_error("discord_voice cannot block the gateway loop it needs.")
     except RuntimeError:
         pass
+    home = (get_secret("DISCORD_HOME_CHANNEL", "") or "").strip() if action == "join" else ""
     from agent.async_utils import safe_schedule_threadsafe
-    fut = safe_schedule_threadsafe(_do(runner, adapter, source, action), loop, logger=logger,
+    fut = safe_schedule_threadsafe(_do(runner, adapter, source, action, home), loop, logger=logger,
                                    log_message="discord_voice: failed to schedule on gateway loop")
     if fut is None:
         return tool_error("Could not schedule the voice action on the gateway loop.")
+    # Anything else the helper raises propagates to the registry's dispatch boundary, which logs
+    # the traceback and returns it as a tool error.
     try:
         result = fut.result(timeout=_TIMEOUT_S)
-    except Exception as e:  # timeout or the helper raised
-        logger.warning("discord_voice %s failed: %s", action, e)
-        return tool_error(f"Voice {action} failed: {e}")
+    except TimeoutError:
+        logger.warning("discord_voice %s timed out after %ss", action, _TIMEOUT_S)
+        return tool_error(f"Voice {action} timed out after {_TIMEOUT_S}s.")
+    except CancelledError:  # the gateway loop shut down underneath the action
+        return tool_error(f"Voice {action} was cancelled (gateway shutting down).")
     if "error" in result:
         return tool_error(result["error"])
     return tool_result(result)
@@ -185,12 +182,9 @@ def check_discord_voice_requirements() -> bool:
     runner = _runner()
     if runner is None:
         return False
-    try:
-        from gateway.config import Platform
-        return any(Platform.DISCORD in (m or {}) for m in
-                   [getattr(runner, "adapters", None), *((getattr(runner, "_profile_adapters", None) or {}).values())])
-    except Exception:
-        return False
+    from gateway.config import Platform
+    return any(Platform.DISCORD in (m or {}) for m in
+               [getattr(runner, "adapters", None), *((getattr(runner, "_profile_adapters", None) or {}).values())])
 
 
 DISCORD_VOICE_SCHEMA = {

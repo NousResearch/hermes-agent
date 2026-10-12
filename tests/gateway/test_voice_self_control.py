@@ -169,12 +169,35 @@ def test_leave_from_dm_finds_connected_guild(runner):
     assert runner._voice_mode[f"discord:{TEXT}"] == "off"
 
 
+
+def test_join_from_dm_uses_profile_scoped_home_channel(runner, monkeypatch):
+    """The DM fallback reads DISCORD_HOME_CHANNEL from the turn's profile secret scope, not the
+    launch process env, and binds the voice channel to that home channel's guild."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    home = "444444444444444444"
+    monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+    adapter = _adapter(connected=False)
+    adapter._client = MagicMock()
+    adapter._client.get_channel = MagicMock(return_value=SimpleNamespace(guild=SimpleNamespace(id=GUILD)))
+    runner.adapters[Platform.DISCORD] = adapter
+    scope = set_secret_scope({"DISCORD_HOME_CHANNEL": home})
+    tokens = _bind(chat="999", scope="")
+    try:
+        out = _call(runner, "join")
+    finally:
+        clear_session_vars(tokens)
+        reset_secret_scope(scope)
+    assert out["success"] is True and out["text_channel_id"] == home
+    adapter._client.get_channel.assert_called_once_with(int(home))
+    assert adapter._voice_text_channels[GUILD] == int(home)
+
 def test_unknown_action():
     import tools.discord_voice_tool as tool
     assert "error" in json.loads(tool.discord_voice("dance"))
 
 
 def test_tool_registered_in_discord_toolset():
-    import tools.discord_voice_tool  # noqa: F401
+    import tools.discord_voice_tool
     from toolsets import resolve_toolset
     assert "discord_voice" in resolve_toolset("discord")

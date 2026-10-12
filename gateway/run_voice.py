@@ -173,7 +173,7 @@ class GatewayVoiceMixin:
         try:
             success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
-            logger.warning("Failed to join voice channel: %s", e)
+            logger.warning("Failed to join voice channel: %s", e, exc_info=True)
             adapter._voice_input_callback = None
             if not any(tok in str(e).lower() for tok in ("pynacl", "nacl", "davey")):
                 return t("gateway.voice.channel_join_failed", error=e)
@@ -208,7 +208,7 @@ class GatewayVoiceMixin:
         try:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
-            logger.warning("Error leaving voice channel: %s", e)
+            logger.warning("Error leaving voice channel: %s", e, exc_info=True)
         # Always clean up state even if leave raised an exception
         self._apply_voice_mode(adapter, self._voice_key_for_source(source),
                                source.chat_id, "off")

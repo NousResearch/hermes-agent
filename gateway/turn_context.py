@@ -19,6 +19,8 @@ class TurnContext:
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
+    # Automatic review has no human recipient on plugin-injected turns.
+    skip_background_review: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
@@ -100,3 +102,9 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+
+def plugin_injection_review_suppressed(value: Any) -> bool:
+    """Whether event or turn display metadata identifies a plugin-injected turn."""
+    metadata = value if isinstance(value, dict) else getattr(value, "metadata", None)
+    return bool((metadata or {}).get("hermes_plugin_injection"))

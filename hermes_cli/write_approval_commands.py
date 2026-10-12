@@ -110,11 +110,33 @@ def _changed_entries(result: dict, kind: str) -> list[str]:
     return ([single] if single else []) + [batch[k] for k in sorted(batch, key=int)]
 
 
+def _entry_delta(op) -> str:
+    """``'235 -> 47 chars, -188 (-80%), shrinks it below half'`` for a staged replace/remove.
+
+    Memory's whole-entry contract means a payload that edits one clause of a multi-fact entry
+    deletes the rest (#124582); the payload alone reads like a small edit, and the summary line
+    shows only the old_text search, never the size of the loss. The char delta is the one number
+    that makes a destructive proposal visible in the list an approver is already reading."""
+    before = len(op["matched_entry"])
+    after = len(op.get("content") or op.get("new_text") or "") if op["action"] == "replace" else 0
+    delta = after - before
+    pct = round(100 * delta / before) if before else 0
+    # Under half is the shape of the incident: a clause-level edit whose payload dropped the rest.
+    verdict = ("deletes the entry" if not after else
+               "grows the entry" if delta > 0 else
+               "leaves it the same size" if delta == 0 else
+               "shrinks it below half" if after * 2 < before else
+               "shrinks it")
+    return f"{before} -> {after} chars, {delta:+d} ({pct:+d}%), {verdict}"
+
+
 def _matched_entries(payload) -> list[str]:
-    """The full entry each staged memory replace/remove is pinned to: the summary shows only
-    the old_text search string, and approval applies to this entry, not to that search."""
+    """The full entry each staged memory replace/remove is pinned to, prefixed with what the op
+    does to it: the summary shows only the old_text search string, and approval applies to this
+    entry, not to that search."""
     from tools.memory_tool import destructive_ops
-    return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
+    return [f"{op['action']}s entry: {_entry_delta(op)}: {op['matched_entry']}"
+            if op.get("matched_entry")
             else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
             for op in destructive_ops(payload)]
 

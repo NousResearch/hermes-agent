@@ -172,6 +172,70 @@ def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     assert store.memory_entries == ["RULE B: CI is per-head."]
 
 
+# ---------------------------------------------------------------------------
+# The pending list quantifies what an approval destroys (#136738)
+# ---------------------------------------------------------------------------
+
+_FACTS = ("laptop drop-off = deliberate KDE AC suspend 1h, no WoL; wifi = WPA3 only on 5GHz, "
+          "2.4GHz off at the AP; backup = nightly restic to nas-2 at 03:30, retention 14d")
+
+
+def _review_stages_one_loss(op, shape="batch"):
+    """Seed one multi-fact entry, then stage ``op`` against it through the review fork's own
+    path (which is what pins the full matched entry the pending view reports on)."""
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
+                                        set_current_write_origin, set_review_attended)
+    store = MemoryStore(); store.load_from_disk()
+    assert store.add("memory", _FACTS)["success"]
+    kwargs = op if shape == "single" else {
+        "operations": [op, {"action": "add", "content": "ssh = port 2222, key ed25519"}]}
+    origin, attended = set_current_write_origin("background_review"), set_review_attended(False)
+    try:
+        staged = json.loads(memory_tool(target="memory", store=store, **kwargs))
+    finally:
+        reset_review_attended(attended)
+        reset_current_write_origin(origin)
+    assert staged.get("staged") is True, staged
+    return store
+
+
+@pytest.mark.parametrize("content,verdict", [
+    ("drop-off = deliberate KDE AC suspend 1h, no WoL", "shrinks it below half"),
+    (_FACTS, "leaves it the same size"),
+    (_FACTS + "; vpn = wireguard on 51820", "grows the entry"),
+])
+def test_pending_view_quantifies_what_a_replace_does_to_the_entry(hermes_home, content, verdict):
+    """#136738: whole-entry semantics makes a clause-level payload read like a small edit while
+    deleting the rest, and the summary line shows only the old_text search string. The pending
+    list must state the loss in chars, and flag the payload that guts the entry."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _review_stages_one_loss({"action": "replace", "old_text": "drop-off = deliberate",
+                             "content": content})
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+
+    assert f"{len(_FACTS)} -> {len(content)} chars" in out, out
+    assert f"{len(content) - len(_FACTS):+d}" in out, out
+    assert verdict in out, out
+    assert _FACTS in out, out  # the full target entry stays visible
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_pending_view_quantifies_a_remove_as_a_whole_entry_loss(hermes_home, shape):
+    """A remove has no content to compare against: the entry it deletes is the whole loss."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _review_stages_one_loss({"action": "remove", "old_text": "backup = nightly restic"}, shape)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+
+    assert f"{len(_FACTS)} -> 0 chars, {-len(_FACTS):+d}" in out, out
+    assert "deletes the entry" in out, out
+
+
+
 _KEPT = "Repo lives in ~/src/app; tests via make test"
 _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 

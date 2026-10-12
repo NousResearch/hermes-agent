@@ -94,7 +94,8 @@ def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str)
     appear verbatim in content, which verifies old_string (and rules out a file that really
     contains ``\\'``/``\\"``). new_string's added code is not in the file, so it is only
     stripped when ``_quote_escapes_all_spurious`` holds for the whole call; otherwise the call
-    is left unchanged for the existing reject-and-ask guard.
+    is left unchanged for the existing reject-and-ask guard. Raises ``AmbiguousEscapeDriftError``
+    when new_string escapes a quote kind that old_string does not.
     """
     has_quote_suspect = (
         ("\\'" in old_string and "\\'" in new_string)
@@ -108,6 +109,16 @@ def maybe_correct_quote_escaping(old_string: str, new_string: str, content: str)
     stripped_old = _strip_spurious_quote_escapes(old_string)
     if stripped_old not in content:
         return old_string, new_string
+    # Only old_string is checked against the file, so only the quote kinds it escapes are
+    # proven drift. A kind escaped only in new_string may be an escape the model meant.
+    unproven = [q for q in ("'", '"') if "\\" + q in new_string and "\\" + q not in old_string]
+    if unproven:
+        shown = " and ".join("\\" + q for q in unproven)
+        raise AmbiguousEscapeDriftError(
+            "Escape-drift detected: removing the spurious quote escapes in old_string matches "
+            f"the file, but new_string also contains {shown}, which old_string gives no evidence "
+            "for. Re-read the file and resend old_string/new_string with their intended escaping."
+        )
 
     return stripped_old, _strip_spurious_quote_escapes(new_string)
 
@@ -118,7 +129,8 @@ def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -
 
     Tries quote escaping, then backslash correction of the anchor only. Raises
     ``AmbiguousEscapeDriftError`` for a verified doubled anchor whose replacement
-    contains backslashes; the caller must return an error without attempting a match.
+    contains backslashes, or a verified quote correction whose replacement escapes a
+    quote kind the anchor does not; the caller must return an error without matching.
 
     Returns ``(corrected_old, corrected_new, note)``: ``note`` is a human-readable description
     of the correction that was applied, or ``None`` if neither fired. The caller attaches

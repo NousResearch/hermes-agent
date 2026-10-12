@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tools.escape_drift_autocorrect import maybe_correct_escape_drift
+from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
 
 
 @pytest.fixture
@@ -36,6 +36,24 @@ _MIXED_CALLS = {
 def test_mixed_quote_escaping_is_not_corrected():
     content, old, new = _MIXED_CALLS["quote_new_line_really_escaped"]
     assert maybe_correct_escape_drift(old, new, content) == (old, new, None)
+
+
+# The anchor proves only apostrophe drift; the replacement's \" has no evidence either way.
+_UNPROVEN_QUOTE_KIND = (
+    'message = "it' + "'" + 's fine"\n',
+    r"it\'s fine",
+    r"it\'s \"great\"",
+)
+
+
+def test_quote_kind_escaped_only_in_replacement_is_rejected():
+    content, old, new = _UNPROVEN_QUOTE_KIND
+    with pytest.raises(AmbiguousEscapeDriftError):
+        maybe_correct_escape_drift(old, new, content)
+    from tools.fuzzy_match import fuzzy_find_and_replace
+    out, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
+    assert count == 0 and out == content
+    assert "intended escaping" in err
 
 
 _SHARED_CASES = [
@@ -130,6 +148,14 @@ class TestPatchEndToEnd:
                         task_id="t-drift")
         assert r.get("success") is not True
         assert f.read_text() == original
+
+    def test_quote_kind_escaped_only_in_replacement_is_rejected(self, workdir):
+        content, old, new = _UNPROVEN_QUOTE_KIND
+        f = workdir / "e.py"
+        f.write_text(content)
+        r = _patch_tool(path=str(f), old_string=old, new_string=new, task_id="t-drift")
+        assert r.get("success") is not True
+        assert f.read_text() == content
 
     def test_quote_mixed_call_rejected_not_mangled(self, workdir):
         content, old, new = _MIXED_CALLS["quote_new_line_really_escaped"]

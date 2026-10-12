@@ -54,7 +54,7 @@ import {
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import { $projectTree } from './project-tree'
+import { $projectTree, $projectTreeSessionRows } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
@@ -3023,13 +3023,7 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 function focusedSessionRow(storedSessionId: string): SessionInfo | undefined {
   return (
     ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, storedSessionId)) ??
-    $projectTree
-      .get()
-      .flatMap(project => [
-        ...(project.previewSessions ?? []),
-        ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
-      ])
-      .find(s => sessionMatchesStoredId(s, storedSessionId))
+    $projectTreeSessionRows.get().find(s => sessionMatchesStoredId(s, storedSessionId))
   )
 }
 

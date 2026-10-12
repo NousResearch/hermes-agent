@@ -44,6 +44,7 @@ _RETRY_ONCE_STATUSES = frozenset({502, 503, 504})
 _MAX_RETRY_AFTER_SECONDS = 10.0
 # Gateway origins that rejected the single-call execute form; they get the array form for the process.
 _LEGACY_EXECUTE_ORIGINS: set[str] = set()
+_EXECUTE_ROUTE = "connectors.execute"
 
 
 @dataclass(frozen=True)
@@ -243,16 +244,21 @@ class ConnectorClient:
                 continue
             status = int(getattr(response, "status_code", 0))
             payload = _safe_json(response)
+            request_id = response_request_id(response)
             if 200 <= status < 300:
+                log_connector_outcome(_EXECUTE_ROUTE, status, request_id=request_id, call=self._call)
                 parsed = self._parse(wire.ConnectorExecuteSingleResponse, payload, "connector execute result")
                 entry = {"data": parsed.result.data, "error": None}
                 if parsed.result.account:
                     entry["account"] = parsed.result.account
                 return entry
             headers = getattr(response, "headers", None)
+            failure = _call_failure(payload)
+            code = failure.code if failure else parse_gateway_error(status, payload, headers).code
+            log_connector_outcome(_EXECUTE_ROUTE, status, code=code,
+                                  request_id=(failure.request_id if failure else None) or request_id, call=self._call)
             if status == 400 and _rejects_single_call_form(payload):
                 return None
-            failure = _call_failure(payload)
             wait = _retry_wait(status, headers) if attempt < _MAX_RETRIES else None
             if wait is not None:
                 logger.debug("Connector execute attempt %d got %d; retrying with same key", attempt + 1, status)
@@ -261,7 +267,7 @@ class ConnectorClient:
                 continue
             if failure is None:
                 raise parse_gateway_error(status, payload, headers)
-            return {"data": None, "error": _error_dict(failure, status=status, headers=headers)}
+            return {"data": None, "error": _error_dict(failure, status=status, request_id=request_id)}
         raise ToolGatewayError("connector execute retries exhausted", code="TRANSPORT_ERROR", retryable=True)
 
     def _execute_legacy(
@@ -410,7 +416,7 @@ def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
 
 
 def _error_dict(
-    failure: wire.ConnectorToolError, *, status: Optional[int] = None, headers: Optional[Mapping[str, Any]] = None,
+    failure: wire.ConnectorToolError, *, status: Optional[int] = None, request_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """The plain error entry merge renders. ``status`` and ``request_id`` are for logs, never the model."""
     error: dict[str, Any] = {"code": failure.code, "message": failure.message}
@@ -423,7 +429,7 @@ def _error_dict(
             error[key] = value
     if status is not None:
         error["status"] = status
-    request_id = getattr(failure, "request_id", None) or (headers or {}).get("x-request-id")
+    request_id = getattr(failure, "request_id", None) or request_id
     if request_id:
         error["request_id"] = str(request_id)
     return error

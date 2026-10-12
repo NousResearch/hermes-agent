@@ -166,7 +166,6 @@ def run_remote(
         # A CONNECTION_REQUIRED link minted by this call is the user's next click, so the call names
         # the surface that browser should come back to.
         remote_results = client.execute(wire_planned, **return_to_args())
-        _log_call_failures(remote_results, dispatch_id)
         entries = splice_remote_results(planned, remote_results)
     except ToolGatewayError as exc:
         logger.warning(
@@ -206,7 +205,6 @@ def run_remote(
     # Retry confirmed misses once without disturbing successful sibling slots.
     try:
         fallback_results = client.execute(fallback_planned, **return_to_args())
-        _log_call_failures(fallback_results, dispatch_id)
         fallback_entries = splice_remote_results(fallback_planned, fallback_results)
     except ToolGatewayError as exc:
         logger.warning(
@@ -231,13 +229,3 @@ def run_remote(
         entries[slot] = fallback_entry
     return entries
 
-
-def _log_call_failures(results: Any, dispatch_id: Optional[str]) -> None:
-    """One WARNING per failed call, carrying the gateway's request id so the line joins its trace."""
-    for result in results if isinstance(results, list) else ():
-        error = result.get("error") if isinstance(result, dict) else None
-        if isinstance(error, dict):
-            logger.warning(
-                "connector execute %s %s request_id=%s dispatch=%s",
-                error.get("status", 200), error.get("code"), error.get("request_id", "-"), dispatch_id,
-            )

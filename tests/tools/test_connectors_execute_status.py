@@ -3,6 +3,7 @@ shape stays what the array envelope produced, and an older gateway still works t
 """
 
 import json
+import logging
 
 import pytest
 
@@ -108,6 +109,14 @@ def test_an_unknown_code_with_a_family_still_renders():
     body = {"code": "SOMETHING_NEW", "family": "backend", "message": "new failure"}
     entry = model_entry(FakeTransport(FakeResponse(500, body)))
     assert entry["error"] == {"code": "SOMETHING_NEW", "message": "new failure", "family": "backend"}
+
+
+def test_a_failed_call_logs_its_code_and_the_gateways_request_id(caplog):
+    caplog.set_level(logging.DEBUG)
+    make_client(FakeTransport(failure("TOOL_NOT_ALLOWED", 403))).execute(planned())
+    lines = [r for r in caplog.records if r.getMessage().startswith("connector connectors.execute")]
+    assert [(r.levelno, r.getMessage()) for r in lines] == [
+        (logging.WARNING, "connector connectors.execute 403 TOOL_NOT_ALLOWED request_id=req_9 dispatch=-")]
 
 
 def test_success_returns_the_result_data():

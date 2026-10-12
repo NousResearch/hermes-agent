@@ -809,7 +809,7 @@ def _anthropic_ordered_blocks(msg: dict) -> list[dict]:
     return [block for block in converted if block is not None]
 
 
-def _reasoning_details_blocks(msg: dict, claude: bool) -> list[dict]:
+def _reasoning_details_blocks(msg: dict, claude: bool, own: bool = False) -> list[dict]:
     """Thinking from the persisted ``reasoning_details`` (Anthropic shape, as Converse captures it), in stored
     order: Claude gets signed thinking + redacted blobs, other models readable text only (falling back to
     ``reasoning_content``). This is the carrier a turn reloaded from state.db replays from, since the
@@ -819,7 +819,7 @@ def _reasoning_details_blocks(msg: dict, claude: bool) -> list[dict]:
         if not isinstance(d, dict):
             continue
         if d.get("type") == "thinking" and isinstance(d.get("thinking"), str) and d["thinking"].strip():
-            if claude and d.get("signature"):
+            if (claude or own) and d.get("signature"):
                 blocks.append(_reasoning_text_block(d["thinking"], d["signature"]))
             elif not claude:
                 blocks.append(_reasoning_text_block(d["thinking"], None))
@@ -832,7 +832,7 @@ def _reasoning_details_blocks(msg: dict, claude: bool) -> list[dict]:
     return blocks
 
 
-def _assistant_blocks(msg: dict, content, claude: bool = True) -> list[dict]:
+def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False) -> list[dict]:
     """Assistant message → Converse blocks, from the first carrier that yields any: the ordered
     ``bedrock_content_blocks`` sidecar, (Claude only) the ordered ``anthropic_content_blocks`` sidecar,
     else thinking from ``reasoning_details`` followed by text, then tool calls. Anthropic-shaped carriers
@@ -842,7 +842,7 @@ def _assistant_blocks(msg: dict, content, claude: bool = True) -> list[dict]:
         return content_blocks
     if claude and (content_blocks := _anthropic_ordered_blocks(msg)):
         return content_blocks
-    content_blocks = _reasoning_details_blocks(msg, claude)
+    content_blocks = _reasoning_details_blocks(msg, claude, own)
     if isinstance(content, str) and content.strip():
         content_blocks.append({"text": content})
     elif isinstance(content, list):
@@ -864,6 +864,17 @@ def _assistant_blocks(msg: dict, content, claude: bool = True) -> list[dict]:
 #              reject them ("This model doesn't support the reasoningContent.reasoningText.signature field");
 #              the in-flight loop was produced by the model now answering and replays as captured.
 _CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3")
+
+
+# reasoning_details record naming the model that minted a turn's Converse reasoning: its signatures are that
+# model's own, so it gets them back unmodified on every later turn and after a reload (AWS: "include the text and
+# its signature unmodified"); any other model still gets the per-policy prior-turn treatment.
+CONVERSE_ISSUER_TYPE = "bedrock.native_assistant"
+
+
+def _issued_by(msg: dict, model: Optional[str]) -> bool:
+    return model is not None and any(isinstance(d, dict) and d.get("type") == CONVERSE_ISSUER_TYPE
+                                     and d.get("model") == model for d in msg.get("reasoning_details") or [])
 
 
 def _converse_replay_policy(model: Optional[str]) -> str:
@@ -934,9 +945,9 @@ def convert_messages_to_converse(
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            blocks = _filter_reasoning(
-                _assistant_blocks(msg, content, claude=policy == "signed"), prior_filter if idx < loop_start else loop_filter
-            )
+            own = _issued_by(msg, model)
+            keep = loop_filter if idx >= loop_start or (own and policy == "unsigned") else prior_filter
+            blocks = _filter_reasoning(_assistant_blocks(msg, content, claude=policy == "signed", own=own), keep)
             append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
             append_turn("user", _convert_content_to_converse(content))
@@ -988,7 +999,6 @@ class _ResponseParts:
 
     def __init__(self) -> None:
         self.text_parts: list[str] = []
-        self.reasoning_parts: list[str] = []
         self.reasoning_details: list[dict[str, Any]] = []
         self.tool_calls: list[SimpleNamespace] = []
 
@@ -1001,7 +1011,6 @@ class _ResponseParts:
             reasoning = {**reasoning, **reasoning["reasoningText"]}
         thinking_text = reasoning.get("text", "")
         if thinking_text:
-            self.reasoning_parts.append(str(thinking_text))
             if on_text:
                 on_text(thinking_text)
             block["text"] = block.get("text", "") + str(thinking_text)
@@ -1021,7 +1030,8 @@ class _ResponseParts:
             role="assistant", content="\n".join(self.text_parts) if self.text_parts else None,
             tool_calls=self.tool_calls or None,
             reasoning_details=_persisted_reasoning_details(ordered_blocks) or self.reasoning_details or None,
-            reasoning_content="\n\n".join(self.reasoning_parts) if self.reasoning_parts else None,
+            reasoning_content="\n\n".join(texts) if (texts := [b["reasoningContent"]["text"] for b in ordered_blocks
+                if isinstance(b.get("reasoningContent"), dict) and b["reasoningContent"].get("text")]) else None,
             bedrock_content_blocks=ordered_blocks or None,
         )
         cache_read_tokens, cache_write_tokens, output_tokens = (

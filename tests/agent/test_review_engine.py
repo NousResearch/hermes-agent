@@ -110,6 +110,10 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
+            "fallback_chain": [
+                {"provider": "custom:gemini", "model": "gemini-flash-lite-latest"},
+                {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+            ],
         }}},
     )
     cfg = re_mod._load_review_credentials_cfg()
@@ -119,7 +123,24 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
         "base_url": "",
         "api_key": "",
         "api_mode": "",
+        "fallback_providers": [
+            {"provider": "custom:gemini", "model": "gemini-flash-lite-latest"},
+            {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+        ],
     }
+
+def test_load_review_credentials_cfg_preserves_explicit_empty_chain(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {
+            "provider": "openrouter",
+            "model": "review-model",
+            "fallback_chain": [],
+        }}},
+    )
+    cfg = re_mod._load_review_credentials_cfg()
+    assert cfg is not None
+    assert cfg["fallback_providers"] == []
 
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(

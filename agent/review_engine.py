@@ -152,6 +152,14 @@ def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
         cfg["provider"] = ""
     if not (cfg["provider"] or cfg["model"] or cfg["base_url"]):
         return None
+    # ``auxiliary.review`` uses the auxiliary-task spelling ``fallback_chain``;
+    # delegate_task's per-call routing seam consumes the canonical
+    # ``fallback_providers`` key. Preserve an explicit [] so the task can
+    # intentionally disable failover, without ever inheriting the parent's chain.
+    if "fallback_chain" in review:
+        cfg["fallback_providers"] = review["fallback_chain"]
+    elif "fallback_providers" in review:
+        cfg["fallback_providers"] = review["fallback_providers"]
     return cfg
 
 

@@ -56,7 +56,7 @@ def _prefixed(*prefixes: str) -> Callable[[str | None], bool]:
     return lambda model: _flat_model_name(model).startswith(prefixes)
 
 
-def _effort_extras(efforts: tuple[str, ...], overrides: dict[str, str] | None = None) -> _ExtrasFn:
+def _effort_extras(efforts: tuple[str, ...]) -> _ExtrasFn:
     """Top-level ``reasoning_effort`` clamped onto a relay vocabulary. Disabled asks for ``none``;
     where the model has no ``none`` (thinking-only) the field is omitted and the server default holds."""
 
@@ -65,7 +65,7 @@ def _effort_extras(efforts: tuple[str, ...], overrides: dict[str, str] | None = 
         effort = "none" if disabled else re_.requested_effort(reasoning_config)
         if effort is None or (effort == "none" and "none" not in efforts):
             return {}, {}
-        clamped = re_.clamp_effort(effort, efforts, overrides)
+        clamped = re_.clamp_effort(effort, efforts)
         return ({}, {"reasoning_effort": clamped}) if clamped in efforts else ({}, {})
 
     return extras

@@ -28,9 +28,13 @@ against what the user types in the composer (regex metacharacters are escaped, s
 and `[URL]` can never match). They exist because the composer otherwise offers a skill only when the
 draft names it — useless to a user who writes in another language or never types the skill's name.
 Write the words the user would actually type, in their language, and keep them distinctive: a phrase
-made of common words fires on unrelated drafts. At most 12 per skill are honoured (the excess is
-dropped silently), and a phrase beginning with `/` is unreliable — the composer strips a `/token` that
-follows whitespace from the draft before matching, so it fires only when the draft *starts* with it.
+made of common words fires on unrelated drafts. **Arabic spelling is folded**, so the author does not
+have to guess the hamza: alef variants (`أ إ آ ٱ`) are matched as `ا`, and diacritics and the
+tatweel are ignored — `الأرقام` declared and `الارقام` typed are the same phrase. Deliberately *not*
+folded, because each merges two different words: `ة/ه`, `ى/ي`, `ؤ/ئ` — declare those the way they will
+be typed. At most 12 per skill are honoured (the excess is dropped silently), and a phrase beginning
+with `/` is unreliable — the composer strips a `/token` that follows whitespace from the draft before
+matching, so it fires only when the draft *starts* with it.
 
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 

@@ -4,6 +4,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 
 import {
   collidesWithWorkspace,
+  foldArabic,
   skillHit,
   skillPattern,
   skillTouchedInMessages,
@@ -21,11 +22,11 @@ const hits = (name: string, draft: string) => skillHit(skillPattern(name), draft
 // provider's REAL haystack (slash tokens stripped, then lowercased) — a helper that skipped the
 // sanitizer would pass a trigger the provider can never fire, e.g. one beginning with "/".
 const hitsTrigger = (phrase: string, draft: string) =>
-  skillHit(triggerPattern(phrase), stripSlashTokens(draft).toLowerCase())
+  skillHit(triggerPattern(phrase), foldArabic(stripSlashTokens(draft).toLowerCase()))
 
 // Exercises the provider's real haystack sanitizer, not a copy of it.
 const hitsAfterSanitize = (name: string, draft: string) =>
-  skillHit(skillPattern(name), stripSlashTokens(draft).toLowerCase())
+  skillHit(skillPattern(name), foldArabic(stripSlashTokens(draft).toLowerCase()))
 
 describe('skillPattern + skillHit', () => {
   it('matches the exact name as a completed whole word', () => {
@@ -242,5 +243,72 @@ describe('triggerPhrases — the payload contract, defended', () => {
 
   it('caps the list', () => {
     expect(triggerPhrases(Array.from({ length: 40 }, (_, i) => `p${i}`))).toHaveLength(12)
+  })
+})
+
+describe('foldArabic — the spelling variants Arabic writers type interchangeably', () => {
+  // Every draft below carries a trailing word on purpose: skillHit only fires on a COMPLETED word
+  // (at least one character after the match), which is the pill's real contract — the user is mid-draft,
+  // not typing a bare phrase. A fixture that ended AT the phrase would assert false for the wrong reason,
+  // and would have hidden a fold that wrongly merges two words.
+  // The reported case, from the owner's own machine: a skill declaring `تدقيق الأرقام` was offered when
+  // the draft carried the hamza and missed when it did not. Both spellings are the same phrase to a
+  // reader, so they must be the same phrase to the matcher.
+  it('folds every alef variant, in both directions', () => {
+    for (const variant of ['أ', 'إ', 'آ', 'ٱ']) {
+      expect(hitsTrigger(`تدقيق ${variant}رقام`, 'تدقيق ارقام الآن')).toBe(true)
+      expect(hitsTrigger('تدقيق ارقام', `تدقيق ${variant}رقام الآن`)).toBe(true)
+    }
+  })
+
+  it('drops diacritics and the tatweel', () => {
+    expect(hitsTrigger('كشف حساب', 'كَشْف حِسَاب الآن')).toBe(true)
+    expect(hitsTrigger('كشف حساب', 'كشــــــف حساب الآن')).toBe(true)
+  })
+
+  it('folds a decomposed spelling the same as a composed one', () => {
+    const composed = 'الأرقام'
+    const decomposed = composed.normalize('NFD')
+    expect(decomposed).not.toBe(composed)
+    expect(foldArabic(decomposed)).toBe(foldArabic(composed))
+    expect(hitsTrigger(composed, `${decomposed} الآن`)).toBe(true)
+  })
+
+  // The defect this test was written to catch: folding marks before composing turns the DECOMPOSED
+  // رؤية into روية, so the same words would merge in one encoding and stay apart in the other.
+  it('keeps a hamza-on-waw distinct in both encodings', () => {
+    const composed = 'رؤية'
+    const decomposed = composed.normalize('NFD')
+    expect(foldArabic(decomposed)).toBe(foldArabic(composed))
+    expect(hitsTrigger(composed, `${decomposed} الآن`)).toBe(true) // same word, either spelling
+    expect(hitsTrigger('روية', `${decomposed} الآن`)).toBe(false) // and never the other one
+    expect(hitsTrigger('روية', `${composed} الآن`)).toBe(false)
+  })
+
+  it('is idempotent, and leaves blank input alone', () => {
+    const once = foldArabic('الأرقامُ')
+    expect(foldArabic(once)).toBe(once)
+    expect(foldArabic('')).toBe('')
+    expect(foldArabic('   ')).toBe('   ')
+  })
+
+  // The exclusions asserted, not merely documented: an unbounded fold is exactly how this feature
+  // would start offering skills on unrelated prose, which is the failure the whole feature is at risk of.
+  it('does NOT fold what would merge two different words', () => {
+    expect(hitsTrigger('كتابة', 'كتابه الآن')).toBe(false) // ة / ه
+    expect(hitsTrigger('مصطفى', 'مصطفي الآن')).toBe(false) // ى / ي
+    expect(hitsTrigger('رؤية', 'روية الآن')).toBe(false) // ؤ / و
+    expect(hitsTrigger('مسؤول', 'مسوول الآن')).toBe(false) // ؤ / و
+  })
+
+  it('keeps the word boundaries the pattern was built on', () => {
+    expect(hitsTrigger('الأرقام', 'بالأرقام الآن')).toBe(false) // no prefix
+    expect(hitsTrigger('الأرقام', 'الأرقامية الآن')).toBe(false) // no suffix
+    expect(hitsTrigger('الأرقام', 'تدقيق الأرقام الآن')).toBe(true)
+  })
+
+  it('leaves Latin matching exactly as it was', () => {
+    expect(hitsTrigger('file pdf', 'SEND THE FILE PDF NOW')).toBe(true)
+    expect(hitsTrigger('file pdf', 'files pdf now')).toBe(false)
   })
 })

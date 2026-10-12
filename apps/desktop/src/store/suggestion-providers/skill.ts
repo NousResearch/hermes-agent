@@ -54,6 +54,38 @@ export function skillPattern(name: string): RegExp {
   return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'gu')
 }
 
+/** Fold the Arabic spelling variants people type interchangeably, so a declared phrase meets the way
+ *  the user actually writes rather than the one spelling its author happened to pick:
+ *
+ *    - alef variants `أ إ آ ٱ` (and their decomposed forms) become `ا`
+ *    - diacritics (`U+064B–U+065F`, `U+0670`) and the tatweel/kashida `U+0640` are removed
+ *
+ *  Folded on BOTH sides — the declared phrase and the draft. Folding one side only matches nothing,
+ *  which is why this is one function called twice rather than a rule stated in two places.
+ *
+ *  Deliberately NOT folded, each because it merges two DISTINCT words instead of two spellings of one:
+ *  `ة/ه` (كتابة/كتابه), `ى/ي` (مصطفى/مصطفي), `ؤ/ئ`→`و/ي` (رؤية/روية). Trading a miss for a wrong match
+ *  is worse than the miss, so a phrase containing them is declared the way it will be typed, and the
+ *  tests assert the exclusions as well as the inclusions — an unbounded fold is how this feature would
+ *  turn into noise.
+ *
+ *  `text.trim()` is not folded: trimming is the caller's job, and a fold that quietly ate leading
+ *  whitespace would hide a phrase the author wrote by accident. */
+export function foldArabic(text: string): string {
+  return (
+    text
+      // NFC FIRST, and not as decoration: a decomposed spelling writes ؤ as (و + U+0654) and أ as
+      // (ا + U+0654). Folding the marks off before composing would turn رؤية into روية — merging two
+      // different words in the decomposed spelling while keeping them apart in the composed one, i.e.
+      // the same input behaving differently by encoding. Composing first makes the two spellings fold
+      // to the same string, which is what the exclusions below depend on.
+      .normalize('NFC')
+      .replace(/[\u0622\u0623\u0625\u0671]/g, '\u0627')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/\u0640/g, '')
+  )
+}
+
 /** A declared trigger phrase, matched by the same whole-word rule as a name.
  *
  *  Why this exists: the provider's only signal used to be the skill's NAME, so a skill whose name the
@@ -61,9 +93,10 @@ export function skillPattern(name: string): RegExp {
  *  word that carries no intent — could never be offered. A declared phrase list is authored in the
  *  user's own words, so `ملف pdf` or `دمج ملفين` reaches the skill that `pdf-editing` does not.
  *
- *  Whitespace inside a phrase is flexible (`دمج   ملفين` still matches) and the phrase is escaped, so
- *  punctuation in a trigger is literal. An empty phrase yields a pattern that never matches rather
- *  than one that matches everywhere.
+ *  Whitespace inside a phrase is flexible (`دمج   ملفين` still matches), the phrase is escaped so
+ *  punctuation in a trigger is literal, and Arabic orthography is folded by `foldArabic` — `الأرقام`
+ *  declared and `الارقام` typed are the same phrase to a reader and to this matcher. An empty phrase
+ *  yields a pattern that never matches rather than one that matches everywhere.
  *
  *  Sibling matcher, and why this one is not it: `mcp.ts` has `keywordHit` for the MCP catalog's
  *  `suggest.keywords`, the same whole-word job. The two differ deliberately in one place — the
@@ -74,7 +107,7 @@ export function skillPattern(name: string): RegExp {
  *  a shared `wholeWordPattern(phrase, { flexibleWhitespace })` is the follow-up that would remove
  *  the duplication without changing either caller's semantics. */
 export function triggerPattern(phrase: string): RegExp {
-  const parts = phrase.trim().toLowerCase().split(/\s+/).filter(Boolean).map(escape)
+  const parts = foldArabic(phrase.trim().toLowerCase()).split(/\s+/).filter(Boolean).map(escape)
 
   if (parts.length === 0) {
     // A blank entry is not a wildcard. Built from a string, not written as a literal, because the
@@ -292,7 +325,10 @@ registerDraftProvider('skill', async ({ sessionId, text }) => {
     return []
   }
 
-  const haystack = stripSlashTokens(text).toLowerCase()
+  // Folding the haystack here (not only inside triggerPattern) is what makes the fold symmetric: the
+  // draft is folded once for every matcher that reads it. It is a no-op for Latin names and for any
+  // name that carries no Arabic, so the name match keeps its exact former behaviour.
+  const haystack = foldArabic(stripSlashTokens(text).toLowerCase())
   const cwd = $currentCwd.get()
   const skills = await loadIndex()
 

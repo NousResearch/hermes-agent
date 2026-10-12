@@ -412,9 +412,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     except ValueError as exc:
         return _err(rid, 4002, str(exc))
     composer_override_profile = None
-    if session_model_override and _flag(params, "follow_profile_config"):
+    if session_model_override:
         # Same provenance a mid-chat switch records (_apply_model_switch): without the OWNING profile's
-        # model beside the pick, resume reads the row as an unmarked Bot Chat and drops the pick (#123805).
+        # model beside the pick, resume reads the row as config-routed and drops the pick (#123805).
         with _profile_build_scope(profile_home):
             profile_model, profile_provider = _config_model_target()
         composer_override_profile = {"model": profile_model, "provider": profile_provider}
@@ -657,11 +657,11 @@ class _Resume:
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
         if follows_profile:
-            record.update(
-                follow_profile_config=True,
-                composer_override_profile=(model_config.get("composer_override_profile")
-                                           if overrides and overrides.get("model_override") else None),
-            )
+            record["follow_profile_config"] = True
+        if overrides is not None:
+            # The restored pick keeps its provenance so the per-turn sync drops it once config moves.
+            record["composer_override_profile"] = (
+                model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None)
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
@@ -1034,9 +1034,9 @@ def _resume_eager(ctx: _Resume) -> dict:
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
                 if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True
-                    session["composer_override_profile"] = (
-                        model_config.get("composer_override_profile")
-                        if stored_runtime_overrides.get("model_override") else None)
+                session["composer_override_profile"] = (
+                    model_config.get("composer_override_profile")
+                    if stored_runtime_overrides.get("model_override") else None)
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)

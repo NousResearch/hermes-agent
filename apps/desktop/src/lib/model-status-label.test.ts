@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  applySpeedPolicy,
+  composerServiceTier,
   currentPickerSelection,
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
-  modelVariantTag
+  modelVariantTag,
+  speedPolicyWord
 } from './model-status-label'
 
 describe('model-status-label', () => {
@@ -125,6 +128,56 @@ describe('model-status-label', () => {
     // Quant-only ids are unchanged: quant stays off the pill.
     expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
     expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
+  })
+
+  it('keeps the bounded speed policies (auto/cold) exact instead of collapsing them to normal (#132275)', () => {
+    // The backend parses 'auto' (fast window per user turn) and 'cold' (only a
+    // cold session's first turn) via parse_exact_service_tier. The composer
+    // used to fold them into 'normal', so a saved bounded policy mis-displayed
+    // as Standard and the next write destroyed it.
+    expect(composerServiceTier('auto')).toBe('auto')
+    expect(composerServiceTier('cold')).toBe('cold')
+    // Legacy aliases keep their canonical modes; unknown words read as normal.
+    expect(composerServiceTier('fast')).toBe('priority')
+    expect(composerServiceTier('priority')).toBe('priority')
+    expect(composerServiceTier('ultrafast')).toBe('ultrafast')
+    expect(composerServiceTier('default')).toBe('normal')
+    expect(composerServiceTier('flex')).toBe('normal')
+    expect(composerServiceTier('')).toBe('')
+  })
+
+  it('surfaces the saved policy word a surface should show, never the session fast window (#132275)', () => {
+    // 'priority' is the wire word an older session.info or legacy preset
+    // carries; 'fast' is what applySpeedPolicy/applyModelPreset stamp into the
+    // session store. Both are the POLICY fast — the boolean window state is
+    // never the policy.
+    expect(speedPolicyWord('priority')).toBe('fast')
+    expect(speedPolicyWord('fast')).toBe('fast')
+    expect(speedPolicyWord('auto')).toBe('auto')
+    expect(speedPolicyWord('cold')).toBe('cold')
+    expect(speedPolicyWord('ultrafast')).toBe('ultrafast')
+    expect(speedPolicyWord('')).toBe('normal')
+    expect(speedPolicyWord(undefined)).toBe('normal')
+  })
+
+  it('shows a bounded policy on the model pill even while its window is closed (#132275)', () => {
+    // fastMode (the window state) must not mask the saved policy word.
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: false, serviceTier: 'auto' })).toBe('GPT-5.5 · Auto')
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: false, serviceTier: 'cold' })).toBe('GPT-5.5 · Cold')
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe(
+      'GPT-5.5 · Ultrafast'
+    )
+  })
+
+  it('gates a remembered speed policy to the model route and downgrades to normal, never a silent swap (#132275)', () => {
+    expect(applySpeedPolicy('ultrafast', { fast: true, ultrafast: true })).toBe('ultrafast')
+    expect(applySpeedPolicy('ultrafast', { fast: true, ultrafast: false })).toBe('normal')
+    expect(applySpeedPolicy('priority', { fast: true, ultrafast: false })).toBe('fast')
+    // A remembered bounded policy rides the fast param, so it needs the model's fast.
+    expect(applySpeedPolicy('auto', { fast: true, ultrafast: false })).toBe('auto')
+    expect(applySpeedPolicy('cold', { fast: true, ultrafast: false })).toBe('cold')
+    expect(applySpeedPolicy('auto', { fast: false, ultrafast: false })).toBe('normal')
+    expect(applySpeedPolicy('normal', { fast: true, ultrafast: true })).toBe('normal')
   })
 
   describe('currentPickerSelection', () => {

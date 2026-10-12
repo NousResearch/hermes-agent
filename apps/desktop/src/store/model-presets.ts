@@ -30,6 +30,11 @@ export interface ModelPreset {
 export const modelPresetServiceTier = ({ fast, serviceTier }: ModelPreset): string | undefined =>
   serviceTier ?? (fast === undefined ? undefined : fast ? 'priority' : 'normal')
 
+/** The bounded policies (`/fast auto`, `/fast cold`): the fast window opens on
+ *  the backend's clock, so the composer/tile boolean `fast` stays off and only
+ *  the exact tier rides (#132275). */
+export const isBoundedSpeedPolicy = (tier: string | undefined): boolean => tier === 'auto' || tier === 'cold'
+
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 /** Stable `provider::model` key (matches the visibility-store format). */
@@ -75,6 +80,69 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
   persistString(STORAGE_KEY, JSON.stringify(next))
 }
 
+/** The confirmed preset for a failed write's rollback: the last value the chain
+ *  confirmed for the dimension. A bounded policy (auto/cold) rolls back with the
+ *  boolean fast OFF — the window opens on the backend's clock (#132275). */
+function confirmedPreset(dimension: 'effort' | 'speed', confirmedValue: string): ModelPreset {
+  if (dimension === 'effort') {
+    return { effort: confirmedValue }
+  }
+
+  return {
+    serviceTier: confirmedValue || 'normal',
+    fast: !!confirmedValue && confirmedValue !== 'normal' && !isBoundedSpeedPolicy(confirmedValue)
+  }
+}
+
+/** Roll one failed dimension back to its last confirmed value. A late failure
+ *  never undoes a newer edit: each store write only lands when the store still
+ *  holds the value this write was setting. */
+function rollbackFailedDimension(
+  dimension: 'effort' | 'speed',
+  err: unknown,
+  state: {
+    confirmedValue: string
+    effort: string | undefined
+    failMessage: string
+    isCurrent: boolean
+    onFailure?: (dimension: 'effort' | 'speed', confirmed: ModelPreset) => void
+    ownsPrimary: boolean
+    sessionId: null | string
+    tier: string | undefined
+  }
+): void {
+  const confirmed = confirmedPreset(dimension, state.confirmedValue)
+
+  state.onFailure?.(dimension, confirmed)
+
+  if (state.isCurrent) {
+    if (state.ownsPrimary) {
+      if (dimension === 'effort' && $currentReasoningEffort.get() === state.effort) {
+        setCurrentReasoningEffort(confirmed.effort ?? '')
+      } else if (dimension === 'speed' && $currentServiceTier.get() === state.tier) {
+        setCurrentFastMode(confirmed.fast ?? false)
+        setCurrentServiceTier(confirmed.serviceTier ?? '')
+      }
+    }
+
+    if (state.sessionId) {
+      sessionTileDelegate()?.updateSession(state.sessionId, tile => {
+        if (dimension === 'effort' && tile.reasoningEffort === state.effort) {
+          return { ...tile, reasoningEffort: confirmed.effort ?? '', reasoningEffortWire: '' }
+        }
+
+        if (dimension === 'speed' && tile.serviceTier === state.tier) {
+          return { ...tile, fast: confirmed.fast ?? false, serviceTier: confirmed.serviceTier ?? '' }
+        }
+
+        return tile
+      })
+    }
+  }
+
+  notifyError(err, state.failMessage)
+}
+
 /** Apply a model's preset to the composer, then push it to a live session.
  *  `undefined` skips that dimension; values are capability-gated upstream.
  *  Without a session the local draft still needs the preset, but must not call
@@ -97,7 +165,7 @@ export async function applyModelPreset(
 ): Promise<void> {
   const { effort } = preset
   const tier = modelPresetServiceTier(preset)
-  const fast = tier === undefined ? undefined : tier !== 'normal'
+  const fast = tier === undefined ? undefined : tier !== 'normal' && !isBoundedSpeedPolicy(tier)
   const primary = ctx.primary ?? true
   const oldOwner = $activeSessionId.get()
   const slice = $sessionStates.get()[ctx.sessionId ?? '']
@@ -181,41 +249,16 @@ export async function applyModelPreset(
 
         await write
       } catch (err) {
-        const confirmedValue = confirmedValues.get(writeKey(dimension)) ?? ''
-
-        const confirmed: ModelPreset =
-          dimension === 'effort'
-            ? { effort: confirmedValue }
-            : { serviceTier: confirmedValue || 'normal', fast: !!confirmedValue && confirmedValue !== 'normal' }
-
-        ctx.onFailure?.(dimension, confirmed)
-
-        if (ctx.isCurrent?.(dimension) ?? true) {
-          if (primary && $activeSessionId.get() === oldOwner) {
-            if (dimension === 'effort' && $currentReasoningEffort.get() === effort) {
-              setCurrentReasoningEffort(confirmed.effort ?? '')
-            } else if (dimension === 'speed' && $currentServiceTier.get() === tier) {
-              setCurrentFastMode(confirmed.fast ?? false)
-              setCurrentServiceTier(confirmed.serviceTier ?? '')
-            }
-          }
-
-          if (ctx.sessionId && (!primary || $activeSessionId.get() === oldOwner)) {
-            sessionTileDelegate()?.updateSession(ctx.sessionId, state => {
-              if (dimension === 'effort' && state.reasoningEffort === effort) {
-                return { ...state, reasoningEffort: confirmed.effort ?? '', reasoningEffortWire: '' }
-              }
-
-              if (dimension === 'speed' && state.serviceTier === tier) {
-                return { ...state, fast: confirmed.fast ?? false, serviceTier: confirmed.serviceTier ?? '' }
-              }
-
-              return state
-            })
-          }
-        }
-
-        notifyError(err, ctx.failMessage)
+        rollbackFailedDimension(dimension, err, {
+          confirmedValue: confirmedValues.get(writeKey(dimension)) ?? '',
+          effort,
+          failMessage: ctx.failMessage,
+          isCurrent: ctx.isCurrent?.(dimension) ?? true,
+          onFailure: ctx.onFailure,
+          ownsPrimary: primary && $activeSessionId.get() === oldOwner,
+          sessionId: ctx.sessionId && (!primary || $activeSessionId.get() === oldOwner) ? ctx.sessionId : null,
+          tier
+        })
       } finally {
         // Rollback must read the last confirmed value before the final writer
         // releases the chain. Draft/skipped writes never enter these maps.

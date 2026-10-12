@@ -9,6 +9,7 @@ import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
+import { enModelOptions } from './en_model_options'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
@@ -1621,6 +1622,8 @@ export const en: Translations = {
       reasoningOff: 'Off',
       speed: 'Speed',
       speedStandard: 'Standard',
+      speedAuto: 'Auto',
+      speedCold: 'Cold',
       defaultsFailed: 'Failed to save model defaults',
       loadFailed: 'Could not load models',
       restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
@@ -4143,25 +4146,7 @@ export const en: Translations = {
     paneControls: 'Pane controls',
     appControls: 'App controls',
     modelMenu: enModelMenu,
-    modelOptions: {
-      noOptions: 'No options for this model',
-      options: 'Options',
-      thinking: 'Thinking',
-      fast: 'Fast',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: 'Use standard speed',
-      effort: 'Effort',
-      minimal: 'Minimal',
-      low: 'Low',
-      medium: 'Medium',
-      high: 'High',
-      xhigh: 'Extra High',
-      max: 'Max',
-      ultra: 'Ultra',
-      sendsOnRoute: (level: string) => `sends ${level} on this route`,
-      updateFailed: 'Model option update failed',
-      fastFailed: 'Fast mode update failed'
-    },
+    modelOptions: enModelOptions,
     gatewayMenu: {
       gateway: 'Gateway',
       connected: 'Connected',

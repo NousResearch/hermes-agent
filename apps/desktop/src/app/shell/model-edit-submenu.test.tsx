@@ -29,7 +29,7 @@ function renderSubmenu(opts: {
   fastControl: FastControl
   isActive?: boolean
   onSelectModel?: (model: string) => void
-  onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  onSetOptions: (patch: { effort?: string; fast?: boolean; serviceTier?: string }) => void
   reasoning: boolean
 }) {
   return render(
@@ -60,13 +60,15 @@ function renderSubmenu(opts: {
 // ever writes directly again, picking an effort for a kanban card would reach
 // over and change the user's live chat.
 describe('ModelEditSubmenu reports edits without performing them', () => {
-  it('param fast: reports the toggle', () => {
+  it('param fast: reports the speed-policy pick, never a fast/normal toggle (#132275)', () => {
     const onSetOptions = vi.fn()
     renderSubmenu({ fastControl: { kind: 'param', on: true }, onSetOptions, reasoning: false })
 
-    fireEvent.click(screen.getByRole('switch'))
+    // A param route picks the exact POLICY through a radio group: a switch
+    // could only write fast/normal and destroyed a saved bounded policy.
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Auto' }))
 
-    expect(onSetOptions).toHaveBeenCalledWith({ fast: false })
+    expect(onSetOptions).toHaveBeenCalledWith({ serviceTier: 'auto' })
   })
 
   it('thinking: toggling off reports the none level', () => {

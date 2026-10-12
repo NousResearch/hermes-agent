@@ -15,6 +15,7 @@ import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { ModelMenuTranslations } from './types_model_menu'
+import type { ModelOptionsTranslations } from './types_model_options'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
@@ -1365,6 +1366,8 @@ export interface Translations extends NoticeTranslations {
       reasoningOff: string
       speed: string
       speedStandard: string
+      speedAuto: string
+      speedCold: string
       defaultsFailed: string
       loadFailed: string
       restartRequired: string
@@ -3579,26 +3582,7 @@ export interface Translations extends NoticeTranslations {
     paneControls: string
     appControls: string
     modelMenu: ModelMenuTranslations
-    modelOptions: {
-      noOptions: string
-      options: string
-      thinking: string
-      fast: string
-      ultrafast: string
-      useStandardSpeed: string
-      effort: string
-      minimal: string
-      low: string
-      medium: string
-      high: string
-      xhigh: string
-      max: string
-      ultra: string
-      /** The CLI's `/reasoning` clamp note, e.g. "sends Max on this route". */
-      sendsOnRoute: (level: string) => string
-      updateFailed: string
-      fastFailed: string
-    }
+    modelOptions: ModelOptionsTranslations
     gatewayMenu: {
       gateway: string
       connected: string

@@ -6,6 +6,7 @@ import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
+import { deModelOptions } from './de_model_options'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
@@ -1980,6 +1981,8 @@ export const deOverrides = {
       reasoningOff: 'Aus',
       speed: 'Geschwindigkeit',
       speedStandard: 'Standard',
+      speedAuto: 'Automatisch',
+      speedCold: 'Kalt',
       defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
       loadFailed: 'Modelle konnten nicht geladen werden',
       restartRequired:
@@ -4592,25 +4595,7 @@ export const deOverrides = {
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
     modelMenu: deModelMenu,
-    modelOptions: {
-      noOptions: 'Keine Optionen für dieses Modell',
-      options: 'Optionen',
-      thinking: 'Denken',
-      fast: 'Schnell',
-      ultrafast: 'Ultrafast',
-      useStandardSpeed: 'Standardgeschwindigkeit verwenden',
-      effort: 'Aufwand',
-      minimal: 'Minimal',
-      low: 'Niedrig',
-      medium: 'Mittel',
-      high: 'Hoch',
-      xhigh: 'Extra hoch',
-      max: 'Max',
-      ultra: 'Ultra',
-      sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
-      updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
-    },
+    modelOptions: deModelOptions,
     gatewayMenu: {
       gateway: 'Gateway',
       connected: 'Verbunden',

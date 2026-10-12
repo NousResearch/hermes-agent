@@ -37,7 +37,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { applySpeedPolicy, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -433,15 +433,7 @@ export function ModelCatalogMenu({
     }
 
     const rememberedTier = preset.serviceTier ?? (preset.fast ? 'priority' : 'normal')
-
-    const tier =
-      rememberedTier === 'ultrafast'
-        ? caps?.ultrafast
-          ? 'ultrafast'
-          : 'normal'
-        : rememberedTier === 'priority' && caps?.fast
-          ? 'priority'
-          : 'normal'
+    const tier = applySpeedPolicy(rememberedTier, { fast: caps?.fast ?? false, ultrafast: caps?.ultrafast ?? false })
 
     controller.applyPreset(
       {
@@ -986,6 +978,25 @@ interface ModelFamilyRowProps {
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
  *  differently. */
+/** The speed chip a family row shows for the row's exact tier: the bounded
+ *  policies (auto/cold) are a saved policy even while their window is closed,
+ *  and ultrafast outranks the generic fast word (#132275). */
+function familyRowSpeedChip(
+  tier: string | undefined,
+  fastOn: boolean,
+  words: { auto: string; cold: string; fast: string; ultrafast: string }
+): string | null {
+  if (tier === 'ultrafast') {
+    return words.ultrafast
+  }
+
+  if (tier === 'auto' || tier === 'cold') {
+    return words[tier]
+  }
+
+  return fastOn ? words.fast : null
+}
+
 function ModelFamilyRow({
   controller,
   current,
@@ -1051,11 +1062,16 @@ function ModelFamilyRow({
   // be the same chip on every row, so it shows only on the active model and
   // on a row whose remembered preset chose one.
   const settings = [
-    fastControl.kind !== 'none' && fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false)
-      ? effTier === 'ultrafast'
-        ? t.shell.modelOptions.ultrafast
-        : copy.fast
-      : null,
+    // Show the exact POLICY, not just "Fast": a bounded auto/cold tier is a
+    // saved policy even while its window is closed (#132275).
+    fastControl.kind === 'none'
+      ? null
+      : familyRowSpeedChip(effTier, fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false), {
+          auto: t.shell.modelOptions.auto,
+          cold: t.shell.modelOptions.cold,
+          fast: copy.fast,
+          ultrafast: t.shell.modelOptions.ultrafast
+        }),
     (caps?.reasoning ?? true) && (isCurrent ? !current.effortPending : Boolean(effEffort))
       ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
       : null

@@ -68,4 +68,50 @@ describe('withoutCoveredAssistantPrefix', () => {
     expect(remaining).toHaveLength(1)
     expect(remaining[0].parts).toEqual([assistantTextPart('two')])
   })
+
+  // Field capture (2026-10-12): a turn that streamed while the pane was away
+  // lost the second tool of a parallel pair to the frame watermarks — the live
+  // bubbles held `call_one … call_three` while the durable fold kept
+  // `call_one, call_two … call_three`. Requiring an every-position match
+  // stalled the walk on `call_two` and left all three covered narrations on
+  // screen beside the fold that already carried them.
+  it('folds past a stored tool occurrence the live window never rendered', () => {
+    const call = (tool_id: string) => upsertToolPart([], { name: 'terminal', tool_id }, 'complete', 2)[0]
+
+    const durable = [
+      assistant([
+        assistantTextPart('lead'),
+        call('call_one'),
+        call('call_two'),
+        assistantTextPart('mid'),
+        call('call_three'),
+        assistantTextPart('tail')
+      ])
+    ]
+
+    const local = [
+      assistant([assistantTextPart('lead')], 'live-lead'),
+      assistant([call('call_one'), assistantTextPart('mid')], 'live-mid'),
+      assistant([call('call_three'), assistantTextPart('tail')], 'live-tail')
+    ]
+
+    expect(withoutCoveredAssistantPrefix(durable, local)).toEqual([])
+  })
+
+  it('never skips stored text while aligning the run', () => {
+    const call = (tool_id: string) => upsertToolPart([], { name: 'terminal', tool_id }, 'complete', 2)[0]
+
+    const durable = [
+      assistant([
+        assistantTextPart('lead'),
+        assistantTextPart('prose the run never streamed'),
+        call('call_one'),
+        assistantTextPart('tail')
+      ])
+    ]
+
+    const local = [assistant([assistantTextPart('lead'), call('call_one'), assistantTextPart('tail')])]
+
+    expect(withoutCoveredAssistantPrefix(durable, local)).toBe(local)
+  })
 })

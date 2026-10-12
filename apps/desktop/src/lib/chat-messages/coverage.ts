@@ -57,6 +57,28 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
         continue
       }
 
+      // The durable fold also carries tool occurrences the live window never
+      // rendered — a turn that streamed while the pane was away can lose the
+      // second tool of a parallel pair to the frame watermarks, while the
+      // stored rows keep it. Stored TOOL parts between matched occurrences
+      // are coverage, not identity: skip them. Stored TEXT is not skippable —
+      // that would let a later equal paragraph stand in for prose the run
+      // never streamed — and the anchor rule below still demands at least one
+      // matched tool before anything folds.
+      for (;;) {
+        const stored = parts[cursor]
+
+        if (!stored || stored.type !== 'tool-call') {
+          break
+        }
+
+        if (part.type === 'tool-call' && stored.toolCallId === part.toolCallId) {
+          break
+        }
+
+        cursor += 1
+      }
+
       if (!parts[cursor] || !sameOccurrencePart(parts[cursor], part)) {
         break
       }

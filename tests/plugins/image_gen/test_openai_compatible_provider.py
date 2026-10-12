@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from threading import TIMEOUT_MAX
 
 import pytest
 import requests
@@ -179,9 +180,21 @@ class TestOpenAICompatibleImageProvider:
             ),
         ],
     )
-    def test_endpoint_joining(self, base_url, expected):
-        module = _load_plugin_module()
-        assert module._endpoint(base_url) == expected
+    def test_endpoint_joining(self, monkeypatch, configured_home, base_url, expected):
+        from hermes_cli.config import atomic_config_write, load_config
+
+        config = load_config()
+        config["image_gen"]["openai_compatible"]["base_url"] = base_url
+        atomic_config_write(configured_home / "config.yaml", config)
+        seen = []
+
+        def post(url, **kwargs):
+            seen.append(url)
+            return _Response({"data": [{"b64_json": base64.b64encode(b"image").decode()}]})
+
+        monkeypatch.setattr(requests, "post", post)
+        assert _load_plugin_module().OpenAICompatibleImageProvider().generate("cat")["success"] is True
+        assert seen == [expected]
 
     @pytest.mark.parametrize(
         "base_url",
@@ -194,10 +207,15 @@ class TestOpenAICompatibleImageProvider:
             "https://example.test/v1#fragment",
         ],
     )
-    def test_endpoint_rejects_invalid_or_credentialed_urls(self, base_url):
-        module = _load_plugin_module()
-        with pytest.raises(ValueError):
-            module._endpoint(base_url)
+    def test_endpoint_rejects_invalid_or_credentialed_urls(self, monkeypatch, configured_home, base_url):
+        from hermes_cli.config import atomic_config_write, load_config
+
+        config = load_config()
+        config["image_gen"]["openai_compatible"]["base_url"] = base_url
+        atomic_config_write(configured_home / "config.yaml", config)
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("invalid URL must not be requested"))
+        result = _load_plugin_module().OpenAICompatibleImageProvider().generate("cat")
+        assert result["error_type"] == "invalid_config"
 
     def test_payload_omits_response_format_unless_configured(
         self, monkeypatch, configured_home
@@ -220,12 +238,14 @@ class TestOpenAICompatibleImageProvider:
         assert result["success"] is True
         assert seen[-1]["response_format"] == "b64_json"
 
-    def test_reserved_params_fail_closed(self, monkeypatch, configured_home):
+    @pytest.mark.parametrize("reserved", ["model", "prompt", "size", "n", "response_format"])
+    @pytest.mark.parametrize("quoted", [True, False])
+    def test_reserved_params_fail_closed(self, monkeypatch, configured_home, reserved, quoted):
         config_path = configured_home / "config.yaml"
         config_path.write_text(
             config_path.read_text()
             + "    params:\n"
-            + "      prompt: attacker-controlled replacement\n"
+            + f"      {repr(reserved) if quoted else reserved}: attacker-controlled replacement\n"
         )
         module = _load_plugin_module()
         monkeypatch.setattr(
@@ -237,11 +257,28 @@ class TestOpenAICompatibleImageProvider:
         result = module.OpenAICompatibleImageProvider().generate("real prompt", "square")
         assert result["success"] is False
         assert result["error_type"] == "invalid_config"
-        assert "prompt" in result["error"]
+        assert reserved in result["error"]
 
-    def test_multiple_output_count_is_rejected(self, monkeypatch, configured_home):
+    @pytest.mark.parametrize("field,value", [
+        ("n", "true"), ("n", "1.9"), ("n", ".inf"), ("n", ".nan"),
+        ("n", "0"), ("n", "-1"), ("n", "2"), ("n", "null"), ("n", "1.0"),
+        ("n", "false"), ("n", "[]"),
+        ("'n'", "true"), ("'n'", "1.9"), ("'n'", ".inf"),
+        ("n", "1" + "0" * 400), ("n", "'1.00000000000000001'"),
+        ("timeout", "true"), ("timeout", ".nan"), ("timeout", ".inf"),
+        ("timeout", "-.inf"), ("timeout", "0"), ("timeout", "-0.1"),
+        ("timeout", "null"), ("timeout", "1" + "0" * 400),
+        ("timeout", "'1e309'"), ("timeout", "'1e-999'"),
+        ("timeout", "1.0e100"), ("timeout", str(TIMEOUT_MAX + 1)), ("timeout", "[]"),
+    ])
+    @pytest.mark.parametrize("has_credential", [True, False])
+    def test_invalid_numeric_config_fails_before_network(
+        self, monkeypatch, configured_home, field, value, has_credential
+    ):
+        if not has_credential:
+            monkeypatch.delenv("OPENAI_COMPATIBLE_IMAGE_API_KEY")
         config_path = configured_home / "config.yaml"
-        config_path.write_text(config_path.read_text() + "    n: 2\n")
+        config_path.write_text(config_path.read_text() + f"    {field}: {value}\n")
         module = _load_plugin_module()
         monkeypatch.setattr(
             module.requests,
@@ -252,7 +289,30 @@ class TestOpenAICompatibleImageProvider:
         result = module.OpenAICompatibleImageProvider().generate("cat", "square")
         assert result["success"] is False
         assert result["error_type"] == "invalid_config"
-        assert "n must be 1" in result["error"]
+        assert field.strip("'") in result["error"]
+
+    @pytest.mark.parametrize("timeout,count", [(0.001, 1), (600, 1), ("300", "1"), (TIMEOUT_MAX, 1)])
+    def test_valid_numeric_config_is_sent_unchanged(
+        self, monkeypatch, configured_home, timeout, count
+    ):
+        from utils import fast_safe_load
+
+        config_path = configured_home / "config.yaml"
+        config = fast_safe_load(config_path.read_text())
+        config["image_gen"]["openai_compatible"].update(timeout=timeout, n=count)
+        from hermes_cli.config import atomic_config_write
+        atomic_config_write(config_path, config)
+        seen = {}
+
+        def post(url, **kwargs):
+            seen.update(kwargs)
+            return _Response({"data": [{"b64_json": base64.b64encode(b"image").decode()}]})
+
+        monkeypatch.setattr(requests, "post", post)
+        result = _load_plugin_module().OpenAICompatibleImageProvider().generate("cat")
+        assert result["success"] is True
+        assert seen["timeout"] == float(timeout)
+        assert seen["json"]["n"] == 1
 
     def test_url_output_is_cached(self, monkeypatch, configured_home, tmp_path):
         module = _load_plugin_module()
@@ -279,10 +339,12 @@ class TestOpenAICompatibleImageProvider:
         assert seen["url"] == "https://cdn.example.test/temporary.png"
         assert "/" not in seen["prefix"]
 
-    def test_unsupported_edit_is_rejected(self, configured_home):
+    @pytest.mark.parametrize("sources", [{"image_url": "cat.png"}, {"reference_image_urls": ["cat.png"]}])
+    def test_unsupported_edit_is_rejected(self, monkeypatch, configured_home, sources):
         module = _load_plugin_module()
+        monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("edit must not reach the network"))
         result = module.OpenAICompatibleImageProvider().generate(
-            "edit cat", "square", image_url="/tmp/cat.png"
+            "edit cat", "square", **sources
         )
         assert result["error_type"] == "modality_unsupported"
 
@@ -434,12 +496,21 @@ class TestOpenAICompatibleImageProvider:
         finally:
             secret_scope.set_multiplex_active(False)
 
-    def test_setup_schema_uses_fixed_profile_secret(self, configured_home):
-        module = _load_plugin_module()
-        schema = module.OpenAICompatibleImageProvider().get_setup_schema()
-        assert schema["env_vars"] == [
-            {
-                "key": "OPENAI_COMPATIBLE_IMAGE_API_KEY",
-                "prompt": "OpenAI-compatible image endpoint bearer token",
-            }
-        ]
+    def test_setup_credential_is_used_for_generation(self, monkeypatch, configured_home):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        provider = _load_plugin_module().OpenAICompatibleImageProvider()
+        credentials = {field["key"]: "setup-secret" for field in provider.get_setup_schema()["env_vars"]}
+        seen = {}
+
+        def post(url, **kwargs):
+            seen.update(kwargs)
+            return _Response({"data": [{"b64_json": base64.b64encode(b"image").decode()}]})
+
+        monkeypatch.setattr(requests, "post", post)
+        token = set_secret_scope(credentials)
+        try:
+            assert provider.generate("cat")["success"] is True
+            assert seen["headers"]["Authorization"] == "Bearer setup-secret"
+        finally:
+            reset_secret_scope(token)

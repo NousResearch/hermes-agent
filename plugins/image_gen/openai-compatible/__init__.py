@@ -28,8 +28,10 @@ The endpoint must implement ``POST /v1/images/generations`` and return either a
 from __future__ import annotations
 
 import logging
+import math
 import re
-from typing import Any, Dict, List, Optional
+from threading import TIMEOUT_MAX
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import requests
@@ -37,12 +39,13 @@ import requests
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
-    error_response,
     resolve_aspect_ratio,
     save_b64_image,
     save_url_image,
     success_response,
 )
+
+from plugins.image_gen._common import error_factory, load_image_gen_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,25 +60,8 @@ _DEFAULT_SIZES = {
 }
 
 
-def _load_image_gen_config() -> Dict[str, Any]:
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-        image_gen = config.get("image_gen") if isinstance(config, dict) else None
-        return image_gen if isinstance(image_gen, dict) else {}
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("could not load image_gen config: %s", exc)
-        return {}
-
-
-def _load_config() -> Dict[str, Any]:
-    compatible = _load_image_gen_config().get("openai_compatible")
-    return compatible if isinstance(compatible, dict) else {}
-
-
 def _configured_model() -> str:
-    image_gen = _load_image_gen_config()
+    image_gen = load_image_gen_config()
     compatible = image_gen.get("openai_compatible")
     local_model = compatible.get("model") if isinstance(compatible, dict) else None
     if isinstance(local_model, str) and local_model.strip():
@@ -117,6 +103,48 @@ def _safe_cache_component(value: str) -> str:
     return (clean or "image")[:80]
 
 
+def _request_timeout(config: dict[str, Any]) -> float:
+    """Validate before coercion: bools are ints, and int(1.9) silently truncates."""
+    raw_timeout = config.get("timeout", DEFAULT_TIMEOUT)
+    try:
+        if isinstance(raw_timeout, bool):
+            raise ValueError
+        timeout = float(raw_timeout)
+        if not math.isfinite(timeout) or not 0 < timeout <= TIMEOUT_MAX:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"timeout must be a finite positive number <= {TIMEOUT_MAX}") from exc
+
+    # Hermes' YAML 1.1 loader resolves an unquoted `n` key to False.
+    count = config.get("n", config.get(False, 1))
+    if not ((type(count) is int and count == 1) or (isinstance(count, str) and count.strip() == "1")):
+        raise ValueError("image_gen.openai_compatible.n must be 1 because Hermes returns one image")
+    return timeout
+
+
+def _request_payload(config: dict[str, Any], model: str, prompt: str, aspect: str) -> dict[str, Any]:
+    params = config.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("image_gen.openai_compatible.params must be a mapping")
+    params = dict(params or {})
+    conflicts = _RESERVED_PARAMS.intersection(params)
+    if False in params:  # YAML 1.1 spelling of an unquoted `n` key.
+        conflicts.add("n")
+    if conflicts:
+        raise ValueError("image_gen.openai_compatible.params cannot override reserved fields: "
+                         + ", ".join(sorted(conflicts)))
+    sizes = config.get("size_by_aspect")
+    size = sizes.get(aspect) if isinstance(sizes, dict) else None
+    if not isinstance(size, str) or not size.strip():
+        configured_size = config.get("size")
+        size = configured_size if isinstance(configured_size, str) else _DEFAULT_SIZES[aspect]
+    payload = {"model": model, "prompt": prompt, "size": size.strip(), "n": 1, **params}
+    response_format = config.get("response_format")
+    if isinstance(response_format, str) and response_format.strip():
+        payload["response_format"] = response_format.strip()
+    return payload
+
+
 class OpenAICompatibleImageProvider(ImageGenProvider):
     """User-selected OpenAI Images-compatible endpoint."""
 
@@ -126,16 +154,16 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
 
     @property
     def display_name(self) -> str:
-        config = _load_config()
+        config = load_image_gen_config("openai_compatible")
         value = config.get("display_name")
         return value.strip() if isinstance(value, str) and value.strip() else "OpenAI-compatible"
 
     def is_available(self) -> bool:
-        config = _load_config()
+        config = load_image_gen_config("openai_compatible")
         base_url = config.get("base_url")
-        return bool(isinstance(base_url, str) and base_url.strip() and _read_api_key())
+        return bool(isinstance(base_url, str) and base_url.strip() and _configured_model() and _read_api_key())
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         model = _configured_model()
         if model:
             return [{"id": model, "display": model}]
@@ -145,11 +173,15 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
         models = self.list_models()
         return models[0]["id"] if models else None
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": self.display_name,
             "badge": "custom",
             "tag": "User-configured OpenAI /v1/images/generations endpoint",
+            "config_fields": [
+                {"key": "image_gen.openai_compatible.base_url", "prompt": "Image endpoint base URL"},
+                {"key": "image_gen.openai_compatible.model", "prompt": "Image model ID"},
+            ],
             "env_vars": [
                 {
                     "key": API_KEY_ENV,
@@ -158,7 +190,7 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
             ],
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["text"], "max_reference_images": 0}
 
     def generate(
@@ -167,22 +199,13 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         *,
         image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
+        reference_image_urls: Optional[list[str]] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
-        config = _load_config()
-
-        def fail(message: str, error_type: str, *, model: str = "") -> Dict[str, Any]:
-            return error_response(
-                error=message,
-                error_type=error_type,
-                provider=self.name,
-                model=model,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
+        config = load_image_gen_config("openai_compatible")
+        fail = error_factory(self.name, aspect, prompt=prompt)
 
         if not prompt:
             return fail("Prompt is required and must be a non-empty string", "invalid_argument")
@@ -200,10 +223,6 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
         except ValueError as exc:
             return fail(str(exc), "invalid_config")
 
-        api_key = _read_api_key()
-        if not api_key:
-            return fail(f"{API_KEY_ENV} is not set", "auth_required")
-
         # This provider documents its scoped model as taking precedence over
         # image_gen.model. The dispatcher passes the global model in kwargs,
         # so resolve configured provider scope before using that fallback.
@@ -217,56 +236,15 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
                 "invalid_config",
             )
 
-        params = config.get("params")
-        if params is not None and not isinstance(params, dict):
-            return fail("image_gen.openai_compatible.params must be a mapping", "invalid_config", model=model)
-        params = dict(params or {})
-        conflicts = sorted(_RESERVED_PARAMS.intersection(params))
-        if conflicts:
-            return fail(
-                "image_gen.openai_compatible.params cannot override reserved fields: "
-                + ", ".join(conflicts),
-                "invalid_config",
-                model=model,
-            )
-
         try:
-            timeout = float(config.get("timeout", DEFAULT_TIMEOUT))
-            if timeout <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return fail("timeout must be a positive number", "invalid_config", model=model)
-        try:
-            count = int(config.get("n", 1))
-        except (TypeError, ValueError):
-            return fail(
-                "image_gen.openai_compatible.n must be 1 because Hermes returns one image",
-                "invalid_config",
-                model=model,
-            )
-        if count != 1:
-            return fail(
-                "image_gen.openai_compatible.n must be 1 because Hermes returns one image",
-                "invalid_config",
-                model=model,
-            )
+            timeout = _request_timeout(config)
+            payload = _request_payload(config, model, prompt, aspect)
+        except ValueError as exc:
+            return fail(str(exc), "invalid_config", model=model)
 
-        sizes = config.get("size_by_aspect")
-        size = sizes.get(aspect) if isinstance(sizes, dict) else None
-        if not isinstance(size, str) or not size.strip():
-            configured_size = config.get("size")
-            size = configured_size if isinstance(configured_size, str) else _DEFAULT_SIZES[aspect]
-
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "size": size.strip(),
-            "n": count,
-            **params,
-        }
-        response_format = config.get("response_format")
-        if isinstance(response_format, str) and response_format.strip():
-            payload["response_format"] = response_format.strip()
+        api_key = _read_api_key()
+        if not api_key:
+            return fail(f"{API_KEY_ENV} is not set", "auth_required")
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -305,7 +283,7 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
                     body = response.json()
                     error = body.get("error") if isinstance(body, dict) else None
                     detail = error.get("message", "") if isinstance(error, dict) else str(error or "")
-                except Exception:  # noqa: BLE001
+                except ValueError:
                     detail = response.text[:300]
             return fail(
                 f"Image generation failed ({status}): {detail or str(exc)}",
@@ -315,7 +293,7 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
 
         try:
             result = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             return fail(f"Image endpoint returned invalid JSON: {exc}", "invalid_response", model=model)
 
         data = result.get("data") if isinstance(result, dict) else None
@@ -328,7 +306,8 @@ class OpenAICompatibleImageProvider(ImageGenProvider):
                 image = save_url_image(first["url"], prefix=prefix)
             else:
                 return fail("Image endpoint returned no image data", "empty_response", model=model)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            logger.debug("Could not cache generated image", exc_info=True)
             return fail(f"Could not cache generated image: {exc}", "io_error", model=model)
 
         return success_response(

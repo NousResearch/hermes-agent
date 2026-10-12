@@ -14332,7 +14332,7 @@ def test_interrupt_error_after_tts_stop_still_resumes_wake(monkeypatch):
             {"id": "host", "method": "session.interrupt", "params": {"session_id": "sid"}},
             transport=owner,
         )
-        assert failed["error"]["code"] == 5019
+        assert failed["result"] == {"status": "interrupted", "turn_isolation": True}
         assert state["paused"] is False
         assert state["resumed"] == [owner, owner]
     finally:

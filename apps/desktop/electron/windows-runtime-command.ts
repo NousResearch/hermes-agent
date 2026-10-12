@@ -16,7 +16,10 @@ export function windowsRuntimeProgramArgv(runtime: WindowsRuntime, program: stri
   const entry = /runpy\.run_module\((['"])hermes_cli\.main\1,\s*run_name=(['"])__main__\2,\s*alter_sys=True\)\s*$/
 
   if (codeIndex >= 1 && codeIndex === command.length - 2 && entry.test(command[codeIndex + 1])) {
-    command[codeIndex + 1] = command[codeIndex + 1].replace(entry, () => `exec(${JSON.stringify(program)})`)
+    // PowerShell 5.1 strips embedded double quotes when forming native argv.
+    // ASCII hex carries the program losslessly without changing the launcher bootstrap.
+    const encodedProgram = Buffer.from(program, 'utf8').toString('hex')
+    command[codeIndex + 1] = command[codeIndex + 1].replace(entry, () => `exec(bytes.fromhex('${encodedProgram}').decode('utf-8'))`)
 
     return command
   }

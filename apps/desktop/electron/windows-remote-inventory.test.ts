@@ -34,6 +34,21 @@ test('the canonical runtime prefix is actually executed, including bootstrap and
   assert.throws(() => windowsRuntimeProgramArgv({ ...runtime, runtimeCommand: [python, '-c', 'print(0)'] }, 'pass'), (e: any) => e.kind === 'update-required')
 })
 
+test('injected Python program survives the observed PowerShell 5.1 double-quote loss', () => {
+  const program = `import json; print(json.dumps({'marker': '用户/quote"path'}, ensure_ascii=False))`
+  const argv = windowsRuntimeProgramArgv(selected, program)
+  const tail = argv.at(-1)!
+
+  assert.match(tail, /exec\(bytes\.fromhex\('[0-9a-f]+'\)\.decode\('utf-8'\)\)$/)
+  assert.equal(tail.startsWith(bootstrap.split('runpy.run_module')[0]), true)
+  // The transport failure was observed on real Windows by Polaris; this is its loss-channel regression,
+  // not a claim to execute PowerShell 5.1 on a Mac.
+  const result = spawnSync(argv[0], [...argv.slice(1, -1), tail.replace(/"/g, '')], { encoding: 'utf8' })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), { marker: '用户/quote"path' })
+})
+
 test('PATH bin launcher is resolved independently of its absent sibling Python, after the marker gate', async () => {
   const calls: string[] = []
 

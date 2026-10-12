@@ -481,7 +481,7 @@ class GatewayBusySessionMixin:
             f"{text}"
         )
 
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
+    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included)."""
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
@@ -560,7 +560,7 @@ class GatewayBusySessionMixin:
                     if _adapter and _reply:
                         _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
                         if _text:
-                            await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
+                            await self._send_busy_reply(event, _adapter, _text)
                     return True
         except Exception:
             logger.warning(

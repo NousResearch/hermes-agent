@@ -266,6 +266,20 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     return [node, "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 
 
+def _tui_argv_or_exit(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
+    """``_make_tui_argv()``, or the reason plus the CLI fallback when the TUI cannot be prepared."""
+    from pm import InstallError
+    try:
+        return _make_tui_argv(tui_dir, tui_dev)
+    except InstallError as exc:  # like the dashboard PTY route: PM's remedy names the fix
+        reason = str(exc)
+    except subprocess.CalledProcessError as exc:  # dependency install or build step; its output is above
+        reason = f"a build step failed with exit status {exc.returncode} (output above)"
+    print(f"Hermes could not prepare the TUI: {reason}", file=sys.stderr)
+    print("To keep working now, run `hermes --cli`.", file=sys.stderr)
+    sys.exit(1)
+
+
 def _split_comma_items(items, *, split_non_str: bool = True) -> list[str]:
     """Flatten str / list (comma-separated) input into stripped non-empty parts."""
     raw_items = [items] if isinstance(items, str) else items
@@ -493,10 +507,8 @@ def _launch_tui(
         apply_terminal_config_to_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
-    active_session_fd, active_session_file = tempfile.mkstemp(
-        prefix="hermes-tui-active-session-", suffix=".json")
-    os.close(active_session_fd)
-    env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+    # Before the temp file and the --worktree exist: a refused or failed preparation leaves neither behind.
+    argv, cwd = _tui_argv_or_exit(tui_dir, tui_dev)
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
     if native_mode is None:
         try:
@@ -563,7 +575,10 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    active_session_fd, active_session_file = tempfile.mkstemp(
+        prefix="hermes-tui-active-session-", suffix=".json")
+    os.close(active_session_fd)
+    env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     code: Optional[int] = None
     try:
         try:

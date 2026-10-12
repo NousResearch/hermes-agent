@@ -1,7 +1,9 @@
 from argparse import Namespace
 import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 
 import pytest
 from hermes_cli import main_tui_launch
@@ -215,3 +217,60 @@ def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypat
     with pytest.raises(SystemExit):
         main_mod._launch_tui(model="stub-model")
     assert spawned and spawned[-1][flag] == "1" and spawned[-1]["HERMES_MODEL"] == "stub-model"
+
+
+@pytest.fixture
+def tui_scratch_tmp(monkeypatch, tmp_path):
+    """mkstemp lands here, so a test sees an active-session file a launch leaves behind. TMPDIR alone is
+    not enough: conftest caches tempfile.tempdir."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    return scratch
+
+
+@pytest.mark.parametrize("worktree", [False, True])
+def test_launch_tui_reports_pm_refusing_node_and_leaves_nothing_behind(
+        monkeypatch, main_mod, tmp_path, tui_scratch_tmp, capsys, worktree):
+    """Lazy installs are off (conftest) and PM's store is empty, so PM itself refuses node. The launch
+    prints PM's reason and remedy instead of a traceback, before the active-session file or a
+    --worktree exist."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))
+    monkeypatch.delenv("HERMES_NODE", raising=False)
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: tmp_path / "entry.js")
+    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree",
+                        lambda: pytest.fail("the worktree must not exist before node is known"))
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda *args, **kwargs: pytest.fail("the TUI must not start"))
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui(worktree=worktree)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Hermes could not prepare the TUI: node: not installed and lazy installs are disabled" in err
+    assert "hermes pm install" in err and "hermes --cli" in err
+    assert not list(tui_scratch_tmp.glob("hermes-tui-active-session-*"))
+
+
+def test_launch_tui_reports_a_failed_build_step_without_traceback(
+        monkeypatch, main_mod, tui_scratch_tmp, capsys):
+    """A source checkout whose dependency step fails (with lazy installs off, node-deps.mjs refuses stale
+    dependencies) ends in the same short report instead of a CalledProcessError traceback."""
+    from hermes_cli import source_build
+
+    def stale(project_root, *, env):
+        raise subprocess.CalledProcessError(1, ["node", str(project_root / "scripts/build/node-deps.mjs")])
+
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: None)
+    monkeypatch.setattr(main_tui_launch, "_ensure_tui_workspace", lambda tui_dir: None)
+    monkeypatch.setattr(main_tui_launch, "_tui_need_rebuild", lambda tui_dir: True)
+    monkeypatch.setattr(source_build, "source_build_env", lambda *args, **kwargs: {"PATH": os.environ.get("PATH", "")})
+    monkeypatch.setattr(source_build, "prepare_launch_dependencies", stale)
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda *args, **kwargs: pytest.fail("the TUI must not start"))
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Hermes could not prepare the TUI: a build step failed with exit status 1" in err
+    assert "hermes --cli" in err
+    assert not list(tui_scratch_tmp.glob("hermes-tui-active-session-*"))

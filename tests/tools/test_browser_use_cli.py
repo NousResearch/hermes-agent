@@ -564,30 +564,24 @@ class TestBackendCdpResolution:
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
-    def test_direct_api_without_key_errors_instead_of_dropping_cdp(self, monkeypatch):
-        """cloud_provider browser-use with no API key must not return None.
-
-        None is the autospawn signal, and autospawn only runs when the key is
-        set. Without the key the harness used to hunt an installed Chrome for
-        DevToolsActivePort and never started the bundled Chromium.
-        """
+    def test_direct_api_without_key_uses_session_path_not_chrome_hunt(self, monkeypatch, _fake_managed_chromium):
+        """cloud_provider browser-use with no API key must not take the autospawn shortcut: the CLI
+        only autospawns with the key, so None left the harness hunting an installed Chrome
+        (DevToolsActivePort). The session path's local-Chromium fallback drives the packaged one."""
 
         class _BUProvider:
             name = "browser-use"
 
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
-        )
+        monkeypatch.setattr(bt_session, "_get_session_info", lambda key: {
+            "cdp_url": None, "features": {"local": True}, "fallback_from_cloud": True,
+            "fallback_reason": "BROWSER_USE_API_KEY is not set"})
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
         monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
-        env = {}
-        err = bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2")
-        assert isinstance(err, str) and "BROWSER_USE_API_KEY" in err
-        assert "hermes tools" in err
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "ws://127.0.0.1:47000/devtools/browser/t1"
 
     def test_picker_managed_selection_resolves_gateway_provider(self, monkeypatch):
         """``cloud_provider: nous`` (the `hermes tools` managed row) must resolve through the
@@ -619,9 +613,6 @@ class TestBackendCdpResolution:
         class _BUProvider:
             name = "browser-use"
 
-            def _get_config_or_none(self, refresh_token=True):
-                return {"api_key": "tok", "base_url": "https://gateway", "managed_mode": True}
-
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
         monkeypatch.setattr(
@@ -630,52 +621,10 @@ class TestBackendCdpResolution:
         )
         # Never-configured: browser section present but no selection at all.
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"backend": "browser-use"})
+        monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/autodetect"
-
-    def test_direct_api_provider_still_takes_native_shortcut(self, monkeypatch):
-        """The managed-vs-direct split must not regress the direct-API path: with a real
-        BROWSER_USE_API_KEY and no gateway, the CLI still talks to BU cloud natively instead of
-        double-sessioning through the provider."""
-        class _BUProvider:
-            name = "browser-use"
-
-            def _get_config_or_none(self, refresh_token=True):
-                return {"api_key": "bu-key", "base_url": "https://api.browser-use.com", "managed_mode": False}
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
-        )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
-        env = {}
-        assert bu_cli._resolve_backend_cdp(env, "t1") is None
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
-
-    def test_never_configured_managed_provider_failure_errors_never_silently_unset(self, monkeypatch):
-        """A managed provider that cannot produce a session must surface that failure, NOT fall
-        through with BU_CDP_* unset — the harness's own discovery then fails with a misleading
-        chrome-not-running instead of naming the real problem."""
-        class _BUProvider:
-            name = "browser-use"
-
-            def _get_config_or_none(self, refresh_token=True):
-                return {"api_key": "tok", "base_url": "https://gateway", "managed_mode": True}
-
-        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda task_id: (_ for _ in ()).throw(RuntimeError("no managed session")),
-        )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"backend": "browser-use"})
-        env = {}
-        err = bu_cli._resolve_backend_cdp(env, "t1")
-        assert err and "no managed session" in err
-        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
     def test_legacy_use_gateway_flag_still_resolves_gateway_provider(self, monkeypatch):
         """Regression guard for the pre-picker shape of the same selection."""

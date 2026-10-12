@@ -216,25 +216,6 @@ def _use_gateway(browser_cfg: dict) -> bool:
     return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
-def _is_managed_browser_use(provider: Any) -> bool:
-    """True when a resolved ``browser-use`` provider is backed by the managed Nous Tool Gateway
-    rather than a direct ``BROWSER_USE_API_KEY`` config.
-
-    Autodetect hands back a managed provider on installs that never configured a cloud browser
-    (the gateway token needs no API key), and that provider reports the same ``name`` as the
-    direct-API one. The direct-API shortcut below then skipped session resolution for a provider
-    that CAN provide one, leaving BU_CDP_* unset so the harness fell back to hunting the user's
-    profile dirs — ``chrome-not-running`` on a host with no ~/.config/chromium."""
-    resolver = getattr(provider, "_get_config_or_none", None)
-    if not callable(resolver):
-        return False
-    try:
-        config = resolver(refresh_token=False)
-    except Exception:
-        return False
-    return bool(isinstance(config, dict) and config.get("managed_mode"))
-
-
 def get_browser_backend() -> str:
     """Configured browser backend key ("" = unset → default). YAML 1.1 parses an
     unquoted ``off`` as False — that must mean BACKEND_DISABLED, not "unset"."""
@@ -514,20 +495,14 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
     # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
     # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
-    # provisions the browser server-side and returns its CDP URL.
+    # provisions the browser server-side and returns its CDP URL. Without BROWSER_USE_API_KEY the CLI cannot
+    # autospawn, and the provider is either the managed gateway (autodetect on a never-configured install) or
+    # a selection missing its key; both go through the session path (gateway CDP, or the session layer's
+    # local-Chromium fallback) instead of leaving the harness to hunt for an installed Chrome.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
+    from agent.secret_scope import get_secret
     if (provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg())
-            and not _is_managed_browser_use(provider)):
-        # Direct-API returns no CDP on purpose so the CLI can autospawn. Autospawn only
-        # happens when BROWSER_USE_API_KEY is set. With the key missing, None used to
-        # leave the harness to discover an installed Chrome (DevToolsActivePort).
-        from agent.secret_scope import get_secret
-        if not get_secret("BROWSER_USE_API_KEY", ""):
-            from tools.tool_backend_helpers import selection_error
-            return selection_error(
-                "browser", "'browser-use'",
-                "BROWSER_USE_API_KEY is not set, so browser_exec cannot start a Browser Use cloud browser",
-            )
+            and get_secret("BROWSER_USE_API_KEY", "")):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
         return None
 

@@ -43,6 +43,7 @@ _dashboard_local_update_managed_externally = late("_dashboard_local_update_manag
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
 _require_token = late("_require_token")
+_has_valid_session_token = late("_has_valid_session_token")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _resolve_restart_drain_timeout = late("_resolve_restart_drain_timeout", "hermes_cli.web_server_lifecycle")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
@@ -464,7 +465,7 @@ async def _advisory_pressure(status: dict[str, Any], home: Path) -> None:
 
 
 @router.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(profile: Optional[str] = None, request: Request = None):
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
 
@@ -504,6 +505,9 @@ async def get_status(profile: Optional[str] = None):
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
         restart_drain_timeout = await run_in_threadpool(_resolve_restart_drain_timeout)
         auth = _auth_gate_status()
+        authenticated = request is not None and (
+            getattr(request.state, "session", None) is not None
+            or (not auth["auth_required"] and _has_valid_session_token(request)))
 
         status = {
             "version": get_version_info().base_version, "release_date": __release_date__,
@@ -552,13 +556,20 @@ async def get_status(profile: Optional[str] = None):
         status["multiplex_standalone_reason"] = topology.get("multiplex_standalone_reason")
 
         # Host paths, gateway PID, internal health URL and per-gateway ports are deployment
-        # recon a liveness probe never needs, and on a gated bind *any* unauthenticated caller
-        # reaches this endpoint — surface them only on a loopback / ``--insecure`` bind.
-        if not auth["auth_required"]:
+        # recon a liveness probe never needs — surface them only to verified sessions.
+        if authenticated:
             status.update({
                 "hermes_home": str(get_hermes_home()), "config_path": str(get_config_path()),
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
+
+        if not authenticated:
+            public_states = {"connected", "running", "ok", "disconnected", "connecting",
+                             "stopped", "disabled", "fatal", "error", "failed", "starting"}
+            status["gateway_platforms"] = {
+                key: {"state": value.get("state") if value.get("state") in public_states else "unknown"}
+                for key, value in gateway["gateway_platforms"].items() if isinstance(value, dict)}
+            status.pop("gateway_exit_reason", None)
 
         return status
     finally:

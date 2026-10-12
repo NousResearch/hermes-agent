@@ -180,10 +180,9 @@ jobs:
             exit 0
           fi
 
-          # Match PyPI dep specs that have >= and no < ceiling.
-          # Pattern: "package>=version" without a following ",<" bound.
-          # Excludes git+ URLs (which use commit SHAs) and comments.
-          UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
+          # PyPI requirement strings whose version clauses have no upper bound
+          # (markers, spaces and dotted names included; git+ refs are SHA-pinned).
+          UNBOUNDED=$(echo "$ADDED" | python3 scripts/ci/check_dep_bounds.py)
 
           if [ -n "$UNBOUNDED" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"

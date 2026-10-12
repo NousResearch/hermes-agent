@@ -967,7 +967,7 @@ class GatewayTurnProgressMixin:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        if ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled:
+        if ctx.matrix_activity_pane is not None:
             await self._send_matrix_activity_progress()
             return
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
@@ -1305,15 +1305,14 @@ class GatewayTurnProgressMixin:
         if ctx.session_key and ctx.run_generation is not None:
             status_key = f"{ctx.session_key}:run:{ctx.run_generation}:{event_type}"
 
-        if (ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled
-                and ctx.progress_queue is not None):
-            ctx.progress_queue.put(prepared)
-            return
         def present():
             if local_viewer_turn(self):
                 from agent.conversation_compression import compaction_status_kind
                 self._publish_execution("status.update", {"kind": compaction_status_kind(event_type, message),
                                                           "text": prepared})
+                return
+            if ctx.matrix_activity_pane is not None and ctx.progress_queue is not None:
+                ctx.progress_queue.put(prepared)
                 return
             fut = self._schedule(
                 _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata),

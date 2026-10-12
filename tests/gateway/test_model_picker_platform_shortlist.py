@@ -14,7 +14,8 @@ fake picker-capable adapter that records the provider rows the picker was handed
 import types
 
 import pytest
-import yaml
+
+import hermes_yaml as yaml  # the repo's YAML stack (ruamel); PyYAML is not a dependency
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType

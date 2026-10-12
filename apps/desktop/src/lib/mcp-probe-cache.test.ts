@@ -12,7 +12,7 @@ describe('classifyProbe', () => {
   })
 
   it.each([
-    'HTTP 401 Unauthorized',
+    'HTTP 401 Unauthorized',\n    'HTTP 403 Forbidden',
     'invalid_token: The access token expired',
     'OAuth authorization required',
     'authentication failed'

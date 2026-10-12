@@ -243,7 +243,12 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     provider = str(browser_cfg.get("cloud_provider") or "").strip().lower()
     if provider not in {"browser-use", ""} or _use_gateway(browser_cfg) or _camofox_active(" during migration"):
         return False
-    # Profile credential: a multiplexed secondary must not inherit the default's cloud mode.
+    return _browser_use_api_key_set()
+
+
+def _browser_use_api_key_set() -> bool:
+    """BROWSER_USE_API_KEY for the served profile: the only credential Hermes autospawns BU cloud with.
+    Profile-scoped so a multiplexed secondary never inherits the default's cloud mode."""
     from agent.secret_scope import get_secret
     return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
@@ -466,9 +471,11 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
     so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
     (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
-    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
-    the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
-    each name gets its OWN browser — what makes named sessions concurrent-safe.
+    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs WITH
+    ``BROWSER_USE_API_KEY`` → None (checked before (3)): the CLI reaches BU cloud natively (BU_AUTOSPAWN); a
+    keyless ``browser-use`` provider (managed-gateway autodetect, or a selection missing its key) takes (3).
+    ``session_name`` (BU_NAME) keys the session cache so each name gets its OWN browser — what makes named
+    sessions concurrent-safe.
 
     ``force_local_sidecar`` skips step (3): the call runs on the local engine under the ``::local`` cache
     key (hybrid routing; see ``_hybrid_routes_locally``). It sits BELOW the two operator overrides, and the
@@ -492,7 +499,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     if provider is None:
         return _resolve_local_engine_cdp(env, task_id, session_name)
 
-    # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
+    # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN) — the
     # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
     # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
     # provisions the browser server-side and returns its CDP URL. Without BROWSER_USE_API_KEY the CLI cannot
@@ -500,9 +507,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     # a selection missing its key; both go through the session path (gateway CDP, or the session layer's
     # local-Chromium fallback) instead of leaving the harness to hunt for an installed Chrome.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
-    from agent.secret_scope import get_secret
-    if (provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg())
-            and get_secret("BROWSER_USE_API_KEY", "")):
+    if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()) and _browser_use_api_key_set():
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
         return None
 

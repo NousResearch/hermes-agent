@@ -578,10 +578,10 @@ class TestBackendCdpResolution:
             "cdp_url": None, "features": {"local": True}, "fallback_from_cloud": True,
             "fallback_reason": "BROWSER_USE_API_KEY is not set"})
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
-        monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "ws://127.0.0.1:47000/devtools/browser/t1"
+        assert _fake_managed_chromium == [("t1", "get", ("cdp-url",))]
 
     def test_picker_managed_selection_resolves_gateway_provider(self, monkeypatch):
         """``cloud_provider: nous`` (the `hermes tools` managed row) must resolve through the
@@ -617,11 +617,10 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
         monkeypatch.setattr(
             bt_session, "_get_session_info",
-            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/autodetect"},
+            lambda key: {"cdp_url": "wss://gateway.example/cdp/autodetect"},
         )
-        # Never-configured: browser section present but no selection at all.
+        # The "Browser Use" picker row writes only browser.backend: no cloud_provider selection.
         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"backend": "browser-use"})
-        monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/autodetect"

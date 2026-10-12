@@ -1,6 +1,6 @@
 name: hermes-call-ledger
 repo: https://github.com/skappafrost/hermes-call-ledger
-sha: c37f8835519812cb4ed944f37bbf46258e86fcc5
+sha: c55671dd61becb30a8b4d5e53cba9926938fb299
 description: >-
   Per-call cost ledger for Hermes Desktop, one route with seven tabs. Every model call Hermes makes is
   recorded from the observer hooks (provider, model, tokens, duration, outcome), then paired with the
@@ -38,6 +38,7 @@ description: >-
 maintainer: skappafrost
 tier: community
 category: desktop
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/skappafrost/hermes-call-ledger#readme
 version: "1.0.0"
 platforms: []

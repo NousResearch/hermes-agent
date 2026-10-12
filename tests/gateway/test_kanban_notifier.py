@@ -780,6 +780,42 @@ def test_block_loop_detected_wakes_the_origin_session(tmp_path, monkeypatch):
     assert tid in _wake_text(adapter)
 
 
+def test_respawn_held_pings_the_reason_and_the_lifting_command(tmp_path, monkeypatch):
+    """A card held in Ready is the stall nobody hears about: ``respawn_guarded``
+    is written every tick and stays silent, so the one ``respawn_held`` event
+    must reach the subscriber with the guard reason and the command that lifts
+    it, and wake the origin so somebody decides."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "held.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="held by its pr", assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            chat_type="dm", delivery_mode="notify+wake",
+        )
+        kb._append_event(conn, tid, "respawn_guarded", {"reason": "active_pr"})
+        kb._append_event(conn, tid, "respawn_held", {"reason": "active_pr", "held_seconds": 720})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert tid in text
+    assert "active_pr" in text
+    assert "12 min" in text
+    assert f"hermes kanban unblock {tid}" in text
+    assert tid in _wake_text(adapter)
+
+
 def test_review_requested_does_not_wake_a_notify_only_subscription(
     tmp_path, monkeypatch,
 ):

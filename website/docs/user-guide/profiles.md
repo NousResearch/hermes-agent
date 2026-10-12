@@ -235,6 +235,10 @@ Profiles are often confused with workspaces or sandboxes, but they are different
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
 
+New local profiles persist `<profile-home>/workspace` as an absolute `terminal.cwd` before the profile is published. CLI creation, Desktop's **New Agent**, and dashboard creation share this policy. Local config-only and full clones rebase the source profile's home / standard workspace (including lexical aliases), or an unset/placeholder cwd, to the destination profile; explicit external projects and non-local backend paths remain unchanged. Symlinks are compared lexically, not followed.
+
+Backend selection for this creation policy uses defaults and the destination's copied `.env`/YAML, not the launch process's backend. A present YAML `terminal.backend` wins over the legacy `terminal.env_type` alias; a null backend inherits the destination's `.env` or default and still blocks that alias. This is a creation-only policy, not a change to runtime alias support, historical profiles, or session resume. The classic interactive CLI continues to use the directory it was launched from without overwriting the saved profile cwd.
+
 If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 
 ```yaml

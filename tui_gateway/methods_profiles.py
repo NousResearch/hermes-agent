@@ -316,21 +316,28 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import profiles as profiles_mod
         clone_from = str(params.get("clone_from") or "").strip() or None
         clone_all = is_truthy_value(params.get("clone_all", False))
+        prepared = {}
         path = profiles_mod.create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all,
             clone_config=bool(clone_from) and not clone_all,
             no_skills=is_truthy_value(params.get("no_skills", False)),
             description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)))
+            clone_channels=is_truthy_value(params.get("clone_channels", False)),
+            prepare_before_publish=lambda staging: prepared.update(_prepare_rpc_profile(staging, params)))
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         return _err(rid, 4062, str(e))
     except Exception as e:
         return _err(rid, 5062, str(e))
-    # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
-    if not clone_from:
-        _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
+    # Wrappers resolve the published profile, not its hidden staging tree.
     if not is_truthy_value(params.get("no_alias", False)):
         _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
+    return _ok(rid, {"ok": True, "name": name, "path": str(path), **prepared})
+
+
+def _prepare_rpc_profile(path, params: dict) -> dict:
+    """Finish RPC-owned files before creation selects workspace policy and publishes the tree."""
+    if not str(params.get("clone_from") or "").strip():
+        _best_effort(lambda: _lazy("hermes_cli.profiles", "seed_profile_skills")(path, quiet=True))
     soul = params.get("soul")
     soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
         lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
@@ -338,11 +345,24 @@ def _(rid, params: dict) -> dict:
     model, provider = _model_provider_params(params)
     model_set = False
     if model and provider:
-        model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
+        model_set = _best_effort(lambda: _pin_created_profile_model(path, provider, model))
     elif is_truthy_value(params.get("mirror_credentials", True)):
         mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
-    return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
-                     "model_set": model_set, "mirrored": mirrored})
+    return {"soul_written": soul_written, "model_set": model_set, "mirrored": mirrored}
+
+
+def _pin_created_profile_model(path, provider, model) -> None:
+    """Use the normal model-selection contract, scoped by path: a hidden tree is not a profile id."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.web_server_config import (
+        _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection)
+    # Validation needs the staged profile's external credentials, just like the published setter.
+    with _session_profile_runtime_scope({"profile_home": str(path)}, hydrate_secrets=True):
+        provider, model = _normalize_main_model_assignment(provider, model)
+        cfg = load_config()
+        result = _validated_main_model_selection(cfg, provider, model)
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
+        save_config(cfg)
 
 
 @_profile_handler("profiles.describe", 5063)
@@ -529,7 +549,7 @@ def _inherit_launch_model(path) -> bool:
             cfg = load_config()
             cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
             save_config(cfg)
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+    _pin_created_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 
 

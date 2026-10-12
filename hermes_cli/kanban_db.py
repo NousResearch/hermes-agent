@@ -629,7 +629,7 @@ class Task:
     status: str
     priority: int
     created_by: Optional[str]
-    created_at: int
+    created_at: Optional[int]  # None only for an unparseable stamp
     started_at: Optional[int]
     completed_at: Optional[int]
     workspace_kind: str
@@ -673,7 +673,7 @@ class Task:
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
-            **{col: _to_epoch(row[col]) for col in _TASK_EPOCH_COLUMNS},  # INTEGER, but outside writers may store ISO text
+            **{col: _to_epoch(row[col]) for col in _TASK_EPOCH_COLUMNS},  # outside writers may store text: epoch or None
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
@@ -687,8 +687,10 @@ class Task:
 
 
 # Columns every schema version has (KeyError if the SELECT omitted them).
-_TASK_REQUIRED_COLUMNS = ("id", "title", "body", "assignee", "status", "priority", "created_by",
-                          "workspace_kind", "workspace_path", "claim_lock", "claim_expires")
+_TASK_REQUIRED_COLUMNS = (
+    "id", "title", "body", "assignee", "status", "priority", "created_by",
+    "workspace_kind", "workspace_path", "claim_lock", "claim_expires",
+)
 _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at")
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
@@ -4194,9 +4196,7 @@ def _to_epoch(val) -> Optional[int]:
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    _c = _to_epoch(task.created_at)
-    _s = _to_epoch(task.started_at)
-    _co = _to_epoch(task.completed_at)
+    _c, _s, _co = task.created_at, task.started_at, task.completed_at  # from_row coerced
     return {
         "created_age_seconds": now - _c if _c is not None else None,
         "started_age_seconds": now - _s if _s is not None else None,

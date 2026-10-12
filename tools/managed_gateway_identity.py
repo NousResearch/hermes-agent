@@ -123,9 +123,11 @@ def log_connector_outcome(
     route: str, status: Optional[int], *, code: Optional[str] = None, request_id: Optional[str] = None,
     call: Optional[CallRef] = None,
 ) -> None:
-    """One line per connector HTTP outcome: failures at WARNING, success and expected misses at DEBUG."""
-    failed = status is None or not 200 <= status < 300
-    level = logging.WARNING if failed and code not in _EXPECTED_MISSES else logging.DEBUG
+    """One line per connector HTTP outcome: failures at WARNING, success and expected misses at DEBUG.
+
+    The ``code`` makes a line a failure, not the status: a 200 whose body failed carries one, and a
+    304 that refreshed a cached list does not."""
+    level = logging.WARNING if code is not None and code not in _EXPECTED_MISSES else logging.DEBUG
     logger.log(
         level, "connector %s %s %s request_id=%s dispatch=%s",
         route, status if status is not None else "transport", code or "-", request_id or "-",

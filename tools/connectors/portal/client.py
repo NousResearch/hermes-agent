@@ -102,7 +102,7 @@ class PortalConnectorClient:
         validate_slug(slug)
         headers = {"If-None-Match": if_none_match} if if_none_match else None
         try:
-            response, status = self._request("GET", f"/api/v1/connectors/{slug}/tools", headers=headers)
+            response, status, route = self._request("GET", f"/api/v1/connectors/{slug}/tools", headers=headers)
         except ToolGatewayError as exc:
             missing_route = isinstance(exc, GatewayUnavailable) and exc.code != "connector_not_found"
             if type(exc) is not ToolGatewayError and not missing_route:
@@ -116,38 +116,38 @@ class PortalConnectorClient:
             ) from exc
         if status == 304:
             return NotModified()
-        listing = self._parse(ConnectorToolsListing, response, status, PortalToolsUnavailable, "portal tools unavailable")
+        listing = self._parse(ConnectorToolsListing, response, status, route, PortalToolsUnavailable, "portal tools unavailable")
         etag = getattr(response, "headers", {}).get("etag")
         return listing.model_copy(update={"etag": etag}) if isinstance(etag, str) and etag else listing
 
     def catalog(self) -> ConnectorCatalogResponse:
-        response, status = self._request("GET", "/api/v1/connectors/catalog")
-        return self._parse(ConnectorCatalogResponse, response, status, PortalConnectorUnavailable, "portal catalog unavailable")
+        response, status, route = self._request("GET", "/api/v1/connectors/catalog")
+        return self._parse(ConnectorCatalogResponse, response, status, route, PortalConnectorUnavailable, "portal catalog unavailable")
 
     def list_accounts(self) -> list[dict[str, Any]]:
-        response, status = self._request("GET", "/api/v1/connectors/accounts")
-        inventory = self._parse(ConnectorAccountsResponse, response, status, PortalConnectorUnavailable, "portal accounts unavailable")
+        response, status, route = self._request("GET", "/api/v1/connectors/accounts")
+        inventory = self._parse(ConnectorAccountsResponse, response, status, route, PortalConnectorUnavailable, "portal accounts unavailable")
         return [account.model_dump(by_alias=True) for account in inventory.accounts]
 
     def rename_account(self, connection_id: str, alias: str) -> dict[str, Any]:
         path = f"/api/v1/connectors/accounts/{quote(connection_id, safe='')}"
-        response, status = self._request("PATCH", path, {"alias": alias})
-        account = self._parse(ConnectorAccount, response, status, PortalConnectorUnavailable, "portal accounts unavailable")
+        response, status, route = self._request("PATCH", path, {"alias": alias})
+        account = self._parse(ConnectorAccount, response, status, route, PortalConnectorUnavailable, "portal accounts unavailable")
         return account.model_dump(by_alias=True)
 
     def delete_account(self, connection_id: str) -> dict[str, Any]:
         path = f"/api/v1/connectors/accounts/{quote(connection_id, safe='')}"
-        response, status = self._request("DELETE", path)
-        removed = self._parse(RemovedConnectorAccount, response, status, PortalConnectorUnavailable, "portal accounts unavailable")
+        response, status, route = self._request("DELETE", path)
+        removed = self._parse(RemovedConnectorAccount, response, status, route, PortalConnectorUnavailable, "portal accounts unavailable")
         return removed.model_dump(by_alias=True)
 
     def policy(self) -> ConnectorPolicyResponse:
-        response, status = self._request("GET", "/api/v1/connectors/policy")
-        return self._parse(ConnectorPolicyResponse, response, status, PortalConnectorUnavailable, "portal policy unavailable")
+        response, status, route = self._request("GET", "/api/v1/connectors/policy")
+        return self._parse(ConnectorPolicyResponse, response, status, route, PortalConnectorUnavailable, "portal policy unavailable")
 
     def set_policy(self, body: dict[str, Any]) -> ConnectorPolicyWriteResponse:
-        response, status = self._request("PUT", "/api/v1/connectors/policy", body)
-        return self._parse(ConnectorPolicyWriteResponse, response, status, PortalConnectorUnavailable, "portal policy unavailable")
+        response, status, route = self._request("PUT", "/api/v1/connectors/policy", body)
+        return self._parse(ConnectorPolicyWriteResponse, response, status, route, PortalConnectorUnavailable, "portal policy unavailable")
 
     def _request(
         self,
@@ -156,7 +156,9 @@ class PortalConnectorClient:
         body: dict[str, Any] | None = None,
         *,
         headers: dict[str, str] | None = None,
-    ) -> tuple[Any, int]:
+    ) -> tuple[Any, int, str]:
+        """The answer, its status and route key. A failed status is logged and raised here; a 2xx is
+        logged by ``_parse`` once its body is checked."""
         url = f"{self.origin()}{path}"
         headers = self._authorized_headers(url, headers)
         try:
@@ -171,18 +173,23 @@ class PortalConnectorClient:
             error.request_id = error.request_id or request_id
             log_connector_outcome(_route_key(path), status, code=error.code, request_id=error.request_id)
             raise error
-        log_connector_outcome(_route_key(path), status, request_id=request_id)
-        return response, status
+        if status == 304:
+            log_connector_outcome(_route_key(path), status, request_id=request_id)
+        return response, status, _route_key(path)
 
     @staticmethod
-    def _parse(model, response: Any, status: int, error_type, message: str):
+    def _parse(model, response: Any, status: int, route: str, error_type, message: str):
+        request_id = response_request_id(response)
         try:
             payload = response.json()
             if not isinstance(payload, Mapping):
                 raise ValueError("response must be an object")
-            return model.model_validate(payload)
+            parsed = model.model_validate(payload)
         except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-            raise error_type(message, code="INVALID_RESPONSE", status=status) from exc
+            log_connector_outcome(route, status, code="INVALID_RESPONSE", request_id=request_id)
+            raise error_type(message, code="INVALID_RESPONSE", status=status, request_id=request_id) from exc
+        log_connector_outcome(route, status, request_id=request_id)
+        return parsed
 
 
 def _route_key(path: str) -> str:

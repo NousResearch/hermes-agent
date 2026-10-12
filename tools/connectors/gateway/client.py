@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, Sequence
 
 import requests
@@ -36,6 +37,16 @@ SEARCH_TIMEOUT_SECONDS = 30.0
 SCHEMAS_TIMEOUT_SECONDS = 10.0
 
 _MAX_RETRIES = 1
+
+
+@dataclass(frozen=True)
+class _Reply:
+    """A 2xx answer before its body is checked; the outcome line is written once the body is read."""
+
+    payload: Any
+    status: int
+    request_id: Optional[str]
+    route: str
 
 
 class Transport(Protocol):
@@ -92,21 +103,20 @@ class ConnectorClient:
         body = wire.ConnectorSearchRequest(
             queries=[wire.ConnectorSearchQuery(**q) for q in queries]
         ).model_dump(by_alias=True, exclude_none=True)
-        payload = self._post(
+        reply = self._post(
             wire.CONNECTOR_SEARCH_PATH, body,
             timeout=SEARCH_TIMEOUT_SECONDS, retries=0,
         )
-        parsed = wire.ConnectorSearchResponse.model_validate(payload)
-        return parsed.model_dump()
+        return self._checked(wire.ConnectorSearchResponse, reply, "connector search").model_dump()
 
     def schemas(self, tools: Sequence[str]) -> dict[str, Any]:
         body = wire.ConnectorSchemasRequest(tools=list(tools)).model_dump(
             by_alias=True
         )
-        payload = self._post(
+        reply = self._post(
             wire.CONNECTOR_SCHEMAS_PATH, body, timeout=SCHEMAS_TIMEOUT_SECONDS
         )
-        return wire.ConnectorSchemasResponse.model_validate(payload).model_dump()
+        return self._checked(wire.ConnectorSchemasResponse, reply, "connector schemas").model_dump()
 
     def connections(
         self, connectors: Sequence[str], *, reinitiate: bool = False, alias: Optional[str] = None,
@@ -119,8 +129,8 @@ class ConnectorClient:
             connectors=list(connectors), reinitiate=reinitiate, alias=alias, connection_id=connection_id,
             return_to=return_to, op=op, initiator=self._initiator,
         ).model_dump(by_alias=True, exclude_none=True)
-        payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
-        return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
+        reply = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
+        return self._checked(wire.ConnectorConnectionsResponse, reply, "connector connections").model_dump()
 
     def list_connectors(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
         """Every page of the session's toolkit list, each typed whole. ``timeout`` applies per page: the
@@ -132,8 +142,8 @@ class ConnectorClient:
             path = f"{wire.CONNECTORS_PATH}?limit=50"
             if cursor:
                 path += f"&cursor={cursor}"
-            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
-                               "connector list page")
+            page = self._checked(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
+                                 "connector list page")
             items.extend(item.model_dump(by_alias=True) for item in page.items)
             cursor = page.next_cursor
             if not cursor:
@@ -146,12 +156,33 @@ class ConnectorClient:
         """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``.
         ``timeout`` is the watcher's remaining deadline, so a stalled read cannot outlive its operation."""
         try:
-            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
+            reply = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
         except GatewayUnavailable as exc:
             if exc.code == "connection_not_found":
                 return None
             raise
-        return self._parse(wire.ConnectorAccount, payload, "connector account").model_dump(by_alias=True)
+        return self._checked(wire.ConnectorAccount, reply, "connector account").model_dump(by_alias=True)
+
+    def _checked(self, model: Any, reply: _Reply, what: str) -> Any:
+        """Parse a 2xx body and write its outcome line: a body that does not parse is a failure,
+        logged with the gateway's request id like any failed status."""
+        try:
+            parsed = self._parse(model, reply.payload, what)
+        except ToolGatewayError as exc:
+            exc.status, exc.request_id = reply.status, reply.request_id
+            self._log(reply, exc.code)
+            raise
+        if not isinstance(parsed, wire.ConnectorExecuteResponse):
+            self._log(reply)
+            return parsed
+        # The execute envelope answers 200 even when a call failed; each failed call is a failure line.
+        failed = [result.error.code for result in parsed.results if result.error is not None]
+        for code in failed or [None]:
+            self._log(reply, code)
+        return parsed
+
+    def _log(self, reply: _Reply, code: Optional[str] = None) -> None:
+        log_connector_outcome(reply.route, reply.status, code=code, request_id=reply.request_id, call=self._call)
 
     @staticmethod
     def _parse(model: Any, payload: Any, what: str) -> Any:
@@ -179,13 +210,13 @@ class ConnectorClient:
         ).model_dump(by_alias=True, exclude_none=True)
         # Keep the key dispatch-local so its retry reuses it without a shared store.
         idempotency_key = str(uuid.uuid4())
-        payload = self._post(
+        reply = self._post(
             wire.CONNECTOR_EXECUTE_PATH,
             body,
             timeout=EXECUTE_TIMEOUT_SECONDS,
             idempotency_key=idempotency_key,
         )
-        parsed = wire.ConnectorExecuteResponse.model_validate(payload)
+        parsed = self._checked(wire.ConnectorExecuteResponse, reply, "connector execute response")
         return [_result_dict(result) for result in parsed.results]
 
     def _post(
@@ -196,7 +227,7 @@ class ConnectorClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         idempotency_key: Optional[str] = None,
         retries: int = _MAX_RETRIES,
-    ) -> Any:
+    ) -> _Reply:
         return self._request(
             "POST", path, body,
             timeout=timeout, idempotency_key=idempotency_key, retries=retries,
@@ -211,7 +242,9 @@ class ConnectorClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         idempotency_key: Optional[str] = None,
         retries: int = _MAX_RETRIES,
-    ) -> Any:
+    ) -> _Reply:
+        """The 2xx reply, unchecked; the caller logs its outcome once the body is read. A failed
+        status is logged and raised here."""
         origin = self._endpoint_resolver()
         if not origin:
             raise GatewayUnavailable(
@@ -237,8 +270,7 @@ class ConnectorClient:
             status = int(getattr(response, "status_code", 0))
             request_id = response_request_id(response)
             if 200 <= status < 300:
-                log_connector_outcome(route, status, request_id=request_id, call=self._call)
-                return response.json()
+                return _Reply(_safe_json(response), status, request_id, route)
 
             error = parse_gateway_error(status, _safe_json(response), getattr(response, "headers", None))
             error.request_id = error.request_id or request_id

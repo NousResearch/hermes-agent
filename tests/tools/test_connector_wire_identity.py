@@ -19,6 +19,8 @@ class _Response:
         self.headers = {"x-request-id": request_id}
 
     def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
         return self._body
 
 
@@ -172,3 +174,48 @@ def test_operation_logs_open_transitions_and_settle(caplog):
         f"connection op {op} settled by all_resolved: gmail=connected",
     ]
     assert json.dumps(operation.snapshot())  # snapshot still serializes
+
+
+def _outcomes(caplog):
+    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "tools.managed_gateway_identity"]
+
+
+def test_a_200_whose_body_failed_is_a_warning_with_the_request_id(caplog):
+    """The outcome line follows the checked body: a failed call inside the execute envelope and a body
+    that does not parse are both failures, and both keep the gateway's request id."""
+    from tools.connectors.gateway.errors import ToolGatewayError
+    from tools.connectors.gateway.merge import PlannedCall
+
+    failed_call = {"results": [{"error": {"code": "CONNECTION_REQUIRED", "message": "connect gmail"}}]}
+    transport = _Transport(_Response(200, failed_call, request_id="exec-id"),
+                           _Response(200, ValueError("not json"), request_id="junk-id"))
+    client = _client(transport, call=CallRef(tool_call_id="call-3"))
+    plan = PlannedCall(position=0, name="gmail_send_email", connector="gmail", tool="GMAIL_SEND_EMAIL", arguments={})
+    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+        assert client.execute([plan])[0]["error"]["code"] == "CONNECTION_REQUIRED"
+        with pytest.raises(ToolGatewayError) as raised:
+            client.schemas(["X"])
+    assert raised.value.request_id == "junk-id" and raised.value.code == "INVALID_RESPONSE"
+    assert _outcomes(caplog) == [
+        (logging.WARNING, "connector connectors.execute 200 CONNECTION_REQUIRED request_id=exec-id dispatch=call-3"),
+        (logging.WARNING, "connector connectors.schemas 200 INVALID_RESPONSE request_id=junk-id dispatch=call-3"),
+    ]
+
+
+def test_portal_tools_304_is_a_success_and_a_bad_body_a_failure(caplog):
+    from tools.connectors.portal.client import NotModified, PortalConnectorClient
+    from tools.connectors.portal.errors import PortalToolsUnavailable
+
+    transport = _Transport(_Response(304, None, request_id="same-id"), _Response(200, [], request_id="bad-id"))
+    client = PortalConnectorClient(transport=transport, endpoint_resolver=lambda: "https://portal.test",
+                                   header_provider=lambda url: {"Authorization": "Bearer t"})
+    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+        assert isinstance(client.tools("gmail", if_none_match="etag-1"), NotModified)
+        with pytest.raises(PortalToolsUnavailable) as raised:
+            client.tools("gmail")
+    assert raised.value.request_id == "bad-id"
+    assert _outcomes(caplog) == [
+        (logging.DEBUG, "connector portal.connectors.tools 304 - request_id=same-id dispatch=-"),
+        (logging.WARNING, "connector portal.connectors.tools 200 INVALID_RESPONSE request_id=bad-id dispatch=-"),
+    ]
+

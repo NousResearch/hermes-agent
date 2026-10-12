@@ -63,7 +63,7 @@ async def _device_metadata(client, server_url, auth_server_url):
     """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
     from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
 
-    from tools.mcp_oauth_provider import metadata_issued_by_origin
+    from tools.mcp_oauth_provider import entra_tenant_issuer_template_matches, metadata_issued_by_origin
 
     for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
@@ -81,7 +81,12 @@ async def _device_metadata(client, server_url, auth_server_url):
         # binding already use; any other mismatch is still rejected.
         expected = auth_server_url.rstrip("/") if auth_server_url else auth_server_url
         if expected and not metadata_issued_by_origin(metadata, expected, response):
-            if str(metadata.issuer).rstrip("/") != expected:
+            # Entra's multi-tenant document issuer keeps its literal {tenantid} placeholder where the
+            # advertised identifier (Fabric: "organizations") is concrete, so accept that one template
+            # shape (same origin, every other path segment identical); any other mismatch is still
+            # rejected (#136978).
+            if (str(metadata.issuer).rstrip("/") != expected
+                    and not entra_tenant_issuer_template_matches(expected, str(metadata.issuer))):
                 from mcp.client.auth.exceptions import OAuthFlowError
                 raise OAuthFlowError(f"Authorization server metadata issuer mismatch: {metadata.issuer} != {expected}")
         grants = metadata.grant_types_supported

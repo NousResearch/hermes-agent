@@ -89,7 +89,7 @@ def _loss(window: SchedulerWindow) -> dict[str, dict[str, int]]:
     return loss
 
 
-def project_timing(window, token: SchedulerToken, *, previous_end_ns: int = 0) -> dict:
+def _project_timing(window, token: SchedulerToken, *, previous_end_ns: int = 0) -> dict:
     """Bind an external source window to its observation and clock domain."""
     if (window.source_identity_before != token.source_identity
             or window.source_identity_after != token.source_identity):
@@ -127,7 +127,7 @@ def project_window(window: SchedulerWindow, token: SchedulerToken, *, previous_e
         raise ValueError("Unverified scheduler clock or attribution")
     counts, loss = _counts(window.counts), _loss(window)
     return {
-        **project_timing(window, token, previous_end_ns=previous_end_ns),
+        **_project_timing(window, token, previous_end_ns=previous_end_ns),
         "source": "linux_tracefs_sched_switch", "summary_id": window.summary_id,
         "coverage": "verified_kernel_trace_window", "timestamp_resolution_ns": 1000,
         "counts": counts, "trace_loss": loss,

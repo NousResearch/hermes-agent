@@ -1,4 +1,4 @@
-"""Bind externally collected windows to an existing physical Relay observation.
+"""Bind external scheduler windows to an existing physical Relay observation.
 
 The trusted caller verifies the source lifetime. Hermes only validates the
 binding and numeric payload; it neither discovers resources nor starts collectors.
@@ -12,8 +12,7 @@ import uuid
 import weakref
 from typing import Any
 
-from agent.relay_resource_metrics import RESOURCE_EVENT, ResourceWindow, project_resource_window
-from agent.relay_resource_scheduler import COUNT_KEYS, SCHEDULER_EVENT, SchedulerToken, SchedulerWindow, project_window
+from agent.relay_scheduler_windows import COUNT_KEYS, SCHEDULER_EVENT, SchedulerToken, SchedulerWindow, project_window
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.execution_observability import opaque_docker_resource_id
 
@@ -27,7 +26,7 @@ def _publisher() -> DaemonThreadPoolExecutor:
     global _PUBLISHER
     with _PUBLISHER_LOCK:
         if _PUBLISHER is None:
-            _PUBLISHER = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="relay-measurement")
+            _PUBLISHER = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="relay-scheduler")
         return _PUBLISHER
 
 
@@ -38,7 +37,7 @@ def _source_valid(identity: tuple, start: int) -> bool:
             and type(start) is int and 0 <= start < 2**63)
 
 
-class ResourceObservation:
+class SchedulerObservation:
     def __init__(self, owner: Any, token: SchedulerToken):
         self.owner = weakref.ref(owner)
         self._token = token
@@ -46,11 +45,9 @@ class ResourceObservation:
         self._active = True
         self.pending = None
         self._pending_publications = 0
-        self._last_resource_end = self._last_scheduler_end = 0
-        self._last_scheduler_id = None
-        self._resource_windows = self._scheduler_windows = 0
-        self._cpu_usage_us = self._resource_duration_ns = self._scheduler_duration_ns = 0
-        self._memory_peak = None
+        self._last_end = 0
+        self._last_id = None
+        self._windows = self._duration_ns = 0
         self._scheduler_counts: dict[str, int] = {}
         self._rejected = self._omitted = self._completed = self._failed = 0
 
@@ -65,57 +62,30 @@ class ResourceObservation:
 
     def submit_scheduler_window(self, token: SchedulerToken, window: SchedulerWindow) -> bool:
         with self._lock:
-            if not self._valid_token(token):
+            owner = self.owner()
+            if not self._active or owner is None or owner.scope.closed:
+                return False
+            if not isinstance(token, SchedulerToken) or token != self.token:
+                self._rejected += 1
                 return False
             try:
-                if not isinstance(window, SchedulerWindow) or window.summary_id == self._last_scheduler_id:
+                if not isinstance(window, SchedulerWindow) or window.summary_id == self._last_id:
                     raise ValueError("Invalid or duplicate scheduler window")
-                data = project_window(window, self.token, previous_end_ns=self._last_scheduler_end)
+                data = project_window(window, self.token, previous_end_ns=self._last_end)
             except (ValueError, TypeError, AttributeError):
                 self._rejected += 1
                 return False
-            if not self._schedule(SCHEDULER_EVENT, data):
+            if not self._schedule(data):
                 self._omitted += 1
                 return False
-            self._last_scheduler_end, self._last_scheduler_id = window.end_monotonic_ns, window.summary_id
-            self._scheduler_windows += 1
-            self._scheduler_duration_ns += data["window_duration_ns"]
+            self._last_end, self._last_id = window.end_monotonic_ns, window.summary_id
+            self._windows += 1
+            self._duration_ns += data["window_duration_ns"]
             for key in COUNT_KEYS:
                 self._scheduler_counts[key] = self._scheduler_counts.get(key, 0) + data["counts"][key]
             return True
 
-    def submit_resource_window(self, token: SchedulerToken, window: ResourceWindow) -> bool:
-        with self._lock:
-            if not self._valid_token(token):
-                return False
-            try:
-                if not isinstance(window, ResourceWindow):
-                    raise ValueError("Invalid resource window")
-                data = project_resource_window(window, self.token, previous_end_ns=self._last_resource_end)
-            except (ValueError, TypeError, AttributeError):
-                self._rejected += 1
-                return False
-            if not self._schedule(RESOURCE_EVENT, data):
-                self._omitted += 1
-                return False
-            self._last_resource_end = window.end_monotonic_ns
-            self._resource_windows += 1
-            self._resource_duration_ns += data["window_duration_ns"]
-            self._cpu_usage_us += window.cpu_usage_us
-            if window.memory_current_bytes is not None:
-                self._memory_peak = max(self._memory_peak or 0, window.memory_current_bytes)
-            return True
-
-    def _valid_token(self, token: SchedulerToken) -> bool:
-        owner = self.owner()
-        if not self._active or owner is None or owner.scope.closed:
-            return False
-        if not isinstance(token, SchedulerToken) or token != self.token:
-            self._rejected += 1
-            return False
-        return True
-
-    def _schedule(self, event_name: str, data: dict) -> bool:
+    def _schedule(self, data: dict) -> bool:
         if self._pending_publications:
             return False
         owner = self.owner()
@@ -132,9 +102,9 @@ class ResourceObservation:
             operation = runtime.acquire_operation_lease()
             context = scope.context.copy()
             self._pending_publications = 1
-            self.pending = context.run(_publisher().submit, self._emit, event_name, data, handle)
+            self.pending = context.run(_publisher().submit, self._emit, data, handle)
         except Exception as exc:
-            logger.debug("Measurement submission failed (%s)", type(exc).__name__, exc_info=True)
+            logger.debug("Scheduler submission failed (%s)", type(exc).__name__, exc_info=True)
             self._pending_publications = 0
             slots.release()
             if operation is not None:
@@ -145,7 +115,7 @@ class ResourceObservation:
             try:
                 emitted = future.result()
             except Exception as exc:
-                logger.debug("Measurement publication failed (%s)", type(exc).__name__, exc_info=True)
+                logger.debug("Scheduler publication failed (%s)", type(exc).__name__, exc_info=True)
                 emitted = False
             with self._lock:
                 self._completed += int(bool(emitted))
@@ -157,7 +127,7 @@ class ResourceObservation:
         self.pending.add_done_callback(completed)
         return True
 
-    def _emit(self, event_name: str, data: dict, handle: Any) -> bool:
+    def _emit(self, data: dict, handle: Any) -> bool:
         owner = self.owner()
         if owner is None:
             return False
@@ -168,7 +138,7 @@ class ResourceObservation:
             return False
         # Snapshot the explicit physical handle; never lock lifecycle cleanup
         # around a potentially stalled native subscriber invocation.
-        runtime.relay.scope.event(event_name, handle=handle, data=data)
+        runtime.relay.scope.event(SCHEDULER_EVENT, handle=handle, data=data)
         return True
 
     def finish(self) -> dict:
@@ -178,25 +148,21 @@ class ResourceObservation:
                 "schema_version": "1", "observation_id": self.token.observation_id,
                 "measurement_id": self.token.measurement_id, "resource_id": self.token.resource_id,
                 "resource_id_scheme": "oci_container_id_sha256_128_v1",
+                "source": "linux_tracefs_sched_switch",
                 "coverage": "accepted_external_windows_only", "publication_semantics": "admitted_not_export_confirmed",
-                "resource_windows": self._resource_windows, "scheduler_windows": self._scheduler_windows,
+                "scheduler_windows": self._windows,
                 "rejected_windows": self._rejected, "omitted_publications": self._omitted,
                 "completed_publications": self._completed, "failed_publications": self._failed,
                 "pending_publications": self._pending_publications,
-                "scheduler_switches_status": "available" if self._scheduler_windows else "not_collected",
+                "scheduler_switches_status": "available" if self._windows else "not_collected",
             }
-            if self._resource_windows:
-                data.update(cpu_usage_us=self._cpu_usage_us, resource_duration_ns=self._resource_duration_ns,
-                            average_cpu_cores=self._cpu_usage_us * 1000 / self._resource_duration_ns)
-            if self._memory_peak is not None:
-                data["memory_sample_peak_bytes"] = self._memory_peak
-            if self._scheduler_windows:
-                data.update(scheduler_duration_ns=self._scheduler_duration_ns,
+            if self._windows:
+                data.update(scheduler_duration_ns=self._duration_ns,
                             scheduler_counts=dict(self._scheduler_counts))
             return data
 
 
-def attach_measurements(environment: Any, *, source_identity: tuple, source_start_ns: int) -> ResourceObservation | None:
+def attach_scheduler(environment: Any, *, source_identity: tuple, source_start_ns: int) -> SchedulerObservation | None:
     """Bind an explicitly supplied collector; never infer independent verification."""
     if not _source_valid(source_identity, source_start_ns):
         return None
@@ -205,10 +171,10 @@ def attach_measurements(environment: Any, *, source_identity: tuple, source_star
     if owner is None or resource_id is None:
         return None
     with owner.lock:
-        if (owner.scope.closed or owner._measurements_closed
-                or resource_id != owner._measurement_resource_id):
+        if (owner.scope.closed or owner._scheduler_closed
+                or resource_id != owner._scheduler_resource_id):
             return None
-        previous = owner.resources
+        previous = owner.scheduler
         if previous is not None:
             token = previous.token
             same_epoch = token.resource_id == resource_id and token.source_identity == source_identity
@@ -217,5 +183,5 @@ def attach_measurements(environment: Any, *, source_identity: tuple, source_star
             if previous.active:
                 return None
         token = SchedulerToken(owner.scope.lease_id, uuid.uuid4().hex, resource_id, source_start_ns, source_identity)
-        owner.resources = ResourceObservation(owner, token)
-        return owner.resources
+        owner.scheduler = SchedulerObservation(owner, token)
+        return owner.scheduler

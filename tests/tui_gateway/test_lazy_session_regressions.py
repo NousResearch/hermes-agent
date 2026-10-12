@@ -12,7 +12,7 @@ import threading
 import time
 import types
 from unittest.mock import MagicMock, patch
-
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 # ===========================================================================
@@ -102,11 +102,9 @@ class TestFinalizeSessionUsesAgentSessionId:
         assert continuation["end_reason"] == "tui_close"
 
 
-
 # ===========================================================================
 # Bug #20001: _sync_session_key_after_compress post-run_conversation
 # ===========================================================================
-
 
 
 # ===========================================================================
@@ -147,11 +145,6 @@ class TestPendingTitleValueError:
             server, "_sync_session_key_after_compress", lambda *a, **kw: None
         )
 
-        class _ImmediateThread:
-            def __init__(self, target=None, daemon=None, **kw):
-                self._target = target
-            def start(self):
-                self._target()
 
         server._sessions["sid"] = session
         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -170,7 +163,6 @@ class TestPendingTitleValueError:
             )
         finally:
             server._sessions.pop("sid", None)
-
 
 
 # ===========================================================================
@@ -201,7 +193,6 @@ class TestGatewaySurfacesNullResponse:
 
         assert response != "", "Null response with api_calls>0 must be surfaced"
         assert "nonexistent_tool" in response
-
 
 
     def test_failed_generic_error(self):
@@ -288,9 +279,4 @@ class TestFinalizeOrphanedCompressionSessions:
         session = db.get_session("ghost-cont")
         assert session["ended_at"] is not None
         assert session["end_reason"] == "orphaned_compression"
-
-
-
-
-
 

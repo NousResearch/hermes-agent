@@ -12,6 +12,7 @@ from tui_gateway import server
 from hermes_cli import anon_auth, free_tier_offer
 from hermes_cli.profiles import SETUP_PROFILE_MARKER
 from tui_gateway.free_tier_task_done import note_task_done
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_intervened": False}
 
@@ -84,14 +85,6 @@ def test_a_correction_rpc_during_the_task_disqualifies_it(method, params):
     finally:
         server._sessions.pop("sid", None)
     assert not _recorded()
-
-
-class _ImmediateThread:
-    def __init__(self, target=None, daemon=None, **kw):
-        self._target = target
-
-    def start(self):
-        self._target()
 
 
 @pytest.mark.parametrize("touch,recorded_turns,records_at_each_complete", [

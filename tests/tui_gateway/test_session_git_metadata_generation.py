@@ -4,14 +4,7 @@ from __future__ import annotations
 
 from tui_gateway import server
 from hermes_state import SessionDB
-
-
-class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 def test_cwd_claim_precedes_probe_and_generation_reaches_publish(monkeypatch):

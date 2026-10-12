@@ -12,6 +12,7 @@ import threading
 
 from hermes_state import SessionDB
 from tui_gateway import server
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 def _bind_db(monkeypatch, db):
@@ -104,12 +105,6 @@ def _gateway_appends(db, turns: int = 10) -> None:
 
 
 def _immediate_thread(monkeypatch) -> None:
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 

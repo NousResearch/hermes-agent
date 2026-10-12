@@ -15,25 +15,9 @@ import pytest
 
 from hermes_state import SessionDB
 from tui_gateway import server
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 TURN = f"pid={os.getpid()}:turn=tui:platform=tui"
-
-
-class _ImmediateThread:
-    """Run the turn inside ``start()`` so tests observe its final state synchronously."""
-
-    def __init__(self, target=None, daemon=None, **_kwargs):
-        self._target = target
-
-    def start(self):
-        if self._target is not None:
-            self._target()
-
-    def is_alive(self):
-        return False
-
-    def join(self, timeout=None):
-        return None
 
 
 class _Agent:

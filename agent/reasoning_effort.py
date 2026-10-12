@@ -68,6 +68,10 @@ TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 
+#: Alibaba DashScope OpenAI-compatible mode (Model Studio): ``extra_body.enable_thinking``
+#: plus a top-level ``reasoning_effort`` that must agree with it (issue #137174).
+DASHSCOPE_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")

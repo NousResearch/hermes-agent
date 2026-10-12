@@ -7,16 +7,36 @@ and ``model.provider: alibaba-cn`` resolves at runtime.
 
 from typing import Any
 
-from agent.reasoning_effort import dashscope_preserve_thinking_extras
+from agent.reasoning_effort import DASHSCOPE_EFFORTS, clamp_effort, dashscope_preserve_thinking_extras
 from providers import register_provider
 from providers.base import ProviderProfile
 
 
 class DashScopeProfile(ProviderProfile):
-    """DashScope compatible-mode: ask the server to keep replayed prior-turn reasoning."""
+    """DashScope compatible-mode: translate the reasoning setting, keep replayed reasoning.
 
-    def build_api_kwargs_extras(self, *, model: str | None = None, **context: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        return dashscope_preserve_thinking_extras(model), {}
+    The server default for Qwen thinking models is *full* thinking, so a profile that
+    never translates the user's setting leaves ``--reasoning none`` and
+    ``agent.reasoning_effort`` silent no-ops (#137174). Thinking rides on two fields
+    that must agree — ``extra_body.enable_thinking`` plus a top-level
+    ``reasoning_effort`` — otherwise DashScope answers HTTP 400 (``'reasoning_effort'
+    must be 'none' when 'enable_thinking' is false``)."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        extra_body = dashscope_preserve_thinking_extras(model)
+        if not isinstance(reasoning_config, dict):
+            return extra_body, {}
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if reasoning_config.get("enabled", True) is False or effort in {"none", "false", "disabled"}:
+            extra_body["enable_thinking"] = False
+            return extra_body, {"reasoning_effort": "none"}
+        clamped = clamp_effort(effort, DASHSCOPE_EFFORTS)
+        if clamped in DASHSCOPE_EFFORTS:
+            extra_body["enable_thinking"] = True
+            return extra_body, {"reasoning_effort": clamped}
+        return extra_body, {}
 
 
 alibaba = DashScopeProfile(

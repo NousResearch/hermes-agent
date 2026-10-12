@@ -135,6 +135,8 @@ _packs: list[PackEntry] = []
 _pack_cache: dict[tuple[str, str], dict[str, str]] = {}
 _overlay_cache: dict[tuple[str, str, str], dict[str, str]] = {}
 _overlay_languages_cache: dict[str, frozenset[str]] = {}
+# Incremented by clear_cache. An overlay read stores its result only if no clear ran while it was reading.
+_generation = 0
 
 
 def _reset_facade() -> None:
@@ -213,6 +215,7 @@ def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> d
     per home so a multiplexed process serving profile A then B then A never mixes overlays."""
     key = (str(home), lang, surface)
     with _lock:
+        generation = _generation
         cached = _overlay_cache.get(key)
         if cached is not None:
             return cached
@@ -226,7 +229,8 @@ def overlay_layer(home: Path | str, lang: str, surface: str = CORE_SURFACE) -> d
             logger.warning("Failed to load i18n overlay %s: %s", path, exc)
             flat = {}
     with _lock:
-        _overlay_cache[key] = flat
+        if generation == _generation:
+            _overlay_cache[key] = flat
     return flat
 
 
@@ -234,12 +238,14 @@ def overlay_languages(home: Path | str) -> frozenset[str]:
     """Language ids that have at least one overlay file (any surface) under *home*."""
     key = str(home)
     with _lock:
+        generation = _generation
         cached = _overlay_languages_cache.get(key)
         if cached is not None:
             return cached
     langs = frozenset(lang for lang, _surface, _path in scan_locale_dir(overlay_dir(home)))
     with _lock:
-        _overlay_languages_cache[key] = langs
+        if generation == _generation:
+            _overlay_languages_cache[key] = langs
     return langs
 
 
@@ -258,10 +264,12 @@ def layered_languages(home: Path | str) -> frozenset[str]:
 
 def clear_cache() -> None:
     """Drop merged views (not the registrations); the facade's ``reset_language_cache`` calls this."""
+    global _generation
     with _lock:
         _pack_cache.clear()
         _overlay_cache.clear()
         _overlay_languages_cache.clear()
+        _generation += 1
 
 
 def _reset_registry_for_tests() -> None:

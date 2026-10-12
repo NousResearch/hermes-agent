@@ -19,7 +19,8 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
-    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
+    parse_active_agent_details, parse_active_agents, parse_active_work_counts,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
@@ -564,6 +565,27 @@ async def get_status(profile: Optional[str] = None):
     finally:
         if status_scope is not None:
             status_scope.__exit__(*sys.exc_info())
+
+
+@router.get("/api/status/active-work")
+async def get_active_work_status(request: Request):
+    """Return authenticated, content-free diagnostics for live agent work."""
+    _require_token(request)
+    runtime = read_runtime_status() or {}
+    raw_counts = runtime.get("active_work_counts")
+    counts = parse_active_work_counts(raw_counts)
+    if not isinstance(raw_counts, dict):
+        # Legacy record without source counts: attribute the aggregate to messaging.
+        counts["messaging"] = parse_active_agents(runtime.get("active_agents", 0))
+    return {
+        "active_agents": sum(counts.values()),
+        "active_work_counts": counts,
+        "active_agent_details": parse_active_agent_details(
+            runtime.get("active_agent_details", [])
+        ),
+        "gateway_state": runtime.get("gateway_state"),
+        "updated_at": runtime.get("updated_at"),
+    }
 
 
 @router.get("/api/system/stats")

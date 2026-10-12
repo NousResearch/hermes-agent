@@ -3571,6 +3571,7 @@ class GatewayTurnMixin:
                 # Prefer the real result even if the watchdog fired in the same window (the run already
                 # persisted its reply).
                 return worker.executor_task.result()
+            self._persist_active_agents()
             if worker.agent_timeout is not None:
                 if worker.timeout_fired.is_set():
                     break

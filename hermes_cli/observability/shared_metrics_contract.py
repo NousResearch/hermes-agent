@@ -13,6 +13,7 @@ from agent.relay_runtime import (
     RUNTIME_SCHEMA_VERSION,
 )
 from hermes_cli.platforms import PLATFORMS
+from tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
 from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
@@ -116,7 +117,7 @@ DURATION_BUCKETS = frozenset({
 })
 COUNT_BUCKETS = frozenset({"0", "1", "2", "3_to_5", "6_to_10", "gte_11"})
 TOOL_CATEGORIES = frozenset({
-    "browser", "code_execution", "communication", "computer_use", "delegation", "file",
+    "browser", "code_execution", "communication", "computer_use", "connector", "delegation", "file",
     "home_automation", "mcp", "media", "memory", "other", "planning", "project", "scheduler",
     "skill", "terminal", "unknown", "web",
 })
@@ -153,10 +154,12 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 # Surfaces that are not messaging platforms keep their own execution_surface value.
 # ``relay``: a connector inbound whose platform neither the inbound nor a single-platform connector names.
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
-TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
+# The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
+BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
+TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_ERROR_CLASSES = frozenset({
-    "blocked", "contract_violation", "exception", "interrupted", "invalid_arguments", "none",
-    "timeout", "tool_error", "unknown",
+    "alias", "blocked", "connection_required", "connector_backend", "contract_violation", "exception",
+    "interrupted", "invalid_arguments", "none", "not_allowed", "timeout", "tool_error", "unknown",
 })
 SIZE_BUCKETS = frozenset({
     "0", "1", "2", "3_to_5", "6_to_10", "11_to_25", "26_to_100", "101_to_250", "gte_251",
@@ -586,6 +589,14 @@ LOOP_GUARD_DETECTORS = frozenset({
 })
 TOOL_RECOVERY_OUTCOMES = frozenset({"error", "gave_up", "no_tool_call", "success"})
 TOOL_RECOVERY_NEXT_TOOLS = frozenset({"different", "none", "same"})
+# ---- v4 connectors ----
+TOOL_SEARCH_MARK = TOOL_SEARCH_METRIC = "hermes.tool_search.count"
+TOOL_BATCH_MARK = TOOL_BATCH_METRIC = "hermes.tool_batch.count"
+CONNECTOR_CHAIN_MARK = CONNECTOR_CHAIN_METRIC = "hermes.connector_chain.count"
+TOOL_SEARCH_SCOPES = frozenset({"both", "connector", "local"})
+TOOL_SEARCH_OUTCOMES = frozenset({"connector_unavailable", "error", "hits", "no_hits"})
+CONNECTOR_SHARES = frozenset({"all", "none", "some"})
+# ---- end v4 connectors ----
 TERMINAL_COMMAND_KINDS = frozenset({
     "build", "container", "file_ops", "git", "network", "node", "other", "package_manager", "python",
     "shell", "shell_builtin", "test_runner",
@@ -1026,6 +1037,13 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "outcome": INSTALL_RUN_OUTCOMES,
     },
     # ---- end iuf c2 ----
+    # ---- v4 connectors ----
+    TOOL_SEARCH_METRIC: {"hits_bucket": COUNT_BUCKETS, "outcome": TOOL_SEARCH_OUTCOMES, "scope": TOOL_SEARCH_SCOPES},
+    TOOL_BATCH_METRIC: {"connector_share": CONNECTOR_SHARES, "size_bucket": COUNT_BUCKETS},
+    CONNECTOR_CHAIN_METRIC: {
+        "described_first": YES_NO, "outcome": TOOL_OUTCOMES, "searches_before_bucket": COUNT_BUCKETS,
+    },
+    # ---- end v4 connectors ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1067,6 +1085,7 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     PROVIDER_SETUP_METRIC: {"provider": PROVIDER_IDENTIFIER_MAX_LENGTH},
     FEATURE_DISABLED_METRIC: {"name": FEATURE_DISABLED_NAME_MAX_LENGTH},
     # ---- end v5 signals ----
+    TOOL_BATCH_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
 }
 # ---- v5 engagement ----
 # Conversation volume on the session row: new fields, so rows recorded before them still package.
@@ -1174,6 +1193,8 @@ _DECISION_MARK_METRICS = {
     # ---- iuf c2 ----
     INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
     # ---- end iuf c2 ----
+    TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
+    CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC,
 }
 
 
@@ -1698,6 +1719,8 @@ _TOOL_CATEGORY_PREFIXES = (
 
 def tool_category(kwargs: dict[str, Any]) -> str:
     """Map Hermes registry toolset metadata to a low-cardinality category."""
+    if _norm(kwargs.get("tool_name")).startswith(CONNECTOR_NAME_PREFIX):
+        return "connector"
     toolset = _norm(kwargs.get("toolset"))
     if not toolset:
         return "unknown"
@@ -1756,12 +1779,14 @@ def tool_terminal_fields(
 
 
 def tool_metric_name(kwargs: dict[str, Any]) -> str:
-    """A built-in tool's own name; MCP and plugin tools collapse to their source kind."""
+    """A built-in or bridge tool's own name; connector, MCP and plugin tools collapse to their kind."""
     name = _norm(kwargs.get("tool_name"))
-    if name in BUILTIN_TOOL_NAMES:
+    if name in BUILTIN_TOOL_NAMES or name in BRIDGE_TOOL_NAMES:
         return name
     if not name:
         return "unknown"
+    if name.startswith(CONNECTOR_NAME_PREFIX):
+        return "connector"
     return "mcp" if name.startswith("mcp_") or tool_category(kwargs) == "mcp" else "plugin"
 
 
@@ -1778,14 +1803,55 @@ _TOOL_ERROR_TYPES = {
 
 def tool_error_class(kwargs: dict[str, Any], outcome: str | None = None) -> str:
     """Closed failure class from Hermes's own error_type; exception class names become
-    ``exception`` so plugin-defined identifiers never leave the machine."""
+    ``exception`` so plugin-defined identifiers never leave the machine. A connector entry's
+    gateway error code names its class instead of ``tool_error``."""
     outcome = outcome or tool_outcome(kwargs)
     if outcome in _TOOL_STATUS_ERROR_CLASSES:
         return _TOOL_STATUS_ERROR_CLASSES[outcome]
     if outcome != "failed":
         return "unknown"
     error_type = _norm(kwargs.get("error_type"))
+    if error_type == "tool_error" and (connector_class := connector_error_class(kwargs)):
+        return connector_class
     return _TOOL_ERROR_TYPES.get(error_type, "exception" if error_type else "unknown")
+
+
+# The tool gateway's execute codes (product family: the user or the model can fix it; backend: the
+# gateway or the vendor failed). An unlisted code falls back to its family.
+_CONNECTOR_CODE_CLASSES = {
+    **dict.fromkeys(("CONNECTION_REQUIRED", "CONNECTION_EXPIRED"), "connection_required"),
+    "TOOL_NOT_ALLOWED": "not_allowed",
+    **dict.fromkeys(("ALIAS_REQUIRED", "ALIAS_UNKNOWN"), "alias"),
+    "INVALID_ARGUMENTS": "invalid_arguments",
+    **dict.fromkeys((
+        "PROVIDER_ERROR", "PROVIDER_RATE_LIMITED", "PROVIDER_TIMEOUT", "POLICY_UNAVAILABLE", "GATEWAY_ERROR",
+    ), "connector_backend"),
+}
+_CONNECTOR_FAMILY_CLASSES = {"backend": "connector_backend"}
+
+
+def connector_error_class(kwargs: dict[str, Any]) -> str | None:
+    """The class of a failed connector entry from its result's ``error.code`` (``error.family`` for an
+    unlisted code); None when the call is not a connector call or its result names no code."""
+    if not _norm(kwargs.get("tool_name")).startswith(CONNECTOR_NAME_PREFIX):
+        return None
+    error = _result_error(kwargs.get("result"))
+    code = str(error.get("code") or "").strip().upper()
+    if not code:
+        return None
+    return _CONNECTOR_CODE_CLASSES.get(code) or _CONNECTOR_FAMILY_CLASSES.get(_norm(error.get("family")))
+
+
+def _result_error(result: Any) -> dict[str, Any]:
+    if isinstance(result, str):
+        try:
+            import json
+
+            result = json.loads(result)
+        except ValueError:
+            return {}
+    error = result.get("error") if isinstance(result, dict) else None
+    return error if isinstance(error, dict) else {}
 
 
 def tool_latency_bucket(value: Any, *, fallback_duration_ms: int | None = None) -> str:

@@ -22,17 +22,42 @@ CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
 ConnectionStatus = Literal["pending", "active", "failed", "expired", "revoked", "inactive"]
 # Where the vendor's done page sends the browser after consent; the dev desktop registers hermes-dev://.
 ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"]
+# Who asked for a connect, so the gateway can attribute each minted link. The gateway sets
+# ``execute_link`` and ``portal`` itself; an older gateway ignores the field.
+ConnectorInitiator = Literal["agent_tool", "desktop_page", "card_retry"]
 
 # Hermes dispatch caps batches lower, so client-side chunking is deliberately absent.
 WIRE_BATCH_MAX = 25
 
-# A 200 execute envelope carries per-tool failures as results, not HTTP errors.
-ConnectorErrorCode = Literal[
-    "TOOL_NOT_ALLOWED",
-    "CONNECTION_REQUIRED",
-    "TOOL_NOT_FOUND",
-    "PROVIDER_ERROR",
-]
+# Any string: a gateway newer than this client may add codes, and an unknown code still renders.
+ConnectorErrorCode = str
+# `product`: the request or the user's setup is the cause. `backend`: the gateway or the vendor failed.
+ErrorFamily = Literal["product", "backend"]
+
+# Single-call execute failures: code -> (family, HTTP status). The legacy array envelope carries only
+# TOOL_NOT_ALLOWED, CONNECTION_REQUIRED, TOOL_NOT_FOUND and PROVIDER_ERROR, always under a 200.
+EXECUTE_ERROR_CODES: dict[str, tuple[ErrorFamily, int]] = {
+    "TOOL_NOT_ALLOWED": ("product", 403),
+    "CONNECTION_REQUIRED": ("product", 409),
+    "CONNECTION_EXPIRED": ("product", 409),
+    "ALIAS_REQUIRED": ("product", 422),
+    "ALIAS_UNKNOWN": ("product", 422),
+    "INVALID_ARGUMENTS": ("product", 422),
+    "TOOL_NOT_FOUND": ("product", 404),
+    "PROVIDER_ERROR": ("backend", 502),
+    "PROVIDER_RATE_LIMITED": ("backend", 429),
+    "PROVIDER_TIMEOUT": ("backend", 504),
+    "POLICY_UNAVAILABLE": ("backend", 503),
+    "GATEWAY_ERROR": ("backend", 500),
+}
+
+
+def execute_error_family(code: str, family: Optional[str] = None) -> Optional[str]:
+    """The gateway's family when it sent one, else the table's; ``None`` for an unknown code."""
+    if family in ("product", "backend"):
+        return family
+    known = EXECUTE_ERROR_CODES.get(code)
+    return known[0] if known else None
 
 
 class _Wire(BaseModel):
@@ -100,6 +125,13 @@ class ConnectorToolError(_Wire):
     # The account the link was minted for; absent when the link mint failed. Absent means nothing to watch.
     connection_id: Optional[str] = Field(default=None, alias="connectionId")
     hint: Optional[str] = None
+    family: Optional[str] = None
+
+
+class ConnectorExecuteFailure(ConnectorToolError):
+    """The body of a non-2xx single-call execute answer."""
+
+    request_id: Optional[str] = Field(default=None, alias="requestId")
 
 
 class ConnectorExecuteCall(_Wire):
@@ -116,6 +148,23 @@ class ConnectorExecuteRequest(_Wire):
     # Ride any CONNECTION_REQUIRED link the call mints back to the surface that asked.
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+
+class ConnectorExecuteSingleRequest(_Wire):
+    call: ConnectorExecuteCall
+    return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
+    op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+
+class ConnectorExecuteSingleResult(_Wire):
+    connector: str = ""
+    tool: str = ""
+    data: Any = None
+    account: Optional[str] = None
+
+
+class ConnectorExecuteSingleResponse(_Wire):
+    result: ConnectorExecuteSingleResult
 
 
 class ConnectorExecuteResult(_Wire):
@@ -145,6 +194,7 @@ class ConnectorConnectionsRequest(_Wire):
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     # The caller's operation id, echoed on the hermes://connections/done link.
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    initiator: Optional[ConnectorInitiator] = None
 
 
 class ConnectorConnectionResult(_Wire):

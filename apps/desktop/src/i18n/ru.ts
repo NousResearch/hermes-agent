@@ -3452,6 +3452,10 @@ export const ruOverrides = {
       turnRunning: 'Выполняется',
       contextUsage: 'Использование контекста',
       compressions: count => `Сжатий: ${count}`,
+      systemResources: {
+        cpu: 'ЦП',
+        disk: 'Диск'
+      },
       contextUsagePanel: {
         categories: {
           conversation: 'Диалог',

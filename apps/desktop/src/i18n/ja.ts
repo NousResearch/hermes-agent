@@ -3156,6 +3156,8 @@ export const jaOverrides = {
         gpuUtilization: 'GPU 使用率',
         gpuMemory: 'GPU メモリ',
         ram: 'RAM',
+        cpu: 'CPU',
+        disk: 'ディスク',
         unifiedNote: 'ユニファイドメモリ——GPU とシステムがこのプールを共有します。',
         toggle: 'システムリソース'
       },

@@ -470,7 +470,11 @@ export const arChrome = {
       openModelPicker: 'فتح اختيار النموذج',
       modelPinned: 'النموذج مثبت',
       modelTitle: (provider, model) => `${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider}: ${model}`
+      providerModelTitle: (provider, model) => `${provider}: ${model}`,
+      systemResources: {
+        cpu: 'المعالج',
+        disk: 'القرص'
+      }
     }
   },
   rightSidebar: {

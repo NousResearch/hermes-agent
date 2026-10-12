@@ -4706,6 +4706,8 @@ export const deOverrides = {
         gpuUtilization: 'GPU-Auslastung',
         gpuMemory: 'GPU-Speicher',
         ram: 'RAM',
+        cpu: 'CPU',
+        disk: 'Datenträger',
         unifiedNote: 'Unified Memory — die GPU und das System teilen sich diesen Speicherpool.',
         toggle: 'Systemressourcen'
       },

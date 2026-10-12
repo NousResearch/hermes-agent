@@ -2,18 +2,21 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
-import { getLocalHardware } from '@/hermes'
+import { getLocalHardware, getSystemStats } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Activity } from '@/lib/icons'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
-import type { LocalHardware } from '@/types/hermes'
+import type { LocalHardware, SystemStats } from '@/types/hermes'
 
-// Live host-resource readout for the bottom bar: GPU utilization + VRAM +
-// RAM, fed by /api/local-models/hardware. Hidden by default (an item most
-// users don't watch); the poll runs ONLY while the item is shown, so the
-// hidden default costs nothing. 5s cadence — resource numbers, not a
-// heartbeat.
+// Live host-resource readout for the bottom bar: CPU + GPU utilization + VRAM
+// + RAM + disk of the ACTIVE connection's backend host — over SSH, the remote
+// machine. GPU/VRAM/RAM come from /api/local-models/hardware, CPU/disk from
+// /api/system/stats (the dashboard System page's route); each source fails
+// alone, so a backend missing one still shows the other's rows. Hidden by
+// default (an item most users don't watch); the poll runs ONLY while the item
+// is shown, so the hidden default costs nothing. 5s cadence — resource
+// numbers, not a heartbeat.
 const POLL_MS = 5_000
 
 function gb(bytes: number | null | undefined): string {
@@ -57,6 +60,7 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const enabled = $localModelsEnabled.get()
   const shown = enabled && !hiddenIds.includes('system-resources')
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
+  const [stats, setStats] = useState<SystemStats | null>(null)
 
   useEffect(() => {
     if (!shown) {
@@ -73,16 +77,11 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         return
       }
 
-      try {
-        const next = await getLocalHardware()
+      const [nextHardware, nextStats] = await Promise.allSettled([getLocalHardware(), getSystemStats()])
 
-        if (!cancelled) {
-          setHardware(next)
-        }
-      } catch {
-        if (!cancelled) {
-          setHardware(null)
-        }
+      if (!cancelled) {
+        setHardware(nextHardware.status === 'fulfilled' ? nextHardware.value : null)
+        setStats(nextStats.status === 'fulfilled' ? nextStats.value : null)
       }
 
       if (!cancelled) {
@@ -132,15 +131,26 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
   const ramPercent =
     hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
 
-  // Compact bar label: the numbers a local-inference user glances at.
-  // "GPU 34% · 18G/32G" with a GPU; "RAM 41G/256G" without.
+  const cpuPercent = stats?.cpu_percent != null ? Math.round(stats.cpu_percent) : null
+  const disk = stats?.disk ?? null
+
+  // Compact bar label: the numbers a glance wants. "GPU 34% · 18G/32G" with a
+  // GPU; "CPU 12% · RAM 41G/256G" without (CPU dropped when the backend can't
+  // report it); "CPU 12%" when only the stats route answered.
+  const cpuLabel = cpuPercent != null ? `CPU ${cpuPercent}%` : null
+
   const label = hardware
     ? hasGpu
       ? `GPU ${hardware.gpu_util_percent ?? 0}%${
           hardware.vram_used_bytes != null ? ` · ${gb(hardware.vram_used_bytes)}/${gb(hardware.vram_total_bytes)}` : ''
         }`
-      : `RAM ${gb(ramUsed)}/${gb(hardware.ram_total_bytes)}`
-    : copy.loading
+      : [cpuLabel, `RAM ${gb(ramUsed)}/${gb(hardware.ram_total_bytes)}`].filter(Boolean).join(' · ')
+    : (cpuLabel ?? copy.loading)
+
+  // Header subtitle: the GPU's name when there is one, else the backend's
+  // hostname — which machine these numbers are from matters once the
+  // connection is a remote one.
+  const subtitle = hardware?.gpu_name || stats?.hostname || null
 
   return {
     detail: undefined,
@@ -160,10 +170,10 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
         <div className="flex min-w-0 items-baseline justify-between gap-2">
           <p className="shrink-0 font-medium text-foreground">{copy.title}</p>
 
-          {hardware?.gpu_name && (
-            <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{hardware.gpu_name}</span>
-          )}
+          {subtitle && <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{subtitle}</span>}
         </div>
+
+        {cpuPercent != null && <MeterRow label={copy.cpu} percent={cpuPercent} value={`${cpuPercent}%`} />}
 
         {hasGpu && (
           <MeterRow
@@ -186,6 +196,14 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
           percent={ramPercent}
           value={`${gbLong(ramUsed)} / ${gbLong(hardware?.ram_total_bytes)}`}
         />
+
+        {disk && (
+          <MeterRow
+            label={copy.disk}
+            percent={Math.round(disk.percent)}
+            value={`${gbLong(disk.used)} / ${gbLong(disk.total)}`}
+          />
+        )}
 
         {hardware?.uma && <p className="text-[0.6875rem] text-muted-foreground">{copy.unifiedNote}</p>}
       </div>

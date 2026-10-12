@@ -11,7 +11,8 @@ import type {
   ElevenLabsVoicesResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
-  MemoryStatusResponse
+  MemoryStatusResponse,
+  SystemStats
 } from '@/types/hermes'
 
 import {
@@ -264,6 +265,16 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
   return hermesApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
     ...profileScoped(profile)
+  })
+}
+
+/** Host CPU / memory / disk of the ACTIVE connection's backend — over SSH that
+ *  is the remote machine, not this one. Same route the dashboard System page
+ *  reads, so older backends already serve it. */
+export function getSystemStats(): Promise<SystemStats> {
+  return hermesApi<SystemStats>({
+    ...profileScoped(),
+    path: '/api/system/stats'
   })
 }
 

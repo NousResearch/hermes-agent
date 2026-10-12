@@ -4261,6 +4261,8 @@ export const en: Translations = {
         gpuUtilization: 'GPU utilization',
         gpuMemory: 'GPU memory',
         ram: 'RAM',
+        cpu: 'CPU',
+        disk: 'Disk',
         unifiedNote: 'Unified memory — the GPU and system share this pool.',
         toggle: 'System resources'
       },

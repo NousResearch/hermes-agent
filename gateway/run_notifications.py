@@ -25,6 +25,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+from gateway.run_completion_claims import GatewayCompletionBatchMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -123,7 +124,7 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
+class GatewayNotificationsMixin(GatewayCompletionBatchMixin, GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -1359,23 +1360,29 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 return False
         return True
 
-    async def _preflight_completion_delivery(self, evt: dict) -> _CompletionClaim:
+    async def _preflight_completion_delivery(
+        self, evt: dict, *, durable_claim_id: Optional[str] = None,
+        claim: Optional[_CompletionClaim] = None,
+    ) -> _CompletionClaim:
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
         Adapter acceptance is not proof of delivery: the inner resolver can still fail closed inside
         the pipeline after acceptance, falsely acking the durable row. Verifying first gives drops an
         honest durable disposition.
         """
-        claim = self._CompletionClaim()
+        claim = claim if claim is not None else self._CompletionClaim()
         evt_type = evt.get("type")
-        if evt_type == "async_delegation" and not await self._completion_delivery_ready(evt):
+        if (evt_type == "async_delegation" and durable_claim_id is None
+                and not await self._completion_delivery_ready(evt)):
             claim.proceed, claim.early_result = False, False
             return claim
         # An interim per-task notice shares the batch's delegation_id but is not the durable
         # completion; claiming that row here would acknowledge the FINAL result before it exists.
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
-            if claim.delegation_id:
+            if durable_claim_id is not None:
+                claim.claim_id = durable_claim_id
+            elif claim.delegation_id:
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
@@ -1383,7 +1390,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                         claim.proceed = False
                         return claim
                 except Exception as exc:
-                    logger.warning("Could not claim durable async completion %s: %s", claim.delegation_id, exc)
+                    logger.warning("Could not claim durable async completion %s: %s", claim.delegation_id, exc, exc_info=True)
                     claim.proceed, claim.early_result = False, False
                     return claim
         elif evt_type != "completion":
@@ -1464,6 +1471,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
 
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
+        _durable_claim_id: Optional[str] = None, _preflight_claim: Optional[_CompletionClaim] = None,
     ) -> Optional[bool]:
         """Acknowledge one admitted batch, refund refusals, or release failed deliveries.
 
@@ -1472,20 +1480,30 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         """
         async with self._completion_event_scope(evt):
             return await self._deliver_completion_notification_scoped(
-                synth_text, evt, sibling_claims=sibling_claims)
+                synth_text, evt, sibling_claims=sibling_claims,
+                _durable_claim_id=_durable_claim_id, _preflight_claim=_preflight_claim,
+            )
 
     async def _deliver_completion_notification_scoped(
         self, synth_text: str, evt: dict, *, sibling_claims=(),
+        _durable_claim_id: Optional[str] = None, _preflight_claim: Optional[_CompletionClaim] = None,
     ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
         from tools.process_registry_notifications import should_surface_notification
-        if not should_surface_notification(evt):
-            return None  # Suppressed noise is terminal, not a consumed process result.
         identity = self._completion_delivery_identity(evt)
-        claim = self._CompletionClaim()
+        # Own an inherited batch claim even if target validation is cancelled or raises.
+        claim = _preflight_claim or self._CompletionClaim(
+            delegation_id=str(evt.get("delegation_id") or ""),
+            claim_id=_durable_claim_id or "",
+        )
         accepted = identity_claimed = refused = False
         try:
-            claim = await self._preflight_completion_delivery(evt)
+            if not should_surface_notification(evt):
+                return None  # Suppressed noise still releases an inherited batch claim.
+            if _preflight_claim is None:
+                claim = await self._preflight_completion_delivery(
+                    evt, durable_claim_id=_durable_claim_id, claim=claim,
+                )
             if not claim.proceed:
                 return claim.early_result
             if identity is not None:
@@ -1682,78 +1700,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         if parsed.get("thread_id"):
             evt["thread_id"] = parsed["thread_id"]
 
-    async def _deliver_async_delegation_group(self, group: list[dict]) -> Optional[bool]:
-        """Deliver a same-session batch of async completions as ONE turn: the primary carries the
-        consolidated text of every sibling THIS runner claimed (siblings owned elsewhere are excluded;
-        their claims are acked only after adapter acceptance). True after acceptance, False to requeue
-        the group, None when nothing is deliverable here (retry siblings requeued)."""
-        # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
-        async with self._completion_event_scope(group[0]):
-            return await self._deliver_async_delegation_group_scoped(group)
 
-    async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
-        from gateway.run import _format_gateway_process_notification
-        from tools.process_registry import process_registry as _pr
-        # API delivery does not start a model turn, so there is nothing to coalesce.
-        # Keep each unit's stable identity with its row across partial delivery/retry.
-        if group and group[0].get("origin_session_id"):
-            outcomes = []
-            for evt in group:
-                text = _format_gateway_process_notification(evt)
-                if text:
-                    outcomes.append(await self._deliver_completion_notification(text, evt))
-            return False if False in outcomes else True
-        deliverable: list[tuple[dict, str]] = []
-        for evt in group:
-            synth_text = _format_gateway_process_notification(evt)
-            if not synth_text:
-                continue
-            parent = str(evt.get("parent_session_id") or "")
-            if parent and await self._classify_completion_target(parent, str(evt.get("session_key") or "")) == "terminal":
-                await self._deliver_completion_notification(synth_text, evt)
-                continue
-            identity = self._completion_delivery_identity(evt)
-            if identity is not None and self._completion_identity_seen(identity):
-                continue
-            deliverable.append((evt, synth_text))
-        if not deliverable:
-            return None
-        if len(deliverable) == 1:
-            evt, synth_text = deliverable[0]
-            return await self._deliver_completion_notification(synth_text, evt)
-        # Check the entire group before claiming ANY row: an unavailable sibling must
-        # not exhaust its budget just because the primary has a usable route.
-        for evt, _text in deliverable:
-            if not await self._completion_delivery_ready(evt):
-                return False
-        from tools.async_delegation import claim_event_delivery
-        primary_evt, primary_text = deliverable[0]
-        blocks = [primary_text]
-        siblings: list[tuple[dict, str]] = []
-        for evt, synth_text in deliverable[1:]:
-            claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
-            if claim_id is None:
-                # Another consumer owns this row: keep it out of our text so it is never double-injected.
-                continue
-            siblings.append((evt, claim_id))
-            blocks.append(synth_text)
-        if not siblings:
-            return await self._deliver_completion_notification(primary_text, primary_evt)
-        header = (
-            f"[IMPORTANT: {len(blocks)} background subagent delegations "
-            "completed for this session. Treat these results as one "
-            "completion batch and send at most one consolidated user-facing "
-            "response. If a result does not change the current conclusion, absorb it silently.]"
-        )
-        consolidated = "\n\n".join([header, *blocks])
-        delivered = await self._deliver_completion_notification(
-            consolidated, primary_evt, sibling_claims=siblings,
-        )
-        if delivered is None:
-            # Primary dropped/owned elsewhere: retry the unadmitted siblings.
-            for evt, _claim_id in siblings:
-                _pr.completion_queue.put(evt)
-        return delivered
 
     def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process

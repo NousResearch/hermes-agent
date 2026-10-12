@@ -114,7 +114,7 @@ def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
     assert _git(install, "rev-parse", "HEAD") == pin
     assert (install / "README").read_text() == "one"
     assert _git(install, "status", "--porcelain") == ""
-    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    [clone] = [line for line in trace.read_text().splitlines() if "clone" in line.split()]
     assert "--no-checkout" in clone.split()
     unpinned_root = tmp_path / "unpinned"
     unpinned_root.mkdir()
@@ -122,7 +122,7 @@ def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
     result = _stage(unpinned_root, origin, prelude=tracer)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (unpinned_root / "install" / "README").read_text() == "tip"
-    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    [clone] = [line for line in trace.read_text().splitlines() if "clone" in line.split()]
     assert "--no-checkout" not in clone.split()
 
 
@@ -231,8 +231,8 @@ def test_rerun_marks_partial_clone_packs_when_the_fetch_crashes(tmp_path):
     _commit(origin, "two")
     # Stand-in for the git 2.53+ index-pack crash: any fetch while an unmarked pack exists dies.
     crashing_fetch = (
-        'git() { if [ "${3:-}" = fetch ]; then for p in "$2"/.git/objects/pack/pack-*.pack; do '
-        '[ -e "${p%.pack}.promisor" ] || { echo "BUG: should_include_obj" >&2; return 128; }; done; fi; '
+        'git() { case " $* " in *" fetch "*) for p in "$2"/.git/objects/pack/pack-*.pack; do '
+        '[ -e "${p%.pack}.promisor" ] || { echo "BUG: should_include_obj" >&2; return 128; }; done;; esac; '
         'command git "$@"; }'
     )
     result = _stage(tmp_path, origin, prelude=crashing_fetch)

@@ -136,11 +136,26 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
+    # Take the model from the record the route below comes from. With ``gateway_runtime`` (same test as
+    # ``session_gateway_runtime``) the gateway sync wrote the column and the route together, and a confirmed
+    # Browser/API lock still naming the column wrote it without the pick. Otherwise the pick wins: a fallback
+    # that served the first call rewrites the column (first_accounted_route), not model_config.
+    row_model = str(row.get("model") or "").strip()
+    picked_model = str(model_config.get("model") or "").strip()
+    gateway_runtime = model_config.get("gateway_runtime")
+    lock = model_config.get("browser_model_lock")
+    column_is_locked = isinstance(lock, dict) and bool(lock.get("confirmed")) and (
+        str(lock.get("model") or "").strip() == row_model)
+    if (isinstance(gateway_runtime, dict) and gateway_runtime.get("provider")) or column_is_locked:
+        model = row_model or picked_model
+    else:
+        model = picked_model or row_model
     # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
     # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    # ``billing_provider`` served the column model, so it must not fill the provider of a different pick.
+    route_row = row if model == row_model else {**row, "billing_provider": None}
     from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
+    route = SessionDB.session_gateway_runtime(route_row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")

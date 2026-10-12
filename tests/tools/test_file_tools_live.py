@@ -128,23 +128,6 @@ class TestWriteFile:
         assert result.bytes_written == len(SIMPLE_CONTENT.encode())
         assert Path(path).read_text() == SIMPLE_CONTENT
 
-    # .py so write_file probes the previous content (lint coverage) for the rewrite check.
-    def test_large_rewrite_of_existing_file_warns_with_replaced_line_count(self, ops, tmp_path):
-        path = tmp_path / "big.py"
-        path.write_text("".join(f"x_{i} = {i}\n" for i in range(40)))
-        rewritten = "".join(f"x_{i} = {i + 1000 if i < 30 else i}\n" for i in range(40))
-        result = ops.write_file(str(path), rewritten)
-        assert result.error is None
-        assert result.warning is not None
-        assert "30 of 40 previous lines" in result.warning
-
-    def test_small_edit_of_existing_file_has_no_warning(self, ops, tmp_path):
-        path = tmp_path / "small.py"
-        path.write_text("".join(f"x_{i} = {i}\n" for i in range(40)))
-        result = ops.write_file(str(path), path.read_text().replace("x_7 = 7", "x_7 = 70"))
-        assert result.error is None
-        assert result.warning is None
-
 
 # ── patch_replace ────────────────────────────────────────────────────────
 

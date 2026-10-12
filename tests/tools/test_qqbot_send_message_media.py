@@ -265,7 +265,9 @@ class TestQqbotMediaFailureFallsBackToText:
             )
 
         assert result.get("success") is True, result
-        assert any(json and json.get("content") == "the caption text" for _, json in posted), posted
+        assert any(
+            json and json.get("markdown", {}).get("content") == "the caption text"
+            for _, json in posted), posted
         assert any("omitted" in w or "skipping" in w for w in result.get("warnings", [])), result
 
     def test_upload_quota_error_still_delivers_caption_as_text(self, tmp_path):
@@ -299,7 +301,9 @@ class TestQqbotMediaFailureFallsBackToText:
             )
 
         assert result.get("success") is True, result
-        assert any(json and json.get("content") == "urgent notice" for _, json in posted), posted
+        assert any(
+            json and json.get("markdown", {}).get("content") == "urgent notice"
+            for _, json in posted), posted
         assert result.get("warnings"), "media failure must be surfaced as a warning"
 
     def test_non_caption_message_text_sent_before_failed_media_is_not_duplicated(self, tmp_path):
@@ -329,7 +333,7 @@ class TestQqbotMediaFailureFallsBackToText:
         # Main's contract: the already-delivered text survives; the media failure becomes a
         # warning on the result, not a bare error that discards the send.
         assert result.get("success") is True, result
-        contents = [json.get("content") for _, json in posted if json]
+        contents = [json.get("markdown", {}).get("content") for _, json in posted if json]
         assert contents.count("read this text") == 1, posted
         assert result.get("warnings"), "media failure must be surfaced as a warning"
 

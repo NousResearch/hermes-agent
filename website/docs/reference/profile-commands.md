@@ -80,7 +80,7 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, skills, and the curated `memories/MEMORY.md` / `memories/USER.md` from the current profile. Sessions, `state.db` and cron jobs are not copied. |
+| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, skills, the curated `memories/MEMORY.md` / `memories/USER.md`, and the active `memory.provider`'s own config (`<provider>/` or `<provider>.json`, e.g. `hindsight/config.json`) from the current profile. Sessions, `state.db` and cron jobs are not copied. |
 | `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `hermes backup` excludes. |
 | `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
@@ -174,6 +174,8 @@ hermes profile show <name>
 
 Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
 
+The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
+
 This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
 | Argument | Description |
@@ -227,7 +229,11 @@ hermes profile alias work --remove
 hermes profile rename <old-name> <new-name>
 ```
 
-Renames a profile. Updates the directory and shell alias.
+Renames a profile. Updates the directory and shell alias. A gateway service installed under the
+old name (`hermes -p <old-name> gateway install`) is removed, whether or not the gateway is
+running, because it would start the old name at the next login; reinstall it with
+`hermes -p <new-name> gateway install`. Inside the Docker image the s6 gateway slot moves to the
+new name.
 
 | Argument | Description |
 |----------|-------------|
@@ -319,7 +325,7 @@ hermes profile purge-identity mybot
 hermes profile export <name> [options]
 ```
 
-Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json` and `.env` are always excluded.
+Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json`, `.env` and the other credential stores are always excluded; see [what an export file contains](../user-guide/profile-distributions.md#what-an-export-file-contains).
 
 Also available in chat as [`/export`](./slash-commands.md), and in the desktop app via **⌘K → Export profile…** or a profile square's right-click menu. A desktop export additionally stages `desktop.json` (skin, light/dark mode, custom themes, rail color, window layout) into the archive.
 
@@ -506,9 +512,12 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
 version (treated as `>=`). Install fails with a clear error if the current
 Hermes version doesn't satisfy the spec.
 
-`distribution_owned` is optional. If set, only those paths are replaced on
-update; anything else in the profile stays user-owned. If omitted, the
-defaults above apply.
+`distribution_owned` is optional. If set, only those paths are updated;
+anything else in the profile stays user-owned. A directory of skills, such as
+`skills/` or a category like `skills/research/`, is merged per skill: the skills
+the distribution ships are replaced, and skills you added there stay. A skill
+the author later drops from the distribution is left in place on update, as
+with top-level `skills/`. If omitted, the defaults above apply.
 
 ### Publishing a distribution
 

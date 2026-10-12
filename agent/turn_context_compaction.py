@@ -27,9 +27,9 @@ logger = logging.getLogger("agent.turn_context")
 class CompactionOutcome:
     """Locals rebuilt by turn-start compaction (``build_turn_context`` reads them back)."""
 
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Optional[str]
-    conversation_history: Optional[List[Dict[str, Any]]]
+    conversation_history: Optional[list[dict[str, Any]]]
     current_turn_user_idx: int
     # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
     compressed: bool = False
@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke
@@ -112,7 +113,7 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
     return api_call_count
 
 
-def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
+def _reanchor(agent: Any, messages: list[Any], user_message: Any) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
     from agent.turn_context import reanchor_current_turn_user_idx
@@ -126,8 +127,8 @@ def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
 
 
 def run_turn_start_compaction(
-    agent: Any, *, messages: List[Dict[str, Any]], system_message: Optional[str],
-    active_system_prompt: Optional[str], conversation_history: Optional[List[Dict[str, Any]]],
+    agent: Any, *, messages: list[dict[str, Any]], system_message: Optional[str],
+    active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
 ) -> CompactionOutcome:
     """Idle compaction, then preflight compression (or the uncompressed guard)."""
@@ -202,7 +203,7 @@ def _idle_compaction(
     if _idle_status:
         agent._emit_status(_idle_status)
     out.messages, out.active_system_prompt = agent._compress_context(
-        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id
+        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id, trigger="idle",
     )
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
@@ -380,7 +381,7 @@ def _run_preflight_passes(
         _orig_tokens = _preflight_tokens
         out.messages, out.active_system_prompt = agent._compress_context(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, trigger="turn_start_threshold",
         )
         if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
@@ -404,6 +405,7 @@ def _run_preflight_passes(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
         ):
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
@@ -421,6 +423,8 @@ def _run_preflight_passes(
                 "~%s -> ~%s request tokens; skipping additional passes",
                 f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
             )
+            # Sub-5% progress on a request still above the window: no further pass will get under it.
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             break
 
 
@@ -454,7 +458,8 @@ def _engine_preflight_maintenance(
     )
     _engine_input = out.messages
     out.messages, out.active_system_prompt = agent._compress_context(
-        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id
+        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id,
+        trigger="engine_preflight",
     )
     # ``_compress_context`` returns the INPUT list on every skip path and an engine
     # may no-op; re-baseline/re-anchor only after a REAL compaction.
@@ -467,7 +472,7 @@ def _engine_preflight_maintenance(
 
 
 def _rearm_uncompressed_overflow_warn(
-    agent: Any, messages: List[Any], active_system_prompt: Optional[str]
+    agent: Any, messages: list[Any], active_system_prompt: Optional[str]
 ) -> None:
     """Uncompressed session guard: the warning fires from the loop's pre-API site;
     here we only RE-ARM the dedup once back under the window."""

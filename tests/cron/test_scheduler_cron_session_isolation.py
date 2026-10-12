@@ -111,7 +111,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
             "args": None,
         },
     )
-    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda: [])
+    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", list)
     monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
     monkeypatch.setattr(

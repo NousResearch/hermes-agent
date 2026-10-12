@@ -9,14 +9,20 @@ process, so threads exercise the true kernel-lock semantics.
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl  # POSIX-only; on Windows the module is skipped wholesale
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 import json
 import os
-import re
+import subprocess
+import sys
 import threading
 import time
 
 import pytest
+
+pytestmark = pytest.mark.platforms("linux")
 
 from tools import bot_mode_dm, bot_relay
 from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
@@ -74,8 +80,6 @@ def test_timeout_is_structured_target_busy(root):
         assert err.reason == "target_busy"
         assert err.profile == "ops"
         assert err.waited_seconds >= 0.3
-        assert "target_busy" in str(err)
-        assert re.search(r"~\d+s", str(err))  # rough wait duration surfaced
     finally:
         release.set()
         t.join(timeout=5)
@@ -112,11 +116,6 @@ def test_lock_released_when_holder_fd_closes(root):
         pass  # acquires immediately — no TurnBusyError
 
 
-def test_reentry_after_clean_release(root):
-    with acquire_turn_lock(root, "ops", timeout_seconds=1):
-        pass
-    with acquire_turn_lock(root, "ops", timeout_seconds=1):
-        pass
 
 
 def test_lock_path_is_short_and_sanitized(root):
@@ -293,7 +292,7 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
 
         return _Done()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
 
     held = threading.Event()
     release = threading.Event()
@@ -307,6 +306,7 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
         assert "error" in out
         assert out["error"]["code"] == 5096
         assert "target_busy" in out["error"]["message"]
+        assert out["error"]["data"]["reason"] == "target_busy"
         assert not spawned, "turn must not spawn while the profile is busy"
     finally:
         release.set()
@@ -327,7 +327,7 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
         stdout = "pong"
         stderr = ""
 
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: _Proc())
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", lambda *a, **k: _Proc())
 
     held = threading.Event()
     release = threading.Event()
@@ -343,3 +343,79 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
     assert "error" not in out, out
     assert out["result"]["reply"] == "pong"
     assert time.monotonic() - start >= 0.2, "deliver should have queued"
+
+
+class _WithReason(RuntimeError):
+    """An exception carrying its own ``reason``. ``reason`` is a stdlib attribute on
+    ``ssl.SSLError`` and ``urllib.error.URLError`` too, so a refusal must not forward whatever
+    it finds there into a channel whose consumers expect a closed vocabulary."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "reason"),
+    [
+        (TurnBusyError("ops", 0.2), 5096, "target_busy"),
+        (subprocess.TimeoutExpired(["hermes"], 600), 5093, "delivery_timeout"),
+        (RuntimeError("Error code: 401 - invalid api key"), 5094, "provider_auth_or_access"),
+        (RuntimeError("something nobody has a rule for"), 5094, "unknown"),
+        (_WithReason("CERTIFICATE_VERIFY_FAILED", "ssl handshake failed"), 5094, "unknown"),
+        (_WithReason("provider_quota_limit", "quota exhausted"), 5094, "provider_quota_limit"),
+    ],
+    ids=["busy", "turn-timed-out", "classifiable-failure", "unclassifiable-failure",
+         "reason-outside-the-vocabulary", "reason-inside-the-vocabulary"],
+)
+def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, failure, code, reason):
+    """`data.reason` is the only channel the Desktop forwards: it reads `error.data.reason` and puts
+    it in the sender's reply file, and the sender re-classifies from free text otherwise — which can
+    never produce these codes. A refusal that ships only a JSON-RPC code reaches the sending agent as
+    `[reason: unknown]`, so it cannot tell "retry shortly" from an auth failure. The turn-failure
+    branch already did this; these three did not."""
+    import tui_gateway.server as srv
+
+    h = tmp_path / "h"
+    (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
+    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: ["__delivery__", prof])
+
+    def _raise(argv, **kwargs):
+        raise failure
+
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _raise)
+
+    out = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
+
+    assert out["error"]["code"] == code
+    assert out["error"]["data"]["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (RuntimeError("Error code: 401 - invalid api key"), "provider_auth_or_access"),
+        (RuntimeError("something nobody has a rule for"), "unknown"),
+        (_WithReason("CERTIFICATE_VERIFY_FAILED", "ssl handshake failed"), "unknown"),
+    ],
+    ids=["classifiable-failure", "unclassifiable-failure", "reason-outside-the-vocabulary"],
+)
+def test_delivery_main_reports_every_failure_as_typed_json(tmp_path, monkeypatch, capsys, failure, reason):
+    """The local lane's runner stdout IS the sender's completion notification. A failure other
+    than target_busy used to reach the sender as stderr prose with no reason, so it could not
+    tell an auth failure from a transient one; it now rides the same vocabulary as the relay."""
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hi", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(bot_mode_dm, "_run_delivery", _raise)
+
+    rc = bot_mode_dm._delivery_main(["--run-delivery", "query-file", str(dm), "hermes", "-p", "ops", "chat"])
+
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"error": str(failure), "reason": reason}

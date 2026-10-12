@@ -64,3 +64,36 @@ def test_archived_only_view_includes_hidden_archived_sessions(db):
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["plain"]
     # ...and the archived-only view must surface the archived+hidden row.
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True, archived_only=True)] == ["both"]
+
+
+def _stale_lineage(db: SessionDB, prefix: str) -> tuple[str, str]:
+    """root(compression, 40 days old) -> tip; the tip's state is the caller's."""
+    root, tip = f"{prefix}-root", f"{prefix}-tip"
+    db.create_session(root, source="feishu")
+    db.create_session(tip, source="feishu", parent_session_id=root)
+    base = time.time() - 40 * 86400
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ?, end_reason = 'compression', last_activity_at = ? WHERE id = ?",
+        (base, base + 10, base + 10, root))
+    db._conn.commit()
+    return root, tip
+
+
+def test_bulk_archive_matches_a_lineage_through_its_tip_only(db):
+    """#115489: `hermes sessions archive --older-than` must never hide an OPEN, active continuation
+    because its compression ancestor is old — the lineage is archived through its tip, and an idle
+    ended tip still takes its whole chain with it."""
+    live_root, live_tip = _stale_lineage(db, "live")
+    db.append_message(live_tip, "user", "still chatting")
+    stale_root, stale_tip = _stale_lineage(db, "stale")
+    stale = time.time() - 35 * 86400
+    db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ?, end_reason = 'cli_close', last_activity_at = ? "
+                     "WHERE id = ?", (stale, stale + 10, stale + 10, stale_tip))
+    db._conn.commit()
+
+    assert [r["id"] for r in db.list_prune_candidates(older_than_days=30, archived=False, lineage_tips_only=True)] == [stale_tip]
+    assert db.archive_sessions(older_than_days=30) == 1
+
+    assert {s: db.get_session(s)["archived"] for s in (live_root, live_tip)} == {live_root: 0, live_tip: 0}
+    assert {s: db.get_session(s)["archived"] for s in (stale_root, stale_tip)} == {stale_root: 1, stale_tip: 1}
+    assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == [live_tip]

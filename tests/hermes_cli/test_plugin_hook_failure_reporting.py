@@ -72,3 +72,79 @@ def test_middleware_failure_warns_once_and_unload_forgets_it(manager, caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_exec" in r.getMessage()]
     assert len(warnings) == 2
     assert "Middleware 'agent_tool_execution'" in warnings[0].getMessage()
+
+
+def test_execution_chain_middleware_failure_warns_once(manager, caplog, monkeypatch):
+    """The execution chain (``tool_execution``/``llm_execution``, one frame per tool or LLM call)
+    reports a mis-declared callback through the same warn-once path as hooks — and still skips the
+    frame and runs the tool."""
+    from hermes_cli import middleware as mw
+
+    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+
+    def on_exec(tool_data, next_call):  # core sends tool_name/args, never tool_data
+        return next_call()
+
+    manager._middleware.setdefault(mw.TOOL_EXECUTION_MIDDLEWARE, []).append(on_exec)
+    with caplog.at_level(logging.DEBUG):
+        results = [
+            mw.run_tool_execution_middleware("read_file", {"path": f"/p{i}"}, lambda args: "ran")
+            for i in range(4)
+        ]
+
+    assert results == ["ran"] * 4
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_exec" in r.getMessage()]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "on_exec" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(debugs) == 3
+    assert "Middleware 'tool_execution'" in warnings[0].getMessage()
+
+
+def test_stream_observer_hook_failure_warns_once(manager, caplog, monkeypatch):
+    """Stream observer hooks fire once per streaming delta (far more often than per tool call);
+    the per-consumer worker reports a mis-declared callback through the same warn-once path."""
+    from agent import plugin_stream_hooks as psh
+
+    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+
+    def on_stream_delta(tool_data, **kwargs):  # core sends delta, never tool_data
+        return None
+
+    monkeypatch.setattr(psh, "_registered_callbacks", lambda name: (on_stream_delta,))
+    psh.shutdown_plugin_stream_hook_dispatcher()
+    try:
+        with caplog.at_level(logging.DEBUG):
+            for i in range(20):
+                assert psh.enqueue_plugin_stream_hook("on_stream_delta", delta=f"d{i}")
+            for dispatcher in psh._dispatchers_for("on_stream_delta"):
+                dispatcher.events.join()
+    finally:
+        psh.shutdown_plugin_stream_hook_dispatcher()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_stream_delta" in r.getMessage()]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "on_stream_delta" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(debugs) == 19
+    assert "Hook 'on_stream_delta'" in warnings[0].getMessage()
+    assert "delta" in warnings[0].getMessage()
+
+
+def test_event_subscriber_failure_warns_once(manager, caplog):
+    """Plugin event subscribers deliver on the host worker; one that raises identically on every
+    emit is reported once with the ``Event`` surface label."""
+    manager._discovered = True
+
+    def on_event(tool_data, **kwargs):  # the emitter sends its own payload, never tool_data
+        return None
+
+    manager._subscribe_event("listener", "emitter:tick", on_event)
+    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+        for i in range(4):
+            assert manager._dispatch_event("emitter:tick", {"n": i}) == 1
+        assert manager._wait_for_event_dispatch(timeout=2.0)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_event" in r.getMessage()]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "on_event" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(debugs) == 3
+    assert "Event 'emitter:tick'" in warnings[0].getMessage()

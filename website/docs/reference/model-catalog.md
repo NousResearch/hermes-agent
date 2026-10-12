@@ -67,6 +67,10 @@ Field notes:
 
 Cache location: `~/.hermes/cache/model_catalog.json`.
 
+### Per-provider model lists in the GUI picker
+
+The Desktop, TUI and dashboard pickers (`model.options`) build each provider's row from the disk-cached live catalog (`~/.hermes/provider_models_cache.json`) or, when nothing is cached yet, the curated list. Opening the picker never waits on a provider's `/v1/models` probe or on an auth probe: stale or missing catalogs are refreshed in a background thread and land on the next open, so one slow, rate-limited or unreachable provider cannot hold the whole picker on its loading state. **Refresh models** (or `/model --refresh`) is the explicit action that busts the cache and probes every provider live.
+
 ## Config
 
 ```yaml

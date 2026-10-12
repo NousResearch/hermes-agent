@@ -23,7 +23,7 @@ _UNION_META_KEYS = ("title", "description", "default", "examples")  # copied ont
 
 
 def _empty_object() -> dict:
-    return {"type": "object", "properties": {}}
+    return {"type": "object", "properties": {}, "required": []}
 
 
 def _rewrite(schema: Any, fn: Callable[[dict], Any]) -> Any:
@@ -98,6 +98,8 @@ def _sanitize_single_tool(tool: dict) -> dict:
     top["type"] = "object"
     if not isinstance(top.get("properties"), dict):
         top["properties"] = {}
+    if not isinstance(top.get("required"), list):
+        top["required"] = []
     # The recursive pass only handles array-form ``type: [X, "null"]``; collapse anyOf unions
     # here, keeping ``nullable: true`` so ``tools.arg_coercion._schema_allows_null`` still coerces.
     top = strip_nullable_unions(top, keep_nullable_hint=True)
@@ -314,10 +316,11 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if out.get("type") == "object":
         if not isinstance(out.get("properties"), dict):
             out["properties"] = {}
-        if isinstance(out.get("required"), list):
-            # Keep the key even when nothing survives: ``required: []`` is valid everywhere,
-            # while a missing key reads as ``null`` on strict OpenAI-compatible proxies.
-            out["required"] = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
+        # Always emit a list: ``required: []`` is valid everywhere, while a missing or
+        # non-list key reads as ``null`` on strict OpenAI-compatible proxies (#56123).
+        required = out.get("required")
+        out["required"] = ([r for r in required if isinstance(r, str) and r in out["properties"]]
+                           if isinstance(required, list) else [])
     return out
 
 

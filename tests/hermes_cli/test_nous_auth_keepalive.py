@@ -1,3 +1,5 @@
+import logging
+
 from hermes_cli import nous_auth_keepalive as keepalive
 
 # Both lifetimes have been observed on real installs.
@@ -122,3 +124,82 @@ def test_keepalive_falls_back_to_singleton_state(monkeypatch):
 
     assert keepalive.refresh_nous_auth_keepalive_once(timeout_seconds=15.0) is True
     assert calls == [{"timeout_seconds": 15.0}]
+
+
+def test_keepalive_binds_launch_scope_for_multiplexed_singleton_refresh(tmp_path, monkeypatch, caplog):
+    """The daemon tick must not lose the launch profile's routing secrets."""
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_cli.auth_nous import _nous_inference_env_override, _nous_portal_env_override
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / ".env").write_text(
+        "NOUS_INFERENCE_BASE_URL=https://inference.example/v1\n"
+        "HERMES_PORTAL_BASE_URL=https://portal.example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        keepalive, "get_provider_auth_state", lambda provider: {"access_token": "stored-token"}
+    )
+    seen = []
+
+    def _resolve(**kwargs):
+        seen.append((_nous_inference_env_override(), _nous_portal_env_override(), kwargs))
+        return {"provider": "nous"}
+
+    monkeypatch.setattr(keepalive, "resolve_nous_runtime_credentials", _resolve)
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert keepalive.refresh_nous_auth_keepalive_once(timeout_seconds=15.0) is True
+    finally:
+        set_multiplex_active(previous_multiplex)
+
+    assert seen == [(
+        "https://inference.example/v1", "https://portal.example", {"timeout_seconds": 15.0}
+    )]
+    assert not [record for record in caplog.records if "no profile secret scope" in record.getMessage()]
+
+
+def test_keepalive_binds_launch_scope_for_multiplexed_pool_refresh(tmp_path, monkeypatch):
+    """Pool refreshes run under the same launch scope as singleton refreshes."""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active, set_multiplex_active
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / ".env").write_text(
+        "NOUS_INFERENCE_BASE_URL=https://inference.example/v1\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    seen = []
+
+    class _Entry:
+        access_token = "pooled-access-token"
+        expires_at = "2000-01-01T00:00:00+00:00"
+        agent_key = ""
+        agent_key_expires_at = None
+        scope = "inference:invoke"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            seen.append((current_secret_scope() or {}).get("NOUS_INFERENCE_BASE_URL"))
+            return _Entry()
+
+        def try_refresh_current(self):
+            return _Entry()
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        assert keepalive.refresh_nous_auth_keepalive_once() is True
+    finally:
+        set_multiplex_active(previous_multiplex)
+
+    assert seen == ["https://inference.example/v1"]

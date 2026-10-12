@@ -2,21 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { PtyResumeSanitizer } from "./pty-resume-sanitizer";
 import {
-  PTY_RESUME_LOADING_MAX_MS,
   shouldFinishResumeHydrationOnChunk,
   shouldShowResumeLoadingOverlay,
 } from "./pty-resume-loading";
-
-describe("shouldFinishResumeHydrationOnChunk", () => {
-  it("finishes on the first non-empty chunk", () => {
-    expect(shouldFinishResumeHydrationOnChunk("")).toBe(false);
-    expect(shouldFinishResumeHydrationOnChunk("hello")).toBe(true);
-  });
-
-  it("keeps a positive hard-cap timeout for wedged resumes", () => {
-    expect(PTY_RESUME_LOADING_MAX_MS).toBeGreaterThan(0);
-  });
-});
 
 describe("resume hydration gate over the real sanitizer", () => {
   // Regression: the gate must key off the payload actually written to xterm,

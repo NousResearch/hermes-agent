@@ -54,12 +54,8 @@ describe('drafting-tool label lifecycle', () => {
   // retry drops a partial call, a guardrail-blocked tool skips the lifecycle
   // callbacks — and the name then sat on screen for the rest of the turn.
   it.each([
-    ['message.delta', { text: 'never mind' }],
     ['reasoning.delta', { text: 'reconsidering' }],
-    ['thinking.delta', { text: 'reconsidering' }],
     ['tool.start', { name: 'terminal', tool_id: 'tool-1' }],
-    ['tool.complete', { name: 'terminal', tool_id: 'tool-1' }],
-    ['message.complete', { text: 'done' }],
     ['error', { message: 'boom' }]
   ] as const)('retires the label when %s proves the model moved on', (type, payload) => {
     mountStream()

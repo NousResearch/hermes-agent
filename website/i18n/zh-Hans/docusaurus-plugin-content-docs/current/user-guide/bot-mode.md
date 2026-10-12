@@ -50,7 +50,7 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 - **模型与 provider 锁定**——为 Bot 指定专属模型。Hermes 支持的任意 provider/model 组合都可以使用，不同的 Bot 可以并排运行在不同的模型上。留空则继承自启动 profile。
 - **自定义 SOUL.md**——Bot 的人格与常驻指令。
 - **按技能、按工具集、按 MCP 服务器逐项启用**——精确勾选这个专精 Bot 需要的能力。
-- **共享密钥**——默认情况下，新 Bot 与主 profile 共用一个 OAuth/token 池，这样凭据刷新不会互相失效。（较旧的 gateway 会改为复制凭据——依然可用，只是分叉了。）
+- **从主 profile 复制 API 密钥**——默认开启。每个 Bot 都拥有自己的凭据存储：静态 API 密钥会被复制进来，而一次性 OAuth 登录（Anthropic、OpenAI Codex、xAI）不会被复制——请用 `hermes -p <name> auth add <provider>` 在 Bot 内登录。详见[每个 profile 各自拥有凭据](./profiles.md)。
 
 ### 选择它运行在哪台机器上（"Create on"）
 
@@ -114,7 +114,7 @@ Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Herm
 - **不是每个 Bot 都会回复每一条消息。** 是否发言由每个成员自己决定——一个 Bot 只有在有新内容可补充时才会回复，否则就跳过；@提及特定成员会把这一轮范围限定到他们身上。你可以预期被 @提及 的成员（或任何有话要说的成员）会发言，其余的保持安静。
 - **关闭 Desktop 后房间仍会继续运行。** 当一个房间的所有成员都位于同一个 gateway 上时，该 gateway 会通过一个持久的驱动器来负责轮次调度：关闭 Hermes Desktop（或失去它的连接）不会让讨论中途停止，Desktop 重新连接时只需从房间日志中补上进度即可。适用这种情况时，gateway 上的 `groups.capabilities` 会报告 `driver: true`。成员跨多台机器的房间则不同：每个成员的轮次运行在它自己的 gateway 上，*Bot 之间的消息*一节中描述的跨连接信使机制仍然适用于它们。
 - **房间可以跨越多台机器。** New Group Chat 选择器可以从任意已注册的连接中挑选 Bot；每个成员的发言都运行在它自己的机器上，在它自己那台机器的房间会话里。跨机器的成员在房间和其他成员的对话记录中都带有设备徽标（`dixie · Mac Mini`），消除歧义的 `@name-device` handle 在房间提及中同样有效——因此两台机器上同名的 agent 永远不会混淆。
-- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](/user-guide/features/hooks#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Hermes 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
+- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Hermes 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
 
 ## Bot 之间的消息
 
@@ -166,9 +166,9 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 ```bash
 hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
 hermes peer list
-hermes peer dm spark < /tmp/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
-hermes peer dm spark/researcher < /tmp/dm.txt   # 多路复用 peer 上的指定 profile
-hermes peer run spark --idempotency-key ticket-123 < /tmp/long-task.txt
+hermes peer dm spark < ~/.hermes/cache/scratch/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
+hermes peer dm spark/researcher < ~/.hermes/cache/scratch/dm.txt   # 多路复用 peer 上的指定 profile
+hermes peer run spark --idempotency-key ticket-123 < ~/.hermes/cache/scratch/long-task.txt
 hermes peer status spark run_abc123
 hermes peer stop spark run_abc123
 ```

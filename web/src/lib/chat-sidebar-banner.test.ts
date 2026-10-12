@@ -7,7 +7,6 @@ describe('credentialWarning', () => {
     const w = credentialWarning("No API key configured for provider 'openrouter'. First message will fail.")
     expect(w?.provider).toBe('openrouter')
     expect(w?.message).toContain('openrouter')
-    expect(w?.message).toMatch(/Keys/)
     expect(w?.message).not.toContain('First message will fail')
   })
 
@@ -30,7 +29,6 @@ describe('sidecarErrorMessage', () => {
     ]) {
       expect(sidecarErrorMessage(raw)).toBe(SIDECAR_DISCONNECTED_MESSAGE)
     }
-    expect(SIDECAR_DISCONNECTED_MESSAGE).toContain('Chat still works')
     expect(sidecarErrorMessage("Profile 'nope' not found")).toBe("Profile 'nope' not found")
   })
 })

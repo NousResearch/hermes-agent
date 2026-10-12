@@ -1,0 +1,43 @@
+name: financial-datasets
+repo: https://github.com/financial-datasets/hermes-plugin
+sha: 6745cb6261f86895364579d897be2b6067f117f1
+description: Stock market data from Financial Datasets - financial statements, prices, SEC filings, insider and institutional ownership, KPIs, news, macro data, and a stock screener.
+maintainer: financial-datasets
+tier: community
+category: tools
+docs_url: https://github.com/financial-datasets/hermes-plugin#readme
+version: "1.0.0"
+capabilities:
+  provides_tools:
+  - fd_get_beneficial_owners
+  - fd_get_beneficial_ownership
+  - fd_get_company_facts
+  - fd_get_earnings
+  - fd_get_filing_items
+  - fd_list_filing_item_types
+  - fd_get_filings
+  - fd_get_financial_metrics
+  - fd_get_financial_metrics_snapshot
+  - fd_get_balance_sheet
+  - fd_get_income_statement
+  - fd_get_cash_flow_statement
+  - fd_get_index_fund
+  - fd_get_insider_ownership
+  - fd_get_insider_trades
+  - fd_get_institutional_investors
+  - fd_get_institutional_holdings
+  - fd_get_interest_rates
+  - fd_get_kpi_guidance
+  - fd_get_kpi_metrics
+  - fd_get_kpi_non_gaap
+  - fd_get_macro_data
+  - fd_get_news
+  - fd_get_segmented_financials
+  - fd_get_stock_price
+  - fd_get_stock_prices
+  - fd_screen_stocks
+  - fd_list_stock_screener_filters
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - FINANCIAL_DATASETS_API_KEY

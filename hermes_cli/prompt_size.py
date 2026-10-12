@@ -29,7 +29,7 @@ def _bytes(s: str) -> int:
     return len(s.encode("utf-8"))
 
 
-def _size(text: str) -> Dict[str, int]:
+def _size(text: str) -> dict[str, int]:
     return {"chars": len(text), "bytes": _bytes(text)}
 
 
@@ -66,21 +66,23 @@ def _build_inspection_agent(platform: str) -> Any:
     )
 
 
-def _skill_md_paths_by_name() -> Dict[str, Path]:
+def _skill_md_paths_by_name() -> dict[str, Path]:
     """Map each installed skill's frontmatter ``name`` AND directory name to its ``SKILL.md``.
     Local skills win over external dirs (``get_all_skills_dirs`` yields local first), matching
     the index's own precedence.
     """
     from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
 
-    mapping: Dict[str, Path] = {}
+    mapping: dict[str, Path] = {}
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             dir_name = skill_file.parent.name
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(
+                    skill_file.read_text(encoding="utf-8-sig")
+                )
                 frontmatter_name = str(frontmatter.get("name") or dir_name)
             except Exception:
                 frontmatter_name = dir_name
@@ -89,7 +91,7 @@ def _skill_md_paths_by_name() -> Dict[str, Path]:
     return mapping
 
 
-def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
+def _compute_skills_breakdown(skills_block: str) -> list[dict[str, Any]]:
     """Per-skill byte breakdown parsed from the rendered ``<available_skills>``.
 
     ``index_line_bytes`` is the skill's attributed always-on index cost. For a compact
@@ -97,7 +99,7 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
     and separators.
     """
     name_to_path = _skill_md_paths_by_name()
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
 
     def append_entry(name: str, **index_fields: int) -> None:  # kwarg order == output key order
         path = name_to_path.get(name)
@@ -128,14 +130,14 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
     return entries
 
 
-def _compute_toolsets_breakdown(tools: List[Any]) -> List[Dict[str, Any]]:
+def _compute_toolsets_breakdown(tools: list[Any]) -> list[dict[str, Any]]:
     """Per-toolset schema-byte breakdown, largest-first (tie-broken by name). Each tool is
     attributed to its single canonical toolset so ``json_bytes`` sums to the grand total.
     """
     from tools.registry import registry
 
     tool_to_toolset = registry.get_tool_to_toolset_map()
-    groups: Dict[str, Dict[str, Any]] = {}
+    groups: dict[str, dict[str, Any]] = {}
     for tool in tools:
         toolset = tool_to_toolset.get(_tool_name(tool)) or "(unknown)"
         group = groups.setdefault(toolset, {"toolset": toolset, "tool_count": 0, "json_bytes": 0})
@@ -144,7 +146,7 @@ def _compute_toolsets_breakdown(tools: List[Any]) -> List[Dict[str, Any]]:
     return sorted(groups.values(), key=lambda g: (-g["json_bytes"], g["toolset"]))
 
 
-def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
+def compute_prompt_breakdown(platform: str = "cli") -> dict[str, Any]:
     """Prompt-size measurements for a fresh session: ``system_prompt``, ``skills_index``,
     ``memory``, ``user_profile``, ``tools``, ``sections`` (the three prompt tiers), and the
     largest-first ``skills_breakdown`` / ``toolsets_breakdown`` ("what should I disable?").
@@ -175,7 +177,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
             pass
 
     tools = getattr(agent, "tools", None) or []
-    sections: List[Tuple[str, int, int]] = [
+    sections: list[tuple[str, int, int]] = [
         (label, len(text), _bytes(text))
         for label, text in (("stable (identity/guidance/skills)", stable), ("context (AGENTS.md/cwd files)", context),
                             ("volatile (memory/profile/timestamp)", volatile))
@@ -194,11 +196,11 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     }
 
 
-def render_breakdown(data: Dict[str, Any]) -> str:
+def render_breakdown(data: dict[str, Any]) -> str:
     """Render the breakdown as plain text suitable for a terminal."""
     sp = data["system_prompt"]
     tools = data["tools"]
-    lines: List[str] = [
+    lines: list[str] = [
         f"Prompt-size breakdown (platform={data['platform']}, model={data['model'] or 'unset'})", "",
         f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)", "",
         "  Major blocks:",

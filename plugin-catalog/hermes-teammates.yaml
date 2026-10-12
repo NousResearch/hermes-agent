@@ -1,0 +1,28 @@
+name: hermes-teammates
+repo: https://github.com/100yenadmin/hermes-teammates
+sha: 9a763098edfa290c42598c89c5ccc379545b9eb7
+description: "Named subagent teammates for Hermes: the operator defines a roster (instructions, toolsets, model), and the agent assigns them work, checks results, steers a running teammate, follows up with a digest of earlier results, and can work a Kanban teammates lane with a review handoff. Launches subagents only through the public ctx.subagent_lifecycle API. Stock Hermes; no patched core. Disclosure — adds five tools and a /teammates command; the model picks only a teammate name, and the operator's config decides what it means. Teammates run as in-process Hermes subagents on the parent's provider credentials; toolsets narrow the parent's tools at toolset granularity only (the file toolset includes write_file and patch). Steering dispatches delegate_task's steer action with the turn-bound parent, so under plugins.isolation: host every tool except the roster refuses. It keeps a per-profile SQLite run ledger in its plugin-data folder (goals, statuses, clipped summaries; no transcripts or credentials). For a card assigned to its non-profile lane, it claims the card through the Kanban DB, heartbeats the claim, then moves the card to review without a reviewer, or blocks it on failure; it never completes a card. It runs one in-process monitor thread per lane run to keep the claim alive; no network calls, child processes or self-updates of its own."
+maintainer: 100yenadmin
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/100yenadmin/hermes-teammates#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-teammates/9a763098edfa290c42598c89c5ccc379545b9eb7/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/100yenadmin/hermes-teammates/9a763098edfa290c42598c89c5ccc379545b9eb7/docs/media/screenshot-roster.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-teammates/9a763098edfa290c42598c89c5ccc379545b9eb7/docs/media/screenshot-assign.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-teammates/9a763098edfa290c42598c89c5ccc379545b9eb7/docs/media/screenshot-results.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-teammates/9a763098edfa290c42598c89c5ccc379545b9eb7/docs/media/screenshot-slash-command.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - teammates_roster
+    - teammate_assign
+    - teammate_check
+    - teammate_message
+    - teammate_stop
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

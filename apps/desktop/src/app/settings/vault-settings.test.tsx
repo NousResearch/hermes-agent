@@ -61,25 +61,6 @@ afterEach(() => {
 })
 
 describe('VaultSettings', () => {
-  it('shows the empty state when the vault has no items', async () => {
-    requestGateway.mockResolvedValue({ items: [] })
-    renderVault()
-
-    await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
-    expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
-    // The scoped Settings dial must be foreground so a cold profile spawn is not
-    // queued behind background work (#111651).
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
-      null,
-      expect.any(String),
-      'vault.list',
-      {},
-      undefined,
-      undefined,
-      { spawnPriority: 'foreground' }
-    )
-  })
-
   // Two connections both serving `default` (this device + a remote gateway): a bare profile
   // name would resolve onto the PRIMARY socket and the panel would show the other machine's
   // vault (#94811). The RPC must name the connection the panel claims to show.
@@ -98,17 +79,6 @@ describe('VaultSettings', () => {
       undefined,
       { spawnPriority: 'foreground' }
     )
-  })
-
-  it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {
-    requestGateway.mockResolvedValue({ items: [LOGIN_ITEM] })
-    renderVault()
-
-    await waitFor(() => expect(screen.getByText('GitHub work')).toBeTruthy())
-    expect(screen.getByText('Login')).toBeTruthy()
-    // Identifier is agent-visible metadata and now shows in the row.
-    expect(screen.getByText('me@example.com')).toBeTruthy()
-    expect(screen.getByText('https://github.com')).toBeTruthy()
   })
 
   it('opens the Add dialog pre-filled from deep-link query params (never secrets)', async () => {

@@ -670,12 +670,13 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
         requested_keys.append(key)
         return manifest_bytes
 
-    digest = stable.publish_attempt(
+    digests = stable.publish_attempt(
         _publish_record(commit, tag_object, epoch=epoch),
         repository="example/project", run=run, read_archive=read_archive,
     )
 
-    assert digest == docker_digest
+    assert digests == {"candidate_manifest_sha256": manifest_digest,
+                       "docker_manifest_digest": docker_digest}
     receipt = tag_record(subprocess.check_output(
         ["git", "tag", "-l", "v1.2.3", "--format=%(contents)"],
         text=True, encoding="utf-8"))
@@ -1161,3 +1162,15 @@ def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
     stable.require_smokes_match_claim(manifest, skip_tests=True)
     with pytest.raises(ValueError, match="test policy"):
         stable.require_smokes_match_claim(manifest, skip_tests=False)
+
+
+def test_the_final_tag_push_authenticates_with_gh_token_without_persisted_credentials():
+    """The publication checkout persists no credentials; the push brings GH_TOKEN itself."""
+    from scripts.releases.stable import authenticated_push
+    ref = "refs/tags/v1.2.3"
+    argv = authenticated_push(ref, {"GH_TOKEN": "token"})
+    assert argv[0] == "git" and argv[-3:] == ["push", "origin", ref]
+    # Reset inherited helpers first, then hand git the token through gh.
+    assert argv[1:5] == ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+    assert "token" not in " ".join(argv)
+    assert authenticated_push(ref, {}) == ["git", "push", "origin", ref]

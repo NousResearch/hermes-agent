@@ -89,8 +89,8 @@ if (-not $uv) { $uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe" }  # pre-package-man
 $ver = (& $uv --version).Split(' ')[1]
 # The machine's real arch, not the (possibly x64-emulated) interpreter's —
 # hashing the wrong build would report a false "tampered".
-$machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
-$arch = if ($machArch -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
+$arch = if ($machineArch -eq 'ARM64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $zip = "$env:TEMP\uv.zip"
 Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-$arch-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing

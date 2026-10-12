@@ -164,6 +164,7 @@ def _rename_noreplace(fd: int, src: str, dst: str) -> None:
     no pre-check window), :class:`_NoReplaceUnsupported` where the kernel/fs
     rejects the flag (:data:`_NOREPLACE_UNSUPPORTED_ERRNOS`, a platform-agnostic
     set), or another OSError."""
+    global _noreplace_binding
     binding = _bind_noreplace_rename()
     if not binding:
         raise _NoReplaceUnsupported("no rename-with-no-replace on this platform")
@@ -179,7 +180,7 @@ def _rename_noreplace(fd: int, src: str, dst: str) -> None:
         # rename would silently clobber, so disable and fail closed. EPERM is a
         # genuine permission failure, not an unsupported flag — leave the
         # binding usable and let the caller report it.
-        globals()["_noreplace_binding"] = False
+        _noreplace_binding = False
         raise _NoReplaceUnsupported(err, os.strerror(err), src)
     raise OSError(err, os.strerror(err), src)
 
@@ -289,10 +290,18 @@ def _open_home_bin(hermes_home: Path) -> _BinAnchor | None:
         return None  # gone between probe and open
 
 
+def _metadata_gate(kind: str, st: os.stat_result) -> bool:
+    """Whether *st* is shaped like a *kind* binary before any content I/O.
+
+    Runs FIRST — a FIFO/device must never reach a blocking open — so only a
+    regular file at or above the kind's size floor passes."""
+    return stat.S_ISREG(st.st_mode) and st.st_size >= _MIN_BINARY_BYTES[kind]
+
+
 def _classify(kind: str, st: os.stat_result, magic: bytes, has_identity: bool) -> str:
     """:data:`REMOVABLE` only when the leaf is a regular file over *kind*'s floor,
     with native magic and *kind*'s markers; :data:`UNPROVEN` otherwise."""
-    if not stat.S_ISREG(st.st_mode) or st.st_size < _MIN_BINARY_BYTES[kind]:
+    if not _metadata_gate(kind, st):
         return UNPROVEN
     if not _is_native_executable(magic):
         return UNPROVEN
@@ -326,16 +335,13 @@ def _open_verified(name, st: os.stat_result, *, dir_fd: int | None = None) -> in
     # bits must match everywhere (a dir/symlink/device swap at the name, which
     # Windows' synthesized inode would not separate), and equal mode is a
     # POSIX-only extra.
-    if (opened.st_dev, opened.st_ino, opened.st_size) != (st.st_dev, st.st_ino, st.st_size):
-        os.close(fd)
-        return None
-    if stat.S_IFMT(opened.st_mode) != stat.S_IFMT(st.st_mode):
-        os.close(fd)
-        return None
-    if os.name == "posix" and opened.st_mode != st.st_mode:
-        os.close(fd)
-        return None
-    return fd
+    same_object = (opened.st_dev, opened.st_ino, opened.st_size) == (st.st_dev, st.st_ino, st.st_size)
+    same_type = stat.S_IFMT(opened.st_mode) == stat.S_IFMT(st.st_mode)
+    same_mode = os.name != "posix" or opened.st_mode == st.st_mode
+    if same_object and same_type and same_mode:
+        return fd
+    os.close(fd)
+    return None
 
 
 def _read_magic_and_identity(fd: int, kind: str) -> tuple[bytes, bool]:
@@ -364,7 +370,7 @@ def _probe_leaf(anchor: _BinAnchor, uv_binary: Path, uv_name: str) -> tuple[str,
     except OSError as e:
         _log_warn(f"Could not inspect {uv_binary}: {e}")
         return UNPROBEABLE, None
-    if not stat.S_ISREG(st.st_mode) or st.st_size < _MIN_BINARY_BYTES[kind]:
+    if not _metadata_gate(kind, st):
         return UNPROVEN, st  # no open, no scan: the shape already disqualifies it
     fd = _open_verified(uv_name, st, dir_fd=anchor.fd)
     if fd is None:
@@ -456,7 +462,7 @@ def classify_leftover(path: Path) -> str:
         return ABSENT
     except OSError:
         return UNPROBEABLE
-    if not stat.S_ISREG(st.st_mode) or st.st_size < _MIN_BINARY_BYTES[kind]:
+    if not _metadata_gate(kind, st):
         return UNPROVEN  # no open, no read: links/devices/FIFOs and small files stop here
     fd = _open_verified(path, st)
     if fd is None:

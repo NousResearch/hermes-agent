@@ -28,6 +28,13 @@ the setup scripts run top-level with no source guard. The wiring — that they f
 real ``HERMES_HOME`` into the resolver and stage into what it returns — is
 covered by ``test_install_sh_uv_state.py``, ``test_install_ps1_uv_no_path_borrow.py``
 and ``tests/hermes_cli/test_setup_hermes_script.py``.
+
+This is the deliberate exception to ``tests/AGENTS.md``'s "never read source code
+in tests": that rule is about extracting logic into an importable pure function,
+which the sh/ps1 bootstraps cannot offer (they run before Python exists and are
+piped to bash, so there is nothing to import). Reading the shipped bytes here is
+the only way to pin the four copies against each other and against pm, and it is
+paired with executing those bytes — never just matching their text.
 """
 from __future__ import annotations
 

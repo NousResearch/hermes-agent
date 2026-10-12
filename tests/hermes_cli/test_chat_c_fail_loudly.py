@@ -85,6 +85,101 @@ class TestCreateTitledSession:
         finally:
             db.close()
 
+    def test_default_source_stays_cli(self, isolated_home):
+        """Without --source the minted row keeps the historical 'cli' source."""
+        sid = _create_titled_session("Bot Chat")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(sid)
+            assert session is not None
+            assert session["source"] == "cli"
+            assert session["created_source"] == "cli"
+        finally:
+            db.close()
+
+    def test_explicit_source_is_stored_on_created_row(self, isolated_home):
+        """--source rides along on the --create-if-missing mint (#137373)."""
+        from hermes_cli.main import _create_titled_session
+
+        sid = _create_titled_session("Bot Chat", source="tool")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(sid)
+            assert session is not None
+            assert session["source"] == "tool"
+            assert session["created_source"] == "tool"
+        finally:
+            db.close()
+
+
+class TestCreateIfMissingKeepsSource:
+    """Behavior-level: _resolve_continue_arg must forward args.source (#137373)."""
+
+    def test_resolve_forwards_explicit_source(self, isolated_home, monkeypatch):
+        """`chat -c <title> --create-if-missing --source tool` mints a tool row."""
+        import hermes_cli.main as main_mod
+
+        args = type(
+            "Args",
+            (),
+            {
+                "continue_last": "Bot Chat",
+                "resume": None,
+                "create_if_missing": True,
+                "source": "tool",
+            },
+        )()
+
+        main_mod._resolve_continue_arg(args, use_tui=False)
+
+        assert args.resume, "resume should be set to the new session id"
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(args.resume)
+            assert session is not None
+            assert session["source"] == "tool"
+            assert session["created_source"] == "tool"
+        finally:
+            db.close()
+
+    def test_resolve_without_source_stays_cli(self, isolated_home, monkeypatch):
+        """No --source: the minted row keeps 'cli' (attribute absent, SUPPRESS default)."""
+        import hermes_cli.main as main_mod
+
+        args = type(
+            "Args",
+            (),
+            {
+                "continue_last": "Bot Chat",
+                "resume": None,
+                "create_if_missing": True,
+            },
+        )()
+
+        main_mod._resolve_continue_arg(args, use_tui=False)
+
+        assert args.resume
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(args.resume)
+            assert session is not None
+            assert session["source"] == "cli"
+            assert session["created_source"] == "cli"
+        finally:
+            db.close()
+
 
 class TestChatCFailLoudlyOnStderr:
     """Behavior-level: run the real cmd_chat path and inspect channels."""

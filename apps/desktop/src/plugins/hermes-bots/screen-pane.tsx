@@ -71,6 +71,10 @@ const MAX_PASTE_CUT_TEXT = 256 * 1024
  *  RFB class, so these mirror its internal KeyTable. */
 const KEY_CONTROL_L = 0xffe3
 const KEY_V = 0x0076
+/** Keysyms noVNC forwards a held Cmd as on macOS (the TigerVNC-style shuffle in its
+ *  keyboard.js: left Cmd → XK_Alt_L, right Cmd → XK_Super_L). */
+const KEY_ALT_L = 0xffe9
+const KEY_SUPER_L = 0xffeb
 /** Cmd+V pastes on macOS, Ctrl+V elsewhere (mirrors the app keybind layer's IS_MAC,
  *  which plugin code cannot import). */
 const META_IS_PASTE_CHORD = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
@@ -339,6 +343,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             void readLocalClipboard().then(text => {
               if (text && text.length <= MAX_PASTE_CUT_TEXT) {
                 client.clipboardPasteFrom(text)
+
+                // By the time this chord was intercepted, noVNC had already
+                // forwarded the held Cmd to the remote (as XK_Alt_L / XK_Super_L
+                // on macOS). Release both before the replay, or the remote sees
+                // Alt+Ctrl+V and Chromium drops the paste.
+                if (META_IS_PASTE_CHORD && event.metaKey) {
+                  client.sendKey(KEY_ALT_L, 'MetaLeft', false)
+                  client.sendKey(KEY_SUPER_L, 'MetaRight', false)
+                }
+
                 // The chord was consumed here, so the remote never saw its own
                 // Ctrl+V — replay one to paste the text just synced above.
                 client.sendKey(KEY_CONTROL_L, 'ControlLeft', true)

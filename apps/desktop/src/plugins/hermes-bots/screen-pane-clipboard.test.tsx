@@ -28,6 +28,14 @@ const rfbs = vi.hoisted(
     }>
 )
 
+// META_IS_PASTE_CHORD in screen-pane.tsx resolves at import time, so the macOS
+// Cmd-chord path needs the platform pinned before the module graph loads.
+vi.hoisted(() => {
+  if (typeof navigator !== 'undefined') {
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+  }
+})
+
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useStore } = await import('@nanostores/react')
   const { onGatewayEvent } = await import('../../contrib/events')
@@ -204,6 +212,33 @@ it('intercepts a Ctrl+V chord on the canvas, syncing the local clipboard and rep
     [0xffe3, 'ControlLeft', false]
   ])
   // The chord was consumed before noVNC could forward it (on macOS as a bare "v").
+  expect(noVncKeydown).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('releases the Cmd noVNC already forwarded before replaying the chord on macOS', async () => {
+  vi.stubGlobal('hermesDesktop', { readClipboard: vi.fn(async () => 'clipboard-test-123') })
+
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(rfbs).toHaveLength(1))
+  await waitFor(() => expect(rfbs[0].viewOnly).toBe(false))
+
+  const { canvas, noVncKeydown } = installNoVncCanvas()
+
+  fireEvent.keyDown(canvas, { code: 'KeyV', key: 'v', metaKey: true })
+
+  await waitFor(() => expect(rfbs[0].clipboardPasteFrom).toHaveBeenCalledWith('clipboard-test-123'))
+  // By the time the chord is intercepted noVNC has already forwarded the held Cmd
+  // (left → XK_Alt_L 0xffe9, right → XK_Super_L 0xffeb); those releases must
+  // precede the Ctrl+V replay or the remote sees Alt+Ctrl+V and drops the paste.
+  expect(vi.mocked(rfbs[0].sendKey).mock.calls).toEqual([
+    [0xffe9, 'MetaLeft', false],
+    [0xffeb, 'MetaRight', false],
+    [0xffe3, 'ControlLeft', true],
+    [0x0076, 'KeyV', true],
+    [0x0076, 'KeyV', false],
+    [0xffe3, 'ControlLeft', false]
+  ])
   expect(noVncKeydown).not.toHaveBeenCalled()
   view.unmount()
 })

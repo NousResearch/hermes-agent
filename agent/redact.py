@@ -34,6 +34,7 @@ from agent.redact_vault_values import (  # re-exported: callers import these fro
     clear_vault_redaction_values,
     redact_registered_vault_values,
     register_vault_redaction_value,
+    register_vault_redaction_values,
 )
 
 logger = logging.getLogger(__name__)

@@ -23,6 +23,8 @@ Exit 0 = clean, 1 = a payload was found (lines on stdout), 2 = bad usage.
 from __future__ import annotations
 
 import io
+import os
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -131,9 +133,23 @@ def _file_problem(path: Path, rel: str) -> str | None:
     return None
 
 
+def _shipped_files(plugin_dir: Path) -> list[Path]:
+    """Files the pinned commit ships. In a git checkout that is the tracked set: the
+    catalog gate runs `hermes plugins validate` (which imports the plugin) before this
+    scan, so untracked `__pycache__/*.pyc` it wrote must not read as committed bytecode."""
+    try:
+        out = subprocess.run(["git", "-C", str(plugin_dir), "ls-files", "-z"],
+                             capture_output=True, check=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = b""
+    tracked = [plugin_dir / os.fsdecode(p) for p in out.split(b"\0") if p]
+    # Not a checkout, or a tree nothing tracks (an untracked dir inside some other repo).
+    return sorted(tracked) if tracked else sorted(plugin_dir.rglob("*"))
+
+
 def scan(plugin_dir: Path) -> list[str]:
     findings: list[str] = []
-    for path in sorted(plugin_dir.rglob("*")):
+    for path in _shipped_files(plugin_dir):
         if path.is_symlink() or not path.is_file():
             continue
         if "/.git/" in "/" + path.as_posix():

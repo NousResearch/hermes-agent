@@ -174,11 +174,14 @@ _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
 # (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
-# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# request, but nothing else caps the SUM across the tool loop. The budget is that SUM while a
+# context window bounds a SINGLE request — and request #1 alone already spends a large share of
+# the window (system prompt + tool schemas + replayed snapshot/digest) — so the default is sized
+# at several windows (#136889); ``_REVIEW_MAX_ITERATIONS`` remains the runaway cap and the
+# default never exceeds the historical cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
 _REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
-_REVIEW_INPUT_CONTEXT_FRACTION = 0.75
+_REVIEW_INPUT_WINDOW_MULTIPLE = 5
 _REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
 
@@ -202,14 +205,18 @@ def _background_review_task_config(task_cfg: Optional[dict[str, Any]] = None) ->
 
 
 def _context_derived_review_input_budget(review_agent: Any = None) -> int:
-    """Default budget: 75% of the review fork's resolved context window, capped at the historical
-    600k ceiling. The fork's ``context_compressor.context_length`` is already resolved by
-    ``AIAgent.__init__`` (config overrides, catalog, endpoint probe) — no second lookup here.
-    Unknown window → a conservative fixed fallback so unattended review work stays bounded."""
+    """Default budget: several copies of the review fork's resolved context window, capped at the
+    historical 600k ceiling. The budget is the SUM of input tokens across the fork's requests
+    while a window bounds ONE request, and a routed fork's first request alone spends ~40% of
+    the window (digest + tool schemas), so a sub-window default cut reviews off after 2-3 of
+    the 16 iterations (#136889). The fork's ``context_compressor.context_length`` is already
+    resolved by ``AIAgent.__init__`` (config overrides, catalog, endpoint probe) — no second
+    lookup here. Unknown window → a conservative fixed fallback so unattended review work
+    stays bounded."""
     context_window = getattr(getattr(review_agent, "context_compressor", None), "context_length", None)
     if not isinstance(context_window, int) or isinstance(context_window, bool) or context_window <= 0:
         return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
-    return min(_REVIEW_MAX_INPUT_TOKENS_CAP, max(1, int(context_window * _REVIEW_INPUT_CONTEXT_FRACTION)))
+    return min(_REVIEW_MAX_INPUT_TOKENS_CAP, max(1, context_window * _REVIEW_INPUT_WINDOW_MULTIPLE))
 
 
 def _review_input_token_budget(

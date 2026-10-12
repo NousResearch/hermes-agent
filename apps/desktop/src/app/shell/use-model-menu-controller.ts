@@ -99,7 +99,12 @@ export function useModelMenuController({
   const latestHostScope = useRef(hostScope)
   latestHostScope.current = hostScope
 
-  const patchPreset = (patch: ModelPreset, row: { model: string; provider: string }, failMessage: string) => {
+  const patchPreset = (
+    patch: ModelPreset,
+    row: { model: string; provider: string },
+    failMessage: string,
+    inheritEffort = false
+  ) => {
     const dimensions = [
       ...(patch.effort !== undefined ? ['effort' as const] : []),
       ...(modelPresetServiceTier(patch) !== undefined ? ['speed' as const] : [])
@@ -114,7 +119,8 @@ export function useModelMenuController({
       })
     )
 
-    setModelPreset(row.provider, row.model, patch)
+    // Selecting a model's config fallback must not turn that default into a sticky effort pick.
+    setModelPreset(row.provider, row.model, inheritEffort ? { ...patch, effort: undefined } : patch)
 
     if (touchesPrimary) {
       markComposerSelectionManual()
@@ -126,6 +132,7 @@ export function useModelMenuController({
       primary: touchesPrimary,
       request: requestGateway,
       sessionId: activeSessionId,
+      inheritEffort,
       isCurrent: dimension => {
         const stamp = stamps.get(dimension)!
 
@@ -173,7 +180,8 @@ export function useModelMenuController({
   const controller: ModelMenuController = {
     // Selecting a model row restores that model's remembered preset onto the
     // session (effort/fast). applyModelPreset owns the batched gateway write.
-    applyPreset: (preset, row) => patchPreset(preset, row, t.shell.modelOptions.updateFailed),
+    applyPreset: (preset, row, options) =>
+      patchPreset(preset, row, t.shell.modelOptions.updateFailed, options?.inheritEffort),
 
     current: {
       effort: currentReasoningEffort,

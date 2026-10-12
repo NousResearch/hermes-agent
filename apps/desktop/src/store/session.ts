@@ -16,6 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { rescopeComposerReasoningEffort } from './composer-reasoning-effort'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -1442,7 +1443,12 @@ export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
-function rescopeComposerSelection(nextScope: string | null): void {
+function rescopeComposerSelection(nextScope: string | null, profile = $connection.get()?.profile || 'default'): void {
+  rescopeComposerReasoningEffort(
+    nextScope === '' ? `.registry.local.${encodeURIComponent(profile)}` : nextScope,
+    profile
+  )
+
   if (nextScope === composerSelectionScope) {
     return
   }
@@ -1458,7 +1464,8 @@ function rescopeComposerSelection(nextScope: string | null): void {
  * HermesConnection lookup is unavailable. */
 export function setComposerSelectionOwner(connectionId: string, profile: string): void {
   rescopeComposerSelection(
-    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
+    `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`,
+    profile.trim() || 'default'
   )
 }
 

@@ -3,6 +3,7 @@ import { createContext, useContext } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $composerReasoningEffort } from '@/store/composer-reasoning-effort'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -128,9 +129,15 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryField<string>(state => state.model, $currentModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),
-  $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
+  $reasoningEffort: computed(
+    [$primaryState, $activeSessionId, $composerReasoningEffort, $currentReasoningEffort],
+    (state, runtimeId, pick, mirror) => (state ? state.reasoningEffort : runtimeId ? mirror : pick)
+  ),
   $reasoningEffortPending: $primaryReasoningEffortPending,
-  $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),
+  $reasoningEffortWire: computed(
+    [$primaryState, $activeSessionId, $currentReasoningEffortWire],
+    (state, runtimeId, mirror) => (state ? (state.reasoningEffortWire ?? '') : runtimeId ? mirror : '')
+  ),
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId,
   $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)

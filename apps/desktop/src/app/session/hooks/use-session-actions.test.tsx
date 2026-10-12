@@ -24,6 +24,7 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { setComposerReasoningEffort } from '@/store/composer-reasoning-effort'
 import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
 import {
   activeGatewayConnectionId,
@@ -1361,6 +1362,7 @@ describe('submitTextToNewSession pin release', () => {
 
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {
+    setComposerReasoningEffort('')
     cleanup()
     $newChatProfile.set(null)
     $newChatRoute.set(null)
@@ -1453,7 +1455,7 @@ describe('createBackendSessionForSend profile routing', () => {
       setCurrentModel('openai/gpt-5.6-sol')
       setCurrentProvider('openai-codex')
       setCurrentModelSource('default')
-      setCurrentReasoningEffort('high')
+      setComposerReasoningEffort('high')
     })
 
     expect(params).not.toHaveProperty('model')
@@ -1515,11 +1517,9 @@ describe('createBackendSessionForSend profile routing', () => {
 
     setCurrentModel('anthropic/claude-sonnet-4.6')
     setCurrentProvider('anthropic')
-    // A real composer pick marks the selection manual; this test drives the
-    // atoms directly, so set the source explicitly. Only a manual selection
-    // rides along as a per-session override.
+    // Only a manual model selection rides as a per-session override.
     setCurrentModelSource('manual')
-    setCurrentReasoningEffort('high')
+    setComposerReasoningEffort('high')
     setCurrentFastMode(true)
     // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.
     setCurrentServiceTier('priority')

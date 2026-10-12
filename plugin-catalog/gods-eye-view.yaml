@@ -1,0 +1,20 @@
+name: gods-eye-view
+repo: https://github.com/cygnostik/Hermes-Plugin-Gods-Eye-View
+sha: f34cec4417c4b094341ebe8e2f556627944dac53
+description: "Explore God's Eye View inside Hermes Desktop, with the native 3D globe, scenes, Focus mode and explicit local engine controls. Disclosure — wraps the separate third-party God's Eye View app (installed by the user), starts/stops its local Node server on loopback and on explicit request updates that checkout from GitHub/npm (runs its esbuild install script); on explicit opt-in copies matching Hermes API keys into that app's own key store."
+maintainer: cygnostik
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "0.1.3"
+docs_url: https://github.com/cygnostik/Hermes-Plugin-Gods-Eye-View#readme
+image: https://raw.githubusercontent.com/cygnostik/Hermes-Plugin-Gods-Eye-View/f34cec4417c4b094341ebe8e2f556627944dac53/docs/media/catalog-banner.jpg
+screenshots:
+- https://raw.githubusercontent.com/cygnostik/Hermes-Plugin-Gods-Eye-View/f34cec4417c4b094341ebe8e2f556627944dac53/docs/media/catalog.png
+readme: true
+platforms: [windows, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

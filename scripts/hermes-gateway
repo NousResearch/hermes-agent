@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Historical script entry; service policy belongs to ``hermes gateway``."""
+import os
+from pathlib import Path
+import sys
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root))
+from hermes_cli._launchers import runtime_command
+
+if __name__ == "__main__":
+    command = runtime_command(root, ["gateway", *(sys.argv[1:] or ["run"])])
+    os.execv(command[0], command)

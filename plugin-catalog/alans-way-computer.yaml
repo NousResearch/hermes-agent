@@ -1,0 +1,24 @@
+name: alans-way-computer
+repo: https://github.com/capthvnsen/alans-way-agents
+sha: ce51733b66291e69f616db48ae8799c0de50db43
+subdir: alans-way-computer
+version: "0.7.0"
+title: "Alan's Way Computer"
+description: "Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer through the Alan's Way app, and on the VM's own desktop when the computer is offline. Needs the alans-way plugin's workspace setup. Select it with computer_use.backend: alans-way-computer. Disclosure — starts the workspace router from the profile's mcp_servers.workspace_browser block (command and args from config.yaml, with a filtered environment plus HERMES_WORKSPACE_ALLOW_DESKTOP_ACTIONS=1, which lets this private router child serve desktop input) as a long-running node child per session. It talks to the router over stdio (app lists, element trees, screenshots and input actions). The router reaches the user's computer over SSH on the user's tailnet and falls back to the VM's desktop. The provider never takes the focused window, and every input action still goes through Hermes's computer_use approval gate (cua:*:background entries in command_allowlist, which alans-way's --allow-desktop-actions adds, skip the prompt). On Hermes 0.21.5, which has no provider API, it installs and does nothing."
+maintainer: capthvnsen
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/ce51733b66291e69f616db48ae8799c0de50db43/alans-way-computer
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Needs a Hermes build with the pluggable computer-use API (merged to main after 0.21.5). On older Hermes the plugin installs and does nothing. Install alans-way first and run its workspace setup, which writes the workspace_browser block this provider reuses."
+  - "Hermes asks for approval on every computer_use action type until it is granted. For an unattended Telegram bot, grant them once with Always in Telegram, or add cua:<action>:background entries to command_allowlist (see the README). Takes effect after a gateway restart."
+  - "Runs only in the plugin host: it cannot load under plugins.isolation: host, because the provider hands Hermes a live router session."
+  - "Typing without a target field is not available because the app never takes focus: the agent uses set_value on a field instead."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

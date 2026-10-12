@@ -1,0 +1,949 @@
+import { QueryClient } from '@tanstack/react-query'
+import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { getGlobalModelInfo } from '@/hermes'
+import { modelOptionsQueryKey } from '@/lib/model-options'
+import { $activeGatewayProfile } from '@/store/profile'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffortWire,
+  getCurrentModelSource,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
+} from '@/store/session'
+import * as SessionStates from '@/store/session-states'
+
+import { deferred } from '../../../test/deferred'
+
+import { useModelControls } from './use-model-controls'
+
+const setGlobalModel = vi.fn()
+const tile = vi.hoisted(() => ({ delegate: null as unknown }))
+const confirmMock = vi.fn()
+const notify = vi.fn()
+const notifyError = vi.fn()
+const dismissNotification = vi.fn()
+
+vi.mock('@/hermes', () => ({
+  getGlobalModelInfo: vi.fn(),
+  setApiRequestProfile: vi.fn(),
+  setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
+}))
+
+vi.mock('@/store/session-states', async importOriginal => {
+  const actual = await importOriginal<typeof SessionStates>()
+
+  return {
+    ...actual,
+    sessionTileDelegate: () => tile.delegate
+  }
+})
+
+vi.mock('@/i18n', async importOriginal => ({
+  // Keep the real module so the applier's `translateNow` copy is the shipped
+  // string — the assertions below pin the labels a user actually sees.
+  ...(await importOriginal<Record<string, unknown>>()),
+  useI18n: () => ({
+    t: {
+      desktop: {
+        modelSwitchFailed: 'Model switch failed'
+      }
+    }
+  })
+}))
+
+vi.mock('@/store/confirm', () => ({
+  confirm: (...args: Parameters<typeof confirmMock>) => confirmMock(...args)
+}))
+
+vi.mock('@/store/notifications', () => ({
+  dismissNotification: (...args: Parameters<typeof dismissNotification>) => dismissNotification(...args),
+  notify: (...args: Parameters<typeof notify>) => notify(...args),
+  notifyError: (...args: Parameters<typeof notifyError>) => notifyError(...args)
+}))
+
+type Controls = ReturnType<typeof useModelControls>
+
+function Harness({
+  onReady,
+  requestGateway
+}: {
+  onReady: (controls: Controls) => void
+  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const controls = useModelControls({
+    queryClient: new QueryClient(),
+    requestGateway
+  })
+
+  onReady(controls)
+
+  return null
+}
+
+describe('useModelControls', () => {
+  beforeEach(() => {
+    confirmMock.mockReset()
+    notifyError.mockReset()
+    $activeGatewayProfile.set('default')
+    $activeSessionId.set(null)
+    setCurrentModel('')
+    setCurrentModelSource('')
+    setCurrentProvider('')
+    SessionStates.$sessionStates.set({})
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $activeGatewayProfile.set('default')
+    $activeSessionId.set(null)
+    setCurrentModel('')
+    setCurrentModelSource('')
+    setCurrentProvider('')
+    SessionStates.$sessionStates.set({})
+  })
+
+  it('writes optimistic selections only to the owning connection cache', async () => {
+    const queryClient = new QueryClient()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'source-a',
+        cacheProfile: 'beta',
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await act(() => result.current.selectModel({ model: 'a/model', provider: 'a' }))
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('beta', null, 'source-a'))).toMatchObject({
+      model: 'a/model',
+      provider: 'a'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('beta'))).toBeUndefined()
+    expect(queryClient.getQueryData(modelOptionsQueryKey('beta', null, 'source-b'))).toBeUndefined()
+  })
+
+  it('does not clobber the active session footer state with global model info', async () => {
+    setCurrentModel('deepseek/deepseek-v4-pro')
+    setCurrentProvider('deepseek')
+    $activeSessionId.set('runtime-1')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'openai/gpt-5.5',
+      provider: 'openai-codex'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('deepseek/deepseek-v4-pro')
+    expect($currentProvider.get()).toBe('deepseek')
+  })
+
+  it('keeps a live session authoritative when Settings saves a new profile default', async () => {
+    const queryClient = new QueryClient()
+    $activeSessionId.set('runtime-1')
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers: []
+    })
+    queryClient.setQueryData(modelOptionsQueryKey('default', 'runtime-1'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers: []
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+    await result.current.refreshCurrentModel()
+
+    // Settings changes the profile default, not the active session. The footer
+    // and its session-scoped picker cache must keep showing the live runtime.
+    expect($currentModel.get()).toBe('tencent/hy3:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-1'))).toMatchObject({
+      model: 'tencent/hy3:free',
+      provider: 'nous'
+    })
+
+    // The global cache reflects the save, and the next fresh draft may reseed
+    // from that default instead of preserving the old session's model.
+    expect(getCurrentModelSource()).toBe('default')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toMatchObject({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    $activeSessionId.set(null)
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+  })
+
+  it('paints a saved profile default immediately when no session is active', () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(getCurrentModelSource()).toBe('default')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toEqual({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous',
+      providers: [
+        {
+          models: ['poolside/laguna-xs-2.1:free'],
+          name: 'nous',
+          slug: 'nous'
+        }
+      ]
+    })
+  })
+
+  it('preserves a populated model catalog when painting a saved profile default', () => {
+    const queryClient = new QueryClient()
+    const providers = [{ models: ['tencent/hy3:free'], name: 'Nous', slug: 'nous' }]
+
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toEqual({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous',
+      providers
+    })
+  })
+
+  it('sends an active primary-session picker change without a scope flag so the gateway decides persistence', async () => {
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    // No hardcoded --global (#90235): resolve_persist_behavior on the gateway
+    // owns the policy — session-only unless model.persist_switch_by_default
+    // is set or no default has ever been configured (#86414's first pick).
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'claude-sonnet-4.6 --provider anthropic'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('keeps a mid-turn pick painted and skips the refetch that would repaint the old model', async () => {
+    // The gateway queues a switch made during a turn and applies it at the next
+    // turn start. Invalidating now would answer with the still-running model
+    // and overwrite the user's choice in the pill.
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ deferred: true, key: 'model', value: 'grok-4.5' }) as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('still refetches after a switch that applied immediately', async () => {
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ key: 'model', scope: 'session', value: 'grok-4.5' }) as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('asks in a dialog before retrying a guarded model switch, then applies the confirmed one', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_message: 'This contributor model trains on your data.',
+        confirm_required: true,
+        key: 'model',
+        value: 'muse-spark-1.2-contributor'
+      })
+      .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
+
+    // Hold the answer open: nothing may be applied or resent until the user
+    // actually answers the dialog.
+    const answer = deferred<boolean>()
+
+    confirmMock.mockReturnValueOnce(answer.promise)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
+
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: 'This contributor model trains on your data.',
+        destructive: true
+      })
+    )
+
+    await act(async () => {
+      answer.resolve(true)
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    expect(requestGateway).toHaveBeenLastCalledWith('config.set', {
+      confirm_expensive_model: true,
+      key: 'model',
+      session_id: 'session-1',
+      value: 'muse-spark-1.2-contributor --provider opencode-go'
+    })
+    expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
+    expect($currentProvider.get()).toBe('opencode-go')
+  })
+
+  it('keeps the current model when the guarded switch is declined (#112458)', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+
+    const requestGateway = vi.fn().mockResolvedValueOnce({
+      confirm_message: 'This contributor model trains on your data.',
+      confirm_required: true,
+      key: 'model',
+      value: 'muse-spark-1.2-contributor'
+    })
+
+    confirmMock.mockResolvedValueOnce(false)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })).resolves.toBe(
+      false
+    )
+
+    // Declining is free and silent: no resend, no error toast, the pick is gone.
+    await act(async () => {})
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {
+    // Pre-deferral backends answer 4009 instead of parking the pick. Rolling
+    // back would bounce the pill to the old model and toast an error at a user
+    // who did nothing wrong; the pick still applies to the next turn.
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('session busy — /interrupt the current turn before switching models')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('still rolls back and reports a real switch failure', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+    setCurrentReasoningEffortWire('max')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'bogus', provider: 'xai' })).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('fable-5')
+    expect($currentProvider.get()).toBe('nous')
+    // The old route's clamp is true again once the switch is undone.
+    expect($currentReasoningEffortWire.get()).toBe('max')
+    expect(notifyError).toHaveBeenCalled()
+  })
+
+  it('session-scopes MoA preset selections so they cannot persist as the global gateway default', async () => {
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'BeastMode' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({
+        model: 'BeastMode',
+        provider: 'moa'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'BeastMode --provider moa --session'
+    })
+  })
+
+  it('stores a no-session pick as UI state with no gateway or global write', async () => {
+    const requestGateway = vi.fn()
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    // The pick is plain UI state; session.create ships it later. Nothing touches
+    // the gateway or the profile default here.
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(setGlobalModel).not.toHaveBeenCalled()
+  })
+
+  it('updates only the active profile new-chat cache', async () => {
+    const queryClient = new QueryClient()
+    $activeGatewayProfile.set('compass')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.selectModel({ model: 'qwen3.6:35b-65k', provider: 'custom:local-ollama' })
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('compass'))).toMatchObject({
+      model: 'qwen3.6:35b-65k',
+      provider: 'custom:local-ollama'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toBeUndefined()
+  })
+
+  it('seeds an empty composer model from global but never clobbers a pick', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    // Empty → seeds the default.
+    await result.current.refreshCurrentModel()
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+
+    // A user pick must survive the lifecycle refreshes that fire on boot / fresh
+    // draft / session events.
+    setCurrentModel('anthropic/claude-sonnet-4.6')
+    setCurrentModelSource('manual')
+    setCurrentProvider('anthropic')
+    await result.current.refreshCurrentModel()
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+
+    // A profile swap forces a reseed to the new profile's default.
+    await result.current.refreshCurrentModel(true)
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('reads a forced profile reseed from that concrete profile', async () => {
+    $activeGatewayProfile.set('fred-work')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'local/model', provider: 'custom:local' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel(true)
+
+    expect(getGlobalModelInfo).toHaveBeenCalledWith('fred-work')
+    expect($currentProvider.get()).toBe('custom:local')
+  })
+
+  it('drops a sticky manual pick back to the Settings default on request (#107410)', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash', provider: 'custom:relay' })
+    setCurrentModel('claude-sonnet-4-6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    result.current.followDefaultModel()
+
+    await waitFor(() => expect($currentModel.get()).toBe('deepseek-v4-flash'))
+    expect($currentProvider.get()).toBe('custom:relay')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a sticky manual pick even when its provider row does not list the model', async () => {
+    // Rows are hints: a custom endpoint serves ids the picker row lacks. The
+    // pick is the user's selection and must not be reseeded to the default.
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash-0731', provider: 'custom:hyper' })
+
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      providers: [
+        { aliases: ['custom:hyper', 'hyper'], models: ['deepseek-v4-flash-0731'], name: 'Hyper', slug: 'hyper' }
+      ]
+    })
+
+    setCurrentModel('deepseek-v4.1-flash')
+    setCurrentProvider('custom:hyper')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('deepseek-v4.1-flash')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not let a stale forced profile refresh overwrite a newer picker choice', async () => {
+    const profileDefault = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(profileDefault.promise)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const pendingRefresh = result.current.refreshCurrentModel(true)
+    expect(getGlobalModelInfo).toHaveBeenCalled()
+
+    await expect(
+      result.current.selectModel({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    profileDefault.resolve({ model: 'gpt-5.5', provider: 'openai-codex' })
+    await pendingRefresh
+
+    expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not let an older profile refresh overwrite a newer profile', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getGlobalModelInfo>>>()
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const refreshB = result.current.refreshCurrentModel(true)
+    const refreshC = result.current.refreshCurrentModel(true)
+
+    profileC.resolve({ model: 'profile-c-model', provider: 'profile-c-provider' })
+    await refreshC
+    profileB.resolve({ model: 'profile-b-model', provider: 'profile-b-provider' })
+    await refreshB
+
+    expect($currentModel.get()).toBe('profile-c-model')
+    expect($currentProvider.get()).toBe('profile-c-provider')
+  })
+
+  it('refreshes legacy/default-derived composer state from the profile default', async () => {
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('nous')
+    setCurrentModelSource('')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'gpt-5.5', provider: 'openai-codex' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    expect(getCurrentModelSource()).toBe('')
+
+    await result.current.refreshCurrentModel()
+
+    expect(getGlobalModelInfo).toHaveBeenCalled()
+    expect($currentModel.get()).toBe('gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps an active-A focused-B selection cache and request on B', async () => {
+    const queryClient = new QueryClient()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+    $activeGatewayProfile.set('profile-a')
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('primary/model')
+    setCurrentProvider('openai')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'tile-model' }) as never)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheProfile: 'profile-b',
+        queryClient,
+        requestGateway
+      })
+    )
+
+    await expect(
+      result.current.selectModel({
+        model: 'tile-model',
+        provider: 'anthropic',
+        sessionId: 'runtime-b'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'runtime-b',
+      key: 'model',
+      value: 'tile-model --provider anthropic --session'
+    })
+    // Primary footer untouched — the busy primary must not absorb a tile pick.
+    expect($currentModel.get()).toBe('primary/model')
+    expect($currentProvider.get()).toBe('openai')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b'))).toMatchObject({
+      model: 'tile-model',
+      provider: 'anthropic'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-a', 'runtime-b'))).toBeUndefined()
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-a'))).toBeUndefined()
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
+    })
+  })
+
+  it("withdraws the old route's wire stamp when a tile switches model", async () => {
+    let tileState: Record<string, unknown> = {
+      model: 'gpt-6.1-sol',
+      provider: 'openai-codex',
+      reasoningEffortWire: 'max'
+    }
+
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        tileState = update(tileState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'gpt-6.1-luna' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai-codex', sessionId: 'runtime-b' })
+    } finally {
+      tile.delegate = null
+    }
+
+    // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
+    expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
+  })
+
+  it('rolls a failed focused-B selection back only in B cache', async () => {
+    const queryClient = new QueryClient()
+    const ownerBKey = modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
+    const ambientAKey = modelOptionsQueryKey('profile-a', 'runtime-b', 'connection-a')
+    queryClient.setQueryData(ownerBKey, { model: 'old-b', provider: 'provider-b', providers: [] })
+    queryClient.setQueryData(ambientAKey, { model: 'model-a', provider: 'provider-a', providers: [] })
+    $activeGatewayProfile.set('profile-a')
+    $activeSessionId.set('runtime-a')
+    SessionStates.$sessionStates.set({
+      'runtime-b': { model: 'old-b', provider: 'provider-b' }
+    } as never)
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheProfile: 'profile-b',
+        queryClient,
+        requestGateway
+      })
+    )
+
+    await expect(result.current.selectModel({ model: 'bogus', provider: 'xai', sessionId: 'runtime-b' })).resolves.toBe(
+      false
+    )
+
+    expect(queryClient.getQueryData(ownerBKey)).toMatchObject({ model: 'old-b', provider: 'provider-b' })
+    expect(queryClient.getQueryData(ambientAKey)).toMatchObject({ model: 'model-a', provider: 'provider-a' })
+    expect(notifyError).toHaveBeenCalled()
+  })
+
+  // ── Stale MoA pick (#90244) ───────────────────────────────────────────────
+  // The composer pill kept reading `Model · moa: default` after every MoA
+  // preset was disabled: a manual pick is sticky by design, but the virtual
+  // `moa` provider's catalog row disappears entirely once no preset is
+  // enabled — that one absence is authoritative, so the pick reseeds from
+  // the profile default instead of persisting forever.
+  it('reseeds a manual moa pick when the catalog no longer carries it (#90244)', async () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('default')
+    setCurrentProvider('moa')
+    setCurrentModelSource('manual')
+    // Populated catalog without a moa row: every preset disabled.
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'openai/gpt-5.5',
+      provider: 'openai',
+      providers: [{ models: ['gpt-5.5'], name: 'OpenAI', slug: 'openai' }]
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a manual moa pick while the catalog still offers the preset', async () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('balanced')
+    setCurrentProvider('moa')
+    setCurrentModelSource('manual')
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'openai/gpt-5.5',
+      provider: 'openai',
+      providers: [{ models: ['default', 'balanced'], name: 'Mixture of Agents', slug: 'moa' }]
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('balanced')
+    expect($currentProvider.get()).toBe('moa')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('keeps a manual moa pick when the catalog has not loaded yet', async () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('default')
+    setCurrentProvider('moa')
+    setCurrentModelSource('manual')
+    // Empty cache AND a catalog dispatcher that fails: absence of data must
+    // never read as "the preset was removed".
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn(() => Promise.reject(new Error('gateway unavailable')))
+      })
+    )
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('default')
+    expect($currentProvider.get()).toBe('moa')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('never reseeds an ordinary manual pick the catalog lacks (custom slug)', async () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('my-own-slug')
+    setCurrentProvider('custom')
+    setCurrentModelSource('manual')
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'openai/gpt-5.5',
+      provider: 'openai',
+      providers: [{ models: ['gpt-5.5'], name: 'OpenAI', slug: 'openai' }]
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai' })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await act(() => result.current.refreshCurrentModel())
+
+    // d595e636c83: a picked id is never rewritten to a catalog neighbour —
+    // the moa exception must not leak into the general design.
+    expect($currentModel.get()).toBe('my-own-slug')
+    expect($currentProvider.get()).toBe('custom')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  // ── Stale native pick superseded by a custom default (#81922) ─────────────
+  // `nvidia` -> `custom:nvidia` in config.yaml: the bare slug is the
+  // pre-migration spelling of the SAME endpoint (#87035 aliases the two for one
+  // catalog row), but shipping it builds the NATIVE provider and silently drops
+  // the custom entry's `extra_body` (e.g. `thinking: {type: adaptive}`). The
+  // bare slug must yield to the configured default.
+  it('reseeds a sticky manual pick the profile default migrated to its custom-provider form (#81922)', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('z-ai/glm-5.2')
+    setCurrentProvider('nvidia')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentProvider.get()).toBe('custom:nvidia')
+    expect($currentModel.get()).toBe('z-ai/glm-5.2')
+    // 'default' means the next session.create omits the override entirely, so
+    // the gateway resolves config.yaml's custom entry (with its extra_body).
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  it('keeps a manual pick of a different provider while the default is a custom entry', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'z-ai/glm-5.2', provider: 'custom:nvidia' })
+    setCurrentModel('claude-sonnet-4-6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('claude-sonnet-4-6')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('keeps a manual custom:* pick without consulting the profile default', async () => {
+    setCurrentModel('deepseek-v4-flash')
+    setCurrentProvider('custom:relay')
+    setCurrentModelSource('manual')
+    // getGlobalModelInfo is a shared module mock; count only this test's calls.
+    vi.mocked(getGlobalModelInfo).mockClear()
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    await act(() => result.current.refreshCurrentModel())
+
+    expect($currentModel.get()).toBe('deepseek-v4-flash')
+    expect($currentProvider.get()).toBe('custom:relay')
+    expect(getCurrentModelSource()).toBe('manual')
+    // A provider-class pick can never be shadowed by a custom:<key> default, so
+    // the sticky path must not pay for a /api/model/info round trip.
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+})

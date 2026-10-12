@@ -1,0 +1,682 @@
+"""SessionStore transcript I/O: SQLite append with a per-session retry queue, compression-reroute
+following, FTS corruption recovery, rewrite/rewind/load. Mixin split out of ``gateway/session.py``;
+bound onto ``SessionStore`` via the MRO."""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import logging
+import threading
+import time
+from agent.turn_context import extract_api_content_sidecar
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from gateway.session import SessionEntry
+
+# Log-record parity with the origin module.
+logger = logging.getLogger("gateway.session")
+
+
+class TranscriptReadError(RuntimeError):
+    """Raised when persisted history cannot be read safely."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"transcript read failed for session {session_id}")
+
+
+def _spool_dropped(session_id: str, message: dict[str, Any]):
+    """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
+    is replayed after DB recovery); path or None."""
+    try:
+        from gateway.shutdown_flush import spool_dropped_transcript_message
+        return spool_dropped_transcript_message(session_id, message)
+    except Exception:
+        return None
+
+
+# Message keys persisted only for assistant rows (None otherwise).
+_ASSISTANT_ONLY_KEYS = (
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "codex_message_items",
+)
+# Message keys bound straight to a TEXT column. A spooled message is JSON from disk, and a dict or list
+# here makes sqlite refuse the whole row.
+_BOUND_TEXT_KEYS = ("role", "tool_name", "tool_call_id", "reasoning", "reasoning_content", "platform_message_id")
+
+
+def _bindable_text(value: Any) -> Any:
+    """*value* when sqlite can bind it as is, else its JSON text (``str`` if that fails too). An int
+    outside sqlite's signed 64-bit range raises OverflowError even for a TEXT column."""
+    if value is None or isinstance(value, (str, float)) or (
+            isinstance(value, int) and -2**63 <= value < 2**63):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallback_ts: Any = None) -> dict[str, Any]:
+    """``SessionDB.append_message`` kwargs for one transcript row. The live writer and the restart
+    replay of the transcript spool (gateway/shutdown_flush.py) both build rows here, so a replayed
+    message lands as the row the live drain would have written. Fields are listed rather than
+    splatted: a spooled message is arbitrary JSON from disk, and an unexpected key would raise and
+    abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
+    truthiness test would rewrite epoch 0. Values bound straight to a TEXT column are made bindable
+    (:func:`_bindable_text`), so one malformed field cannot make the row unwritable."""
+    is_assistant = message.get("role") == "assistant"
+    timestamp = message.get("timestamp")
+    kwargs = {
+        "session_id": session_id,
+        "role": message.get("role", "unknown"),
+        "content": message.get("content"),
+        "tool_name": message.get("tool_name"),
+        "tool_calls": message.get("tool_calls"),
+        "tool_call_id": message.get("tool_call_id"),
+        **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
+        "platform_message_id": message.get("platform_message_id") or message.get("message_id"),
+        "observed": bool(message.get("observed")),
+        "timestamp": fallback_ts if timestamp is None else timestamp,
+        # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
+        # persistence path or the next replay diverges.
+        "api_content": extract_api_content_sidecar(message),
+        # Presentation typing ("internal_notification" for self-injected async-delegation/background
+        # notification turns, #82888). DB-only; stripped from provider-bound payloads.
+        "display_kind": message.get("display_kind"),
+        "display_metadata": message.get("display_metadata"),
+    }
+    for key in _BOUND_TEXT_KEYS:
+        kwargs[key] = _bindable_text(kwargs[key])
+    return kwargs
+
+
+class SessionTranscriptMixin:
+    """SessionStore transcript I/O: SQLite append with a per-session retry queue,
+    compression-reroute following, FTS corruption recovery, rewrite/rewind/load."""
+
+    _MAX_PENDING_PER_SESSION = 200  # in-memory pending messages per session (DB broken)
+    # Cooldown between FTS5 rebuild attempts (see _rebuild_fts_once); avoids permanently
+    # disabling recovery after one failed attempt while still avoiding a rebuild storm against
+    # a database that is corrupt on every write.
+    _FTS_REBUILD_COOLDOWN_SECONDS = 300
+    # Consecutive transcript-append failures for one session before escalating from WARNING to
+    # ERROR (see _append_to_transcript_serialized); a session stalled past this many attempts is
+    # no longer a transient blip and needs operator attention.
+    _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
+
+    def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Latest compression continuation for *session_id* (heals a mapping left pointing at a
+        compressed parent by a restart or failed send)."""
+        db = self._db_for_session_id(session_id) if session_id else None
+        if db is None:
+            return session_id
+        try:
+            return db.get_compression_tip(session_id) or session_id
+        except Exception:
+            logger.debug("Compression-tip lookup failed for session %s", session_id, exc_info=True)
+            return session_id
+
+    def _heal_compression_tip_locked(
+        self, entry: "SessionEntry", original_session_id: Optional[str],
+        canonical_session_id: Optional[str]) -> bool:
+        """Rewrite *entry* to the compression continuation if stale. Lock held."""
+        if not original_session_id or not canonical_session_id:
+            return False
+        if entry.session_id != original_session_id or canonical_session_id == original_session_id:
+            return False
+        logger.info(
+            "SessionStore healed compressed session mapping: %s -> %s", entry.session_id,
+            canonical_session_id)
+        entry.session_id = canonical_session_id
+        return True
+
+    def advance_compression_session(
+        self, session_key: str, expected_session_id: str, target_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """CAS-advance one route along an already-verified compression lineage. Unlike
+        ``switch_session`` this never ends/reopens SQLite rows (the compression transaction owns
+        that). ``None`` means the route moved after the caller's snapshot (e.g. /new) — caller
+        must fail closed."""
+        if not session_key or not expected_session_id or not target_session_id:
+            return None
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return None
+            if entry.session_id == target_session_id:
+                return entry
+            if not self._heal_compression_tip_locked(entry, expected_session_id, target_session_id):
+                return None  # route moved (session_id != expected) or nothing to heal
+            self._save()  # bookkeeping, not user activity: leave ``updated_at`` alone
+            return entry
+
+    def _get_transcript_drain_lock(self):
+        """Return the lock that serializes pending-queue drain boundaries."""
+        return self._lazy("_transcript_drain_lock", threading.RLock)
+
+    def append_to_transcript(self, session_id: str, message: dict[str, Any], skip_db: bool = False) -> None:
+        """Serialize transcript draining across queue migration boundaries. A session with no usable
+        store is NOT skipped: the write is queued and counted like any other failed append, so a
+        dead/unopenable state.db escalates and spools instead of dropping turns silently
+        (#114266)."""
+        if skip_db:
+            return
+        with self._get_transcript_drain_lock():
+            self._append_to_transcript_serialized(self._follow_reroutes(session_id), message)
+
+    def _follow_reroutes(self, session_id: str) -> str:
+        """Follow the compression reroute chain (cycle-guarded)."""
+        reroutes = self._lazy("_transcript_reroutes", dict)
+        seen = set()
+        while session_id in reroutes and session_id not in seen:
+            seen.add(session_id)
+            session_id = reroutes[session_id]
+        return session_id
+
+    def _enqueue_transcript_message(self, session_id: str, message: dict[str, Any]) -> list:
+        """Queue *message* (retry lock held); evicts + spools the oldest past the cap."""
+        pending = self._dirty_transcripts.setdefault(session_id, [])
+        pending.append(dict(message))
+        # Cap pending messages per session to avoid unbounded memory growth when the DB is persistently
+        # broken. Spool the evicted oldest message to the on-disk pending spool (same machinery
+        # flush_pending_to_file uses at shutdown) so a runtime cap rotation does not silently discard it
+        # (#78182); it is replayed on the next successful transcript flush.
+        if len(pending) > self._MAX_PENDING_PER_SESSION:
+            spool_path = _spool_dropped(session_id, pending.pop(0))
+            if spool_path is not None:
+                self._lazy("_spooled_drop_sessions", set).add(session_id)
+                logger.warning(
+                    "Session DB transcript pending queue full for %s (cap=%d); spooled oldest "
+                    "message to %s for replay after DB recovery", session_id,
+                    self._MAX_PENDING_PER_SESSION, spool_path)
+            else:
+                logger.warning(
+                    "Session DB transcript pending queue full for %s (cap=%d); dropping oldest "
+                    "message to make room (on-disk spool unavailable)", session_id,
+                    self._MAX_PENDING_PER_SESSION)
+        return pending
+
+    def _divert_transcript_after_db_replaced(
+        self, session_id: str, queue_session_id: str, exc: Exception
+    ) -> None:
+        """Stop SQLite writes on a replaced/quarantined handle and divert the backlog to the on-disk
+        spool + JSONL fallback: retrying cannot succeed and the FTS rebuild must never run here."""
+        logger.error(
+            "Session DB refused further writes on this handle for %s (%s); stopping SQLite writes "
+            "and diverting pending transcripts to the on-disk fallback: %s", session_id,
+            type(exc).__name__, exc)
+        with self._transcript_retry_lock:
+            remaining = list(self._dirty_transcripts.get(queue_session_id, []))
+            self._dirty_transcripts.pop(queue_session_id, None)
+            self._transcript_append_failures.pop(session_id, None)
+        for dropped in remaining:
+            if _spool_dropped(session_id, dropped) is None:
+                logger.warning(
+                    "pending fallback failed for replaced state.db transcript on %s", session_id,
+                    exc_info=True)
+        try:
+            from hermes_state import divert_session_transcript_jsonl
+            divert_session_transcript_jsonl(session_id, remaining)
+        except Exception:
+            logger.warning(
+                "JSONL divert failed for replaced state.db transcript on %s", session_id,
+                exc_info=True)
+
+    def _live_compression_child(self, session_id: str) -> str:
+        """Transitive compression tip of *session_id* if it is a different, still-live row, else ""
+        (a depth-1 lookup misses multi-hop lineages). Uses the PARENT's proven owner handle: the
+        child's id is unpublished until its write succeeds, so a by-id lookup would hit the ambient
+        store."""
+        owner_db = self._db_for_session_id(session_id)
+        tip = owner_db.get_compression_tip(session_id) if owner_db is not None else None
+        if tip and tip != session_id:
+            tip_row = owner_db.get_session(tip)
+            if tip_row is not None and tip_row.get("ended_at") is None:
+                return str(tip)
+        return ""
+
+    def _migrate_transcript_queue_to_child(
+        self, session_id: str, queue_session_id: str, child_id: str, pending: list, msg
+    ) -> list:
+        """Move the retry queue + failure counter from parent to child and record the reroute (retry
+        lock held); returns the child's pending list. Older parent backlog must precede messages
+        already queued directly on the child; routing is published only AFTER the queue moved
+        (caller), so new child writes cannot bypass older parent backlog."""
+        if pending and pending[0] is msg:
+            pending.pop(0)
+        existing_child_pending = self._dirty_transcripts.get(child_id, [])
+        if pending:
+            pending.extend(existing_child_pending)
+            self._dirty_transcripts[child_id] = pending
+        elif existing_child_pending:
+            pending = existing_child_pending
+        self._dirty_transcripts.pop(queue_session_id, None)
+        previous_failures = self._transcript_append_failures.pop(queue_session_id, 0)
+        if previous_failures:
+            self._transcript_append_failures[child_id] = max(
+                previous_failures, self._transcript_append_failures.get(child_id, 0))
+        self._transcript_reroutes[session_id] = child_id
+        return pending
+
+    def _publish_transcript_reroute(self, session_id: str, child_id: str) -> None:
+        """Repoint every route at the compression child and save (index authoritative again)."""
+        with self._lock:
+            for entry in self._entries.values():
+                if entry.session_id == session_id:
+                    entry.session_id = child_id
+            self._save()
+        (getattr(self, "_session_owner_hints", None) or {}).pop(child_id, None)
+
+    def _append_to_transcript_serialized(self, session_id: str, message: dict[str, Any]) -> None:
+        """Append a message to a session's transcript (SQLite), draining the per-session retry
+        queue.
+
+        Args: skip_db: When True, skip the SQLite write. Used when the agent already persisted messages to
+        SQLite via its own _flush_messages_to_session_db(), preventing the duplicate-write bug (#860).
+        """
+        with self._transcript_retry_lock:
+            pending = self._enqueue_transcript_message(session_id, message)
+            msg = pending[0]
+        queue_session_id = session_id
+
+        def _ack_head() -> bool:
+            """Pop the acknowledged head (retry lock held). True if queue drained."""
+            if pending and pending[0] is msg:
+                pending.pop(0)
+            if not pending:
+                self._dirty_transcripts.pop(queue_session_id, None)
+                self._transcript_append_failures.pop(session_id, None)
+                return True
+            return False
+
+        # DB write outside the retry lock so other sessions can append.
+        while True:
+            spool_exc = None
+            try:
+                # Spooled backlog (cap eviction, a stalled session, a boot hold-back) is older than
+                # ``msg``: replay it first. While any of it stays on disk ``msg`` stays queued, since
+                # writing it now would give it a lower row id than that backlog for good. The replay's
+                # own error is raised so the repair/divert handling below still classifies it.
+                spool_exc = self._drain_spooled_drops(session_id)
+                if spool_exc is not None:
+                    raise spool_exc
+                self._append_transcript_message(session_id, msg)
+            except Exception as exc:
+                from hermes_state import StateDbCorruptError, StateDbReplacedError
+                from hermes_state_errors import CompressionSessionClosedError
+                if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
+                    self._divert_transcript_after_db_replaced(session_id, queue_session_id, exc)
+                    return
+                if isinstance(exc, CompressionSessionClosedError):
+                    # Adopt only a different, still-live compression tip, else fail closed.
+                    _owner_key = self._owner_key_for_session_id(session_id)
+                    child_id = self._live_compression_child(session_id)
+                    if child_id:
+                        # Record the child's owner BEFORE writing to it (the reroute is published
+                        # only after the write succeeds — load-bearing for backlog order).
+                        if _owner_key:
+                            self._lazy("_session_owner_hints", dict)[child_id] = _owner_key
+                        try:
+                            self._append_transcript_message(child_id, msg)
+                        except Exception as reroute_exc:
+                            exc = reroute_exc
+                        else:
+                            with self._transcript_retry_lock:
+                                pending = self._migrate_transcript_queue_to_child(
+                                    session_id, queue_session_id, child_id, pending, msg)
+                                queue_session_id = child_id
+                            self._publish_transcript_reroute(session_id, child_id)
+                            if not pending:
+                                return
+                            msg = pending[0]
+                            session_id = child_id
+                            continue
+                    else:
+                        # Permanent routing invariant failure, not a transient outage: drop it so it
+                        # cannot poison later writes.
+                        with self._transcript_retry_lock:
+                            _ack_head()
+                        logger.error(
+                            "Session DB transcript append rejected for compression-ended %s with "
+                            "no unique live child; not retrying", session_id)
+                        return
+                if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                    if spool_exc is not None:
+                        continue  # repaired: drain the older spool again before ``msg``
+                    try:
+                        self._append_transcript_message(session_id, msg)
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                    else:
+                        with self._transcript_retry_lock:
+                            _ack_head()
+                        continue
+                with self._transcript_retry_lock:
+                    failures = self._transcript_append_failures.get(session_id, 0) + 1
+                    self._transcript_append_failures[session_id] = failures
+                if failures >= self._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD:
+                    spooled = self._spool_stalled_backlog(session_id, queue_session_id)
+                    logger.error(
+                        "Session DB transcript append failed for %s (failure_count=%d, "
+                        "pending=%d, spooled_to_disk=%d); session is stalled and needs operator "
+                        "attention: %s", session_id, failures, len(pending), spooled, exc)
+                else:
+                    logger.warning(
+                        "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
+                        "will retry: %s", session_id, failures, len(pending), exc)
+                return
+            else:
+                with self._transcript_retry_lock:
+                    queue_empty = _ack_head()
+                    if not queue_empty:
+                        msg = pending[0]
+                if queue_empty:
+                    return
+                continue
+
+    def _spool_stalled_backlog(self, session_id: str, queue_session_id: str) -> int:
+        """Move a stalled session's in-memory backlog (oldest first) to the on-disk pending spool so
+        a crash/restart during the outage no longer loses it (#114266): ``recover_pending_to_db``
+        replays it at boot, ``_drain_spooled_drops`` before the next live write. Stops at the first
+        spool failure so order holds; whatever stays in memory remains under the cap."""
+        with self._transcript_retry_lock:
+            pending = self._dirty_transcripts.get(queue_session_id, [])
+            backlog = list(pending)
+        spooled = 0
+        for message in backlog:
+            if _spool_dropped(session_id, message) is None:
+                break
+            spooled += 1
+        if spooled:
+            with self._transcript_retry_lock:
+                self._lazy("_spooled_drop_sessions", set).add(session_id)
+                del pending[:spooled]
+                if not pending:
+                    self._dirty_transcripts.pop(queue_session_id, None)
+        return spooled
+
+    def _drain_spooled_drops(self, session_id: str) -> Exception | None:
+        """Replay cap-dropped spooled transcript messages after DB recovery; return the replay
+        failure while some of them are still on disk, else None. Best-effort: replay failures keep
+        the spool files for the next successful flush; nothing here may raise."""
+        spooled_sessions = getattr(self, "_spooled_drop_sessions", None)
+        if not spooled_sessions or session_id not in spooled_sessions:
+            return None
+        failures: list[Exception] = []
+
+        def replay(message: dict[str, Any]) -> None:
+            try:
+                self._append_transcript_message(session_id, message)
+            except Exception as exc:
+                failures.append(exc)
+                raise
+
+        try:
+            from gateway.shutdown_flush import drain_transcript_spool
+            # Inside an outage the append that follows logs/escalates the same failure; the
+            # replay attempt is only the order-preserving probe, so its failure stays at DEBUG.
+            with self._transcript_retry_lock:
+                known_failing = bool(self._transcript_append_failures.get(session_id))
+            _replayed, remaining = drain_transcript_spool(
+                session_id, replay, db_known_failing=known_failing)
+            if not remaining:
+                with self._transcript_retry_lock:
+                    spooled_sessions.discard(session_id)
+                return None
+            return failures[-1] if failures else RuntimeError(
+                f"older spooled transcript rows for {session_id} still pending")
+        except Exception as exc:
+            logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
+            return None
+
+    def mark_spooled_drop_sessions(self, session_ids) -> None:
+        """Have each session's next transcript write drain the on-disk spool first. Boot recovery marks
+        the sessions it held back, so their next live row cannot land ahead of those files."""
+        if not session_ids:
+            return
+        with self._transcript_retry_lock:
+            self._lazy("_spooled_drop_sessions", set).update(session_ids)
+
+    def _append_transcript_message(self, session_id: str, message: dict[str, Any]) -> None:
+        """Write one transcript row. Caller handles retry queuing."""
+        _db = self._db_for_session_id(session_id)
+        if _db is None:
+            # Named profile with no resolvable home yet: defer (caller queues) instead of writing
+            # into the ambient store.
+            raise RuntimeError(
+                f"no owning session store for {session_id}; deferring transcript write")
+        _db.append_message(**transcript_append_kwargs(session_id, message))
+
+    @staticmethod
+    def _is_fts_corruption_error(exc: Exception) -> bool:
+        """True only when the failure is provably scoped to the FTS index. A bare SQLITE_CORRUPT
+        can mean structural B-tree damage; only errors naming ``messages_fts`` or carrying FTS
+        provenance (``SessionDB._is_fts_write_corruption_error``) may authorize the one-shot
+        rebuild-and-retry; everything else takes the retry path.
+
+        A generic ``database disk image is malformed`` (bare SQLITE_CORRUPT) can mean structural damage to
+        canonical B-trees, not just the FTS shadow tables — treating it as FTS-only here made the store
+        rebuild the index and retry transcript writes against a structurally corrupt database (#97940).
+        """
+        if "messages_fts" in str(exc).lower():
+            return True
+        import sqlite3
+        from hermes_state import SessionDB
+        return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
+
+    def _rebuild_fts_once(self) -> bool:
+        """Attempt FTS5 ``rebuild``, at most once per ``_FTS_REBUILD_COOLDOWN_SECONDS`` window;
+        True if any index was rebuilt.
+
+        A permanent one-shot flag meant a single rebuild failure (e.g. a transient WAL
+        split-brain guard hit) permanently disabled recovery for the life of the process, even
+        though later corruption on the same store could be fixable. Retrying on a cooldown lets
+        the store try again after the underlying condition (e.g. a foreign holder) has likely
+        cleared, without hammering a database that is corrupt on every write.
+        """
+        now = time.monotonic()
+        last_attempt = self._fts_rebuild_last_attempt_at
+        if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
+            return False
+        db = self._db
+        if db is None or not hasattr(db, "rebuild_fts"):
+            return False
+        self._fts_rebuild_last_attempt_at = now
+        # WAL split-brain guard: skip when a foreign process holds state.db.
+        foreign_holders = None
+        if hasattr(db, "_foreign_state_db_holders"):
+            foreign_holders = db._foreign_state_db_holders()
+        if foreign_holders:
+            logger.warning(
+                "Skipping Session DB FTS rebuild while foreign processes hold the database or "
+                "WAL sidecars (%s); canonical transcript writes remain available.", foreign_holders)
+            return False
+        try:
+            rebuilt = db.rebuild_fts()
+        except Exception as exc:
+            logger.warning("Session DB FTS rebuild failed: %s", exc)
+            return False
+        if rebuilt:
+            logger.warning("Rebuilt %d Session DB FTS index(es) after append corruption", rebuilt)
+        return rebuilt > 0
+
+    def _clear_dirty_transcript(self, session_id: str) -> None:
+        """Drop queued pending messages so a rewrite/rewind doesn't re-insert them."""
+        with self._transcript_retry_lock:
+            self._dirty_transcripts.pop(session_id, None)
+            self._transcript_append_failures.pop(session_id, None)
+
+    def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
+        """Whether a message with this platform_message_id is persisted (False without a DB).
+
+        Thin wrapper over SessionDB.has_platform_message_id(). Returns False when no DB is available
+        (in-memory sessions). Used by the gateway's transient-failure dedupe guard (#47237).
+        """
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return False
+        try:
+            return db.has_platform_message_id(session_id, platform_message_id)
+        except Exception:
+            logger.debug("has_platform_message_id lookup failed", exc_info=True)
+            return False
+
+    def transcript_tail_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
+        when empty, no DB, or the read fails — the boundary write would fail the same way)."""
+        session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        try:
+            return db.latest_conversation_role(session_id)
+        except Exception:
+            logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
+            return None
+
+    def rewrite_transcript(
+        self, session_id: str, messages: list[dict[str, Any]], active_only: bool = False,
+        reject_active_turn_lease: bool = False) -> bool:
+        """Replace a session's transcript (/retry, /compress). DESTRUCTIVE by default:
+        ``active_only=False`` DELETEs every row incl. soft-archived compaction history (pass
+        ``active_only=True`` for sessions that may carry archived rows). True when the write lands
+        or there is no DB, False on failure — callers committing a destructive change on top
+        (/compress repointing) must check it. ``reject_active_turn_lease`` is for user-initiated
+        rewrites that do not own the cross-process turn lease."""
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return True
+        with self._get_transcript_drain_lock():
+            try:
+                # Even when the current agent doesn't "own" persistence, the session on disk may already
+                # carry compaction-archived rows — e.g. after a model switch or a /restore, both of which
+                # mint a fresh agent with _session_db_created=False (so the check above is False) yet leave
+                # the durable archived transcript in place. A full-history replace would DELETE those
+                # archived rows just like the owned-agent case. Guard against it by replacing ONLY the live
+                # (active=1) set unconditionally: on a fresh create/fork every row is active=1, so
+                # active-only replace is behaviorally identical to the full replace — and when archived rows
+                # DO exist they survive. An existence probe here (has_archived_messages) would fail OPEN
+                # into the destructive replace on any DB error and can race a concurrent archive_and_compact
+                # — the same probe failure mode #80216's /retry fix (gateway/slash_commands.py) deliberately
+                # avoids.
+                db.replace_messages(
+                    session_id, messages, active_only=active_only,
+                    reject_active_turn_lease=reject_active_turn_lease)
+            except Exception as e:
+                logger.debug("Failed to rewrite transcript in DB: %s", e)
+                return False
+            self._clear_dirty_transcript(session_id)
+            return True
+
+    def is_published_compression_child(self, parent_session_id: str, child_session_id: str) -> bool:
+        """True when *child_session_id* is an atomically-published compression continuation of
+        *parent_session_id*: ``publish_compression_child()`` wrote the handoff (plus any cloned
+        foreign-tail rows) in the SAME transaction that ended the parent with
+        ``end_reason='compression'``, so the child transcript is already durable on disk.
+
+        Rewriting such a child is redundant AND destructive: the in-memory handoff lacks the rows
+        cloned during publication, and a failed rewrite reports a false "failed to persist
+        compressed transcript" over a committed compression. Fails open (False) on any DB error so
+        callers fall back to the rewrite."""
+        if not parent_session_id or not child_session_id:
+            return False
+        # The child id is not routed yet; the parent is, and it was ended in the same publish transaction.
+        db = self._db_for_session_id(parent_session_id)
+        if db is None:
+            return False
+        try:
+            child = db.get_session(child_session_id)
+            if not child or child.get("parent_session_id") != parent_session_id:
+                return False
+            if not db._is_compression_child_row(child):
+                return False
+            return db.get_active_message_watermark(child_session_id) > 0
+        except Exception:
+            logger.debug("published-compression-child probe failed for %s", child_session_id, exc_info=True)
+            return False
+
+    def persist_rotated_compression_child(
+            self, parent_session_id: str, child_session_id: str, messages: list[dict[str, Any]]) -> bool:
+        """Make a rotated compression child durable before the live entry is repointed: a published
+        child already is, anything else gets *messages* written by the destructive rewrite."""
+        return (self.is_published_compression_child(parent_session_id, child_session_id)
+                or self.rewrite_transcript(child_session_id, messages))
+
+    def has_input_owner(self, session_id: str, owner: str) -> bool:
+        """Find this accepted input on the canonical live continuation and its ancestors.
+
+        Content and unrelated writers cannot establish ownership. Query only existence;
+        compaction archives can contain many megabytes that replay never needs to load.
+        """
+        try:
+            current = self._follow_reroutes(session_id)
+            db = self._db_for_session_id(current)
+            current = db.get_compression_tip(current) or current
+            seen = set()
+            while current and current not in seen:
+                seen.add(current)
+                if db.has_gateway_input_owner(current, owner):
+                    return True
+                row = db.get_session(current)
+                if not row or not db._is_compression_child_row(row):
+                    break
+                current = row["parent_session_id"]
+            return False
+        except Exception as e:
+            raise TranscriptReadError(session_id) from e
+
+    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
+        """Load all messages from a session's transcript (state.db is canonical). Reads follow the
+        same routing writes use — the in-memory reroute map, then the durable compression tip —
+        otherwise the transcript "vanishes" while every message sits under the child."""
+        if not self._db_for_session_id(session_id):
+            return []
+        session_id = self._follow_reroutes(session_id)
+        with contextlib.suppress(Exception):
+            # Durable successor survives restart; the reroute map doesn't.
+            db = self._db_for_session_id(session_id)
+            session_id = db.get_compression_tip(session_id) or session_id
+        try:
+            # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
+            return self._db_for_session_id(session_id).get_messages_as_conversation(
+                session_id, repair_alternation=True)
+        except Exception as e:
+            # Empty history is valid data; a failed canonical read is not — live-replay callers
+            # must fail closed, not start from [].
+            logger.error(
+                "Transcript read failed for session %s; refusing to treat the conversation as "
+                "empty: %s", session_id, e, exc_info=True)
+            raise TranscriptReadError(session_id) from e
+
+    def rewind_session(
+        self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """Back up ``n`` user turns via soft-delete (``active=0``), mirroring CLI ``/undo [N]``.
+        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no rewindable
+        turn / persistence failure); ``n`` clamps to the oldest user turn. ``require_retryable_composite``
+        is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
+        is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
+        explain why the carrier is unsafe."""
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        from hermes_state_rewind import RewindTargetUnavailableError
+        with self._get_transcript_drain_lock():
+            try:
+                outcome = db.rewind_user_turn(
+                    session_id, -max(n, 1), require_retryable=require_retryable_composite,
+                    require_composite=require_retryable_composite)
+            except RewindTargetUnavailableError as e:
+                logger.debug("rewind_session: %s", e)
+                return None
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.debug("rewind_session: rewind failed: %s", e)
+                return None
+            self._clear_dirty_transcript(session_id)
+            return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
+                    "target_text": outcome.live_text}

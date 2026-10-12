@@ -1,0 +1,711 @@
+"""Tests for the disk-cleanup plugin.
+
+Covers the bundled plugin at ``plugins/disk-cleanup/``:
+
+  * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
+    ``is_safe_path`` and ``guess_category`` filtering.
+  * Plugin ``__init__``: ``post_tool_call`` hook auto-tracks files created
+    by ``write_file`` / ``terminal``; ``on_session_end`` hook runs quick
+    cleanup when anything was tracked during the turn.
+  * Slash command handler: status / dry-run / quick / track / forget /
+    unknown subcommand behaviours.
+  * Bundled-plugin discovery via ``PluginManager.discover_and_load``.
+"""
+
+import importlib
+import itertools
+import json
+import os
+import shutil
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(tmp_path, monkeypatch):
+    """Isolate HERMES_HOME for each test.
+
+    The global hermetic fixture already redirects HERMES_HOME to a tempdir,
+    but we want the plugin to work with a predictable subpath. We reset
+    HERMES_HOME here for clarity.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    yield hermes_home
+
+
+def _load_lib():
+    """Import the plugin's library module directly from the repo path."""
+    repo_root = Path(__file__).resolve().parents[2]
+    lib_path = repo_root / "plugins" / "disk-cleanup" / "disk_cleanup.py"
+    spec = importlib.util.spec_from_file_location(
+        "disk_cleanup_under_test", lib_path
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_CALL_IDS = itertools.count(1)
+
+
+def _run_tool(pi, tool_name, args, create=None, result="OK", **ids):
+    """The real hook order: pre_tool_call snapshot, the call's side effect, post_tool_call — both
+    hooks carry the same identity fields, as the dispatcher sends them."""
+    call_id = f"call-{next(_CALL_IDS)}"
+    pi._on_pre_tool_call(tool_name=tool_name, args=args, tool_call_id=call_id, **ids)
+    if create is not None:
+        create()
+    pi._on_post_tool_call(tool_name=tool_name, args=args, result=result, tool_call_id=call_id, **ids)
+
+
+def _load_plugin_init():
+    """Import the plugin's __init__.py (which depends on the library)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_dir = repo_root / "plugins" / "disk-cleanup"
+    # Use the PluginManager's module naming convention so relative imports work.
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.disk_cleanup",
+        plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    # Ensure parent namespace package exists for the relative `. import disk_cleanup`
+    import types
+    if "hermes_plugins" not in sys.modules:
+        ns = types.ModuleType("hermes_plugins")
+        ns.__path__ = []
+        sys.modules["hermes_plugins"] = ns
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = "hermes_plugins.disk_cleanup"
+    mod.__path__ = [str(plugin_dir)]
+    sys.modules["hermes_plugins.disk_cleanup"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Library tests
+# ---------------------------------------------------------------------------
+
+class TestIsSafePath:
+    def test_accepts_path_under_hermes_home(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "subdir" / "file.txt"
+        p.parent.mkdir()
+        p.write_text("x")
+        assert dg.is_safe_path(p) is True
+
+    @pytest.mark.platforms("macos")
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
+
+    def test_rejects_outside_hermes_home(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/etc/passwd")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path contract")
+    def test_rejects_tmp_traversal_and_near_prefixes(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/tmp/hermes-safe/../not-hermes/file")) is False
+        assert dg.is_safe_path(Path("/tmp-near/hermes-safe/file")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_rejects_final_and_nested_symlink_escapes(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="disk-cleanup-outside-", dir="/tmp"))
+        outside_file = outside_dir / "file.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        try:
+            final_link = temporary / "final-link"
+            final_link.symlink_to(outside_file)
+            nested_link = temporary / "nested-link"
+            nested_link.symlink_to(outside_dir, target_is_directory=True)
+
+            assert dg.is_safe_path(final_link) is False
+            assert dg.is_safe_path(nested_link / outside_file.name) is False
+        finally:
+            shutil.rmtree(temporary)
+            shutil.rmtree(outside_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_symlink_loop_fails_closed(self, _isolate_env, monkeypatch, tmp_path):
+        """Resolution failures must fail closed, never raise into the caller.
+
+        Non-strict ``Path.resolve()`` does not raise on a symlink loop on
+        every platform (ELOOP only surfaces under strict=True), so the loop
+        itself may resolve to a best-effort path. The fail-closed contract
+        added with #98854 is about resolution *errors*: when resolve()
+        raises OSError/RuntimeError, is_safe_path rejects and track()
+        declines without propagating.
+        """
+        dg = _load_lib()
+        loop_root = tmp_path / "loop"
+        loop_root.mkdir()
+        first = loop_root / "first"
+        second = loop_root / "second"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        # Baseline: a loop resolves without raising, so both calls return a
+        # bool — never an exception into the plugin hook.
+        assert isinstance(dg.is_safe_path(first), bool)
+        assert isinstance(dg.track(str(first), "temp", silent=True), bool)
+
+        # Resolution errors are rejected fail-closed.
+        def _raise_resolve(self):
+            raise OSError("ELOOP: too many levels of symbolic links")
+
+        monkeypatch.setattr(Path, "resolve", _raise_resolve)
+        assert dg.is_safe_path(first) is False
+        assert dg.track(str(first), "temp", silent=True) is False
+
+
+class TestGuessCategory:
+    def test_test_prefix(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "test_foo.py"
+        p.write_text("x")
+        assert dg.guess_category(p) == "test"
+
+    def test_tmp_prefix(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "tmp_foo.log"
+        p.write_text("x")
+        assert dg.guess_category(p) == "test"
+
+    def test_dot_test_suffix(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "mything.test.js"
+        p.write_text("x")
+        assert dg.guess_category(p) == "test"
+
+    def test_skips_protected_top_level(self, _isolate_env):
+        dg = _load_lib()
+        logs_dir = _isolate_env / "logs"
+        logs_dir.mkdir()
+        p = logs_dir / "test_log.txt"
+        p.write_text("x")
+        # Even though it matches test_* pattern, logs/ is excluded.
+        assert dg.guess_category(p) is None
+
+    def test_cron_subtree_categorised(self, _isolate_env):
+        dg = _load_lib()
+        # Only files under ``cron/output/`` are disposable run artifacts.
+        output_dir = _isolate_env / "cron" / "output" / "job_123"
+        output_dir.mkdir(parents=True)
+        p = output_dir / "run.md"
+        p.write_text("x")
+        assert dg.guess_category(p) == "cron-output"
+
+
+    def test_cronjobs_top_level_not_tracked(self, _isolate_env):
+        """The legacy ``cronjobs`` alias is also control-plane at the top."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cronjobs"
+        cron_dir.mkdir()
+        p = cron_dir / "jobs.json"
+        p.write_text("[]")
+        assert dg.guess_category(p) is None
+
+    def test_ordinary_file_returns_none(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "notes.md"
+        p.write_text("x")
+        assert dg.guess_category(p) is None
+
+
+class TestProfileUserTreesNeverCleaned:
+    """``workspace/`` (and the other per-profile user trees) hold project files, so
+    a ``test_*``/``tmp_*`` name inside them is never a disposable scratch file.
+
+    Regression for the data loss where ``workspace/<project>/tests/test_parse.py`` was
+    classified "test" on write and unlinked by ``quick()`` at session end.
+    """
+
+    def test_session_end_hook_leaves_workspace_files_alone(self, _isolate_env):
+        """End-to-end: write_file into a project tree, then session end. A scratch file at
+        the HERMES_HOME root is the control: it is still tracked and removed."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
+        keep.parent.mkdir(parents=True)
+        scratch = _isolate_env / "tmp_scratch.py"
+        for p in (keep, scratch):
+            _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                      create=lambda p=p: p.write_text("x"), task_id="t_ws", session_id="s_ws")
+        assert dg.guess_category(keep) is None
+        assert dg.guess_category(scratch) == "test"
+        pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
+        assert keep.exists(), "session-end cleanup must not touch workspace project files"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up"
+
+    def test_empty_dir_sweep_skips_workspace(self, _isolate_env):
+        """Empty dirs inside a project tree are meaningful (``data/``, ``.artifacts/``)
+        and must survive the empty-dir sweep; unprotected empty top levels are still swept."""
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "watch-battery" / "data"
+        keep.mkdir(parents=True)
+        sweepable = _isolate_env / "pairing"
+        sweepable.mkdir()
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
+        assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
+class TestProtectedDirsNeverRmtreed:
+    """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
+    must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never
+    tracked at all (its attachments/workspaces have their own lifecycle)."""
+
+    def test_stale_cache_dir_entry_is_skipped_but_its_old_files_still_age_out(self, _isolate_env):
+        dg = _load_lib()
+        cache = _isolate_env / "cache"
+        (cache / "terminal").mkdir(parents=True)
+        old_file = cache / "scratch.txt"
+        old_file.write_text("x")
+        assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
+        assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        dg.save_tracked([
+            {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
+            {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
+        ])
+
+        summary = dg.quick()
+
+        assert (cache / "terminal").is_dir(), "protected top-level dir must survive a stale tracked entry"
+        assert not old_file.exists(), "old temp FILE under cache/ is still pruned (control)"
+        assert summary["deleted"] == 1
+        assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
+        assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+
+    def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        att = _isolate_env / "kanban" / "attachments" / "t1" / "test_evidence.sh"
+        att.parent.mkdir(parents=True)
+        att.write_text("x")
+        assert dg.guess_category(att) is None
+        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
+        dg.save_tracked([{"path": str(att), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        # A kanban file the call itself CREATES must not be tracked either.
+        new_att = att.with_name("test_new.sh")
+        _run_tool(pi, "write_file", {"path": str(new_att), "content": "x"},
+                  create=lambda: new_att.write_text("y"), task_id="t1", session_id="s_kb")
+        scratch = _isolate_env / "test_scratch.py"
+        _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
+                  create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_kb")
+
+        pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
+
+        assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert new_att.exists(), "kanban files a call created are never tracked or deleted"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
+
+
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); a bare .git at or above HERMES_HOME
+        does not make untracked scratch git-owned — only a .git strictly below HERMES_HOME, or
+        git actually tracking the file, does."""
+        dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+    def test_tracked_file_in_hermes_home_checkout_is_never_disposable(self, _isolate_env, monkeypatch):
+        """HERMES_HOME itself is a git checkout: a file git TRACKS is Git-owned, so a
+        ``test_*``/``tmp_*`` name must not classify it as disposable.
+
+        Observed live: ``~/.hermes`` is the userfiles repo, so ``~/.hermes/scripts/`` sits
+        inside a worktree but is not *below* HERMES_HOME — the parent-chain probe found no
+        ``.git`` and the bundled disk-cleanup plugin deleted two committed regression tests
+        (``scripts/test_analyze_upstream_opportunities.py``,
+        ``scripts/test_customization_protocol_v2.py``), committing the deletion."""
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        (dg.get_hermes_home() / "scripts").mkdir()
+        tracked = _isolate_env / "scripts" / "test_committed.py"
+        tracked.write_text("x")
+        scratch = _isolate_env / "test_untracked.py"
+        scratch.write_text("x")
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "scripts/test_committed.py"],
+                       check=True)
+
+        assert dg._inside_git_worktree(tracked) is True
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(tracked) is None
+        assert dg.guess_category(scratch) == "test"
+        # An inherited pathspec mode must not make the tracked-file probe miss.
+        for mode in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            monkeypatch.setenv(mode, "1")
+            assert dg._inside_git_worktree(tracked) is True, mode
+            monkeypatch.delenv(mode)
+
+        # A stale pre-fix entry is dropped by quick()'s re-validation, not deleted, while
+        # untracked scratch beside it in the same repo is still cleaned.
+        now = datetime.now(timezone.utc).isoformat()
+        dg.save_tracked([{"path": str(p), "category": "test", "timestamp": now, "size": 1}
+                         for p in (tracked, scratch)])
+        result = dg.quick()
+        assert tracked.exists(), "a git-tracked test file must never be auto-deleted"
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+        # Committed AFTER first classification in the same process: seen immediately.
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "test_untracked.py"], check=True)
+        assert dg.guess_category(scratch) is None
+
+        # HERMES_HOME nested in an enclosing repo (a ~/.git dotfiles repo) that tracks it.
+        outer = _isolate_env.parent / "outer"
+        (outer / ".hermes" / "scripts").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(outer)], check=True)
+        nested = outer / ".hermes" / "scripts" / "test_x.py"
+        nested.write_text("x")
+        subprocess.run(["git", "-C", str(outer), "add", "."], check=True)
+        monkeypatch.setenv("HERMES_HOME", str(outer / ".hermes"))
+        assert dg.guess_category(nested) is None
+
+
+class TestStaleCronEntryMigration:
+    """Regression tests for #37721 — stale cron-output entries in tracked.json."""
+
+    def test_quick_skips_stale_cron_output_for_jobs_json(self, _isolate_env):
+        """A stale tracked.json entry with category="cron-output" for
+        cron/jobs.json must NOT be deleted by quick().
+
+        This is the exact scenario from #37721: an old tracked.json has
+        {"path": ".../cron/jobs.json", "category": "cron-output"} which
+        would pass the delete filter but must be skipped because
+        guess_category() now returns None for non-output cron paths.
+        """
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs_json = cron_dir / "jobs.json"
+        jobs_json.write_text('{"jobs": []}')
+
+        # Simulate a stale tracked.json entry from before #34840 by
+        # directly writing the tracked file (track() would reject it).
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(jobs_json),
+            "category": "cron-output",
+            "timestamp": "2025-01-01T00:00:00+00:00",  # very old
+            "size": 123,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 0, "cron/jobs.json must not be deleted"
+        assert jobs_json.exists(), "jobs.json must still exist"
+        # The stale entry should have been dropped from tracking.
+        remaining = json.loads(tracked_file.read_text())
+        assert len(remaining) == 0
+
+
+    def test_dry_run_omits_stale_cron_output(self, _isolate_env):
+        """dry_run() should also skip stale cron-output entries."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs_json = cron_dir / "jobs.json"
+        jobs_json.write_text("[]")
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(jobs_json),
+            "category": "cron-output",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 123,
+        }]))
+
+        auto, prompt = dg.dry_run()
+        assert len(auto) == 0, "stale cron-output for jobs.json must not appear"
+        assert len(prompt) == 0
+
+    def test_legitimate_cron_output_still_deleted(self, _isolate_env):
+        """A valid cron-output entry under cron/output/ must still be deleted."""
+        dg = _load_lib()
+        output_dir = _isolate_env / "cron" / "output" / "job_1"
+        output_dir.mkdir(parents=True)
+        run_md = output_dir / "run.md"
+        run_md.write_text("x")
+
+        # Old enough to be deleted (>14 days)
+        from datetime import datetime, timezone, timedelta
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(run_md),
+            "category": "cron-output",
+            "timestamp": old_ts,
+            "size": 10,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 1, "valid old cron-output should be deleted"
+        assert not run_md.exists()
+
+
+class TestTrackForgetQuick:
+    def test_track_then_quick_deletes_test(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "test_a.py"
+        p.write_text("x")
+        assert dg.track(str(p), "test", silent=True) is True
+        summary = dg.quick()
+        assert summary["deleted"] == 1
+        assert not p.exists()
+
+
+    def test_forget_removes_entry(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "keep.tmp"
+        p.write_text("x")
+        dg.track(str(p), "temp", silent=True)
+        assert dg.forget(str(p)) == 1
+        assert p.exists()  # forget does NOT delete the file
+
+
+class TestStatus:
+    def test_empty_status(self, _isolate_env):
+        dg = _load_lib()
+        s = dg.status()
+        assert s["total_tracked"] == 0
+        assert s["top10"] == []
+
+    def test_status_with_entries(self, _isolate_env):
+        dg = _load_lib()
+        p = _isolate_env / "big.tmp"
+        p.write_text("y" * 100)
+        dg.track(str(p), "temp", silent=True)
+        s = dg.status()
+        assert s["total_tracked"] == 1
+        assert len(s["top10"]) == 1
+        rendered = dg.format_status(s)
+        assert "temp" in rendered
+        assert "big.tmp" in rendered
+
+
+class TestDryRun:
+    def test_classifies_by_category(self, _isolate_env):
+        dg = _load_lib()
+        test_f = _isolate_env / "test_x.py"
+        test_f.write_text("x")
+        big = _isolate_env / "big.bin"
+        big.write_bytes(b"z" * 10)
+        dg.track(str(test_f), "test", silent=True)
+        dg.track(str(big), "other", silent=True)
+        auto, _prompt = dg.dry_run()
+        # test → auto, other → neither (doesn't hit any rule)
+        assert any(i["path"] == str(test_f) for i in auto)
+
+
+# ---------------------------------------------------------------------------
+# Plugin hooks tests
+# ---------------------------------------------------------------------------
+
+class TestPostToolCallHook:
+    def test_write_file_test_pattern_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_created.py"
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="t1", session_id="s1")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        data = json.loads(tracked_file.read_text())
+        assert len(data) == 1
+        assert data[0]["category"] == "test"
+
+
+    def test_terminal_command_picks_up_paths(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "tmp_created.log"
+        _run_tool(pi, "terminal", {"command": f"touch {p}"}, create=lambda: p.write_text("x"),
+                  result=f"created {p}\n", task_id="t3", session_id="s3")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        data = json.loads(tracked_file.read_text())
+        assert any(Path(i["path"]) == p.resolve() for i in data)
+
+    def test_ignores_unrelated_tool(self, _isolate_env):
+        pi = _load_plugin_init()
+        pi._on_post_tool_call(
+            tool_name="read_file",
+            args={"path": str(_isolate_env / "test_x.py")},
+            result="contents",
+            task_id="t4", session_id="s4",
+        )
+        # read_file should never trigger tracking.
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
+
+    def test_paths_the_call_did_not_create_are_never_tracked(self, _isolate_env):
+        """'test' items are deleted at age 0 when the turn ends (rmtree for dirs), so only what a
+        call CREATED may be tracked. A user's cron script the agent patched, and a hook dir it
+        merely listed (by argument or in `find` output), must survive the turn."""
+        pi = _load_plugin_init()
+        script = _isolate_env / "scripts" / "test_uptime.py"
+        script.parent.mkdir()
+        script.write_text("print('up')\n")
+        hook_dir = _isolate_env / "hooks" / "test_notify"
+        hook_dir.mkdir(parents=True)
+        old = 1_700_000_000
+        os.utime(script, (old, old))
+        os.utime(hook_dir, (old, old))
+
+        _run_tool(pi, "patch", {"path": str(script), "old_string": "up", "new_string": "ok"},
+                  create=lambda: script.write_text("print('ok')\n"), session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"ls -la {hook_dir}"}, result="total 0\n",
+                  session_id="s_keep")
+        _run_tool(pi, "terminal", {"command": f"find {_isolate_env} -name 'test_*'"},
+                  result=f"{script}\n{hook_dir}\n", session_id="s_keep")
+        pi._on_session_end(session_id="s_keep", completed=True, interrupted=False)
+
+        assert script.exists() and hook_dir.is_dir()
+
+    def test_a_call_never_uses_another_sessions_snapshot(self, _isolate_env):
+        """tool_call_id is not unique: llama.cpp sends one constant id for every call. Session A
+        patching the user's test_user.py must not consume session B's snapshot of a new file under
+        that id, or the user's file reads as created and is deleted when the turn ends; B's own
+        created file is still tracked and cleaned up."""
+        pi = _load_plugin_init()
+        user_file = _isolate_env / "test_user.py"
+        user_file.write_text("keep")
+        new_file = _isolate_env / "test_new.py"
+        a = {"tool_call_id": "call_0", "task_id": "sA", "session_id": "sA"}
+        b = {"tool_call_id": "call_0", "task_id": "sB", "session_id": "sB"}
+
+        pi._on_pre_tool_call(tool_name="patch", args={"path": str(user_file)}, **a)
+        pi._on_pre_tool_call(tool_name="write_file", args={"path": str(new_file)}, **b)
+        new_file.write_text("x")
+        pi._on_post_tool_call(tool_name="patch", args={"path": str(user_file)}, result="OK", **a)
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(new_file)}, result="OK", **b)
+        pi._on_session_end(session_id="sA", completed=True, interrupted=False)
+
+        assert user_file.read_text() == "keep"
+        assert not new_file.exists()
+
+
+class TestOnSessionEndHook:
+    def test_runs_quick_when_test_files_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_cleanup.py"
+        _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                  create=lambda: p.write_text("x"), task_id="", session_id="s1")
+        assert p.exists()
+        pi._on_session_end(session_id="s1", completed=True, interrupted=False)
+        assert not p.exists(), "test file should be auto-deleted"
+
+
+
+# ---------------------------------------------------------------------------
+# Slash command
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+# Bundled-plugin discovery
+# ---------------------------------------------------------------------------
+
+class TestBundledDiscovery:
+    def _write_enabled_config(self, hermes_home, names):
+        """Write plugins.enabled allow-list to config.yaml."""
+        import hermes_yaml as yaml
+        cfg_path = hermes_home / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
+
+    def test_disk_cleanup_discovered_but_not_loaded_by_default(self, _isolate_env):
+        """Bundled plugins are discovered but NOT loaded without opt-in."""
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        # Discovered — appears in the registry
+        assert "disk-cleanup" in mgr._plugins
+        loaded = mgr._plugins["disk-cleanup"]
+        assert loaded.manifest.source == "bundled"
+        # But NOT enabled — no hooks or commands registered
+        assert not loaded.enabled
+        assert loaded.error and "not enabled" in loaded.error
+
+
+    def test_disabled_beats_enabled(self, _isolate_env):
+        """plugins.disabled wins even if the plugin is also in plugins.enabled."""
+        import hermes_yaml as yaml
+        cfg_path = _isolate_env / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump({
+            "plugins": {
+                "enabled": ["disk-cleanup"],
+                "disabled": ["disk-cleanup"],
+            }
+        }))
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        loaded = mgr._plugins["disk-cleanup"]
+        assert not loaded.enabled
+        assert loaded.error == "disabled via config"
+
+    def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
+        """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
+        as top-level plugins — they have their own discovery paths."""
+        self._write_enabled_config(
+            _isolate_env, ["memory", "context_engine", "disk-cleanup"]
+        )
+        from hermes_cli import plugins as pmod
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        assert "memory" not in mgr._plugins
+        assert "context_engine" not in mgr._plugins

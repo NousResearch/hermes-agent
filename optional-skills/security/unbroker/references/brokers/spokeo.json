@@ -1,0 +1,56 @@
+{
+  "id": "spokeo",
+  "name": "Spokeo",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["US"],
+  "parent": "spokeo",
+  "owns": ["freepeopledirectory"],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.spokeo.com/search",
+    "fetch": "browser",
+    "match_signal": "profile",
+    "by": ["name", "phone", "email", "address"]
+  },
+  "optout": {
+    "tier": "T1",
+    "method": "web_form",
+    "url": "https://www.spokeo.com/optout",
+    "email": "privacy@spokeo.com",
+    "requires": {
+      "profile_url": true,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["profile_url", "contact_email"],
+    "deletion": {
+      "via": "email_followup",
+      "email": "privacy@spokeo.com",
+      "kinds": ["ccpa", "generic"],
+      "notes": "privacy@spokeo.com is the documented direct privacy contact (verified live on /optout 2026-07-01). Use for full CCPA deletion beyond listing opt-out, for listings the form rejects, and when more listings keep surfacing."
+    },
+    "playbook": [
+      "Opt-out form at spokeo.com/optout -- clears FreePeopleDirectory. Inputs: the confirmed profile URL + contact email; the form emails a confirmation link (poll-verification picks it up; open it in the agent's own browser).",
+      "EVERY LISTING SEPARATELY: 'you may have multiple listings on Spokeo. Each one is identified by a unique URL and must be opted out individually' (their own wording). Run ALL search vectors first, collect every listing URL, and submit one opt-out per URL.",
+      "Fast: requests process in 24-48 hours per their page -- re-scan after 2 days and record the real outcome.",
+      "FULL DELETION follow-up: send-email --kind ccpa (CA) / generic to privacy@spokeo.com naming all listing URLs -- covers data retained beyond the free-search suppression.",
+      "Paid/account data may be retained even when hidden from free search -- verify actual removal via re-scan; never mark confirmed_removed off the free-search view alone."
+    ],
+    "notes": "Form + privacy@spokeo.com verified live 2026-07-01. Their page: opting out does not remove data from original sources and listings may reappear as new public records arrive -- keep the reappearance re-scan scheduled.",
+    "quirks": [
+      "Profile URL formats the form accepts: listing URL like spokeo.com/{First}-{Last}/{City}/{ST}/p{id} or a purchase URL spokeo.com/purchase?q=... (examples shown on /optout).",
+      "Multiple listings per person are NORMAL (one per name x location x record cluster); each unique URL must be opted out individually -- feed every found listing URL through the form.",
+      "Processing is 24-48h ('depending on the nature of your request and the amount of data').",
+      "Paid accounts may retain data even when hidden from free search - verify actual removal, don't mark confirmed_removed off the free-search view alone."
+    ],
+    "est_processing_days": 2,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": "2026-07-01",
+  "source": "BADBOOL"
+}

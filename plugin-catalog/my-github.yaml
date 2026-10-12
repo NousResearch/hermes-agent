@@ -1,0 +1,15 @@
+name: my-github
+repo: https://github.com/tomekdot/hermes-my-github-plugin
+sha: 21f78065692294de9d52bccb8c4939fe51588b68
+description: 'Desktop and dashboard plugin: statusbar chip, palette command, and dashboard tab listing your GitHub repos (public + private) via the gh CLI.'
+maintainer: tomekdot
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/tomekdot/hermes-my-github-plugin
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

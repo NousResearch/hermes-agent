@@ -10,13 +10,17 @@ never run here.
 `argmax(index - cost / point_price)` over eligible rows: in-cap (`cost` strictly
 under the cap), non-provisional, exactly mapped to a nous provider model id, not
 cooling down. `point_price` is USD per Hermes Index point. `none` (or
-`usd_per_point: null`) makes a point free, so the rule is plain max index.
+`usd_per_point: null`) makes a point free, so the rule is plain max index: the
+same rule at an infinite price. This family therefore contains the old max-index
+rule as a special case; `none` is the shipped default, so upgrading never changes
+an existing install's pick until the user opts in.
 
-Why this is the rational objective. Any monotone preference over (capability,
-cost) is represented by some utility, and the optimum is the argmax of it. The
-linear form above is the marginal-value rule: you pay at most `point_price` per
-index point. The cap is a hard box constraint, unrelated to the preference. The
-cap and the point price are the only two numbers; everything else is derived.
+The shape is a choice, not a theorem. Any monotone preference over (capability,
+cost) has an argmax optimum, but the shape is ours to pick. `index - cost/point_price`
+is the simplest useful one: it says you pay at most `point_price` for one more
+index point, and no more. Real value is probably concave in capability, so treat
+the linearity as a deliberate simplification, not a measurement. The cap is a hard
+box constraint, unrelated to the preference. Two numbers, everything derived.
 
 ## Why the pick is on the Pareto frontier
 

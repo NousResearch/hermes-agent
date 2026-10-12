@@ -106,7 +106,9 @@ COOLDOWN_HOURS = 24
 # removes the trade and restores the legacy "max Hermes Index under the cap".
 # The cap and the point price are the whole policy; everything else is derived.
 CAP_PER_TASK_USD = 0.30      # shipped default; answers.json overrides (None = no ceiling)
-USD_PER_POINT = 0.02         # shipped default $/index-point; answers.json overrides (None = max index)
+USD_PER_POINT = None         # shipped default: NO preference (plain max index), so upgrading
+                             # never changes an existing install's pick. Setup opts the user
+                             # in; answers.json overrides with a $/index-point or None.
 BENCH_URL = "https://portal.nousresearch.com/bench"
 BENCH_SOURCE = ("portal.nousresearch.com/bench (Hermes Index, pass@1, "
                 "Hermes Agent harness)")

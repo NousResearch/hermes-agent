@@ -1,6 +1,9 @@
 ---
 name: minecraft-modpack-server
 description: "Host modded Minecraft servers (CurseForge, Modrinth)."
+version: 1.0.0
+author: Teknium (teknium1), Hermes Agent
+license: MIT
 tags: [minecraft, gaming, server, neoforge, forge, modpack]
 platforms: [linux, macos]
 ---
@@ -129,7 +132,7 @@ Check with: `sudo ufw status | grep 25565`
 ### 8. Create Launch Script
 ```bash
 cat > ~/start-minecraft.sh << 'EOF'
-#!/bin/bash
+#!/usr/bin/env bash
 cd ~/minecraft-server/server
 java @user_jvm_args.txt @libraries/net/neoforged/neoforge/<VERSION>/unix_args.txt nogui
 EOF
@@ -141,7 +144,7 @@ Note: For Forge (not NeoForge), the args file path differs. Check `startserver.s
 Create backup script:
 ```bash
 cat > ~/minecraft-server/backup.sh << 'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 SERVER_DIR="$HOME/minecraft-server/server"
 BACKUP_DIR="$HOME/minecraft-server/backups"
 WORLD_DIR="$SERVER_DIR/world"

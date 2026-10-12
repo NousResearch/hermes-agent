@@ -34,11 +34,15 @@ const CODE_MIN_CHARS = 3000
 const HTML_LANGUAGES = new Set(['html', 'htm', 'xhtml'])
 
 // Languages whose fences are never artifacts: prose-ish, terminal output, and
-// the fences already owned by richer renderers (mermaid diagrams, small svg).
+// the fences already owned by richer renderers (mermaid diagrams, small svg,
+// listing cards). Artifact detection runs BEFORE the rich-fence registry, so a
+// language that has its own renderer must opt out here or a long enough fence
+// gets promoted to a code card and never reaches it.
 const NON_ARTIFACT_LANGUAGES = new Set([
   '',
   'console',
   'diff',
+  'listing',
   'log',
   'logs',
   'markdown',

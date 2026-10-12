@@ -12,11 +12,10 @@ from unittest.mock import MagicMock
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     PlatformConfig,
     Platform,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +219,49 @@ class TestBusyInputModeQueueFifo:
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
 
+
+    def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "") -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        return MessageEvent(
+            text=text, message_type=message_type, source=source,
+            media_urls=[path], media_types=[mime], message_id=f"m-{path}",
+        )
+
+    def test_non_photo_media_followups_each_keep_their_own_fifo_turn(self):
+        """Three voice notes are three deliveries — head + two overflow items, never one merged
+        event (the merge branch used to fire on any ``media_urls``). Video/document follow-ups
+        are the same class."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:voice-fifo"
+
+        for path in ("/tmp/v1.ogg", "/tmp/v2.ogg", "/tmp/v3.ogg"):
+            runner._queue_or_replace_pending_event(
+                session_key, self._media_event(path, "audio/ogg", MessageType.VOICE))
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/clip.mp4", "video/mp4", MessageType.VIDEO))
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/notes.pdf", "application/pdf", MessageType.DOCUMENT))
+
+        assert adapter._pending_messages[session_key].media_urls == ["/tmp/v1.ogg"]
+        assert [e.media_urls for e in runner._queued_events[session_key]] == [
+            ["/tmp/v2.ogg"], ["/tmp/v3.ogg"], ["/tmp/clip.mp4"], ["/tmp/notes.pdf"],
+        ]
+        assert runner._queue_depth(session_key, adapter=adapter) == 5
+
+    def test_photo_burst_still_merges_into_one_head_event(self):
+        """Control: rapid photos (and a trailing caption text) still collapse into one album
+        event so the next turn sees the whole burst."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:photo-burst"
+
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="first"))
+        runner._queue_or_replace_pending_event(
+            session_key, self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO))
+        runner._queue_or_replace_pending_event(session_key, self._text_event("second"))
+
+        head = adapter._pending_messages[session_key]
+        assert head.message_type == MessageType.PHOTO
+        assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
+        assert "first" in head.text and "second" in head.text
+        assert runner._queue_depth(session_key, adapter=adapter) == 1

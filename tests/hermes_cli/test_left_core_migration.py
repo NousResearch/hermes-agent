@@ -207,7 +207,7 @@ def test_migrate_all_homes_migrates_only_the_profile_that_used_it(tmp_path, monk
     monkeypatch.setattr(ps, "dependency_homes", lambda: [a, b])
     installed_into = []
 
-    def install_into(home):
+    def install_into(home, **_kw):
         def _install(name):
             installed_into.append((home, name))
             return {"ok": True}
@@ -225,7 +225,7 @@ def test_startup_honours_lazy_install_opt_out(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import pm.install
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: False)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: pytest.fail("installed"))
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: pytest.fail("installed"))
     said = []
     assert lcm.recover_at_startup(say=said.append) == []
     assert "allow_lazy_installs is off" in said[0] and "plugins install homeassistant" in said[0]
@@ -238,8 +238,13 @@ def test_gateway_start_outcome_waits_for_the_first_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import pm.install
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: (lambda name: {"ok": True}))
+    consents = []
+    monkeypatch.setattr(lcm, "_install_into",
+                        lambda h, consent=None: consents.append(consent) or (lambda name: {"ok": True}))
     assert lcm.recover_at_startup() == ["homeassistant"]  # gateway start: nobody to tell yet
+    # Agent init cannot answer a dependency prompt (the chat input owns the terminal): the feature
+    # shipped in core, so its startup install carries consent.
+    assert consents == [True]
     said = []
     assert lcm.recover_at_startup(say=said.append) == []  # first agent: delivered, not re-attempted
     assert len(said) == 1 and said[0].startswith("✓ Home Assistant moved out of core")
@@ -273,7 +278,7 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     assert lcm.migrate_home(home, install=install, say=quiet) == []
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: install)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: install)
     assert lcm.recover_at_startup(say=quiet) == []
     assert calls == ["homeassistant"] and not plugin.exists()
 
@@ -292,7 +297,7 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
                  "Details: Cloning into '/h/plugins/.install-1'...\n"
                  "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com\n")
     failing = lambda name: {"ok": False, "error": git_error}
-    monkeypatch.setattr(lcm, "_install_into", lambda h: failing)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: failing)
     said = []
     assert lcm.recover_at_startup(say=said.append) == []
     assert len(said) == 1 and "\n" not in said[0] and "Could not resolve host: github.com" in said[0]
@@ -317,7 +322,7 @@ def test_repeated_startup_failures_back_off_exponentially(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
     attempts = []
-    monkeypatch.setattr(lcm, "_install_into", lambda h: lambda n: attempts.append(n) or {"ok": False, "error": "x"})
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: lambda n: attempts.append(n) or {"ok": False, "error": "x"})
     stamp = mpm._failure_stamp(home, "homeassistant")
 
     def start_after(hours: float) -> None:
@@ -371,3 +376,48 @@ def test_old_spotify_commands_point_at_the_plugin(tmp_path, monkeypatch):
     (home / "plugins" / "spotify").mkdir(parents=True)  # installed but disabled
     assert "plugins enable spotify" in lcm.moved_command_hint("hermes", "spotify")
     assert lcm.moved_command_hint("hermes", "honcho") == ""
+
+
+_LANGFUSE_KEYS_ENV = "HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-x\nHERMES_LANGFUSE_SECRET_KEY=sk-lf-x\n"
+
+
+@pytest.mark.parametrize(("config", "managed", "in_use"), [
+    ("plugins:\n  enabled: [observability/langfuse]\n", "", True),
+    ("plugins:\n  enabled: [langfuse]\n", "", True),                   # legacy bare name the loader accepted
+    ("plugins:\n  enabled: [observability/langfuse]\n  disabled: [langfuse]\n", "", False),  # disabled wins
+    ("plugins:\n  enabled: [other]\n", "", False),
+    ("", "", False),                                                   # keys alone: it was opt-in
+    ("", "plugins:\n  enabled: [observability/langfuse]\n", True),     # an administrator's pinned list
+])
+def test_langfuse_in_use_is_the_bundled_plugin_enabled(tmp_path, monkeypatch, config, managed, in_use):
+    home = _home(tmp_path, env=_LANGFUSE_KEYS_ENV, config=config)
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    if managed:
+        (managed_dir / "config.yaml").write_text(managed, encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    assert lcm.langfuse_in_use(home) is in_use
+
+
+def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monkeypatch):
+    """`observability/langfuse` (every pre-move doc, an administrator's pinned list) names the install
+    while the plugin is absent, and selects/resolves the installed plugin once it is there."""
+    from hermes_cli.plugins_cmd import _find_plugin_entry, _unknown_plugin_message
+    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_manifest import PluginManifest
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for name in ("observability/langfuse", "langfuse"):
+        message = _unknown_plugin_message(name)
+        assert "moved out of core into the 'langfuse' plugin" in message
+        assert "hermes plugins install langfuse" in message
+    assert "moved out of core" not in _unknown_plugin_message("nonexistent")
+
+    plugin_dir = home / "plugins" / "langfuse"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: langfuse\nversion: 2.0.0\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    assert _find_plugin_entry("observability/langfuse")[5] == "langfuse"
+    manifest = PluginManifest(name="langfuse", source="user", path=str(plugin_dir), key="langfuse")
+    assert gate_manifest(manifest, set(), {"observability/langfuse"}).action == "load"
+    assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == "disabled via config"

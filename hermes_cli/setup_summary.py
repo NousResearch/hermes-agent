@@ -64,7 +64,7 @@ def _voice_provider_status(kind: str, provider: str, rows: dict, default: tuple)
     return (f"{kind} ({label} — not installed)", False, hint)
 
 
-def _first_available_plugin_provider(registry: str, skip: str = None):
+def _first_available_plugin_provider(registry: str, skip: str | None = None):
     """display_name of the first plugin-registered provider in ``agent.<registry>`` that reports
     available (fail-soft: any error means none), skipping ``skip``."""
     try:
@@ -167,22 +167,6 @@ def _modal_row(config, feats):
     return None
 
 
-def _home_assistant_row(config, feats):
-    return ("Smart Home (Home Assistant)", True, None) if _setup.get_env_value("HASS_TOKEN") else None
-
-
-def _spotify_row(config, feats):
-    # OAuth via hermes auth spotify — check auth.json, not env vars
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("spotify") or {}
-        if state.get("access_token") or state.get("refresh_token"):
-            return ("Spotify (PKCE OAuth)", True, None)
-    except Exception:
-        pass
-    return None
-
-
 def _skills_hub_row(config, feats):
     ok = bool(_setup.get_env_value("GITHUB_TOKEN"))
     return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN")
@@ -196,7 +180,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _home_assistant_row, _spotify_row, _skills_hub_row, _always_on_rows)
+    _modal_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):
@@ -271,4 +255,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

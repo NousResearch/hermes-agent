@@ -51,7 +51,7 @@ def _auth_header(auth: dict) -> dict:
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -346,7 +346,7 @@ def _a2a_tools_available() -> bool:
             return True
         a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
         return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -359,11 +359,3 @@ def register_tools(ctx) -> None:
         ctx.register_tool(name=name, toolset="a2a", handler=handler, description=description,
                           schema={"name": name, "description": description, "parameters": parameters},
                           emoji="\U0001f9e9", check_fn=_a2a_tools_available)  # puzzle piece
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import TypedDict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

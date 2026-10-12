@@ -93,12 +93,12 @@ def test_mode_change_replaces_only_that_sessions_backend():
         yolo = True
         unrestricted = computer_use._get_backend("session-a")
 
-    assert getattr(standard, "permission_mode") == "standard"
-    assert getattr(standard, "stopped") is True
-    assert getattr(unrestricted, "permission_mode") == "unrestricted"
+    assert standard.permission_mode == "standard"
+    assert standard.stopped is True
+    assert unrestricted.permission_mode == "unrestricted"
     assert unrestricted is not standard
-    assert getattr(other, "permission_mode") == "standard"
-    assert getattr(other, "stopped") is False
+    assert other.permission_mode == "standard"
+    assert other.stopped is False
 
 
 def test_mode_change_is_rechecked_after_stale_backend_stops():
@@ -127,8 +127,8 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
         yolo = True
         replacement = computer_use._get_backend("session-a")
 
-    assert getattr(original, "permission_mode") == "standard"
-    assert getattr(replacement, "permission_mode") == "standard"
+    assert original.permission_mode == "standard"
+    assert replacement.permission_mode == "standard"
     assert replacement is not original
     assert [backend.permission_mode for backend in created] == [
         "standard",

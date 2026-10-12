@@ -1,19 +1,15 @@
 name: blender
-repo: https://github.com/NousResearch/hermes-plugin-blender
-sha: d1929b593bddd2241a8939fb355e0a69b8e077af
-version: "0.1.0"
-description: >-
-  Official Blender Lab MCP server over stdio, pinned to upstream v1.0.3,
-  with a Blender workflow skill. Requires Blender 5.1+, its separately
-  installed MCP add-on, Git and uv. First startup downloads Python dependencies;
-  prepare the uv environment before connecting. Disclosure: tools execute
-  arbitrary Python in Blender with the user's privileges. No automatic
-  application/version/liveness gate; server discovery does not prove scene readiness.
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: abec9e822a23089943dd1d476a104bf746f19f86
+subdir: blender
+version: "0.2.0"
+description: "Official Blender Lab MCP server over stdio, pinned to upstream v1.0.3, with a Blender workflow skill. Requires Blender 5.1+, its separately installed MCP add-on, Git and uv. First startup downloads Python dependencies; prepare the uv environment before connecting. Disclosure — tools execute arbitrary Python in Blender with your privileges; first start downloads the pinned Blender Lab MCP server and its Python dependencies with uv; at install Hermes looks for Blender in the standard install locations (Windows uninstall registry and Program Files, /Applications and the Steam library on macOS, PATH, flatpak, snap and Steam on Linux) and refuses the install when it is missing. Server discovery does not prove scene readiness."
 title: Blender
 maintainer: NousResearch
 tier: official
 category: tools
-docs_url: https://github.com/NousResearch/hermes-plugin-blender#readme
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/blender
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/abec9e822a23089943dd1d476a104bf746f19f86/assets/blender.jpg
 platforms: [windows, macos, linux]
 onboarding: true
 capabilities:

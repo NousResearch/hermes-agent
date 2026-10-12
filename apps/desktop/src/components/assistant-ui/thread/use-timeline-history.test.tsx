@@ -21,6 +21,10 @@ vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
 vi.mock('@/store/session', () => ({ $connection: atom({ mode: 'local' }), getSessionOwnerHint: () => undefined }))
 vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, transcriptTailState: () => undefined }))
 
+const { sessionCreatedThisRun } = vi.hoisted(() => ({ sessionCreatedThisRun: vi.fn(() => false) }))
+
+vi.mock('@/app/session/hooks/use-session-actions/created-this-run', () => ({ sessionCreatedThisRun }))
+
 const page = (ids: number[], more = false) => ({
   entries: ids.map(id => ({ row_id: id, preview: `Prompt ${id}` })),
   pagination: { next_cursor: more ? ids.at(-1) : null, has_more: more }
@@ -30,6 +34,7 @@ beforeEach(() => {
   vi.resetModules()
   vi.useFakeTimers()
   api.mockReset()
+  sessionCreatedThisRun.mockReset().mockReturnValue(false)
 })
 
 afterEach(() => {
@@ -72,5 +77,20 @@ describe('timeline history index', () => {
       await Promise.resolve()
     })
     expect(api).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fetch a freshly minted, still-empty draft (#123622)', async () => {
+    view.$messages = atom<Array<{ id: string; role: string; rowId?: number }>>([])
+    sessionCreatedThisRun.mockReturnValue(true)
+    const { useTimelineHistory } = await import('./use-timeline-history')
+
+    renderHook(() => useTimelineHistory())
+
+    await act(async () => {
+      vi.advanceTimersByTime(200)
+      await Promise.resolve()
+    })
+
+    expect(api).not.toHaveBeenCalled()
   })
 })

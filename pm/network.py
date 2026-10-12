@@ -9,7 +9,7 @@ import socket
 import ssl
 import time
 import urllib.error
-from datetime import timezone
+from datetime import timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Callable, TypeVar
 
@@ -51,7 +51,7 @@ def _delay(exc: Exception, attempt: int) -> float:
                 try:
                     when = parsedate_to_datetime(value)
                     if when.tzinfo is None:
-                        when = when.replace(tzinfo=timezone.utc)
+                        when = when.replace(tzinfo=UTC)
                     retry_after = when.timestamp() - time.time()
                 except (TypeError, ValueError, OverflowError):
                     retry_after = 0.0

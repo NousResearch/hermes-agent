@@ -53,8 +53,8 @@ class _IssuedCode:
     expires_at: int
 
 
-_pending: Dict[str, _Pending] = {}  # broker_state -> _Pending
-_issued: Dict[str, _IssuedCode] = {}  # gw_code -> _IssuedCode
+_pending: dict[str, _Pending] = {}  # broker_state -> _Pending
+_issued: dict[str, _IssuedCode] = {}  # gw_code -> _IssuedCode
 
 
 class NativeFlowError(Exception):

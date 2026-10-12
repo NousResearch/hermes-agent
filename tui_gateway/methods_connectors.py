@@ -149,6 +149,13 @@ def _session_connector_rpc(rid, request, session, action):
             return _connector_rpc_error(
                 rid, 4004, ConnectorErrorReason.unknown_operation, "No open connection operation for this session."
             )
+        # A retry without an alias or id means the open target; one naming another account must not re-mint this one.
+        if (request.alias is not None or request.connection_id is not None) and any(
+                (target := operation.target(name)) is not None
+                and ((request.alias is not None and target.alias != request.alias)
+                     or request.connection_id not in (None, target.repair_id, target.connection_id))
+                for name in request.connectors):
+            return _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_target, "No such target on the open operation.")
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
         "manage_connections",
@@ -194,7 +201,9 @@ def _account_connector_connect(rid, request):
 
     action = "reconnect" if request.reconnect else "connect"
     try:
-        start = account.find_or_start_operation(request.connectors, action=action, profile_home=_account_home(request))
+        start = account.find_or_start_operation(
+            request.connectors, action=action, profile_home=_account_home(request), alias=request.alias,
+            repair_id=request.connection_id)
         if not start.started:
             from tools.connectors.contract import TargetState
 

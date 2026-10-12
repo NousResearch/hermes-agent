@@ -298,16 +298,13 @@ class TestShadowCheckDoesNotReenterProviderResolution:
 
     def test_shadow_scan_never_calls_resolve_provider(self, monkeypatch):
         """The edge that closes the cycle must not exist."""
-        import hermes_cli.auth as auth
-        from hermes_cli.config import find_shadowed_builtin_provider_entries
+        from hermes_cli import auth
+        from hermes_cli.config_provider_shadow import find_shadowed_builtin_provider_entries
 
         class _Tripwire(BaseException):
-            """Not an ``Exception`` on purpose.
-
-            ``_canonical_shadow`` wraps its provider lookup in a broad
-            ``except Exception``, which would swallow a plain assertion and
-            make this test pass against the very code it is meant to catch.
-            """
+            """Not an ``Exception`` on purpose: a broad ``except Exception``
+            anywhere on the scan path would swallow a plain assertion and make
+            this test pass against the very code it is meant to catch."""
 
         def _boom(*args, **kwargs):
             raise _Tripwire
@@ -333,7 +330,7 @@ class TestShadowCheckDoesNotReenterProviderResolution:
 
     def test_static_scan_keeps_the_original_verdicts(self):
         """Same answers as the resolve_provider-based scan it replaces."""
-        from hermes_cli.config import find_shadowed_builtin_provider_entries
+        from hermes_cli.config_provider_shadow import find_shadowed_builtin_provider_entries
 
         found = find_shadowed_builtin_provider_entries({
             "providers": {

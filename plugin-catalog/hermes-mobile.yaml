@@ -8,6 +8,11 @@ description: >-
   text, voice, images, video and documents in both directions, approval/clarify/slash cards
   answered from the app, streaming edits, typing and avatar state events, cron delivery to a
   chosen device. Ships TypeScript and Python SDKs, platform guides and an acceptance checklist.
+  Disclosure — opens a listening WebSocket socket (wildcard host by default, port 8787) guarded
+  by a shared token; inbound media is written under $HERMES_HOME/mobile-media; secrets are read
+  through Hermes's profile-scoped route; approvals and clarify cards stay with Hermes; no
+  telemetry, no third-party network calls, no self-update (the pinned SHA is the only update
+  path).
 maintainer: geniok1980
 tier: community
 category: platform

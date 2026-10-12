@@ -8080,15 +8080,9 @@ def call_llm(
 
 def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.BoundedSemaphore):
     """Release a permit only after a streaming response is consumed or closed."""
-    try:
-        yield from stream
-    finally:
-        try:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
-        finally:
-            semaphore.release()
+    from agent.auxiliary_stream_permit import SemaphoreOwnedStream
+
+    return SemaphoreOwnedStream(stream, semaphore)
 
 
 def _plan_aux_call(

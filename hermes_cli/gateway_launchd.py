@@ -793,8 +793,25 @@ def launchd_restart():
     from gateway.status import get_running_pid
     try:
         pid = get_running_pid()
+        # The pidfile/lock pid is identity-unverified — a stale lock record or a recycled pid
+        # passes get_running_pid()'s liveness check, so a fresh-pid verdict measured against it
+        # can be satisfied by the incumbent gateway the whole time (#137228). launchd's own
+        # report is the process a restart must replace, so that is the baseline every
+        # fresh-pid verdict below compares against (falling back only when launchd reports none).
+        _loaded, supervised_pid = _gw()._launchd_print_service_pid(domain, label)
+        restart_baseline = supervised_pid if (supervised_pid or 0) > 0 else pid
         if pid is not None and _gw()._request_gateway_self_restart(pid):
-            _launchd_ok("✓ Service restart requested")
+            # A signal-send alone restarts nothing — the hand-off is asynchronous, so hold this
+            # branch to the same fresh-pid contract before printing success (#137228).
+            if _gw().wait_for_launchd_gateway_supervision(
+                label=label, old_pid=restart_baseline
+            ):
+                _launchd_ok("✓ Service restart requested")
+            else:
+                print(
+                    "⚠ gateway self-restart was handed off but no fresh service pid appeared — "
+                    "verify with `hermes gateway status`"
+                )
             return
         if pid is not None and _gw().probe_gateway_loop_liveness(pid) == _gw().GATEWAY_LOOP_WEDGED:
             # Event loop provably dead: it can't process a graceful shutdown, so a full drain wait
@@ -812,7 +829,11 @@ def launchd_restart():
             if _gw()._graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
                 # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
-                if _gw()._wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
+                # Measured against the launchd-reported baseline: with a stale pidfile pid the
+                # incumbent itself would differ from it and pass as "fresh" (#137228).
+                if _gw()._wait_for_launchd_service_pid(
+                    label, restart_baseline, timeout=15.0, domain=domain
+                ):
                     _launchd_ok("✓ Service restart requested")
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")

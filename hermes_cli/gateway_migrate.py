@@ -543,7 +543,7 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
 
     with contextlib.suppress(Exception):
         from gateway.config import Platform
-        from gateway.run import _BUILTIN_ADAPTERS, _builtin_adapter_import
+        from gateway.builtin_adapters import _BUILTIN_ADAPTERS, _builtin_adapter_import
         spec = _BUILTIN_ADAPTERS.get(Platform(platform_value))
         if spec is not None:
             adapter_cls, _ok = _builtin_adapter_import(spec[0], spec[1], spec[2])

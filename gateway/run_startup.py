@@ -176,6 +176,12 @@ class GatewayStartupMixin:
                              getattr(fn, "__name__", fn), exc_info=True)
         return await loop.run_in_executor(None, copy_context().run, fn)
 
+    async def _warm_locale_catalog(self) -> None:
+        """Parse the launch profile's locale catalog on a worker thread, before startup code calls
+        ``t()`` on the loop."""
+        from agent.i18n import warm_catalog
+        await self._run_boot_probe_in_launch_scope(warm_catalog)
+
     async def _run_free_tier_bootstrap(self) -> None:
         """The free-tier bootstrap mints the Portal identity through the same profile-scoped routing
         overrides the warm-up resolves, so it takes the same launch-profile binding."""
@@ -1623,6 +1629,7 @@ class GatewayStartupMixin:
             return True
         if self._start_check_access_policy():
             return True
+        await self._warm_locale_catalog()
         await self._start_recover_previous_run()
         # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
         # demand-time site (provider resolution, /login, the connector token) is a read that needs the

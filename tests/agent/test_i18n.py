@@ -156,6 +156,65 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
         i18n.reset_language_cache()
 
 
+def test_bundled_catalog_is_parsed_once_across_profiles_and_cache_resets(tmp_path, monkeypatch):
+    """Parsing a bundled catalog takes hundreds of milliseconds, and the gateway calls ``t()`` on its
+    event loop. A reset (pack registration, language change) or another profile home must reuse the
+    first parse."""
+    from agent import i18n_layers
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "en.yaml").write_text("greeting: Hello\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    parsed: list[Path] = []
+    real_parse = i18n_layers.parse_locale_file
+
+    def recording_parse(path):
+        parsed.append(Path(path))
+        return real_parse(path)
+
+    monkeypatch.setattr(i18n_layers, "parse_locale_file", recording_parse)
+    i18n.reset_language_cache()
+    texts = [i18n.t("greeting")]
+    i18n.reset_language_cache()
+    texts.append(i18n.t("greeting"))
+    token = set_hermes_home_override(tmp_path / "other-profile")
+    try:
+        texts.append(i18n.t("greeting"))
+    finally:
+        reset_hermes_home_override(token)
+        i18n.reset_language_cache()
+    assert (texts, parsed) == (["Hello"] * 3, [bundled / "en.yaml"])
+
+
+def test_bundled_catalog_replaced_with_same_size_and_mtime_is_read_again(tmp_path, monkeypatch):
+    """``tar``, ``rsync -t`` and ``cp -p`` replace a file by rename and keep its modification time, so a
+    same-size replacement differs from the parsed file only in its inode."""
+    import os
+
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    catalog = bundled / "en.yaml"
+    catalog.write_text("greeting: Hello\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    i18n.reset_language_cache()
+    try:
+        texts = [i18n.t("greeting")]
+        replacement = bundled / "en.yaml.new"
+        replacement.write_text("greeting: Howdy\n", encoding="utf-8")
+        original = catalog.stat()
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        os.replace(replacement, catalog)
+        i18n.reset_language_cache()
+        texts.append(i18n.t("greeting"))
+    finally:
+        i18n.reset_language_cache()
+    assert texts == ["Hello", "Howdy"]
+
+
 
 
 # ---------------------------------------------------------------------------

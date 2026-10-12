@@ -910,7 +910,6 @@ class MatrixAdapter(BasePlatformAdapter):
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
             return False
-
         if event_id in self._processed_events_set:
             return True
         if len(self._processed_events) == self._processed_events.maxlen:

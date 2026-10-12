@@ -162,11 +162,7 @@ async def test_threading_refusals_never_change_live_or_persisted_policy(
     runner, adapters, homes = _setup(tmp_path, monkeypatch, "matrix")
     adapter, home = adapters["default"], homes["default"]
     event = _event(runner, adapter, "on")
-    if failure == "invalid":
-        event.text = "/threading on off"
-    elif failure == "denied":
-        event.source.user_id = "@mallory:example.org"
-    elif failure in {"managed", "managed-other"}:
+    def configure_managed():
         managed = tmp_path / "managed"
         managed.mkdir()
         (managed / "config.yaml").write_text(json.dumps({
@@ -175,19 +171,28 @@ async def test_threading_refusals_never_change_live_or_persisted_policy(
             }},
         }), encoding="utf-8")
         monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-    elif failure == "locked":
-        monkeypatch.setenv("HERMES_MANAGED", "nixos")
-    elif failure == "write":
-        def fail_write(*_args, **_kwargs):
-            raise OSError("disk full")
-        monkeypatch.setattr("hermes_cli.config.atomic_config_replace", fail_write)
-    elif failure == "unreadable":
-        (home / "config.yaml").write_text("matrix: [invalid", encoding="utf-8")
-    elif failure == "unsupported":
-        adapter.configure_room_threading = BasePlatformAdapter.configure_room_threading.__get__(adapter)
-    elif failure == "unavailable":
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    def remove_adapters():
         runner.adapters = {}
         runner._profile_adapters = {}
+
+    setups = {
+        "invalid": lambda: setattr(event, "text", "/threading on off"),
+        "denied": lambda: setattr(event.source, "user_id", "@mallory:example.org"),
+        "managed": configure_managed,
+        "managed-other": configure_managed,
+        "locked": lambda: monkeypatch.setenv("HERMES_MANAGED", "nixos"),
+        "write": lambda: monkeypatch.setattr("hermes_cli.config.atomic_config_replace", fail_write),
+        "unreadable": lambda: (home / "config.yaml").write_text("matrix: [invalid", encoding="utf-8"),
+        "unsupported": lambda: monkeypatch.setattr(
+            adapter, "configure_room_threading",
+            BasePlatformAdapter.configure_room_threading.__get__(adapter)),
+        "unavailable": remove_adapters,
+    }
+    setups[failure]()
     before = (home / "config.yaml").read_bytes()
     policy = dict(adapter._room_auto_thread_overrides)
     set_multiplex_active(True)

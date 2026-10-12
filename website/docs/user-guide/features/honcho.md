@@ -8,8 +8,8 @@ description: "AI-native persistent memory via Honcho — dialectic reasoning, mu
 
 [Honcho](https://github.com/plastic-labs/honcho) is an AI-native memory backend that adds dialectic reasoning and deep user modeling on top of Hermes's built-in memory system. Instead of simple key-value storage, Honcho maintains a running model of who the user is — their preferences, communication style, goals, and patterns — by reasoning about conversations after they happen.
 
-:::info Honcho is a Memory Provider Plugin
-Honcho is integrated into the [Memory Providers](./memory-providers.md) system. All features below are available through the unified memory provider interface.
+:::info Honcho is a catalog Memory Provider Plugin
+Honcho is maintained by Plastic Labs and installed from the [plugin catalog](./plugins.md) (`hermes plugins install honcho`); source lives in [plastic-labs/honcho](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho). It plugs into the [Memory Providers](./memory-providers.md) system, so all features below are available through the unified memory provider interface. Homes upgraded from a release that bundled Honcho get the plugin installed automatically — config and memory carry over untouched.
 :::
 
 ## What Honcho Adds
@@ -33,7 +33,8 @@ Honcho is integrated into the [Memory Providers](./memory-providers.md) system. 
 ## Setup
 
 ```bash
-hermes memory setup    # select "honcho" from the provider list
+hermes plugins install honcho   # from the plugin catalog
+hermes memory setup             # select "honcho" from the provider list
 ```
 
 Or configure manually:
@@ -123,6 +124,8 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
 | `dialecticMaxChars` | `600` | Max chars of dialectic result injected into system prompt |
 | `recallMode` | `'hybrid'` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
+| `initOnSessionStart` | `false` | `tools` mode only. `true` creates the Honcho session **synchronously at session start** so it is ready before the first tool call; `false` (default) defers it to the first `honcho_*` call. See the startup note below |
+| `timeout` | `null` (SDK default) | Seconds allowed for each Honcho SDK call (`requestTimeout` and the `HONCHO_TIMEOUT` env var are accepted too). Caps how long an unreachable server can hold a call, including the eager init above |
 | `writeFrequency` | `'async'` | When to flush messages: `async` (background thread), `turn` (sync), `session` (batch on end), or integer N |
 | `saveMessages` | `true` | Whether to persist messages to Honcho API |
 | `observationMode` | `'directional'` | `directional` (all on) or `unified` (shared pool). Override with `observation` object for granular control |
@@ -165,6 +168,8 @@ Sessions created before title provenance was recorded retain legacy behavior: be
 | `dialecticDynamic` | gates model override | N/A (no tools) | gates model override |
 
 In `tools` mode, the model is fully in control — it calls `honcho_reasoning` when it wants, at whatever `reasoning_level` it picks. Cadence and budget settings only apply to modes with auto-injection (`hybrid` and `context`).
+
+**Startup behaviour and `initOnSessionStart`.** In `hybrid` and `context` mode the session is created in a background thread and startup fails open if Honcho is slow or down. `tools` mode is different by design: with `initOnSessionStart: false` (the default) nothing touches Honcho until the first `honcho_*` tool call, and with `initOnSessionStart: true` the session is created **synchronously during agent construction** so a tool call on turn 1 never races a half-initialized session. That guarantee means startup waits for Honcho: if the server is unreachable, every SDK call in that eager path runs to its connection/`timeout` limit before the agent is ready, which on Desktop shows up as `request timed out: session.resume` / `prompt.submit` (the renderer gives up after 30 s). Keep `initOnSessionStart` at `false` on Desktop and whenever your Honcho is a local service that may not be running, and set `timeout` (seconds) in `honcho.json` to bound each call if you do enable it.
 
 ## Gateway Identity Mapping
 

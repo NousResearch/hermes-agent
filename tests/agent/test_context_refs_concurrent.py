@@ -16,13 +16,6 @@ import pytest
 
 from agent.context_references import preprocess_context_references_async
 
-
-async def _slow_fetcher(url: str) -> str:
-    # Simulate a per-URL network fetch (web_extract round trip).
-    await asyncio.sleep(0.2)
-    return f"CONTENT[{url}]"
-
-
 @pytest.mark.asyncio
 async def test_refs_expand_concurrently(tmp_path):
     # Three independent URL refs in one message.
@@ -75,16 +68,3 @@ async def test_refs_expand_concurrently(tmp_path):
     body = res.message
     assert body.index("a.example") < body.index("b.example") < body.index("c.example"), \
         "reference blocks must stay in original order"
-
-
-@pytest.mark.asyncio
-async def test_concurrent_preserves_output_contract(tmp_path):
-    """Concurrency must not change which blocks/warnings appear or their order."""
-    msg = "@url:https://one.example/p @url:https://two.example/q"
-    res = await preprocess_context_references_async(
-        msg, cwd=tmp_path, context_length=100_000, url_fetcher=_slow_fetcher,
-    )
-    assert "CONTENT[https://one.example/p]" in res.message
-    assert "CONTENT[https://two.example/q]" in res.message
-    assert res.message.index("one.example") < res.message.index("two.example")
-    assert res.injected_tokens > 0

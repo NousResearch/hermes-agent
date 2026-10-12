@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import redact_phone, strip_markdown
+from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
 from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
 )
@@ -79,7 +79,7 @@ def _new_session(**kwargs):
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
     return AIOHTTP_AVAILABLE and bool(
-        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
+        _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip())
 
 
 class SmsAdapter(BasePlatformAdapter):
@@ -88,11 +88,14 @@ class SmsAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
+    # send() splits at MAX_MESSAGE_LENGTH, so cron delivery hands over the full payload.
+    splits_long_messages = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+        # Stripped: a whitespace-only token must read as unset, not key the signature HMAC with blanks.
+        self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "").strip()
         # Scoped like the sibling reads above: a secondary profile must not send from the default
         # profile's TWILIO_PHONE_NUMBER (#98738 class).
         self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
@@ -157,33 +160,31 @@ class SmsAdapter(BasePlatformAdapter):
     # -- Outbound ------------------------------------------------------------
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        last_result = SendResult(success=True)
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
+
+        async def _send_one(chunk: str) -> SendResult:
+            try:
+                async with session.post(url, data=_twilio_form(self._from_number, chat_id, chunk), headers=headers) as resp:
+                    body = await resp.json()
+                    if resp.status >= 400:
+                        error_msg = body.get("message", str(body))
+                        logger.error("[sms] send failed to %s: %s %s", redact_phone(chat_id), resp.status, error_msg)
+                        return SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}")
+                    return SendResult(success=True, message_id=body.get("sid", ""))
+            except Exception as e:
+                logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
+                return SendResult(success=False, error=str(e))
+
         try:
-            for chunk in self.truncate_message(self.format_message(content)):
-                form_data = _twilio_form(self._from_number, chat_id, chunk)
-                try:
-                    async with session.post(url, data=form_data, headers=headers) as resp:
-                        body = await resp.json()
-                        if resp.status >= 400:
-                            error_msg = body.get("message", str(body))
-                            logger.error(
-                                "[sms] send failed to %s: %s %s", redact_phone(chat_id), resp.status, error_msg,
-                            )
-                            return SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}")
-                        last_result = SendResult(success=True, message_id=body.get("sid", ""))
-                except Exception as e:
-                    logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
-                    return SendResult(success=False, error=str(e))
+            return await send_chunks(self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH), _send_one)
         finally:
             if not self._http_session and session:  # close only a fallback session we created
                 await session.close()
-        return last_result
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     def format_message(self, content: str) -> str:
@@ -204,6 +205,8 @@ class SmsAdapter(BasePlatformAdapter):
         return bool(variant and self._check_signature(variant, post_params, signature))
 
     def _check_signature(self, url: str, post_params: dict, signature: str) -> bool:
+        if not self._auth_token:  # an empty HMAC key is public: fail closed rather than verify against it
+            return False
         data_to_sign = url + "".join(key + post_params[key] for key in sorted(post_params.keys()))
         mac = hmac.new(self._auth_token.encode("utf-8"), data_to_sign.encode("utf-8"), hashlib.sha1)
         computed = base64.b64encode(mac.digest()).decode("utf-8")
@@ -299,7 +302,7 @@ def _strip_markdown_for_sms(message: str) -> str:
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
-    auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
+    auth_token = str(getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "") or "").strip()
     if not AIOHTTP_AVAILABLE:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")

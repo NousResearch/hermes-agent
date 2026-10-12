@@ -13,6 +13,14 @@ export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
 // One minute keeps a continuous outage together without carrying old failures.
 export const REMOTE_LIVENESS_FAILURE_WINDOW_MS = 60_000
+// Pooled remote backends are probed from the renderer's reconnect IPC, which
+// fires on a minutes-long cadence once the primary connection is healthy — far
+// beyond REMOTE_LIVENESS_FAILURE_WINDOW_MS. With the primary's 60s window a
+// dead pooled descriptor's failure streak resets on every tick, the drop path
+// is never reached, and the pool serves the dead descriptor until app restart
+// (every call fails with ECONNRESET). A successful probe still clears the
+// streak via recordSuccess(), so a wide window cannot produce false drops.
+export const REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS = 15 * 60_000
 
 export interface RemoteLivenessFailure {
   failures: number

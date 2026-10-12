@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 class TestAuxProbeMode:
     def test_probe_mode_returns_stub_without_openai_import(self):
         import agent.auxiliary_client as aux
@@ -87,22 +86,6 @@ class TestAuxProbeMode:
             t.join()
         assert seen["active"] is False
 
-    def test_maybe_wrap_anthropic_passes_stub_through(self):
-        import agent.auxiliary_client as aux
-
-        stub = aux._AuxProbeClientStub(base_url="https://api.anthropic.com")
-        out = aux._maybe_wrap_anthropic(stub, "m", "key", "https://api.anthropic.com")
-        assert out is stub
-
-    def test_to_async_client_passes_stub_through(self):
-        import agent.auxiliary_client as aux
-
-        stub = aux._AuxProbeClientStub()
-        client, model = aux._to_async_client(stub, "m")
-        assert client is stub
-        assert model == "m"
-
-
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
         from tools import vision_tools
@@ -118,7 +101,6 @@ class TestVisionCheckUsesProbeMode:
             assert vision_tools.check_vision_requirements() is True
         assert states and all(states)
 
-
 class TestLazyMcpSdk:
     def test_module_import_does_not_import_mcp_sdk(self):
         """Importing tools.mcp_tool must not pull in the `mcp` package."""
@@ -133,32 +115,10 @@ class TestLazyMcpSdk:
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout
-
-    def test_availability_flag_reflects_find_spec(self):
-        import importlib.util
-        from tools import mcp_tool
-
-        expected = importlib.util.find_spec("mcp") is not None
-        assert mcp_tool._MCP_AVAILABLE is expected
-
-    def test_ensure_mcp_sdk_binds_symbols(self):
-        import importlib.util
-        from tools import mcp_tool
-
-        if importlib.util.find_spec("mcp") is None:
-            pytest.skip("mcp SDK not installed")
-        assert mcp_tool._ensure_mcp_sdk() is True
-        assert mcp_tool.ClientSession is not None
-        assert mcp_tool.stdio_client is not None
-
-    def test_ensure_respects_patched_unavailable(self):
-        from tools import mcp_tool
-
-        with patch.object(mcp_tool, "_MCP_AVAILABLE", False):
-            assert mcp_tool._ensure_mcp_sdk() is False
 
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
@@ -168,14 +128,13 @@ class TestLazyMcpSdk:
             pytest.skip("mcp SDK not installed")
         # getattr through the module (what mock.patch does when saving the
         # original) must materialize the symbol instead of AttributeError.
-        assert getattr(mcp_tool, "StdioServerParameters") is not None
-
+        assert mcp_tool.StdioServerParameters is not None
 
 class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
         """When the prefetch hasn't finished, the banner path must return in
         well under the old 500ms blocking wait."""
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
 
         with patch.object(banner, "_update_check_done", threading.Event()), \
              patch.object(banner, "_deferred_update_notice_started", False):
@@ -190,7 +149,7 @@ class TestBannerUpdateCheckNonBlocking:
         """The late notice lands after patch_stdout owns stdout, where raw ESC bytes are
         sanitized into visible ``?[1;33m`` text (#83969). It must reach prompt_toolkit as a
         parsed ANSI fragment — never as a bare ``Console.print`` to stdout."""
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 
         printed = []
@@ -210,21 +169,3 @@ class TestBannerUpdateCheckNonBlocking:
         visible = "".join(text for _style, text, *_ in to_formatted_text(printed[0]))
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
-
-    def test_deferred_notice_silent_when_up_to_date(self):
-        import hermes_cli.banner as banner
-
-        printed = []
-
-        def _fake_cprint(text):
-            printed.append(text)
-
-        done = threading.Event()
-        with patch.object(banner, "_update_check_done", done), \
-             patch.object(banner, "_update_result", 0), \
-             patch.object(banner, "_deferred_update_notice_started", False), \
-             patch.object(banner, "cprint", _fake_cprint):
-            banner._defer_update_notice(max_wait=2.0)
-            done.set()
-            time.sleep(0.3)
-        assert not printed

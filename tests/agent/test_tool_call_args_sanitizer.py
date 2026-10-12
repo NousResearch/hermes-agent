@@ -86,25 +86,6 @@ def test_marker_appended_to_existing_tool_message():
 
 
 
-def _disabled_test_marker_message_inserted_when_missing():
-    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
-    messages = [
-        _assistant_message(_tool_call(arguments='{"path": "/tmp/foo')),
-        {"role": "user", "content": "next turn"},
-    ]
-
-    repaired = AIAgent._sanitize_tool_call_arguments(messages)
-
-    assert repaired == 1
-    assert messages[1] == {
-        "role": "tool",
-        "name": "read_file",
-        "tool_call_id": "call_1",
-        "content": marker,
-    }
-    assert messages[2] == {"role": "user", "content": "next turn"}
-
-
 def test_multiple_corrupted_tool_calls_in_one_message():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [
@@ -158,3 +139,30 @@ def test_non_assistant_messages_ignored():
 
     assert repaired == 0
     assert messages == original
+
+
+def test_corrupt_args_repair_pops_persist_marker_on_stamped_dicts():
+    """A resumed session can load stamped rows whose tool_call args are corrupt;
+    repairing them in place must pop the marker or session.db keeps the corrupt
+    bytes while the live transcript holds the repaired ones (divergent resume)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    stamped_call = _assistant_message(
+        _tool_call(call_id="call_1", arguments="{invalid json")
+    )
+    stamped_call[_DB_PERSISTED_MARKER] = True
+    stamped_result = _tool_message(call_id="call_1", content="ok")
+    stamped_result[_DB_PERSISTED_MARKER] = True
+    messages = [
+        {"role": "user", "content": "hello"},
+        stamped_call,
+        stamped_result,
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert stamped_call["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert stamped_result["content"].endswith("ok")
+    assert _DB_PERSISTED_MARKER not in stamped_call
+    assert _DB_PERSISTED_MARKER not in stamped_result

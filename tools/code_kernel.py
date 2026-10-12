@@ -18,11 +18,13 @@ Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry,
 from __future__ import annotations
 
 import atexit
+import glob
 import json
 import logging
 import os
 import queue
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -71,7 +73,7 @@ def run_cell(request, execution_count):
     }, out.getvalue()
 '''
 
-KERNEL_RUNNER_SOURCE = '''\
+KERNEL_RUNNER_SOURCE = f'''\
 """Auto-generated Hermes session-kernel runner. One exec cell per request."""
 import contextlib
 import io
@@ -82,9 +84,9 @@ import threading
 import traceback
 
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
-_CAPTURE_LIMIT = {capture_limit}
+_CAPTURE_LIMIT = {_RUNNER_CAPTURE_BYTES}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
-_SPILL_CAP = {spill_cap}
+_SPILL_CAP = {5_000_000}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
 
@@ -176,7 +178,7 @@ _start_parent_death_pipe_watchdog()
 
 _real_stdout = sys.stdout
 
-{cell_source}
+{RUNNER_CELL_SOURCE}
 
 def _spill(text, spill_name):
     """Best-effort: write the FULL clipped stdout to disk, return its path or ""."""
@@ -223,7 +225,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''.format(cell_source=RUNNER_CELL_SOURCE, capture_limit=_RUNNER_CAPTURE_BYTES, spill_cap=5_000_000)
+'''
 
 
 class CellAuthority:
@@ -286,7 +288,7 @@ class _BoundedBuffer:
     """Byte chunks capped at a total size; ``drain`` returns text and resets."""
 
     def __init__(self):
-        self.chunks: List[bytes] = []
+        self.chunks: list[bytes] = []
         self.total = 0
 
     def append(self, data: bytes, cap: int) -> None:
@@ -303,7 +305,7 @@ class _BoundedBuffer:
 class SessionKernel:
     """One live kernel process plus its RPC server and reader threads."""
 
-    def __init__(self, key: Tuple):
+    def __init__(self, key: tuple):
         self.key, self.owner, self.lock = key, key[0], threading.Lock()
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir = self.rpc_token = self.sentinel = ""
@@ -311,15 +313,16 @@ class SessionKernel:
         self.server_sock: Optional[socket.socket] = None
         self.stop_event = threading.Event()
         self.death_pipe_w: Optional[int] = None
-        self.tool_call_log: List = []
-        self.tool_call_counter: List[int] = [0]
+        self.tool_call_log: list = []
+        self.cell_log_start = 0
+        self.tool_call_counter: list[int] = [0]
         # Cells currently attached (bumped under the registry lock on selection, dropped when the
         # cell settles). Reaping/cap-eviction skip attached kernels: tearing one down mid-spawn
         # rmtree'd the staging dir under the spawner and killed live cells.
         self.attached: int = 0
         # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
         self.pinned: bool = False
-        self.response_q: "queue.Queue[dict]" = queue.Queue()
+        self.response_q: queue.Queue[dict] = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
@@ -362,7 +365,7 @@ class KernelRegistry:
     under the lock and torn down outside it — teardown may block on the child or the transport."""
 
     def __init__(self, teardown: Callable[[Any], None]):
-        self.kernels: Dict[Tuple, Any] = {}
+        self.kernels: dict[tuple, Any] = {}
         self.lock, self._teardown = threading.Lock(), teardown
 
     def shutdown(self, owner: Optional[str] = None, *, owner_matches: Optional[Callable[[str], bool]] = None) -> None:
@@ -375,7 +378,7 @@ class KernelRegistry:
         for kernel in doomed:
             self._teardown(kernel)
 
-    def discard(self, key: Tuple, kernel: Any) -> None:
+    def discard(self, key: tuple, kernel: Any) -> None:
         """Drop *kernel*'s registry entry (only if it is still the one registered under *key* —
         never a replacement) and tear the kernel down."""
         with self.lock:
@@ -385,7 +388,7 @@ class KernelRegistry:
 
 
 _REGISTRY = KernelRegistry(lambda kernel: kernel.teardown())
-_KERNELS: Dict[Tuple, SessionKernel] = _REGISTRY.kernels
+_KERNELS: dict[tuple, SessionKernel] = _REGISTRY.kernels
 
 # Bounded lifecycle defaults (config: code_execution.max_session_kernels / kernel_idle_timeout).
 # A long-lived gateway must never accumulate one live child per finished conversation:
@@ -395,7 +398,7 @@ DEFAULT_MAX_SESSION_KERNELS = 4
 DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
 
 
-def _lifecycle_limits() -> Tuple[int, int]:
+def _lifecycle_limits() -> tuple[int, int]:
     from tools.code_execution_tool import _load_config
     config = _load_config()
     def limit(key: str, default: int) -> int:
@@ -565,7 +568,8 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        from hermes_constants import socket_safe_tmpdir
+        sock_tmpdir = socket_safe_tmpdir()
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)
@@ -575,7 +579,7 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
     return rpc_endpoint
 
 
-def _parent_process_handle(child_env: Dict[str, str]):
+def _parent_process_handle(child_env: dict[str, str]):
     """Windows: open an inheritable SYNCHRONIZE handle to this process for the kernel's parent-death
     watchdog. Returns (handle, CloseHandle, startupinfo) or (None, None, None); fails open."""
     handle = close = startupinfo = None
@@ -626,7 +630,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     # inherits the read end of a pipe whose only write end we hold (EOF == host gone, any cause).
     parent_handle, close_handle, startupinfo = _parent_process_handle(child_env) if _IS_WINDOWS else (None, None, None)
     death_r: Optional[int] = None
-    pass_fds: Tuple[int, ...] = ()
+    pass_fds: tuple[int, ...] = ()
     if not _IS_WINDOWS:
         death_r, kernel.death_pipe_w = os.pipe()
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
@@ -650,9 +654,17 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     for target, args in ((_rpc_forever, (kernel, max_tool_calls, sandbox_tools)),
                          (_stdout_reader, (kernel,)), (_stderr_reader, (kernel,))):
         threading.Thread(target=target, args=args, daemon=True).start()
+    _ensure_background_reaper()
 
 
-def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
+def _pop_idle_expired(now: float, idle_timeout: float) -> list[SessionKernel]:
+    """Pop (caller holds ``_REGISTRY.lock``) every kernel idle past *idle_timeout*. Kernels with
+    attached cells are skipped: the last cell out tears them down."""
+    return [_KERNELS.pop(k) for k in list(_KERNELS)
+            if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+
+
+def _acquire_kernel(key: tuple, reset: bool, *, pinned: bool = False) -> tuple[SessionKernel, bool]:
     """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
     sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
     under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
@@ -660,10 +672,7 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
     ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        now = time.monotonic()
-        # Reaping and eviction skip kernels with attached cells (the last cell out tears them down).
-        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
-                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
         kernel = _KERNELS.get(key)
         state_reset = kernel is not None and (reset or kernel.dead())
         if state_reset:
@@ -685,7 +694,70 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
     return kernel, state_reset
 
 
-def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[str, Dict[str, Any]]:
+# The acquire-path sweep above only fires on the NEXT kernel request. A host that stays
+# alive but stops executing anything (a pids-exhausted container whose tool dispatch is
+# fail-closed) never acquires again, so idle kernels and their thread pools survive
+# indefinitely (#117169). One low-frequency daemon thread reapplies the same criteria on
+# its own schedule, independent of tool traffic, and also sweeps staging dirs that
+# outlived a host which died without cleanup (SIGKILL / container restart).
+_STALE_STAGING_DIR_AGE = 7 * 86400
+_REAPER_INTERVAL_FLOOR, _REAPER_INTERVAL_CEIL = 30.0, 300.0
+_REAPER_STARTED = False
+
+
+def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
+    """Remove ``hermes_kernel_*`` staging dirs untouched for over a week. A live host
+    rmtrees each dir within one idle timeout of the kernel's last use, so a week-old
+    dir belongs to a host that died before its cleanup could run; younger dirs are left
+    alone because a concurrently running host's live kernel may own one. rmtree never
+    follows symlinks, so a planted link is rejected rather than chased."""
+    now = time.time() if now is None else now
+    removed = 0
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
+        try:
+            if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
+                # No ignore_errors: a rejected symlink (or a half-removed dir) must not
+                # count as swept — it stays for the next pass instead.
+                shutil.rmtree(path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _reap_once() -> None:
+    """One background pass: the acquire-path idle criteria, then the stale-dir sweep."""
+    _, idle_timeout = _lifecycle_limits()
+    with _REGISTRY.lock:
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
+    for doomed in expired:
+        doomed.teardown()
+    _sweep_stale_staging_dirs()
+
+
+def _ensure_background_reaper() -> None:
+    """Start the reaper once per process (on the first kernel spawn)."""
+    global _REAPER_STARTED
+    with _REGISTRY.lock:
+        if _REAPER_STARTED:
+            return
+        _REAPER_STARTED = True
+    threading.Thread(target=_background_reaper, daemon=True,
+                     name="hermes-kernel-idle-reaper").start()
+
+
+def _background_reaper() -> None:
+    while True:
+        _, idle_timeout = _lifecycle_limits()
+        time.sleep(min(_REAPER_INTERVAL_CEIL,
+                       max(_REAPER_INTERVAL_FLOOR, idle_timeout / 6.0)))
+        try:
+            _reap_once()
+        except Exception:
+            logger.exception("kernel idle reaper pass failed; retrying next interval")
+
+
+def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> tuple[str, dict[str, Any]]:
     """Wait for the cell's reply; returns (host status, payload)."""
     deadline = time.monotonic() + timeout if timeout else None
     while True:
@@ -706,9 +778,9 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
 
-def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[str, Any], *,
+def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
-                 state_reset: bool, exec_start: float) -> Dict[str, Any]:
+                 state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
@@ -724,13 +796,17 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
     stdout_text, stdout_metadata = _truncate_stdout_text(clean(str(payload.get("stdout", "")) + kernel.raw.drain()))
     cell_stderr = clean(str(payload.get("stderr", "")) + stderr_raw)
     cell_status = payload.get("status", "")
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "status": status, "output": stdout_text, "exit_code": 0,
         "tool_calls_made": kernel.tool_call_counter[0], "duration_seconds": duration,
         "kernel": {"mode": "session", "reused": reused,
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
+    from tools.code_execution_rpc import tool_errors_since
+    tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
+    if tool_errors:
+        result["tool_errors"] = tool_errors
     # Cell-side spill (runner clipped before replying): same read_file recipe as the host-side spill.
     cell_spill = str(payload.get("stdout_spill_path", "") or "")
     if cell_spill and payload.get("stdout_clipped"):
@@ -796,7 +872,7 @@ def execute_in_session_kernel(
             kernel.teardown()
 
 
-def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, child_python: str,
+def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
               is_interrupted, exec_start: float, state_reset: bool) -> str:
     reused = kernel.proc is not None
@@ -811,6 +887,7 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             assert kernel.proc is not None and kernel.proc.stdin is not None
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
+            kernel.cell_log_start = len(kernel.tool_call_log)
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
             kernel.cell_authority = authority
             kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))

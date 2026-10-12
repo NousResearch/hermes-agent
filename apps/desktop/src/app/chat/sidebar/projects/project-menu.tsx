@@ -20,8 +20,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
-import { $panesFlipped, dismissAutoProject } from '@/store/layout'
+import { $panesFlipped, dismissAutoProject, restoreAutoProject } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import {
   copyPath,
   deleteProject,
@@ -58,11 +60,24 @@ function useProjectActions({
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
   const removeAuto = () => {
-    dismissAutoProject(project.id)
+    // Capture the id now: the row unmounts (and, when scoped, the scope exits)
+    // the moment we dismiss, so Undo can't read it back off live menu state.
+    const id = project.id
+
+    dismissAutoProject(id)
 
     if (scoped) {
       onExitScope?.()
     }
+
+    // The hide is persisted and otherwise irreversible — there is no other
+    // restore control — so offer a short undo window (mirrors restoreWorktree).
+    notify({
+      action: { label: p.undoHide, onClick: () => restoreAutoProject(id) },
+      durationMs: 8_000,
+      kind: 'success',
+      message: p.hiddenFromSidebar
+    })
   }
 
   const confirmDelete = async () => {
@@ -95,14 +110,20 @@ function useProjectActions({
         }
       ]
 
+  // The OS file manager needs the local filesystem; a remote backend's
+  // project is not on this computer (the file trees hide reveal the same way).
   const pathItems: ActionItemSpec[] = [
-    {
-      disabled: !project.path,
-      icon: 'folder-opened',
-      key: 'reveal',
-      label: p.reveal,
-      onSelect: () => void revealPath(project.path)
-    },
+    ...(isDesktopFsRemoteMode()
+      ? []
+      : [
+          {
+            disabled: !project.path,
+            icon: 'folder-opened',
+            key: 'reveal',
+            label: p.reveal,
+            onSelect: () => void revealPath(project.path)
+          } satisfies ActionItemSpec
+        ]),
     {
       disabled: !project.path,
       icon: 'copy',

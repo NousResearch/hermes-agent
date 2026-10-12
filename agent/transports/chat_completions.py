@@ -8,11 +8,11 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
+    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
+from agent.message_metadata import MESSAGE_UID
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -35,7 +35,7 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
-    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
+    "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks", MESSAGE_UID,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -108,6 +108,45 @@ def _add_prompt_cache_key(
     )
     if cache_key:
         api_kwargs["prompt_cache_key"] = cache_key
+
+
+_ROUTER_TIMEOUT_SHIM = "Connect timeout, please try again later."
+
+
+def _has_positive_completion_tokens(usage: Any) -> bool:
+    """Return whether a response usage object proves text was generated."""
+    for field in ("completion_tokens", "output_tokens"):
+        value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def router_timeout_shim_may_follow(text: str) -> bool:
+    """True while streamed text is still a prefix of the shim sentinel (hold it back until judged)."""
+    return bool(text) and _ROUTER_TIMEOUT_SHIM.startswith(text.lstrip())
+
+
+def is_router_timeout_shim(response: Any) -> bool:
+    """Recognize a router failure encoded as a successful ChatCompletion (#68396).
+
+    Some OpenAI-compatible routers answer an upstream connect timeout with HTTP 200 and the
+    sentinel as the sole assistant message. Only the exact sentinel, with no tool calls and no
+    positive ``completion_tokens``/``output_tokens`` proof of generation, is a shim — a model
+    that really produced those words keeps its usage evidence. Shared by every consumer of an
+    OpenAI-compatible response: ``validate_response``, the stream assembler, the
+    iteration-limit summary and the auxiliary ``_validate_llm_response``.
+    """
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or content.strip() != _ROUTER_TIMEOUT_SHIM:
+        return False
+    if getattr(message, "tool_calls", None):
+        return False
+    return not _has_positive_completion_tokens(getattr(response, "usage", None))
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -207,13 +246,44 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
         return False
 
 
-def _model_consumes_thought_signature(model: Any) -> bool:
-    """True for Gemini-family targets, which require tool-call ``extra_content`` (thought_signature) replay.
+_GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
+_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex", "copilot"})
 
-    Every other strict provider rejects it, so it is stripped for non-Gemini targets.
+
+def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider: Any = None) -> bool:
+    """True for Gemini routes, which require tool-call ``extra_content`` (thought_signature) replay.
+
+    A Gemini host or provider counts even when the model id is an alias without "gemini" in it;
+    every other strict provider (Fireworks, Cerebras) rejects the key, so it is stripped there.
     """
+    from utils import base_url_host_matches
+
     m = str(model or "").lower()
-    return "gemini" in m or "gemma" in m
+    return (
+        "gemini" in m or "gemma" in m
+        or (provider or "").strip().lower() in _GEMINI_SIGNATURE_PROVIDERS
+        or any(base_url_host_matches(base_url, host) for host in _GEMINI_SIGNATURE_HOSTS)
+    )
+
+
+def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
+    """Reasoning keys an assistant message may carry on this route; the rest are stripped.
+
+    ``message_sanitization.route_reasoning_carriers`` owns the table; keys the route rejected
+    this session were already removed upstream by ``reapply_reasoning_echo``. The table replays
+    ``reasoning_details`` to OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway,
+    Nous Portal) and to vendors documenting it (Novita, MiniMax /v1, TokenHub), never to strict
+    schemas (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
+    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``, #70233).
+    The Portal is back on the list: the "cumulative replayed-reasoning budget" blamed for #118182
+    does not exist in the Portal code and ~440 live replay requests (up to 32 KB of reasoning)
+    returned no 400; the observed failures were an upstream content filter surfaced as
+    "Provider returned error". Portal lanes that reject a carrier are handled by the
+    per-(provider, host, model) reactive strip. Stored history always keeps every carrier.
+    """
+    from agent.message_sanitization import route_reasoning_carriers
+
+    return route_reasoning_carriers(provider, base_url)
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -317,24 +387,44 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
-def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
+def _sanitize_message(
+    msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
+    native_reasoning_details_type: str | None = None,
+) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
     ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
-    ``tool_calls: []`` / ``null`` (strict providers reject both), and ``name``
+    ``tool_calls: []`` / ``null`` (strict providers reject both), ``name``
     on tool results (schema-valid only on user/assistant messages; strict
-    providers reject it with ``contains item with unknown key name``).
+    providers reject it with ``contains item with unknown key name``), and the reasoning
+    keys in ``strip_reasoning`` (carriers the route does not read, ``_wire_reasoning_carriers``).
+    On a route that reads ``reasoning_details``, private ``<provider>.native_assistant`` carriers still go only to the
+    profile that declared that exact type: another provider's signed replay is meaningless (or
+    rejected) elsewhere, and stored history keeps it for a return to the original provider.
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    if msg.get("role") == "assistant":
+        strip_keys += [k for k in strip_reasoning if k in msg]
+    kept_details = None
+    if "reasoning_details" not in strip_keys and isinstance(msg.get("reasoning_details"), list):
+        details = msg["reasoning_details"]
+        kept = [d for d in details if not (
+            isinstance(d, dict) and isinstance(d.get("type"), str)
+            and d["type"].endswith(".native_assistant") and d["type"] != native_reasoning_details_type)]
+        if len(kept) != len(details):
+            strip_keys.append("reasoning_details")
+            kept_details = kept
     # ``name`` is schema-valid on user/assistant messages, so the removal is
     # role-qualified: only tool results carry it illegally (strict providers
     # reject with "contains item with unknown key name").
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    if kept_details:
+        out_msg["reasoning_details"] = kept_details
     tool_calls = msg.get("tool_calls")
     copied_tool_calls = None
     if msg.get("role") == "assistant" and "tool_calls" in msg and (tool_calls is None or (isinstance(tool_calls, list) and not tool_calls)):
@@ -374,8 +464,17 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
-        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content)) for m in messages]
+        profile = kwargs.get("provider_profile")
+        provider = getattr(profile, "name", None) or kwargs.get("provider")
+        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
+        native_type = getattr(profile, "native_reasoning_details_type", None) or None
+        carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))
+        if native_type and carriers:
+            # A profile declaring a native carrier type consumes replayed details by contract.
+            carriers = carriers | {"reasoning_details"}
+        strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type))
+                           for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]
@@ -392,8 +491,11 @@ class ChatCompletionsTransport(ProviderTransport):
         With ``provider_profile`` every quirk comes from the profile; the legacy flag
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
-        sanitized = self.convert_messages(messages, model=model)
         _profile = params.get("provider_profile")
+        sanitized = self.convert_messages(
+            messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
+            provider=params.get("provider_name"),
+        )
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
@@ -401,12 +503,11 @@ class ChatCompletionsTransport(ProviderTransport):
         api_kwargs = _base_kwargs(model, sanitized, tools, params)
 
         is_kimi = params.get("is_kimi", False)
-        is_lmstudio = params.get("is_lmstudio", False)
         supports_reasoning = params.get("supports_reasoning", False)
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
-        # Kimi / TokenHub / LM Studio: top-level reasoning_effort (unless thinking disabled).
+        # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)
         if is_kimi and not thinking_off:
@@ -418,11 +519,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 else clamp_effort(_e, _supported, KIMI_K3_OVERRIDES if is_k3 else None)
             )
         if params.get("is_tokenhub", False) and not thinking_off:
-            api_kwargs["reasoning_effort"] = "high" if _e is None else clamp_effort(_e, TOKENHUB_EFFORTS)
-        if is_lmstudio and supports_reasoning:
-            _lm_effort = resolve_lmstudio_effort(reasoning_config, params.get("lmstudio_reasoning_options"))
-            if _lm_effort is not None:
-                api_kwargs["reasoning_effort"] = _lm_effort
+            api_kwargs["reasoning_effort"] = tokenhub_effort(_e)
 
         extra_body: dict[str, Any] = {}
         is_openrouter = params.get("is_openrouter", False)
@@ -437,8 +534,7 @@ class ChatCompletionsTransport(ProviderTransport):
         if is_kimi:
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
-        # LM Studio is handled above via top-level reasoning_effort.
-        if supports_reasoning and not is_lmstudio:
+        if supports_reasoning:
             if params.get("is_github_models", False):
                 if params.get("github_reasoning_extra") is not None:
                     extra_body["reasoning"] = params["github_reasoning_extra"]
@@ -479,11 +575,15 @@ class ChatCompletionsTransport(ProviderTransport):
         # Profiles fronting several backends override get_max_tokens() per model.
         _apply_max_tokens(api_kwargs, model, reasoning_config, params, profile_max=profile.get_max_tokens(model))
 
+        # LM Studio's probed allowed_options ride only when present, so plugin hooks written
+        # against the older keyword set (no ``**context``) keep working.
+        _lm_options = params.get("lmstudio_reasoning_options")
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
-            session_id=params.get("session_id"),
+            session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+            **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
 
@@ -545,6 +645,10 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_content"] = reasoning_content
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
+        # Message-level carriers (Gemini text-turn signature, Copilot reasoning): agent/reasoning_carriers.py.
+        for key in ("extra_content", "reasoning_opaque", "reasoning_text"):
+            if (value := _attr_or_model_extra(msg, key)) is not None:
+                provider_data[key] = _dump_extra_content(value)
 
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
@@ -560,7 +664,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            reasoning=getattr(msg, "reasoning", None), usage=usage, provider_data=provider_data or None,
+            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
+            reasoning=getattr(msg, "reasoning", None) or provider_data.get("reasoning_text"), usage=usage,
+            provider_data=provider_data or None,
         )
 
     def _normalize_tool_call(self, tc: Any) -> ToolCall | None:
@@ -577,14 +683,22 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        return ToolCall(
+        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # Copilot's Gemini 3 variant
+        provider_data = {k: v for k, v in (("extra_content", None if extra is None else _dump_extra_content(extra)),
+                                            ("thought_signature", fn_sig)) if v is not None}
+        call = ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
-            provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
+            provider_data=provider_data or None,
         )
+        if getattr(tc_function, "args_repaired", False) is True:
+            call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics
+        return call
 
     def validate_response(self, response: Any) -> bool:
-        """Check that response has valid choices."""
-        return bool(response is not None and getattr(response, "choices", None))
+        """Check that response has valid choices and is not a router failure shim."""
+        if response is None or not getattr(response, "choices", None):
+            return False
+        return not is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Cache stats from prompt_tokens_details (OpenRouter/OpenAI) or DeepSeek's top-level prompt_cache_hit_tokens."""
@@ -598,14 +712,6 @@ class ChatCompletionsTransport(ProviderTransport):
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
 
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("chat_completions", ChatCompletionsTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

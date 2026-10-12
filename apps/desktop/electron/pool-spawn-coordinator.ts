@@ -1,3 +1,5 @@
+import type { WaitableChild } from './backend-child'
+
 export type ReleaseLocalBackendSlot = () => void
 
 export type LocalBackendSpawnPriority = 'foreground' | 'background'
@@ -40,6 +42,47 @@ export class LocalBackendSlotWaitTimeoutError extends Error {
 
 export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
   return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
+}
+
+export interface LocalBackendSlotEntry {
+  process?: unknown
+  releaseLocalBackendSlot?: ReleaseLocalBackendSlot | null
+  localBackendSlotKey?: string | null
+  localBackendSpawnRequest?: LocalBackendSpawnRequest | null
+}
+
+export function releaseLocalBackendSlot(entry: LocalBackendSlotEntry | undefined): void {
+  if (!entry) {
+    return
+  }
+
+  const release = entry.releaseLocalBackendSlot
+  const request = entry.localBackendSpawnRequest
+  entry.releaseLocalBackendSlot = null
+  entry.localBackendSlotKey = null
+  entry.localBackendSpawnRequest = null
+
+  if (release) {
+    release()
+  } else {
+    request?.cancel()
+  }
+}
+
+export function assertPoolEntryStillOwned(
+  poolKey: string,
+  entry: LocalBackendSlotEntry,
+  pool: ReadonlyMap<string, LocalBackendSlotEntry>,
+  signal: AbortSignal
+): void {
+  if (signal.aborted || pool.get(poolKey) !== entry) {
+    // A post-claim cancellation still owns a child. Its exit releases capacity.
+    if (!entry.process) {
+      releaseLocalBackendSlot(entry)
+    }
+
+    throw new Error(`Profile backend start for "${poolKey}" was cancelled during start.`)
+  }
 }
 
 /** A retry deferment is expected background control flow, not a start failure. */
@@ -94,6 +137,38 @@ export class BackgroundSlotRetryBackoff {
   }
 }
 
+/** Register at spawn, before claiming ownership or awaiting readiness. */
+export function registerLocalBackendExitFinalizer<Entry extends { process: WaitableChild | null }>(
+  pool: Map<string, Entry>,
+  key: string,
+  entry: Entry,
+  release: ReleaseLocalBackendSlot
+): void {
+  const child = entry.process
+
+  const finalize = () => {
+    child?.removeListener('exit', finalize)
+    child?.removeListener('error', spawnFailed)
+
+    if (pool.get(key) === entry) {
+      pool.delete(key)
+    }
+
+    release()
+  }
+
+  const spawnFailed = () => {
+    // Failed spawn has no PID and emits error, but never exit. A signal error
+    // against an existing child is not evidence of exit and must keep its slot.
+    if (!child?.pid) {
+      finalize()
+    }
+  }
+
+  child?.once('exit', finalize)
+  child?.once('error', spawnFailed)
+}
+
 export async function releaseLocalBackendSlotAfterExit(
   release: ReleaseLocalBackendSlot,
   waitForExit: () => Promise<void>
@@ -106,7 +181,8 @@ export async function releaseLocalBackendSlotAfterExit(
  * Bounds the number of local profile backends that are starting or running.
  *
  * A lease is acquired immediately before local start work and is held until
- * the child exits or the start fails. Remote descriptors never call request().
+ * the child exits, or a start is cancelled before spawn. Remote descriptors
+ * never call request().
  *
  * When the cap is at least 2, one slot is reserved for foreground (user-open)
  * requests so background roster hydration cannot occupy the whole pool.
@@ -117,6 +193,25 @@ export class LocalBackendSpawnCoordinator {
   #activeForeground = 0
   #activeBackground = 0
   #queue: Waiter[] = []
+  #listeners = new Set<() => void>()
+
+  get foregroundWaiters(): ReadonlySet<string> {
+    return new Set(this.#queue.filter(waiter => waiter.priority === 'foreground').map(waiter => waiter.key))
+  }
+
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener)
+
+    return () => {
+      this.#listeners.delete(listener)
+    }
+  }
+
+  #changed(): void {
+    for (const listener of this.#listeners) {
+      listener()
+    }
+  }
 
   constructor(limit: number) {
     if (!Number.isInteger(limit) || limit < 1) {
@@ -250,6 +345,7 @@ export class LocalBackendSpawnCoordinator {
     this.#queue.splice(index, 1)
     this.#clearTimer(waiter)
     waiter.reject(error)
+    this.#changed()
 
     return true
   }
@@ -320,5 +416,7 @@ export class LocalBackendSpawnCoordinator {
       this.#clearTimer(next)
       next.resolve(this.#grant('background'))
     }
+
+    this.#changed()
   }
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
@@ -150,9 +151,11 @@ test('afterStop holds inFlight until extra teardown finishes (process-less SSH)'
   const pool = new Map<string, PoolStopEntry>()
   const events: string[] = []
   let releaseAfter: (() => void) | undefined
+
   const afterGate = new Promise<void>(resolve => {
     releaseAfter = resolve
   })
+
   const stopper = createPoolStopper({
     pool,
     stopChild: () => {
@@ -177,6 +180,7 @@ test('afterStop holds inFlight until extra teardown finishes (process-less SSH)'
   assert.deepEqual(events, ['stop', 'exit', 'after-start'])
 
   let spawned = false
+
   const respawn = (async () => {
     const dying = stopper.inFlight('ssh')
 
@@ -219,4 +223,27 @@ test('a respawn can await the in-flight stop before reusing the key', async () =
   await respawn
 
   assert.deepEqual(order, ['exit-signal', 'spawn'])
+})
+
+test('failed teardown blocks same-profile respawn until the actual late exit', async () => {
+  const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null })
+  const pool = new Map([['profile', { process: child }]])
+
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => {},
+    waitForExit: async () => {
+      throw new Error('child did not exit')
+    }
+  })
+
+  const stopping = stopper.stop('profile')
+
+  await assert.rejects(stopping, /did not exit/)
+  assert.equal(stopper.inFlight('profile'), stopping)
+  assert.equal(stopper.hasPending(), true)
+  await assert.rejects(stopper.stop('profile'), /did not exit/)
+  child.emit('exit')
+  assert.equal(stopper.inFlight('profile'), undefined)
+  assert.equal(stopper.hasPending(), false)
 })

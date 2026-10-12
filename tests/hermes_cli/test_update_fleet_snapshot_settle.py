@@ -13,7 +13,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_fleet as update_cmd_fleet
+from hermes_cli import update_cmd_fleet
+import hermes_cli.update_cmd_fleet_verify as fleet_verify
 from hermes_constants import get_hermes_home
 
 
@@ -45,11 +46,11 @@ def test_snapshot_waits_for_late_current_gateway_state(monkeypatch) -> None:
 
     restart = SimpleNamespace(pre_restart_gateway_pids=[101])
 
-    result = update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True)
+    result = fleet_verify._collect_fleet_snapshot(restart, rows_expected=True)
 
     assert result == [expected]
     assert clock.now > 30.0
-    assert clock.now <= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
+    assert clock.now <= fleet_verify._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
 
 
 def test_snapshot_stops_waiting_once_the_restarted_unit_is_dead(monkeypatch) -> None:
@@ -64,7 +65,7 @@ def test_snapshot_stops_waiting_once_the_restarted_unit_is_dead(monkeypatch) -> 
             stdout="LoadState=loaded\nActiveState=failed\n", stderr="", returncode=0))
 
     restart = SimpleNamespace(pre_restart_gateway_pids=[101], restarted_scoped_units={"user/hermes-gateway.service"})
-    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == []
+    assert fleet_verify._collect_fleet_snapshot(restart, rows_expected=True) == []
     assert clock.now < 30.0
 
 
@@ -85,11 +86,11 @@ def test_snapshot_keeps_waiting_when_the_unit_is_unknown_to_the_asked_scope(monk
             stderr="", returncode=0)
 
     monkeypatch.setattr(update_cmd_fleet, "_systemctl", systemctl)
-    assert update_cmd_fleet._restarted_units_gone(("system/hermes-gateway.service",)) is False
+    assert fleet_verify._restarted_units_gone(("system/hermes-gateway.service",)) is False
 
     restart = SimpleNamespace(pre_restart_gateway_pids=[101], restarted_scoped_units={"system/hermes-gateway.service"})
-    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == []
-    assert clock.now >= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
+    assert fleet_verify._collect_fleet_snapshot(restart, rows_expected=True) == []
+    assert clock.now >= fleet_verify._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
 
 
 def test_snapshot_waits_for_the_relaunched_pid_to_publish_its_identity(monkeypatch) -> None:
@@ -104,20 +105,20 @@ def test_snapshot_waits_for_the_relaunched_pid_to_publish_its_identity(monkeypat
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: next(snapshots))
     restart = SimpleNamespace(pre_restart_gateway_pids=[32512], restarted_scoped_units=set())
 
-    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == [current]
+    assert fleet_verify._collect_fleet_snapshot(restart, rows_expected=True) == [current]
     assert clock.now == 12.0
 
     # Control: the same unknown row for a pid that was already running pre-update is settled as-is.
     clock.now = 0.0
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: [dict(unknown)])
     survivor = SimpleNamespace(pre_restart_gateway_pids=[34516], restarted_scoped_units=set())
-    result = update_cmd_fleet._collect_fleet_snapshot(survivor, rows_expected=True)
+    result = fleet_verify._collect_fleet_snapshot(survivor, rows_expected=True)
     assert clock.now == 2.0 and "identity_pending" not in result[0]
 
     # Still unknown at the deadline: flagged so the matrix prints restart-aware copy, never "predates".
     clock.now = 0.0
-    result = update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True)
-    assert clock.now >= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
+    result = fleet_verify._collect_fleet_snapshot(restart, rows_expected=True)
+    assert clock.now >= fleet_verify._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
     assert result[0]["identity_pending"] is True
 
 
@@ -139,7 +140,7 @@ def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) ->
         "hermes_cli.update_receipt.print_fleet_version_matrix",
         lambda _fleet: False,
     )
-    monkeypatch.setattr(update_cmd_fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda _plan: [])
     monkeypatch.setattr(update_cmd, "_warn_stale_serve_runtimes", lambda _rows: None)
@@ -157,11 +158,10 @@ def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) ->
         fleet_probe_signals=lambda: ([101], set()),
     )
 
-    update_cmd_fleet._verify_fleet_after_update(
+    fleet_verify._verify_fleet_after_update(
         restart,
         _pre_update_plan=None,
         _windows_gateway_resume=None,
-        node_failures=[],
         update_complete=True,
     )
 

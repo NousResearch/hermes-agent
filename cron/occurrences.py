@@ -1,5 +1,6 @@
-"""Exact scheduled identities, independent of mutable jobs.json dispatch stamps."""
-from datetime import datetime, timedelta, timezone
+"""Exact scheduled identities, independent of mutable jobs.json dispatch stamps, plus the
+profile-local stale-schedule catch-up counter marker."""
+from datetime import datetime, timedelta, timezone, UTC
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,15 +14,15 @@ def scheduled_instant(value):
         instant = datetime.fromisoformat(value)
         if instant.tzinfo is None:
             return None
-        return instant.astimezone(timezone.utc).isoformat()
+        return instant.astimezone(UTC).isoformat()
     except ValueError:
         return None
 
 
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
+    from cron.constants import FIRE_CLAIM_SKEW_SECONDS
     from cron.executions import _transaction
-    from cron.jobs import FIRE_CLAIM_SKEW_SECONDS
 
     instant = scheduled_instant(instant)
     if instant is None:
@@ -82,9 +83,8 @@ def unclaimed_pending_slot(job, now):
     THIS process on a job not running here is orphaned (dispatch refused). A stamp by another
     process is honoured while that owner may still be alive within the fire-claim lease — a
     second live gateway on the same store is mid-dispatch, not dead."""
-    from cron.jobs import (
-        FIRE_CLAIM_TTL_SECONDS, _claim_is_live, _job_running_in_this_process, _machine_id,
-    )
+    from cron.constants import FIRE_CLAIM_TTL_SECONDS
+    from cron.jobs import _claim_is_live, _job_running_in_this_process, _machine_id
 
     pending = job.get("pending_slot")
     if not isinstance(pending, dict):
@@ -101,3 +101,21 @@ def unclaimed_pending_slot(job, now):
     if pending.get("by") != _machine_id() and _claim_is_live(pending, now, FIRE_CLAIM_TTL_SECONDS):
         return None
     return slot
+
+
+def get_catch_up_occurrence_count() -> int:
+    """Return the profile-local stale-schedule catch-up count."""
+    from cron.jobs import _current_cron_store
+
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def record_catch_up_occurrence() -> None:
+    """Increment the profile-local stale-schedule catch-up counter, best effort."""
+    from cron.jobs import _write_marker
+
+    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")

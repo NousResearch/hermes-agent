@@ -8,7 +8,8 @@ import {
   $sessionStates,
   $workingSessionIds,
   clearAllSessionStates,
-  publishSessionState
+  publishSessionState,
+  reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
@@ -57,6 +58,24 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] })
 
     expect($unreadFinishedSessionIds.get()).toEqual(['stored-b'])
+  })
+
+  // A turn that started just before the socket dropped was never polled, so
+  // "seen live last poll" cannot gate its confirmation: the reconcile parked it,
+  // and the first fresh snapshot that does not report it working is the
+  // terminal fact that lights the dot.
+  it('confirms a parked reconnect completion the poll never saw live', () => {
+    publishSessionState('runtime-p', {
+      ...createClientSessionState('stored-p'),
+      busy: true,
+      storedSessionId: 'stored-p'
+    })
+    reconcileBusyStatesOnReconnect()
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['stored-p'])
   })
 
   it('clears a blocked session that disappears from the live snapshot', () => {

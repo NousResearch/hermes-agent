@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 
+from agent.i18n import t
 from gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
 
 # Display names come from the stranger. Bound them and keep the mention/markdown surface small in
@@ -40,19 +41,13 @@ def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> 
     """The DM a first-time sender receives: what happened, how long the code lives, what to do
     whether they are the owner or a guest, and that they must message again after approval."""
     hours = max(1, CODE_TTL_SECONDS // 3600)
-    validity = f"{hours} hour" if hours == 1 else f"{hours} hours"
+    validity = t("gateway.pairing.validity_hour" if hours == 1 else "gateway.pairing.validity_hours", hours=hours)
     approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"
-    return (
-        "Hi! I don't recognize you yet, so I can't reply until the person running this bot "
-        "approves you.\n\n"
-        f"Your pairing code: `{code}` (valid for {validity})\n\n"
-        f"If you run this bot, open a terminal and run: `{approve_cmd}`. "
-        "Otherwise send that command to the bot owner. After approval, send your message again."
-    )
+    return t("gateway.pairing.code_reply", code=code, validity=validity, approve_cmd=approve_cmd)
 
 
-PAIRING_RATE_LIMITED_REPLY = (
-    "Too many pairing requests right now. Wait a few minutes, then send your message again.")
+def pairing_rate_limited_reply() -> str:
+    return t("gateway.pairing.rate_limited")
 
 
 def unauthorized_owner_hint(
@@ -71,15 +66,10 @@ def unauthorized_owner_hint(
     who = f"{safe_name} ({user_id})" if safe_name else str(user_id)
     env_var = _allowlist_env_for_platform(platform_name)
     allowlist = (
-        f"add the ID to {env_var} in {hermes_home}/.env and restart the gateway"
-        if env_var else "add the ID to this platform's allowed-users list and restart the gateway"
+        t("gateway.unauthorized.owner_hint_env", env_var=env_var, home=hermes_home)
+        if env_var else t("gateway.unauthorized.owner_hint_generic")
     )
-    return (
-        f"Dropped a message from unrecognized {platform_name} user {who}. If that is you or someone "
-        f"you trust, {allowlist}; or set `unauthorized_dm_behavior: pair` for {platform_name} in "
-        f"{hermes_home}/config.yaml so unknown senders receive a pairing code you can approve with "
-        f"`hermes pairing approve {platform_name} <code>`."
-    )
+    return t("gateway.unauthorized.owner_notice", platform=platform_name, who=who, allowlist=allowlist, home=hermes_home)
 
 
 class UnauthorizedOwnerNotifier:
@@ -112,7 +102,12 @@ class UnauthorizedOwnerNotifier:
                 # The stranger's DM *is* the home channel (misconfiguration); posting there would
                 # answer the unauthorized user, which the ignore behaviour exists to prevent.
                 return
-            await runner._send_home_channel_message(
-                platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
+            # Automatic operator diagnostic on the home channel; same boundary as the state.db warning.
+            from gateway.warning_notifications import present_notification
+            await present_notification(
+                lambda: runner._send_home_channel_message(
+                    platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
+                ),
+                platform=platform,
             )
             return

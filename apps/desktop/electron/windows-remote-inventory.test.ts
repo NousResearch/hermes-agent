@@ -8,7 +8,7 @@ import { test } from 'vitest'
 
 import { WINDOWS_PROFILE_LIST_PY, windowsInventoryScript } from './windows-remote-inventory'
 import { atomicWindowsSpawn, atomicWindowsSpawnCommand, encodedPowerShell, powerShellStdinCommand, probeWindowsFiles, probeWindowsRemote } from './windows-remote-lifecycle'
-import { windowsHelperArgv, windowsRuntimeProgramArgv } from './windows-runtime-command'
+import { WINDOWS_NO_REPARSE_PS, windowsHelperArgv, windowsRuntimeProgramArgv } from './windows-runtime-command'
 
 const repo = path.resolve(import.meta.dirname, '../../..')
 const python = process.env.HERMES_TEST_PYTHON || path.join(repo, '.venv/bin/python')
@@ -242,4 +242,23 @@ test.runIf(Boolean(process.env.HERMES_TEST_PWSH))('real PowerShell parser accept
 
   assert.equal(result.status, 0, result.stderr + result.stdout)
   assert.equal(result.stdout.trim(), 'HERMES_PS_PROGRAMS_PARSE_OK')
+})
+
+test.runIf(Boolean(process.env.HERMES_TEST_PWSH))('no-reparse guard checks a leaf file and every ancestor, not FileInfo.Parent', () => {
+  const pwsh = String(process.env.HERMES_TEST_PWSH)
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-no-reparse-'))
+  fs.mkdirSync(path.join(root, 'real'))
+  fs.writeFileSync(path.join(root, 'real', 'leaf'), 'fixture')
+  fs.symlinkSync(path.join(root, 'real'), path.join(root, 'linked'))
+
+  try {
+    const file = path.join(root, 'linked', 'leaf').replace(/'/g, "''")
+    const program = `${WINDOWS_NO_REPARSE_PS};Assert-NoReparse '${file}' $false`
+    const result = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedPowerShell(program)], { encoding: 'utf8', timeout: 20000 })
+
+    assert.notEqual(result.status, 0, 'a file beneath a reparse directory must be refused')
+    assert.match(result.stderr, /reparse point/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

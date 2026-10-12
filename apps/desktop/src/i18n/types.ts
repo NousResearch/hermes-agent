@@ -19,6 +19,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { SystemResourcesTranslations } from './types_system_resources'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
 
@@ -3692,15 +3693,7 @@ export interface Translations extends NoticeTranslations {
       turnRunning: string
       contextUsage: string
       compressions: (count: number) => string
-      systemResources: {
-        title: string
-        loading: string
-        gpuUtilization: string
-        gpuMemory: string
-        ram: string
-        unifiedNote: string
-        toggle: string
-      }
+      systemResources: SystemResourcesTranslations
       contextUsagePanel: {
         categories: {
           conversation: string

@@ -13,6 +13,7 @@ import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enSystemResources } from './en_system_resources'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
@@ -4255,15 +4256,7 @@ export const en: Translations = {
       turnRunning: 'Running',
       contextUsage: 'Context usage',
       compressions: count => `Compressions: ${count}`,
-      systemResources: {
-        title: 'System Resources',
-        loading: 'Resources…',
-        gpuUtilization: 'GPU utilization',
-        gpuMemory: 'GPU memory',
-        ram: 'RAM',
-        unifiedNote: 'Unified memory — the GPU and system share this pool.',
-        toggle: 'System resources'
-      },
+      systemResources: enSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: 'Conversation',

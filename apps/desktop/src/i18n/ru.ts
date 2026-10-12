@@ -2,12 +2,14 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruContextUsagePanel } from './ru_context_usage'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruSystemResources } from './ru_system_resources'
 import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
@@ -3452,23 +3454,8 @@ export const ruOverrides = {
       turnRunning: 'Выполняется',
       contextUsage: 'Использование контекста',
       compressions: count => `Сжатий: ${count}`,
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Диалог',
-          mcp: 'MCP',
-          memory: 'Память',
-          rules: 'Правила',
-          skills: 'Навыки',
-          subagent_definitions: 'Определения субагентов',
-          system_prompt: 'Системный промпт',
-          tool_definitions: 'Определения инструментов'
-        },
-        empty: 'Данных контекста пока нет',
-        loading: 'Загрузка разбивки…',
-        percentFull: percent => `${percent}% занято`,
-        title: 'Использование контекста',
-        tokenSummary: (used, max) => `${used} / ${max} токенов`
-      },
+      systemResources: ruSystemResources,
+      contextUsagePanel: ruContextUsagePanel,
       focusedSince: 'В фокусе с',
       focusedSinceTitle: 'Время с момента фокуса этого чата — не длительность хода',
       yoloOn: 'YOLO включён — автоматическое подтверждение опасных команд. Shift-клик переключает глобально.',

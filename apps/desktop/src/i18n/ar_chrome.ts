@@ -470,7 +470,18 @@ export const arChrome = {
       openModelPicker: 'فتح اختيار النموذج',
       modelPinned: 'النموذج مثبت',
       modelTitle: (provider, model) => `${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider}: ${model}`
+      providerModelTitle: (provider, model) => `${provider}: ${model}`,
+      systemResources: {
+        title: 'موارد النظام',
+        loading: 'الموارد…',
+        gpuUtilization: 'استخدام وحدة الرسوميات',
+        gpuMemory: 'ذاكرة وحدة الرسوميات',
+        ram: 'الذاكرة العشوائية',
+        cpu: 'المعالج',
+        disk: 'القرص',
+        unifiedNote: 'ذاكرة موحّدة — تتشارك وحدة الرسوميات والنظام هذه الذاكرة.',
+        toggle: 'موارد النظام'
+      }
     }
   },
   rightSidebar: {

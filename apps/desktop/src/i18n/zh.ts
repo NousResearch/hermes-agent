@@ -10,6 +10,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhSystemResources } from './zh_system_resources'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
@@ -4118,15 +4119,7 @@ export const zhOverrides = {
       turnRunning: '运行中',
       contextUsage: '上下文用量',
       compressions: count => `压缩次数：${count}`,
-      systemResources: {
-        title: '系统资源',
-        loading: '资源…',
-        gpuUtilization: 'GPU 利用率',
-        gpuMemory: '显存',
-        ram: '内存',
-        unifiedNote: '统一内存——GPU 与系统共享此内存池。',
-        toggle: '系统资源'
-      },
+      systemResources: zhSystemResources,
       contextUsagePanel: {
         categories: {
           conversation: '对话',

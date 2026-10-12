@@ -616,8 +616,11 @@ def _join_launcher_python() -> str:
 # * Elsewhere (macOS has no subreaper) it records node's descendant tree from ``ps`` while node
 #   runs and, once node exits, kills every recorded process whose start time still matches,
 #   plus what they started. Best effort: a process born and orphaned between two samples escapes.
-# * SIGINT/SIGTERM/SIGHUP are forwarded to node (a node still running 10 s later is killed); the
-#   descendants are then killed as above.
+# * SIGINT/SIGTERM/SIGHUP/SIGQUIT are forwarded to node (a node still running 10 s later is
+#   killed); the descendants are then killed as above. SIGQUIT is relayed like the others
+#   because the forked custodian never exec's: left to its default disposition a SIGQUIT kills
+#   it in place, and on macOS that death — "child side of fork pre-exec" — is crash-reported
+#   per kill (#137413); a handled SIGQUIT exits through the normal settle path instead.
 # * The custodian is NOT the process the runner sees (R4): ``subprocess.run`` SIGKILLs its own
 #   child when Ctrl-C reaches the caller, and no group separation survives a direct kill. The
 #   runner's child only forks the custodian (own group) and relays signals to it and its exit
@@ -639,7 +642,7 @@ if custodian:
             os.kill(custodian, signum)
         except OSError:
             pass
-    for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+    for name in ('SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'):
         signal.signal(getattr(signal, name), relay)
     code = os.waitstatus_to_exitcode(os.waitpid(custodian, 0)[1])
     sys.exit(code if code >= 0 else 128 - code)
@@ -714,7 +717,7 @@ def forward(signum, frame):
     except OSError:
         pass
 
-for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+for name in ('SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'):
     signal.signal(getattr(signal, name), forward)
 deadline = None
 while True:

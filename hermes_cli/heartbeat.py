@@ -36,9 +36,13 @@ _UNIT_SECONDS = {
 }
 
 # field -> (coercer, default used when the stored value is missing/falsy)
+USER_HEARTBEAT_ORIGIN = "user"
+ACTIVE_WORK_HEARTBEAT_ORIGIN = "active-work"
+
 _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
+    "origin": (str, USER_HEARTBEAT_ORIGIN),
 }
 
 
@@ -71,6 +75,7 @@ class HeartbeatState:
     created_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
+    origin: str = USER_HEARTBEAT_ORIGIN  # user | active-work; missing legacy rows are user-authored
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -86,7 +91,17 @@ class HeartbeatState:
         return (time.time() if now is None else now) - (self.last_fired_at or self.created_at) >= self.interval_seconds
 
     def render_prompt(self) -> str:
-        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=format_interval(self.interval_seconds), prompt=self.prompt)
+        interval = format_interval(self.interval_seconds)
+        if self.origin == ACTIVE_WORK_HEARTBEAT_ORIGIN:
+            # The generic footer asks for a visible "nothing has changed" reply.
+            # This check must stay silent unless the marker is exact [SILENT].
+            return (
+                "[Heartbeat — recurring instruction, fires every "
+                f"{interval}]\n{self.prompt}\n\n"
+                "If nothing meaningful changed, reply exactly [SILENT]. "
+                "Do not invent progress."
+            )
+        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=interval, prompt=self.prompt)
 
 
 def _get_session_db() -> Optional[Any]:
@@ -187,8 +202,9 @@ class HeartbeatManager:
         interval_seconds = int(interval_seconds)
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        # A slash-command set is user-authored and replaces any managed check.
         self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                     created_at=time.time())
+                                     created_at=time.time(), origin=USER_HEARTBEAT_ORIGIN)
         save_heartbeat(self.session_id, self._state)
         return self._state
 
@@ -212,6 +228,51 @@ class HeartbeatManager:
         cleared = self._set_status("cleared") is not None
         self._state = None
         return cleared
+
+    def reload(self) -> Optional[HeartbeatState]:
+        """Refresh from SessionDB so a sibling writer is visible."""
+        self._state = load_heartbeat(self.session_id)
+        return self._state
+
+    def ensure_managed(self, prompt: str, interval_seconds: int, *, origin: str) -> str:
+        """Install or refresh a managed heartbeat. Never replace a different origin.
+
+        Returns ``installed``, ``kept``, ``updated``, or ``preserved-user``.
+        """
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("heartbeat prompt is empty")
+        interval_seconds = int(interval_seconds)
+        if interval_seconds < MIN_INTERVAL_SECONDS:
+            raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        if origin == USER_HEARTBEAT_ORIGIN:
+            raise ValueError("managed heartbeats cannot use the user origin")
+        current = self.reload()
+        if current is not None and current.status in {"active", "paused"} and current.origin != origin:
+            return "preserved-user"
+        if current is not None and current.origin == origin and current.status == "active":
+            if current.prompt == prompt and current.interval_seconds == interval_seconds:
+                return "kept"
+            current.prompt = prompt
+            current.interval_seconds = interval_seconds
+            save_heartbeat(self.session_id, current)
+            return "updated"
+        created_at = current.created_at if current and current.origin == origin else time.time()
+        last_fired = current.last_fired_at if current and current.origin == origin else 0.0
+        fire_count = current.fire_count if current and current.origin == origin else 0
+        self._state = HeartbeatState(
+            prompt=prompt, interval_seconds=interval_seconds, status="active",
+            created_at=created_at, last_fired_at=last_fired, fire_count=fire_count, origin=origin,
+        )
+        save_heartbeat(self.session_id, self._state)
+        return "installed"
+
+    def clear_if_origin(self, origin: str) -> bool:
+        """Clear only a heartbeat this origin owns. User-authored rows stay."""
+        current = self.reload()
+        if current is None or current.origin != origin:
+            return False
+        return self.clear()
 
     def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
         """Return the injection prompt if the heartbeat is due, else None.

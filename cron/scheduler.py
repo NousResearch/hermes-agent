@@ -1924,24 +1924,34 @@ def _open_cron_session_db(job: dict):
     return None
 
 
-def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
-    """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
+def _raise_inactivity_timeout(agent, job_name: str, limit_s: float,
+                              tripped_idle: Optional[float] = None) -> None:
+    """Log the agent's last activity, hard-interrupt it and raise TimeoutError.
+
+    ``tripped_idle`` is the idle sample the watchdog actually crossed *limit_s* on. The activity
+    summary is re-read here for the context fields, so a run that re-stamped between the trip and
+    this raise would otherwise be reported with a figure that cannot explain it (measured
+    2026-09-28 01:32:54: "idle for 1s (limit 600s)" on a run killed by a 903s host sleep).
+    """
     _activity = {}
     if hasattr(agent, "get_activity_summary"):
         with contextlib.suppress(Exception):
             _activity = agent.get_activity_summary()
     _last_desc = _activity.get("last_activity_desc", "unknown")
-    _secs_ago = _activity.get("seconds_since_activity", 0)
+    # None when the run was killed before its first activity stamp: the message must still build.
+    _secs_ago = float(_activity.get("seconds_since_activity") or 0.0)
+    _reported = _secs_ago if tripped_idle is None else float(tripped_idle)
     logger.error(
-        "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
+        "Job '%s' idle for %.0fs (inactivity limit %.0fs, sample the watchdog tripped on; "
+        "activity re-read at raise: %.0fs) "
         "| last_activity=%s | iteration=%s/%s | tool=%s",
-        job_name, _secs_ago, limit_s,
+        job_name, _reported, limit_s, _secs_ago,
         _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
         _activity.get("current_tool") or "none")
     request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
-        f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
+        f"{int(_reported)}s (limit {int(limit_s)}s) "
         f"— last activity: {_last_desc}")
 
 
@@ -1997,6 +2007,9 @@ def _run_agent_with_watchdog(
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
+    # The sample the watchdog crossed the limit on (card t_93aa6105), reported instead of a
+    # fresh read of the agent at raise time.
+    _trip_sample: dict = {}
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
@@ -2014,7 +2027,8 @@ def _run_agent_with_watchdog(
             return
         if _inactivity_watchdog_loop(
             get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
-            stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle):
+            stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle,
+            trip_sample=_trip_sample):
             _inactivity_timeout = True
 
     _watch_thread = threading.Thread(
@@ -2053,7 +2067,8 @@ def _run_agent_with_watchdog(
         _cron_pool.shutdown(wait=False, cancel_futures=True)
 
     if _inactivity_timeout:
-        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit,
+                                  tripped_idle=_trip_sample.get("idle_s"))
 
     if not isinstance(result, dict):
         raise RuntimeError(

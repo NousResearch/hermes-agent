@@ -33,6 +33,7 @@ _MIRROR_FILES = (
     "reply-content.mjs",
     "send-format.mjs",
     "spectrum-runtime.mjs",
+    "startup-error.mjs",
     "stream-staleness.mjs",
 )
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.

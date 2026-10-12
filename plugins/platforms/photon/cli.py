@@ -281,6 +281,12 @@ def _cmd_setup_local(args: argparse.Namespace) -> int:
     print("  This Mac must be signed into Messages.")
     print("  The process that starts Hermes may need Full Disk Access to read")
     print("  ~/Library/Messages/chat.db.")
+    print("  In System Settings > Privacy & Security > Full Disk Access, authorize")
+    print("  /usr/bin/osascript for Hermes's current macOS background gateway service.")
+    print("  For a manual terminal launch, authorize the terminal app instead.")
+    print("  osascript is a general-purpose scripting tool: this grant is not Hermes-only.")
+    print("  After granting access or changing launchers, run `hermes gateway restart`.")
+    print("  Access from this setup terminal does not verify background-service access.")
     print()
 
     if sys.platform != "darwin":

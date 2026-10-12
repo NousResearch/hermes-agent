@@ -70,6 +70,7 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { normalizeReplyContent } from "./reply-content.mjs";
 import { createSpectrumRuntime } from "./spectrum-runtime.mjs";
+import { spectrumStartupError } from "./startup-error.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import { supportsProviderCapability } from "./provider-capabilities.mjs";
 import {
@@ -321,11 +322,7 @@ try {
     telemetry,
   }));
 } catch (e) {
-  console.error(
-    "photon-sidecar: Spectrum dependencies could not be loaded. Run `npm install` " +
-      "inside plugins/platforms/photon/sidecar/. Original error: " +
-      (e && e.stack ? e.stack : String(e))
-  );
+  console.error(spectrumStartupError(e, { localMode }));
   process.exit(3);
 }
 

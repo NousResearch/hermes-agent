@@ -38,7 +38,7 @@ requires_env:
 optional_env:
   - name: PHOTON_IMESSAGE_MODE
     config_key: photon.imessage_mode
-    description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account. Local mode needs Messages sign-in and may require Full Disk Access to read ~/Library/Messages/chat.db."
+    description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account. Local mode needs Messages sign-in and access to ~/Library/Messages/chat.db. In System Settings > Privacy & Security > Full Disk Access, authorize /usr/bin/osascript for Hermes's current macOS background gateway service, or your terminal app for a manual launch. The osascript grant is not Hermes-only. Restart the gateway after granting access; terminal access does not verify service access."
     prompt: "iMessage connection"
     password: false
     default: cloud

@@ -135,6 +135,14 @@ not use Spectrum project credentials; the Mac must be signed into Messages,
 and the process that starts Hermes may need Full Disk Access to read
 `~/Library/Messages/chat.db`.
 
+For Hermes's current macOS background gateway service, grant `/usr/bin/osascript`
+access in **System Settings → Privacy & Security → Full Disk Access**. For a
+manual terminal launch, authorize the terminal app instead. Custom launchers
+may have a different responsible process. The `osascript` grant applies to a
+general-purpose scripting tool, not only Hermes. After granting access, run
+`hermes gateway restart`. Updates that change the launcher can require a new
+grant; a successful check in a terminal does not prove service access.
+
 ## Attachments & limitations
 
 - **Inbound attachments and voice notes are downloaded.** The sidecar reads

@@ -209,10 +209,10 @@ def test_setup_regenerates_when_existing_secret_invalid(
     assert "restart it so the sidecar" in out
 
 
+@pytest.mark.platforms("macos")
 def test_local_setup_skips_cloud_and_explains_macos_access(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(
         cli.photon_auth,
         "load_photon_token",
@@ -237,6 +237,11 @@ def test_local_setup_skips_cloud_and_explains_macos_access(
     assert "signed into Messages" in out
     assert "Full Disk Access" in out
     assert "~/Library/Messages/chat.db" in out
+    assert "/usr/bin/osascript" in out
+    assert "terminal app" in out
+    assert "not Hermes-only" in out
+    assert "hermes gateway restart" in out
+    assert "does not verify background-service access" in out
 
 
 def test_gateway_setup_passes_selected_local_mode(

@@ -74,6 +74,27 @@ Local mode uses Spectrum's dedicated open-source macOS provider
 Messages. The process that starts Hermes may need Full Disk Access to read
 `~/Library/Messages/chat.db`.
 
+#### macOS permissions for the gateway
+
+Full Disk Access is associated with the process macOS considers responsible for
+the launch, not simply with Photon or its Node executable:
+
+- Hermes's current macOS background gateway service launches through
+  `/usr/bin/osascript`. Add that executable in **System Settings → Privacy &
+  Security → Full Disk Access** (use **⌘⇧G** in the file picker to enter its path).
+- For `hermes gateway run` in a terminal, authorize the terminal app instead.
+  Custom or older service launchers may use a different responsible process.
+
+The `osascript` grant applies to a general-purpose scripting executable, not
+exclusively to Hermes. Grant it only if you accept that scope. Hermes does not
+change macOS privacy permissions automatically.
+
+After granting access, run `hermes gateway restart`. An update that changes the
+launcher may require a new grant even when local iMessage worked previously.
+Running setup or opening the database successfully in a terminal does **not**
+verify the background service's access; verify that the restarted gateway reports
+Photon connected, then test an inbound message and reply.
+
 Spectrum local mode can start a DM from a bare E.164 number and rehydrate an
 existing DM or group from its chat GUID. That means cold cron delivery works
 with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
@@ -240,6 +261,11 @@ Photon iMessage status
 ```
 
 Common issues:
+
+- **Local mode: `Failed to open database` / `unable to open database file`** —
+  confirm this Mac is signed into Messages and the Messages database exists,
+  then check [the gateway's macOS permissions](#macos-permissions-for-the-gateway).
+  Reinstalling Node dependencies does not grant database access.
 
 - **`sidecar deps : ✗ run hermes photon install-sidecar`** — Node is
   installed but `spectrum-ts` isn't. Run the suggested command.

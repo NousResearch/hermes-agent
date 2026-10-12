@@ -4,9 +4,11 @@
  *   colors      — Tailwind color tokens written directly to CSS vars.
  *   darkColors  — optional hand-tuned dark variant (else `colors` is reused
  *                 unchanged for dark, and a synth pass generates light).
- *   typography  — font families + optional stylesheet URL.
+ *   typography  — font families + optional stylesheet URL + optional
+ *                 baseSize/lineHeight/letterSpacing overrides.
  *
- * Everything else (layout, sizing, radius, line-height) lives in styles.css.
+ * Everything else (layout, sizing, radius, line-height) lives in styles.css —
+ * except the three typography knobs above, which themes may override.
  * Add new themes in `presets.ts` — no other code changes needed.
  */
 
@@ -52,6 +54,12 @@ export interface DesktopThemeTypography {
   fontMono: string
   /** Google/Bunny/self-hosted font stylesheet URL. */
   fontUrl?: string
+  /** Root base font size, painted as `--dt-base-size`. Mirrors the dashboard theme system. */
+  baseSize?: string
+  /** Root line height, painted as `--dt-line-height`. */
+  lineHeight?: string
+  /** Root letter spacing, painted as `--dt-letter-spacing`. */
+  letterSpacing?: string
 }
 
 /**
@@ -98,4 +106,30 @@ export interface DesktopTheme {
   terminal?: DesktopTerminalPalette
   /** Dark-variant terminal ANSI palette. Falls back to `terminal`. */
   darkTerminal?: DesktopTerminalPalette
+  /** Raw CSS injected as a scoped <style> tag on theme apply.
+   *  Persists across updates because it lives in ~/.hermes/skins/,
+   *  not inside app.asar. */
+  customCSS?: string
+}
+
+// The minimal set of color keys a stored theme must carry to be usable. We keep
+// this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
+// theme with no background/foreground/primary is junk and gets dropped.
+const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof DesktopThemeColors> = ['background', 'foreground', 'primary']
+
+/** Shape check for a theme read back from storage or a contribution. */
+export function isValidTheme(value: unknown): value is DesktopTheme {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const theme = value as Partial<DesktopTheme>
+
+  if (typeof theme.name !== 'string' || typeof theme.label !== 'string' || !theme.colors) {
+    return false
+  }
+
+  const colors = theme.colors as unknown as Record<string, unknown>
+
+  return REQUIRED_COLOR_KEYS.every(key => typeof colors[key] === 'string')
 }

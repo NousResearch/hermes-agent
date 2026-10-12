@@ -38,6 +38,22 @@ export function markSubmitting(): void {
   patchUiState({ busy: true, status: 'running…' })
 }
 
+// A voice-mode transcript about to be submitted: the matching prompt.submit carries
+// `voice_turn` so the gateway runs it on `auxiliary.voice_chat`. Matched by text, so a
+// transcript the user edited or that went to the queue still lands as typed text.
+let pendingVoiceTranscript: null | string = null
+
+export function markNextSubmitVoice(text: string): void {
+  pendingVoiceTranscript = text
+}
+
+function takeVoiceTurn(submitText: string): boolean {
+  const voice = pendingVoiceTranscript !== null && pendingVoiceTranscript === submitText.trim()
+  pendingVoiceTranscript = null
+
+  return voice
+}
+
 // Submit a ready prompt (already resolved to be neither a slash command nor a
 // shell escape, with a live session). Pulled out of useSubmission so the
 // synchronous-busy invariant above is unit-testable without React test infra.
@@ -49,7 +65,8 @@ export function submitPrompt(
   text: string,
   deps: SubmitPromptDeps,
   showUserMessage = true,
-  displayOverride?: string
+  displayOverride?: string,
+  opts: { skipDetectDrop?: boolean } = {}
 ): void {
   const sid = getUiState().sid
 
@@ -79,7 +96,11 @@ export function submitPrompt(
     turnController.interrupted = false
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .request<PromptSubmitResponse>('prompt.submit', {
+        session_id: liveSid,
+        text: submitText,
+        ...(takeVoiceTurn(submitText) && { voice_turn: true })
+      })
       .then(r => {
         // The gateway consumed a typed voice stop phrase server-side (voice
         // chat ended, no turn started) — release the busy latch; the
@@ -107,12 +128,17 @@ export function submitPrompt(
 
   // Always ask the backend whether this looks like a file drop. The backend's
   // _detect_file_drop handles paths with spaces, quotes, Windows drive letters,
-  // and escaped characters correctly.
+  // and escaped characters correctly. Literal submissions (startup -q queries)
+  // skip it: launcher-provided text must reach the agent untouched.
   //
   // No notice is emitted for a match: an image dropped into the composer already
   // shows as an `[[ Image N ]]` token, and a matched non-image path is rewritten
   // in place. Announcing it a second time above the status bar was the old
   // out-of-band attachment UI.
+  if (opts.skipDetectDrop) {
+    return startSubmit(text, deps.expand(text), showUserMessage)
+  }
+
   deps.gw
     .request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
     .then(r => {

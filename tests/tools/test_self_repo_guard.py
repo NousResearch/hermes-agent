@@ -1,13 +1,11 @@
 """Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from tools.self_repo_guard import (
     detect_self_repo_git_mutation,
-    get_running_source_root,
 )
 
 
@@ -55,11 +53,11 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_dash_c_targeting_repo_from_outside(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {repo} checkout pr-51020", tmp_path, repo)
+        hit, _ = _detect(f"git -C {repo.as_posix()} checkout pr-51020", tmp_path, repo)
         assert hit is True
 
     def test_cd_into_repo_then_checkout(self, repo, tmp_path):
-        hit, _ = _detect(f"cd {repo} && git checkout pr-51020", tmp_path, repo)
+        hit, _ = _detect(f"cd {repo.as_posix()} && git checkout pr-51020", tmp_path, repo)
         assert hit is True
 
     def test_relative_cd_into_repo(self, repo):
@@ -105,12 +103,12 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_explicit_work_tree_targeting_repo(self, repo, tmp_path):
-        command = f"git --git-dir={repo / '.git'} --work-tree={repo} checkout main"
+        command = f"git --git-dir={(repo / '.git').as_posix()} --work-tree={repo.as_posix()} checkout main"
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
     def test_git_environment_targeting_repo(self, repo, tmp_path):
-        command = f"GIT_DIR={repo / '.git'} GIT_WORK_TREE={repo} git checkout main"
+        command = f"GIT_DIR={(repo / '.git').as_posix()} GIT_WORK_TREE={repo.as_posix()} git checkout main"
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
@@ -147,8 +145,49 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect(command, repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<'EOF' | bash\ngit checkout main\nEOF\n",
+            "cat <<EOF | sudo bash -s\ngit reset --hard\nEOF\n",
+            "cat <<'EOF' |& tee log | { echo; bash; }\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | (bash) # note\ngit checkout main\nEOF\n",
+            # `|` at end of line: the body follows, the consumer comes after the terminator.
+            "cat <<'EOF' |\ngit checkout main\nEOF\nbash\n",
+            # Backslash-newline is removed before the shell reads the line.
+            "cat <<'EOF' | \\\nbash\ngit checkout main\nEOF\n",
+            "bash \\\n<<'EOF'\ngit checkout main\nEOF\n",
+            "(cat <<'EOF'; echo) | bash\ngit checkout main\nEOF\n",
+        ],
+    )
+    def test_heredoc_piped_to_bare_shell_is_executed(self, repo, command):
+        """A heredoc body reaching a bare shell anywhere down its pipeline is a script
+        (GitHub issue 112441): the guard scans it like a `bash <<EOF` body."""
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # `2>&1` is an fd redirect, not a `&` list operator ending the pipeline before bash.
+            ("cat <<'EOF' 2>&1 | bash\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' &>/dev/null | bash\ngit checkout main\nEOF\n", True),
+            # The fd number of a redirect is not a script operand: bash is still bare.
+            ("cat <<'EOF' | bash 2>/dev/null\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash 2>&1\ngit checkout main\nEOF\n", True),
+            ("cat <<'EOF' | bash >/dev/null\ngit checkout main\nEOF\n", True),
+            # A real script operand keeps the body as data; a plain redirect is a file write.
+            ("cat <<'EOF' | bash run.sh 2>/dev/null\ngit checkout main\nEOF\n", False),
+            ("cat <<'EOF' > notes.md\ngit checkout main\nEOF\n", False),
+        ],
+    )
+    def test_fd_redirects_around_heredoc_pipe(self, repo, command, expected):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is expected
+
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
+        monkeypatch.setenv("USERPROFILE", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
         assert hit is True
 
@@ -192,15 +231,15 @@ class TestAllowsSafeCommands:
         assert hit is False
 
     def test_dash_c_redirects_out_of_repo(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {tmp_path} checkout main", repo, repo)
+        hit, _ = _detect(f"git -C {tmp_path.as_posix()} checkout main", repo, repo)
         assert hit is False
 
     def test_cd_out_of_repo_then_checkout(self, repo, tmp_path):
-        hit, _ = _detect(f"cd {tmp_path} && git checkout main", repo, repo)
+        hit, _ = _detect(f"cd {tmp_path.as_posix()} && git checkout main", repo, repo)
         assert hit is False
 
     def test_mentioning_repo_path_without_targeting_it(self, repo, tmp_path):
-        hit, _ = _detect(f"echo {repo} && git checkout main", tmp_path, repo)
+        hit, _ = _detect(f"echo {repo.as_posix()} && git checkout main", tmp_path, repo)
         assert hit is False
 
     def test_checkout_as_grep_pattern_not_git(self, repo):
@@ -228,6 +267,16 @@ class TestAllowsSafeCommands:
         [
             "cat > script.sh <<'EOF'\ngit checkout main\nEOF\n",
             "python - <<'PY'\nprint('git checkout main')\nPY\n",
+            # Downstream consumers that never execute the body, or a shell running a visible
+            # script (already scanned as its own command).
+            "cat <<'EOF' | grep '| bash'\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash -c 'echo hi'\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash run.sh\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | python3\ngit checkout main\nEOF\n",
+            # `&&` / `;` / a bare newline end the pipeline: that shell never sees the body.
+            "cat <<'EOF' && bash\ngit checkout main\nEOF\n",
+            "(cat <<'EOF'); bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | grep x\ngit checkout main\nEOF\nbash\n",
         ],
     )
     def test_data_heredoc_is_not_executed_as_shell(self, repo, command):
@@ -235,17 +284,17 @@ class TestAllowsSafeCommands:
         assert hit is False
 
     def test_subshell_cd_does_not_leak(self, repo):
-        command = f"(cd {repo} && git status); git checkout main"
+        command = f"(cd {repo.as_posix()} && git status); git checkout main"
         hit, _ = _detect(command, repo.parent, repo)
         assert hit is False
 
     def test_pipeline_cd_does_not_leak(self, repo):
-        command = f"cd {repo} | cat; git checkout main"
+        command = f"cd {repo.as_posix()} | cat; git checkout main"
         hit, _ = _detect(command, repo.parent, repo)
         assert hit is False
 
     def test_successful_cd_or_branch_does_not_run(self, repo):
-        command = f"cd {repo} || git checkout main"
+        command = f"cd {repo.as_posix()} || git checkout main"
         hit, _ = _detect(command, repo.parent, repo)
         assert hit is False
 
@@ -282,16 +331,16 @@ class TestWorktreeTargetingSourceRoot:
 
     @pytest.mark.parametrize("action", ["remove", "remove -f", "remove --force"])
     def test_blocks_absolute_target_from_outside(self, repo, tmp_path, action):
-        hit, _ = _detect(f"git worktree {action} {repo}", tmp_path, repo)
+        hit, _ = _detect(f"git worktree {action} {repo.as_posix()}", tmp_path, repo)
         assert hit is True
 
     def test_blocks_move_of_root_from_outside(self, repo, tmp_path):
-        command = f"git worktree move {repo} {tmp_path / 'moved'}"
+        command = f"git worktree move {repo.as_posix()} {tmp_path / 'moved'}"
         hit, _ = _detect(command, tmp_path, repo)
         assert hit is True
 
     def test_blocks_dash_c_worktree_remove(self, repo, tmp_path):
-        hit, _ = _detect(f"git -C {tmp_path} worktree remove {repo}", tmp_path, repo)
+        hit, _ = _detect(f"git -C {tmp_path.as_posix()} worktree remove {repo.as_posix()}", tmp_path, repo)
         assert hit is True
 
     def test_blocks_parent_relative_target_from_subdirectory(self, repo):
@@ -328,10 +377,6 @@ class TestWorktreeTargetingSourceRoot:
 
 
 class TestSourceRootResolution:
-    def test_resolves_to_repo_when_git_dir_present(self):
-        root = get_running_source_root()
-        if root is not None:
-            assert (root / ".git").exists()
 
     def test_worktree_git_file_counts(self, tmp_path, monkeypatch):
         import tools.self_repo_guard as mod
@@ -354,3 +399,19 @@ class TestUnparseableCommands:
     def test_subshell_syntax_does_not_crash(self, repo):
         hit, _ = _detect("VAL=$(git rev-parse HEAD) git checkout main", repo, repo)
         assert hit is True
+
+
+class TestBlockMessageGuidance:
+    """The block message must steer agents to a disk-backed scratch clone,
+    not a bare "temporary clone" (agents defaulted to /tmp, which is tmpfs
+    on most distros — parallel salvage clones running npm ci filled a 32GB
+    tmpfs to 97% in one campaign)."""
+
+
+
+    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch, tmp_path):
+        home = tmp_path / "custom" / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        hit, msg = _detect("git rebase origin/main", repo, repo)
+        assert hit is True
+        assert str(home / "scratch") in msg

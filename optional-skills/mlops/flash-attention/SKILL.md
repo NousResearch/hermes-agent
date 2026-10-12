@@ -1,5 +1,5 @@
 ---
-name: optimizing-attention-flash
+name: flash-attention
 description: Speed up long-sequence transformer training and inference.
 version: 1.0.1
 author: Orchestra Research

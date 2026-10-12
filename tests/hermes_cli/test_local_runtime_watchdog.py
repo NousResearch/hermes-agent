@@ -68,6 +68,45 @@ def test_no_restart_once_the_runtime_is_switched_off(crashing):
     assert crashing.spawned == []
 
 
+@pytest.mark.parametrize("force,port_taken", [(False, False), (True, False), (True, True)])
+def test_boot_force_controls_disabled_restarts(crashing, monkeypatch, tmp_path, force, port_taken):
+    from hermes_cli.local_runtime import binaries, bootstrap, endpoint, supervisor
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "runtimes_root", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap, "models_dir", lambda: tmp_path / "models")
+    monkeypatch.setattr(bootstrap, "adopt_legacy_models", lambda: [])
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: [tmp_path / "model.gguf"])
+    monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
+    monkeypatch.setattr(binaries, "installed_engine", lambda *_: SimpleNamespace(
+        binary=tmp_path / "llama-server", backend="cpu", tag="test"))
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *_: None)
+    monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda *_: 4)
+    monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda *_: None)
+    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "start", lambda *_: None)
+
+    sup = bootstrap.ensure_local_runtime(
+        {"local_runtime": {"enabled": not force, "port": 59998}}, force=force)
+    assert sup is not None
+    crashing.runtime["enabled"] = False
+    if port_taken:
+        crashing.held_ports.add(sup.port)
+    sup.proc = SimpleNamespace(pid=100, poll=lambda: 1)
+    attempts = []
+
+    def spawn():
+        attempts.append(True)
+        if len(attempts) > 50:
+            pytest.fail("watchdog exceeded the bounded test loop")
+
+    monkeypatch.setattr(sup, "_spawn", spawn)
+    monkeypatch.setattr(sup, "_wait_health", crashing.sup._wait_health)
+    monkeypatch.setattr(sup, "_reap_orphaned_children", lambda: None)
+    monkeypatch.setattr(sup._stop_event, "wait", lambda *_: False)
+    sup._watch()
+    assert len(attempts) == (supervisor._MAX_RESTARTS if force and not port_taken else 0)
+
+
 def test_no_restart_onto_a_port_another_process_serves(crashing):
     crashing.held_ports.add(crashing.sup.port)
     crashing.sup._watch()

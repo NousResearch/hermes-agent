@@ -134,7 +134,8 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 restart_when_disabled: bool = False):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -146,6 +147,7 @@ class LlamaServerSupervisor:
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
+        self.restart_when_disabled = restart_when_disabled
         self.proc: subprocess.Popen | None = None
         self._job = None
         self.primary_model: str | None = None
@@ -281,7 +283,8 @@ class LlamaServerSupervisor:
         with suppress(Exception):  # an unreadable config never blocks a restart
             from hermes_cli.config import load_config_readonly
 
-            if not ((load_config_readonly() or {}).get("local_runtime") or {}).get("enabled"):
+            if (not self.restart_when_disabled
+                    and not ((load_config_readonly() or {}).get("local_runtime") or {}).get("enabled")):
                 return "local_runtime.enabled is off"
         if _port_in_use(self.port):
             return f"port {self.port} is in use by another process"

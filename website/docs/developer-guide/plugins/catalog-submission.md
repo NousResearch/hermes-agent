@@ -123,8 +123,10 @@ the gallery. There is no separate listing to maintain.
    `sys.modules[...]`, writes into a core module's tables). Two plugins
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
-   core override` check). If the hook you need does not exist, open an issue
-   describing it: we would rather add the seam than list a patch.
+   core override` check), and warns (without failing) on each import of an
+   undocumented core module, by file and line. If the hook you need does not
+   exist, open an issue describing it: we would rather add the seam than list
+   a patch.
 10. **Dependency security policy is the plugin's.** Hermes's 3-day
    `exclude-newer` release-age check covers Hermes's own dependencies only, at
    the time Hermes locks them; a plugin's `python_dependencies` /

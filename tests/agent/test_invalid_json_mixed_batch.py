@@ -54,7 +54,7 @@ class _MockHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _batch_tc_resp(calls: list[tuple[str, str]]) -> dict:
+def _batch_tc_resp(calls: list[tuple[str, str]], ids: list[str] | None = None) -> dict:
     return {
         "id": "m",
         "choices": [
@@ -65,7 +65,7 @@ def _batch_tc_resp(calls: list[tuple[str, str]]) -> dict:
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": f"call_{i}",
+                            "id": ids[i] if ids else f"call_{i}",
                             "type": "function",
                             "function": {"name": name, "arguments": args},
                         }
@@ -303,3 +303,24 @@ def test_dedup_never_evicts_valid_sibling_or_orphans_a_result(agent_env, order):
     assert _tool_result_ids(msgs) == emitted
     assert len(emitted) == 2  # one duplicate {bad} collapsed, the valid call survived
 
+
+def test_broken_call_keeps_its_error_when_ids_are_rewritten_after_validation(agent_env):
+    """Dedup can leave only provider-minted ids, which the round then rewrites before staging
+    (``normalize_provider_tool_call_ids``). The broken call must still get its Invalid-JSON
+    result under the rewritten id and never dispatch."""
+    agent, handler, dispatched = agent_env
+    handler.response_queue.append(_batch_tc_resp(
+        [("todo", "{}"), ("todo", '{"x": bad}'), ("todo", "{}")],
+        ids=["chatcmpl-tool-a", "chatcmpl-tool-b", "call_z"],
+    ))
+    handler.response_queue.append(_text_resp("done"))
+
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
+
+    assert result.get("completed", False)
+    assert dispatched == [("todo", "{}")]
+    msgs = result.get("messages")
+    emitted = _assistant_tool_call_ids(msgs)
+    assert not any(i.startswith("chatcmpl-tool-") for i in emitted)
+    assert _tool_result_ids(msgs) == emitted
+    assert sum("Invalid JSON" in _tool_result_content(msgs, i) for i in emitted) == 1

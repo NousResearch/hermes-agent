@@ -119,7 +119,7 @@ class TestKernelLifecycle(unittest.TestCase):
             from tools.code_kernel import SessionKernel, _spawn
             k = SessionKernel(("parent-death",))
             _spawn(k, task_id="parent-death", child_python=sys.executable,
-                   child_cwd="", sandbox_tools=frozenset(), max_tool_calls=1)
+                   sandbox_tools=frozenset(), max_tool_calls=1)
             cell = json.dumps({{"id": "x", "code": "import os, time\\n"
                 "assert 'HERMES_KERNEL_PARENT_PROCESS_HANDLE' not in os.environ\\n"
                 "assert 'HERMES_KERNEL_PARENT_DEATH_FD' not in os.environ\\n"
@@ -234,6 +234,26 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertEqual(second["status"], "success", second)
         self.assertIn("42", second["output"])
         self.assertEqual(second["kernel"]["reused"], True)
+
+    def test_a_cwd_change_keeps_the_one_session_kernel(self):
+        # A terminal `cd` between cells moves the cell, not the session. Keying the kernel by cwd
+        # swapped in a fresh one (reused: false, state_reset: false, state gone) and left the old
+        # one running with its cwd inside the previous directory.
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, _kernel_config():
+            a, b = os.path.realpath(a), os.path.realpath(b)
+            with patch("tools.code_execution_tool._resolve_child_cwd", return_value=a):
+                first = self._run_as("conv-cd", "import os\nx = 41\nprint(os.getcwd())", task_id="t1")
+            with patch("tools.code_execution_tool._resolve_child_cwd", return_value=b):
+                second = self._run_as("conv-cd", "print(x + 1, os.getcwd())", task_id="t2")
+            self.assertEqual(len(_KERNELS), 1)
+            (kernel,) = _KERNELS.values()
+            idle_cwd = os.path.realpath(f"/proc/{kernel.proc.pid}/cwd") if os.path.isdir("/proc") else None
+        self.assertEqual(first["output"].strip(), a)
+        self.assertEqual(second["status"], "success", second)
+        self.assertEqual(second["output"].strip(), f"42 {b}")
+        self.assertEqual(second["kernel"]["reused"], True)
+        if idle_cwd is not None:  # between cells the kernel holds neither directory
+            self.assertNotIn(idle_cwd, (a, b))
 
     def test_sessions_are_isolated_from_each_other(self):
         # Same task id, different sessions: no state may cross.

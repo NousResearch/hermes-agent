@@ -5,6 +5,7 @@ import {
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
+  modelNamespace,
   modelVariantTag
 } from './model-status-label'
 
@@ -125,6 +126,48 @@ describe('model-status-label', () => {
     // Quant-only ids are unchanged: quant stays off the pill.
     expect(modelDisplayParts('Qwen3.6-27B-Q8_0')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q8' })
     expect(formatModelPillLabel('Qwen3.6-27B-Q8_0')).toBe('Qwen3.6 27B')
+  })
+
+  describe('nameless ids keep their namespace so look-alikes stay apart', () => {
+    it('leads a generic id with its namespace', () => {
+      // `copilot/auto` and `cursor/auto` both reduce to "Auto" without this:
+      // two identical picker rows and a footer that can't name the brain.
+      expect(displayModelName('copilot/auto')).toBe('Copilot Auto')
+      expect(displayModelName('cursor/auto')).toBe('Cursor Auto')
+      expect(displayModelName('kiro/auto')).toBe('Kiro Auto')
+      expect(displayModelName('workbuddy/auto')).toBe('Workbuddy Auto')
+      expect(displayModelName('workbuddy-ai-plugin/default-model')).toBe('Workbuddy AI Plugin Default Model')
+      // An id that names itself (dotted base) gets no namespace prefix.
+      expect(modelDisplayParts('qoder-plugin/qfmodel')).toEqual({ name: 'Qfmodel', tag: '' })
+    })
+
+    it('reports the namespace only for an id that names nothing on its own', () => {
+      expect(modelNamespace('copilot/auto')).toBe('copilot')
+      expect(modelNamespace('cursor/auto')).toBe('cursor')
+      // A self-naming id carries no namespace: the vendor need not be pinned.
+      expect(modelNamespace('anthropic/claude-opus-4-5')).toBe('')
+      expect(modelNamespace('nvidia/deepseek-ai/deepseek-v4.1-flash')).toBe('')
+      expect(modelNamespace('remote-magpie/litellm/claude-auto-effort')).toBe('')
+      // Dotted route ids name the model too.
+      expect(modelNamespace('qoder-plugin/qfmodel')).toBe('')
+      expect(modelNamespace('gpt-5.5')).toBe('')
+      // First segment only: a route tail never becomes the label's identity.
+      expect(modelNamespace('router/edge/auto')).toBe('router')
+    })
+
+    it('leaves every self-naming id exactly as before', () => {
+      expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+      expect(displayModelName('nvidia/deepseek-ai/deepseek-v4.1-flash')).toBe('DeepSeek V4.1 Flash')
+      expect(displayModelName('google/models/gemini-3.8-flash')).toBe('Gemini 3.8 Flash')
+      expect(displayModelName('remote-magpie/litellm/claude-sonnet-5-5')).toBe('Sonnet 5.5')
+      expect(displayModelName('zai-org/glm-5.1')).toBe('GLM 5.1')
+    })
+
+    it('carries the namespace on the composer pill too, without disturbing the variant tag', () => {
+      expect(formatModelPillLabel('copilot/auto')).toBe('Copilot Auto')
+      expect(formatModelPillLabel('cursor/auto')).toBe('Cursor Auto')
+      expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
+    })
   })
 
   describe('currentPickerSelection', () => {

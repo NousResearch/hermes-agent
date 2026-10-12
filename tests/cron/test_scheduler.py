@@ -1456,6 +1456,104 @@ class TestSilentDelivery:
         mark_mock.assert_called_once()
         assert mark_mock.call_args[0][:2] == ("monitor-job", False)
 
+class TestPauseMarker:
+    """[PAUSE] self-pause: standalone marker line pauses the job AFTER delivery;
+    mid-sentence mentions, bracketless prose, and failed runs never pause."""
+
+    def _make_job(self):
+        return {
+            "id": "monitor-job",
+            "name": "monitor",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def test_pause_marker_pauses_after_delivery(self):
+        """[PAUSE] as last line: final message still delivered, then job paused."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "Printer offline.\n\n[PAUSE]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.jobs.pause_job", return_value={"id": "monitor-job"}) as pause_mock, \
+             patch("cron.scheduler._notify_provider_jobs_changed") as notify_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()   # delivery is NOT suppressed by [PAUSE]
+        pause_mock.assert_called_once()
+        assert pause_mock.call_args[0][0] == "monitor-job"
+        notify_mock.assert_called_once()    # provider re-provisioned after the pause
+
+    def test_silent_and_pause_combined(self):
+        """[SILENT] [PAUSE] together: delivery suppressed AND job paused."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]\n[PAUSE]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.jobs.pause_job", return_value={"id": "monitor-job"}) as pause_mock, \
+             patch("cron.scheduler._notify_provider_jobs_changed"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()    # [SILENT] suppression still wins for delivery
+        pause_mock.assert_called_once()     # ...while [PAUSE] still stops the job
+
+    def test_mid_sentence_marker_does_not_pause(self):
+        """A report merely mentioning [PAUSE] mid-sentence must not stop the job."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "I considered [PAUSE] but the printer is fine.", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.jobs.pause_job") as pause_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+        pause_mock.assert_not_called()
+
+    def test_bracketless_pause_prose_does_not_pause(self):
+        """Bare 'pause' in prose must never disable a schedule (no bracketless variants)."""
+        for response in ("pause", "Pause for now.", "The printer asked me to pause monitoring."):
+            with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+                 patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+                 patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                 patch("cron.scheduler._deliver_result"), \
+                 patch("cron.scheduler.mark_job_run"), \
+                 patch("cron.jobs.pause_job") as pause_mock:
+                from cron.scheduler import tick
+                tick(verbose=False)
+            pause_mock.assert_not_called()
+
+    def test_failed_run_never_pauses(self):
+        """A failed run delivers its failure notice; [PAUSE] must not fire on it."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "[PAUSE]", "some error")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.jobs.pause_job") as pause_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+        pause_mock.assert_not_called()
+
+    def test_is_cron_pause_response_contract(self):
+        """Matcher contract mirroring TestSilentDelivery's expectations."""
+        from cron.scheduler import _is_cron_pause_response as m
+        # Standalone markers (whole response / first / last line) → pause
+        for text in ("[PAUSE]", "[pause]", " [PAUSE] ", "Printer done.\n\n[PAUSE]",
+                     "[PAUSE]\nPrinter done.", "[SILENT]\n[PAUSE]"):
+            assert m(text), text
+        # Mid-sentence mentions, bracketless prose, empty → no pause
+        for text in ("", "   ", "I considered [PAUSE] but kept going.",
+                     "pause", "Pause for now.", "The [PAUSE] marker is documented.",
+                     "[PAUSED]", "paused\n[PAUSE!]"):
+            assert not m(text), text
+
 class TestOneShotDispatchClaim:
     """run_one_job must claim a finite one-shot's dispatch BEFORE run_job so a
     tick that dies mid-execution can't re-fire it forever (issue #38758)."""

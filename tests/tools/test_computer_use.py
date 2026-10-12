@@ -800,7 +800,7 @@ class TestLazyMcpInstall:
                  return_value={"ready": True},
              ), \
              patch("pm.ensure") as driver_ensure, \
-             patch("pm.ensure_import") as mock_ensure, \
+             patch("pm.ensure_import") as mock_ensure, patch.object(cua_backend._EmbeddedCuaDaemon, "start"), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
         mock_ensure.assert_called_once_with("computer-use")
@@ -2108,7 +2108,7 @@ class TestSessionLifecycle:
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("pm.ensure"), patch("pm.ensure_import"):
+        ), patch("pm.ensure"), patch("pm.ensure_import"), patch("tools.computer_use.cua_backend._EmbeddedCuaDaemon.start"):
             backend.start()
 
         # First call_tool after _session.start() must be start_session
@@ -2135,7 +2135,7 @@ class TestSessionLifecycle:
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("pm.ensure"), patch("pm.ensure_import"):
+        ), patch("pm.ensure"), patch("pm.ensure_import"), patch("tools.computer_use.cua_backend._EmbeddedCuaDaemon.start"):
             backend.start()  # must not raise
 
 

@@ -92,8 +92,12 @@ def _default_cli_version_matches_report(monkeypatch):
     mock breaks version probing. Default to a CLI version that matches
     ``_ok_report`` / ``_degraded_report`` (0.5.8); identity tests override.
     """
-    from tools.computer_use import doctor
+    from tools.computer_use import doctor, cua_backend_daemon
 
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "start", lambda self: None)
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "stop", lambda self: None)
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "proxy_invocation",
+                        lambda self: (self._driver_cmd, ["mcp", "--socket", self.socket_path]))
     monkeypatch.setattr(
         doctor,
         "_read_cli_version",

@@ -177,13 +177,14 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     assert proxy_args == ["mcp", "--embedded", "--socket", daemon.socket_path]
 
 
-def test_standard_backend_does_not_spawn_an_embedded_daemon():
+def test_standard_backend_owns_a_standard_private_daemon():
     from tools.computer_use.cua_backend import CuaDriverBackend
 
     standard = CuaDriverBackend(permission_mode="standard")
     unrestricted = CuaDriverBackend(permission_mode="unrestricted")
 
-    assert standard._embedded_daemon is None
+    assert standard._embedded_daemon is not None
+    assert standard._embedded_daemon.permission_mode == "standard"
     assert unrestricted._embedded_daemon is not None
 
 

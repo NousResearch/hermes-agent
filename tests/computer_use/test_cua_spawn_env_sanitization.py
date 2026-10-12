@@ -193,6 +193,11 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
         return proc
 
     monkeypatch.setattr(doctor.subprocess, "Popen", fake_popen)
+    from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "start", lambda self: None)
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "stop", lambda self: None)
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "proxy_invocation",
+                        lambda self: (self._driver_cmd, ["mcp", "--socket", self.socket_path]))
 
     report = doctor._drive_health_report("cua-driver", timeout=1.0)
 

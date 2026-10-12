@@ -253,7 +253,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
+        if permission_mode == "standard":
+            # Standard sessions also need the PM-selected daemon, not an unrelated
+            # machine-wide install. No manifest acknowledgement or approval bypass.
+            self._embedded_daemon = _EmbeddedCuaDaemon("", permission_mode)
+        else:
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
@@ -282,7 +286,10 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # binary (if any) is not the one that will run, so neither its acquisition nor its contract
         # matters. On the host, runtime acquisition is on-demand, never the explicit install command
         # (which may elevate for host setup and bypass the lazy-install gate).
-        if sandbox_mcp_invocation() is not None:
+        sandbox = sandbox_mcp_invocation()
+        daemon = None if sandbox is not None else self._embedded_daemon
+        self._session._embedded_daemon = daemon
+        if sandbox is not None:
             contract = {"ready": True}
         else:
             if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
@@ -309,8 +316,8 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         import importlib
         importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
-            if self._embedded_daemon is not None:
-                rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()
+            if daemon is not None:
+                rollback.callback(daemon.stop) and daemon.start()
             self._session.start()
             rollback.pop_all()
         # Declare this run's identity. Non-fatal: cua-driver accepts anonymous calls (cursor won't render), so degrade.

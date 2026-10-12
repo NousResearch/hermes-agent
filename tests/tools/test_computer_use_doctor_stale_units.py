@@ -48,6 +48,11 @@ def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
         monkeypatch.delenv("XDG_CONFIG_HOME")  # the host's own config dir must not leak into the scan
     monkeypatch.setattr("tools.computer_use.cua_backend.cua_daemon_listening", daemon_probe)
     monkeypatch.setattr(doctor, "_read_cli_version", lambda binary, timeout=5.0: "cua-driver 0.28.2")
+    from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "start", lambda self: None)
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "stop", lambda self: None)
+    monkeypatch.setattr(_EmbeddedCuaDaemon, "proxy_invocation",
+                        lambda self: (self._driver_cmd, ["mcp", "--socket", self.socket_path]))
     installed = InstalledPackage(Path("/fake"), "0.28.2", Path("/fake/cua-driver"))
     out = StringIO()
     with patch("pm.installed_package", return_value=installed) as select, \
@@ -55,7 +60,8 @@ def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
          patch("sys.stdout", out):
         code = doctor.run_doctor(json_output=True)
     select.assert_called_once_with("cua-driver")
-    open_mcp.assert_called_once_with(str(installed.binary))
+    assert open_mcp.call_args.args == (str(installed.binary),)
+    assert "--socket" in open_mcp.call_args.kwargs["args"]
     return code, json.loads(out.getvalue())
 
 

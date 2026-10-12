@@ -103,7 +103,7 @@ platform-appropriate prereqs:
 | Platform | Prereqs |
 |---|---|
 | **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor` (CuaDriver, `com.trycua.driver`, in every permission mode — the driver daemon always launches through `CuaDriver.app`). |
-| **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
+| **Windows** | Run Hermes in the intended interactive console/RDP session. Its private daemon does not adopt the shared autostart daemon or its Session 0 → Session 1+ SSH bridge. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
 Then start a session with the toolset enabled:
@@ -169,11 +169,19 @@ Each MCP transport owns a private lifecycle session inside its runtime. A
 public session name is only a label for cursor identity and session-scoped
 state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
 resetting or closing the Hermes session, cancellation cleanup, or process exit
-closes that transport session. Hermes also stops private runtimes that it
-launched for bounded or unrestricted access. One Hermes
-conversation cannot change another runtime's mode or grants. Bounded and
-unrestricted modes use a private embedded daemon, launched through
-`CuaDriver.app` on macOS (see above).
+closes that transport session. Hermes stops the private runtime it launched
+in every mode, including `standard`. Host sessions and `doctor` use a private
+socket (a named pipe on Windows) and the same PM-selected binary for both the
+daemon and its MCP proxy. They never adopt, reconfigure, or stop a machine-wide
+daemon started by another agent. Standard daemon PID/config state is temporary
+and private too, so it does not overwrite the shared driver's PID file.
+
+`standard` retains normal Hermes approvals and cua-driver's residual approval
+boundaries. Its daemon is **not** started with `--embedded` or
+`--no-permissions-gate`: normal macOS TCC onboarding remains enabled under the
+verified CuaDriver.app identity. Only the MCP proxy uses `--embedded` to forbid
+auto-launching a different daemon if the private endpoint disappears. Bounded
+and unrestricted modes keep their private embedded-daemon behavior.
 
 `smart` approval remains `standard`: an LLM classification cannot stand in for
 a reviewed manifest.

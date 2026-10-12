@@ -115,11 +115,14 @@ def _extract_health_report_from_result(result: Report) -> Report:
         raise HealthReportUnavailable(f"health_report structuredContent lacks schema_version/overall/checks (keys={sorted(sc.keys())})")
     raise RuntimeError(f"health_report response carried neither structuredContent nor a parseable JSON text block. Result keys: {list(result.keys())}")
 
-def _open_mcp(binary: str) -> subprocess.Popen:
-    """Spawn ``<binary> mcp``; pin UTF-8 — cua-driver emits emoji/arbitrary paths and Windows' cp1252 would raise."""
-    return subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+def _open_mcp(binary: str, *, args: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None) -> subprocess.Popen:
+    """Spawn the selected MCP proxy; pin UTF-8 for arbitrary paths on Windows."""
+    from tools.environments.local import _sanitize_subprocess_env
+
+    return subprocess.Popen([binary, *(args if args is not None else ["mcp"])],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1, creationflags=windows_hide_flags(),
-                            env=_sanitized_cua_env())
+                            env=_sanitize_subprocess_env(env) if env is not None else _sanitized_cua_env())
 
 def _mcp_rpc(proc: subprocess.Popen, msg_id: int, method: str, params: Any = None) -> Report:
     """Write one JSON-RPC request and read one response line."""
@@ -146,18 +149,26 @@ def _call_tool(proc: subprocess.Popen, msg_id: int, name: str, arguments: Any = 
 
 @contextmanager
 def _mcp_session(binary: str, timeout: float) -> Iterator[subprocess.Popen]:
-    """Spawn ``<binary> mcp`` and always close stdin / wait / kill it on exit."""
-    proc = _open_mcp(binary)
+    """Diagnose the same isolated standard runtime as Computer Use, then close it."""
+    from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+
+    daemon = _EmbeddedCuaDaemon(binary, "standard")
     try:
-        yield proc
-    finally:
-        with suppress(Exception):
-            proc.stdin.close()
+        daemon.start()
+        command, args = daemon.proxy_invocation()
+        proc = _open_mcp(command, args=args, env=daemon.child_env())
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            yield proc
+        finally:
+            with suppress(Exception):
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    finally:
+        daemon.stop()
 
 def _drive_health_report(binary: str, *, include: Sequence[str] = (), skip: Sequence[str] = (), timeout: float = 12.0) -> Report:
     """Handshake + `health_report` → report; HealthReportUnavailable (caller falls back) or RuntimeError."""

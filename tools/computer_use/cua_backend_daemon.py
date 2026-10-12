@@ -1,5 +1,5 @@
-"""Private embedded cua-driver daemon for non-standard permission modes, plus the macOS CuaDriver.app identity
-checks its launch path depends on. Config/policy helpers are looked up lazily through the facade."""
+"""Private cua-driver daemons, plus macOS CuaDriver.app signing/TCC identity checks.
+Config/policy helpers are looked up lazily through the facade."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def _validate_cua_driver_app_signature(app_path: str) -> None:
                        "local unsigned driver builds.)")
 
 def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: List[str], *, platform: str,
-                                   app_path: Optional[str] = None) -> List[str]:
+                                   app_path: Optional[str] = None, launch_env: Optional[Dict[str, str]] = None) -> List[str]:
     """Build the private-daemon launch while preserving macOS TCC identity."""
     if platform != "darwin":
         return [driver_cmd, *serve_args]
@@ -76,7 +76,8 @@ def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: List[str], *, pl
     if not resolved_app:
         raise RuntimeError("CuaDriver.app is required for private computer-use sessions on macOS. Run `hermes computer-use install` to restore it.")
     _validate_cua_driver_app_signature(resolved_app)
-    return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, "--args", *serve_args]
+    env_args = [arg for key, value in (launch_env or {}).items() for arg in ("--env", f"{key}={value}")]
+    return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, *env_args, "--args", *serve_args]
 
 def _wait_or_kill(process: Any) -> None:
     """Wait 5s for a graceful exit, then terminate (2s), then kill."""
@@ -92,7 +93,8 @@ def _wait_or_kill(process: Any) -> None:
 
 
 class _EmbeddedCuaDaemon:
-    """Private daemon for a non-standard permission mode. cua-driver's permission mode is immutable after daemon
+    """Private daemon for each host session. Standard mode keeps standalone TCC onboarding and residual approvals;
+    only bounded/unrestricted use embedded mode. cua-driver's permission mode is immutable after daemon
     startup, so reusing the machine-wide daemon would let one Hermes session's YOLO choice affect another. A
     private daemon gives the session its own socket, runtime and launch-time authorization; on macOS it is
     launched through CuaDriver.app so TCC stays attached to ``com.trycua.driver``. ``unrestricted`` = explicit
@@ -104,8 +106,8 @@ class _EmbeddedCuaDaemon:
     _START_TIMEOUT_SECONDS = 15.0
 
     def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None) -> None:
-        if permission_mode not in {"unrestricted", "bounded"}:
-            raise ValueError("embedded permission override supports unrestricted or bounded only")
+        if permission_mode not in {"standard", "unrestricted", "bounded"}:
+            raise ValueError("private daemon requires standard, unrestricted or bounded mode")
         manifest = str(capability_manifest or "").strip()
         if not manifest and permission_mode == "bounded":
             raise ValueError("bounded permission mode requires computer_use.capability_manifest")
@@ -123,6 +125,7 @@ class _EmbeddedCuaDaemon:
         self.permission_mode, self._driver_cmd, self._command = permission_mode, driver_cmd, driver_cmd
         self._mcp_args: List[str] = list(_driver._CUA_DRIVER_ARGS)
         self._process: Any = None
+        self._state_dir: Optional[tempfile.TemporaryDirectory] = None
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
@@ -131,6 +134,17 @@ class _EmbeddedCuaDaemon:
 
     def child_env(self) -> Dict[str, str]:
         env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
+        if self.permission_mode == "standard":
+            # Embedded mode suppresses TCC onboarding, even without the explicit
+            # gate flag. Inherited launcher choices must not weaken standard mode.
+            env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "0"
+            env["CUA_DRIVER_EMBEDDED"] = "0"
+            env["CUA_DRIVER_RS_PERMISSIONS_GATE"] = "1"
+            if self._state_dir is not None:
+                # 0.21 has no --pid-file: its PID/config paths are HOME-based
+                # (LOCALAPPDATA on Windows). Never overwrite the global daemon's.
+                env.update(HOME=self._state_dir.name, USERPROFILE=self._state_dir.name,
+                           LOCALAPPDATA=self._state_dir.name)
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
@@ -148,8 +162,11 @@ class _EmbeddedCuaDaemon:
                     logger.debug("embedded cua-driver: %s", text)
 
     def _serve_args(self) -> List[str]:
-        serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
-                      self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
+        serve_args = ["serve", "--socket", self.socket_path, "--permission-mode", self.permission_mode]
+        if self.permission_mode != "standard":
+            serve_args += ["--embedded", "--no-permissions-gate"]
+        if self.permission_mode == "unrestricted":
+            serve_args += ["--dangerously-bypass-approvals"]
         if self.manifest_applies:
             serve_args += ["--capability-manifest", str(self.capability_manifest), "--approve-capability-manifest"]
         # The private daemon owns the cursor overlay, so the overlay policy must apply to this long-lived serve
@@ -166,8 +183,21 @@ class _EmbeddedCuaDaemon:
         if not driver_cmd:
             raise RuntimeError(_driver.cua_driver_install_hint())
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
+        if self.permission_mode == "standard":
+            # Keep the selected/validated executable for serve and every client;
+            # a manifest may describe MCP argv but cannot substitute another install.
+            self._command = driver_cmd
+            self._state_dir = tempfile.TemporaryDirectory(prefix="hermes-cua-")
         env = self._sanitized_env()
-        command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
+        launch_env = {key: value for key, value in env.items()
+                      if key in {"HOME", "USERPROFILE", "LOCALAPPDATA", "CUA_DRIVER_PERMISSION_MODE",
+                                 "CUA_DRIVER_EMBEDDED", "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS",
+                                 "CUA_DRIVER_RS_PERMISSIONS_GATE", "CUA_DRIVER_RS_TELEMETRY_ENABLED",
+                                 "CUA_DRIVER_POLICY_FILE", "CUA_DRIVER_MANAGED_POLICY_FILE",
+                                 "CUA_DRIVER_DISABLE_UNRESTRICTED"}}
+        command = _embedded_daemon_spawn_command(
+            self._command, self._serve_args(), platform=sys.platform,
+            launch_env=launch_env if self.permission_mode == "standard" else None)
         self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                          env=env)
@@ -207,6 +237,9 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
+        if owns_runtime and sys.platform != "win32" and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)
+        if self._state_dir is not None:
+            self._state_dir.cleanup()
+            self._state_dir = None

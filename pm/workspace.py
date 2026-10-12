@@ -133,11 +133,25 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
-        # Byte-identical to core: a member-less generation syncs frozen against core's own lock.
+        # A member-less generation syncs frozen against core's own lock.
         text = core_text.rstrip("\n") + "\n"
     target = root / "pyproject.toml"
+    text = _without_release_age(text)
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
+
+
+def _without_release_age(text: str) -> str:
+    """Drop ``[tool.uv] exclude-newer`` from a generated root's pyproject text.
+
+    The lock already holds checked versions; on the user's machine the cutoff only gates the
+    build tools uv fetches for source builds (setuptools for Hermes itself), and a mirror that
+    serves no upload times rejects all of them (#135589). Text-level so the pre-3.11 bootstrap
+    python, which has no tomllib, can run it.
+    """
+    import re
+
+    return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
 def _trust_core_lock(document: dict, core_lock: Path) -> None:
@@ -377,6 +391,9 @@ def lock_and_sync(
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        # A generation recorded before the cutoff left the user's machine still carries it.
+        manifest = root / "pyproject.toml"
+        manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
     environment.sync(root, extras=extras, frozen=frozen)

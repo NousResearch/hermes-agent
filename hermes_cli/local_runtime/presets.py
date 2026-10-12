@@ -47,7 +47,7 @@ def _args_to_keys(args: list[str]) -> dict[str, str]:
     return keys
 
 
-def _asset_path(asset) -> "Path | None":
+def _asset_path(asset) -> Path | None:
     """On-disk path of a catalog companion asset, or None when it isn't downloaded."""
     from hermes_cli.local_runtime.bootstrap import assets_dir
 
@@ -61,8 +61,8 @@ def _asset_path(asset) -> "Path | None":
 class _Companions:
     """The files a catalog entry loads beside its weights, as far as they are on disk."""
 
-    mmproj: "Path | None" = None
-    mtp_head: "Path | None" = None
+    mmproj: Path | None = None
+    mtp_head: Path | None = None
     nbytes: int = 0
 
 

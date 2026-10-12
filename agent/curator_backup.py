@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 import tarfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from itertools import chain, count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -102,7 +102,7 @@ def _backup_cron_jobs_into(dest: Path) -> dict[str, Any]:
 
 def _utc_id(now: Optional[datetime] = None) -> str:
     """UTC ISO-ish filesystem-safe timestamp: ``2026-05-01T13-05-42Z``."""
-    s = (datetime.now(timezone.utc) if now is None else now).replace(microsecond=0).isoformat()
+    s = (datetime.now(UTC) if now is None else now).replace(microsecond=0).isoformat()
     return s.removesuffix("+00:00").replace(":", "-") + "Z"
 
 
@@ -136,7 +136,7 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted:
         cron_jobs["reason"] = cron_info.get("reason", "not captured")
     if cron_info.get("parse_warning"):
         cron_jobs["parse_warning"] = cron_info["parse_warning"]
-    manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(timezone.utc).isoformat(), "archive": archive_path.name,
+    manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(UTC).isoformat(), "archive": archive_path.name,
                 "archive_bytes": archive_path.stat().st_size, "skill_files": skills_counted, "cron_jobs": cron_jobs}
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 

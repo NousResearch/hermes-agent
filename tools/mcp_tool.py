@@ -45,7 +45,7 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
     try:
         malware_error = await asyncio.wait_for(
             asyncio.to_thread(check_package_for_malware, command, args), timeout=_OSV_MALWARE_CHECK_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("MCP server '%s': OSV malware preflight timed out after %.0fs "
                        "(network slow/unreachable) — proceeding without the check.",
                        server_name, _OSV_MALWARE_CHECK_TIMEOUT_S)

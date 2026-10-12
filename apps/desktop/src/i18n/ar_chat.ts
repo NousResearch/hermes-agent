@@ -133,11 +133,6 @@ export const arChat = {
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
-    localSetup: {
-      title: 'يمكن تشغيل هذا على جهازك',
-      text: (model: string) => `${model} يناسب هذا الجهاز. مجاني، وتبقى المحادثات على جهازك.`,
-      action: 'أرني'
-    },
     queueEdit: 'تحرير الرسالة المجدولة',
     queueExpand: 'توسيع',
     queueCollapse: 'طي',

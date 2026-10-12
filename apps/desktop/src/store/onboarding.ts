@@ -1395,11 +1395,9 @@ export async function confirmOnboardingModel(ctx: OnboardingContext) {
     // this file's non-blocking gateway calls. The alternative (silently
     // keeping the previous default) is still safer than the bug this fixes.
     try {
-      const res = await setMainModelAssignment(
-        { provider: flow.providerSlug, model: flow.currentModel },
-        undefined,
-        { skipConfirmPrompt: true }
-      )
+      const res = await setMainModelAssignment({ provider: flow.providerSlug, model: flow.currentModel }, undefined, {
+        skipConfirmPrompt: true
+      })
 
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {

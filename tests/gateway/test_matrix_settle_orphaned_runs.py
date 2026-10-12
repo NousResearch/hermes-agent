@@ -83,3 +83,42 @@ async def test_a_missing_or_broken_file_is_not_an_error(monkeypatch, tmp_path):
     await adapter._settle_orphaned_runs()  # no file at all
     (tmp_path / "in_flight_runs.json").write_text("{not json")
     await adapter._settle_orphaned_runs()  # garbage is treated as empty
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_working_message_of_a_run_is_the_bubble(monkeypatch, tmp_path):
+    """The settle target must not move to a later working send (step log, heartbeat).
+
+    Repro (The Battlefront, 2026-10-12): the queued-follow-up path sent progress working
+    messages after the real bubble; the run-end edit chased the last tracked event, so the
+    original working bubble stayed state=working on the wire forever.
+    """
+    from gateway.platforms.base import ProcessingOutcome
+    adapter = _adapter(monkeypatch, tmp_path)
+    run = "$req"
+    adapter._remember_status_bubble(ROOM, "$bubble", "📖 Reading", {"state": "working", "run": run})
+    # Later working SENDS (new events) are progress: they must not steal the settle target.
+    adapter._remember_status_bubble(ROOM, "$step-log", "🔧 Running tool", {"state": "working", "run": run})
+    adapter._remember_status_bubble(ROOM, "$heartbeat", "💓 still working", {"state": "working", "run": run})
+    assert adapter._agent_status_bubbles[(ROOM, run)] == ("$bubble", "📖 Reading")
+    assert _state(tmp_path)["bubbles"] == {f"{ROOM}\x1f{run}": ["$bubble", "📖 Reading"]}
+    # An EDIT of the bubble itself keeps the same target and refreshes the remembered text.
+    adapter._remember_status_bubble(ROOM, "$bubble", "📖 Reading + 🔧 Running tool", {"state": "working", "run": run})
+    assert adapter._agent_status_bubbles[(ROOM, run)] == ("$bubble", "📖 Reading + 🔧 Running tool")
+    assert _state(tmp_path)["bubbles"] == {f"{ROOM}\x1f{run}": ["$bubble", "📖 Reading + 🔧 Running tool"]}
+    # The run ends: the FIRST working bubble is what gets settled.
+    adapter._redact_reaction = AsyncMock(return_value=True)
+    adapter.edit_message = AsyncMock()
+    await adapter.on_processing_complete(_event(msg_id=run), ProcessingOutcome.SUCCESS)
+    assert adapter.edit_message.await_args.args[1] == "$bubble"
+    assert adapter.edit_message.await_args.kwargs["agent_status"]["state"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_working_status_without_a_run_is_never_tracked(monkeypatch, tmp_path):
+    adapter = _adapter(monkeypatch, tmp_path)
+    adapter._remember_status_bubble(ROOM, "$x", "hi", {"state": "working"})
+    adapter._remember_status_bubble(ROOM, "$y", "hi", {"state": "done", "run": "$req"})
+    adapter._remember_status_bubble(  # a settled approval prompt isn't the bubble either
+        ROOM, "$z", "ok", {"state": "working", "run": "$req", "choices": [{"label": "Allow"}]})
+    assert adapter._agent_status_bubbles == {}

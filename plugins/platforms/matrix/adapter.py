@@ -1433,11 +1433,24 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=last_event_id)
 
     def _remember_status_bubble(self, chat_id: str, event_id: Optional[str], text: str, status: Any) -> None:
-        """Agent protocol: track the run's working message, to settle it when the run ends."""
+        """Agent protocol: track the run's working message, to settle it when the run ends.
+
+        Only the FIRST working message of a run is the bubble. Later working sends (step
+        logs, heartbeats) are progress: re-tracking them moved the settle target off the
+        bubble, which then stayed ``state=working`` on the wire forever (The Battlefront
+        repro, 2026-10-12). An edit of the tracked bubble itself still refreshes its
+        remembered text, so a restart settles it with the latest progress.
+        """
         if (not event_id or not isinstance(status, dict) or status.get("state") != "working"
                 or not status.get("run") or status.get("choices")):  # a settled prompt isn't the bubble
             return
-        self._agent_status_bubbles[(chat_id, str(status["run"]))] = (str(event_id), text)
+        key = (chat_id, str(status["run"]))
+        if (existing := self._agent_status_bubbles.get(key)) is not None:
+            if existing[0] != str(event_id):
+                return  # a later working send is progress, not the bubble
+            if existing[1] == text:
+                return  # re-editing the same text: nothing new to persist
+        self._agent_status_bubbles[key] = (str(event_id), text)
         self._save_in_flight_runs()
 
     def _load_in_flight_runs(self) -> dict[tuple[str, str], tuple[str, str]]:

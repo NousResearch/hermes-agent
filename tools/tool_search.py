@@ -429,11 +429,12 @@ def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items:
 
 def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
-                         connector_search: Optional[Any] = None) -> str:
+                         connector_search: Optional[Any] = None, call: Optional[Any] = None) -> str:
     config = config or load_config()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
     if err:
+        _record_search_metric(current_tool_defs, hits=0, outcome="error")
         return err
     raw_limit = args.get("limit")
     limit = (config.search_default_limit if raw_limit is None
@@ -443,7 +444,7 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
         remote_entries, hosted_failure = connector_entries_by_group(
-            queries, connector_search=connector_search)
+            queries, connector_search=connector_search, call=call)
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
@@ -467,12 +468,25 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
                                "results": results, "tools": tools_map}
     if hosted_failure:
         payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
+    _record_search_metric(current_tool_defs, catalog=catalog, hits=len(tools_map),
+                          outcome="connector_unavailable" if hosted_failure else "hits" if tools_map else "no_hits")
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int, outcome: str,
+                          catalog: Optional[list[CatalogEntry]] = None) -> None:
+    """One ``hermes.tool_search.count`` row: which corpora the search read, never the query."""
+    from hermes_cli.observability.shared_metrics_events import record_tool_search
+
+    local = bool(catalog if catalog is not None else _deferrable_in(current_tool_defs))
+    hosted = connections_in_scope(current_tool_defs)
+    scope = "both" if local and hosted else "connector" if hosted else "local"
+    record_tool_search(scope=scope, hits=hits, outcome=outcome)
 
 
 def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
-                           connector_describe: Optional[Any] = None) -> str:
+                           connector_describe: Optional[Any] = None, call: Optional[Any] = None) -> str:
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -481,7 +495,7 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
-    remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
+    remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe, call=call)
 
     tools: dict[str, dict[str, Any]] = {}
     not_found: list[str] = []

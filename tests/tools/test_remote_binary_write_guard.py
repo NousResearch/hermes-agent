@@ -190,3 +190,42 @@ def test_remote_probe_failure_fails_closed(remote_target):
         error = result.get("error") or ""
         assert "Refusing" in error and "establish" in error, (failure_mode, result)
         assert target_path.read_bytes() == original
+
+
+_POT_TEMPLATE = 'msgid ""\nmsgstr ""\n' + _KEEP + "\n"
+
+
+class TestRemoteAmbiguousPot:
+    """A ``.pot`` on a non-host backend cannot have its bytes sniffed (#92131): an
+    existing one is refused unverified, as every ``.pot`` was before the sniff, a
+    new one is written, and an unreachable backend fails closed."""
+
+    @pytest.mark.parametrize("op", sorted(_OPERATIONS))
+    def test_existing_target_pot_refused_and_untouched(self, remote_target, op):
+        view_path = remote_target.view / "messages.pot"
+        target_path = remote_target.target / "messages.pot"
+        target_path.write_bytes(_POT_TEMPLATE.encode())
+        original = target_path.read_bytes()
+
+        result = _OPERATIONS[op](view_path, remote_target.task_id)
+
+        assert "binary document" in (result.get("error") or ""), (op, result)
+        assert target_path.read_bytes() == original
+        assert not view_path.exists()
+
+    def test_new_target_pot_written(self, remote_target):
+        created = _write_file(remote_target.view / "new.pot", remote_target.task_id, _POT_TEMPLATE)
+        assert not created.get("error"), created
+        assert (remote_target.target / "new.pot").read_text(encoding="utf-8-sig") == _POT_TEMPLATE
+        assert not (remote_target.view / "new.pot").exists()
+
+    def test_probe_failure_fails_closed(self, remote_target):
+        target_path = remote_target.target / "messages.pot"
+        target_path.write_bytes(_POT_TEMPLATE.encode())
+        original = target_path.read_bytes()
+        for failure_mode in ("raise", "error"):
+            remote_target.env.failure_mode = failure_mode
+            result = _write_file(remote_target.view / "messages.pot", remote_target.task_id)
+            error = result.get("error") or ""
+            assert "Refusing" in error and "establish" in error, (failure_mode, result)
+            assert target_path.read_bytes() == original

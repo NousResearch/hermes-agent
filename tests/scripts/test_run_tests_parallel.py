@@ -577,6 +577,38 @@ def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: 
     assert "NO TESTS RAN" not in proc.stdout
 
 
+@pytest.mark.platforms("windows")  # NTSTATUS exits don't exist on POSIX (exit codes are mod 256)
+def test_ntstatus_loader_exit_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: Path) -> None:
+    """A child exiting with a Windows fault code is classified as CRASHED (#137198).
+
+    Loader-failure exits (STATUS_DLL_INIT_FAILED 0xC0000142, ...) are positive
+    NTSTATUS rc values with zero output — the classifier's POSIX-shape checks
+    missed them, so the file was billed as a collection error under an empty
+    CRASHED section.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_ntstatus.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            def test_loader_failure():
+                # os._exit takes a C int: hand it the signed spelling of the
+                # fault code so the process DWORD comes back as 0xC0000142.
+                os._exit(0xC0000142 - (1 << 32))
+            """
+        )
+    )
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode != 0
+    assert "1 file CRASHED" in proc.stdout, proc.stdout
+    assert "0xc0000142" in proc.stdout, proc.stdout
+    assert "NO TESTS RAN" not in proc.stdout, proc.stdout
+
+
 # ── --files-from: file-backed explicit file lists ───────────────────────────
 #
 # --files carries the whole list as ONE argv element, and Linux caps a

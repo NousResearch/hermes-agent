@@ -762,6 +762,12 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
     return result
 
 
+_WINDOWS_NTSTATUS_NAMES = {
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+    0xC000012D: "STATUS_COMMITMENT_LIMIT",
+}
+
+
 def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     """Return a one-line description when the pytest subprocess died instead of exiting.
 
@@ -771,6 +777,10 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     there is no summary line and every count parses to 0. Without this the
     file is reported as "no tests ran (collection/import error)" under a
     summary that says ``0 failed`` — the wrong diagnosis in both places.
+    The same honesty covers Windows fault exits: loader failures
+    (STATUS_DLL_INIT_FAILED, STATUS_COMMITMENT_LIMIT, ...) surface as a
+    positive NTSTATUS rc, often with zero output — never a collection error
+    (#137198).
     """
     fatal = next(
         (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
@@ -788,6 +798,13 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
         except ValueError:
             name = f"signal {-rc}"
         return f"{fatal} ({name})" if fatal else f"killed by {name}"
+    status = rc & 0xFFFFFFFF
+    if status & 0x80000000:
+        # Windows NTSTATUS: the severity bits are set, which no plain process
+        # exit code carries — the interpreter died, it did not report a result.
+        name = _WINDOWS_NTSTATUS_NAMES.get(status, f"NTSTATUS 0x{status:08x}")
+        label = name if name.startswith("NTSTATUS") else f"{name} (0x{status:08x})"
+        return f"{fatal} ({label})" if fatal else label
     return fatal
 
 

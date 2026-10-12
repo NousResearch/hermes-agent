@@ -721,8 +721,9 @@ class MemoryManager:
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
             result = provider.handle_tool_call(tool_name, args, **kwargs)
-        except Exception as e:
-            logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
+        except (Exception, SystemExit) as e:  # a provider's sys.exit() is a failed call, as in registry.dispatch
+            logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e,
+                         exc_info=True)
             record_provider_memory_call(provider.name, tool_name, args, raised=True)
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
         record_provider_memory_call(provider.name, tool_name, args, result)

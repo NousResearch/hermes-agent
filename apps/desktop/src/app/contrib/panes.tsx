@@ -11,24 +11,22 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import type { CSSProperties } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
-import { ChatPreviewRail } from '@/app/chat/right-rail/preview'
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
 import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $previewTarget, openPreview } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { openPreview } from '@/store/preview'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
 // Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
@@ -36,12 +34,42 @@ import { $currentCwd } from '@/store/session'
 // the controller) — never in a default layout, never a standing tab.
 // ---------------------------------------------------------------------------
 
+const LOGS_BOTTOM_THRESHOLD = 48
+
 export function LogsPane() {
   const { data, error } = useQuery({
     queryKey: ['contrib-logs-tail'],
     queryFn: () => getLogs({ lines: 300 }),
     refetchInterval: 5000
   })
+
+  const preRef = useRef<HTMLPreElement>(null)
+  const shouldStickRef = useRef(true)
+
+  // Stick-to-bottom: auto-scroll when the user is already near the bottom.
+  useEffect(() => {
+    const el = preRef.current
+
+    if (!el || !shouldStickRef.current) {
+      return
+    }
+
+    const raf = requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight })
+    })
+
+    return () => cancelAnimationFrame(raf)
+  }, [data])
+
+  function handleScroll() {
+    const el = preRef.current
+
+    if (!el) {
+      return
+    }
+
+    shouldStickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= LOGS_BOTTOM_THRESHOLD
+  }
 
   if (error) {
     return <div className="p-3 text-xs text-(--ui-text-quaternary)">log unavailable: {String(error)}</div>
@@ -58,7 +86,12 @@ export function LogsPane() {
   // No chrome of its own — the zone header (when the user summons it) is the
   // pane's only label. Just the tail.
   return (
-    <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)">
+    <pre
+      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
+      data-selectable-text="true"
+      onScroll={handleScroll}
+      ref={preRef}
+    >
       {data.lines.join('\n')}
     </pre>
   )
@@ -72,44 +105,12 @@ export function LogsPane() {
  *  Atom-bridged: this module can't import contrib-wiring (it imports us). */
 export const $restartPreviewServer = atom<((url: string, context?: string) => Promise<string>) | null>(null)
 
-export function PreviewRailPane() {
-  const previewTarget = useStore($previewTarget)
-  const restartPreviewServer = useStore($restartPreviewServer)
-
-  if (!previewTarget) {
-    return (
-      <div className="grid h-full place-items-center px-4 text-center">
-        <div className="flex flex-col items-center gap-1.5">
-          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text="PREVIEW" />
-          <span className="text-[0.68rem] text-(--ui-text-quaternary)">click a file in the files pane</span>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    // The contrib layout zeroes --titlebar-height (content sits BELOW the
-    // titlebar, so the real components' clearance padding must collapse) —
-    // but the rail SIZES its per-file tab strip with that var. Restore the
-    // real value for this subtree so the tabs always render at full height.
-    <div
-      className={cn(ZONE_CONTENT, 'min-h-0 w-full overflow-hidden [&>aside]:pt-0')}
-      style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
-    >
-      <ChatPreviewRail
-        onRestartServer={restartPreviewServer ?? undefined}
-        setTitlebarToolGroup={setTitlebarToolGroup}
-      />
-    </div>
-  )
-}
-
 /** Open a file from the tree in the real preview pipeline. */
 function previewFile(path: string) {
-  void normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined)
+  void normalizeOrLocalPreviewTarget(path, $focusedWorkspaceCwd.get() || undefined)
     .then(target => {
       if (target) {
-        openPreview(target, 'file-browser')
+        openPreview(target)
       }
     })
     .catch(() => undefined)
@@ -133,7 +134,7 @@ export function FilesPane() {
 // ---------------------------------------------------------------------------
 
 export function ReviewPaneContent() {
-  const cwd = useStore($currentCwd)
+  const cwd = useStore($focusedWorkspaceCwd)
 
   // Keyed by cwd like DesktopController so switching projects rebuilds the
   // diff state instead of showing the previous repo's files.
@@ -153,24 +154,35 @@ export function ReviewPaneContent() {
 
 /** Collect statusbar contributions for one side. A `render()` contribution
  *  becomes a render-item (arbitrary stateful node); otherwise the declarative
- *  `data` payload is the StatusbarItem. */
+ *  `data` payload is the StatusbarItem.
+ *
+ *  Memoized on `items` (a stable reference from `useContributions` until the
+ *  area actually changes — see `registry.getArea`'s snapshot cache): without
+ *  this, every render-item's `render` wrapper was a brand-new arrow function,
+ *  so `ContribRender`'s `createElement(render)` saw a different component
+ *  TYPE on every statusbar re-render and remounted the whole contributed
+ *  subtree — dropping any state it held (e.g. an open Dialog). See #91603. */
 export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem[] {
   const items = useContributions(`statusBar.${side}`)
 
-  return items
-    .map(c =>
-      c.render
-        ? ({
-            id: c.id,
-            render: () => (
-              <ContribBoundary id={c.id} variant="chip">
-                {c.render!()}
-              </ContribBoundary>
-            )
-          } satisfies StatusbarItem)
-        : (c.data as StatusbarItem)
-    )
-    .filter(Boolean)
+  return useMemo(
+    () =>
+      items
+        .map(c =>
+          c.render
+            ? ({
+                id: c.id,
+                render: () => (
+                  <ContribBoundary id={c.id} variant="chip">
+                    <ContribRender render={c.render!} />
+                  </ContribBoundary>
+                )
+              } satisfies StatusbarItem)
+            : (c.data as StatusbarItem)
+        )
+        .filter(Boolean),
+    [items]
+  )
 }
 
 /** Collect TitlebarTool data contributions for one side of the titlebar. */
@@ -181,7 +193,7 @@ export function useTitlebarToolContributions(side: 'left' | 'right'): TitlebarTo
 }
 
 /**
- * Bridge a page's `GroupSetter` extension point (SkillsView, MessagingView,
+ * Bridge a page's `GroupSetter` extension point (CapabilitiesView, MessagingView,
  * ChatPreviewRail, …) into the registry: each call replaces the group's items
  * as DATA contributions in `<prefix>.<side>`, so page-owned items flow through
  * the same pipe plugins use. Setting an empty list clears the group.

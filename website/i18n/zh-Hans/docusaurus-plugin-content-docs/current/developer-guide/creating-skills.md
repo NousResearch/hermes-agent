@@ -173,7 +173,7 @@ required_environment_variables:
 用户可以跳过配置并继续加载 skill。Hermes 不会将原始密钥值暴露给模型。Gateway 和消息会话会显示本地配置指引，而不是在带内收集密钥。
 
 :::tip 沙箱透传
-加载 skill 时，已设置的 `required_environment_variables` 会**自动透传**到 `execute_code` 和 `terminal` 沙箱——包括 Docker 和 Modal 等远程后端。Skill 的脚本无需用户额外配置即可访问 `$TENOR_API_KEY`（或 Python 中的 `os.environ["TENOR_API_KEY"]`）。详见 [环境变量透传](/user-guide/security#environment-variable-passthrough)。
+加载 skill 时，已设置的 `required_environment_variables` 会**自动透传**到 `execute_code` 和 `terminal` 沙箱——包括 Docker 和 Modal 等远程后端。Skill 的脚本无需用户额外配置即可访问 `$TENOR_API_KEY`（或 Python 中的 `os.environ["TENOR_API_KEY"]`）。详见 [环境变量透传](../user-guide/security.md#environment-variable-passthrough)。
 :::
 
 旧版 `prerequisites.env_vars` 作为向后兼容的别名仍受支持。

@@ -57,7 +57,38 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_degraded_backend_shows_full_reason_and_retry_hint(self):
+        """A degraded backend (Docker down, SSH host unreachable) is an infrastructure problem: the user
+        needs the whole reason plus the fix hint, not the 48-char trimmed 'Terminal backend degraded: ...'."""
+        result = json.dumps({
+            "output": "", "exit_code": -1, "status": "degraded",
+            "reason": "Docker daemon is not reachable at unix:///var/run/docker.sock",
+            "retry_hint": "Start Docker, or run `hermes setup terminal` to switch to Local, then retry",
+            "error": "Terminal backend degraded: Docker daemon is not reachable at unix:///var/run/docker.sock",
+        })
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert "unix:///var/run/docker.sock" in suffix
+        assert "hermes setup terminal" in suffix
+        assert "Terminal backend degraded:" not in suffix
 
+    def test_nonzero_dict_result_is_a_failure(self):
+        """An already-parsed terminal result (a plugin tool_execution middleware may hand back the
+        dict instead of the JSON string) must classify like its JSON form (#111815)."""
+        is_failure, suffix = _detect_tool_failure("terminal", {"exit_code": 2})
+        assert is_failure is True
+        assert suffix == " [exit 2]"
+
+    def test_multimodal_envelope_dict_is_still_a_success(self):
+        envelope = {"_multimodal": True, "content": [{"type": "text", "text": "screenshot taken"}]}
+        assert _detect_tool_failure("browser_exec", envelope) == (False, "")
+
+    def test_degraded_backend_without_hint_shows_reason_alone(self):
+        result = json.dumps({"output": "", "exit_code": -1, "status": "degraded",
+                             "reason": "SSH connection to bob@host timed out", "retry_hint": "",
+                             "error": "Terminal backend degraded: SSH connection to bob@host timed out"})
+        _, suffix = _detect_tool_failure("terminal", result)
+        assert suffix == " [SSH connection to bob@host timed out]"
 
 
 class TestDetectToolFailureMemory:
@@ -118,4 +149,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-

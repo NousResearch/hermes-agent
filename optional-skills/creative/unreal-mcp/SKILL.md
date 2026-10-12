@@ -10,7 +10,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [unreal, unreal-engine, ue5, 3d, mcp, scenes, cinematics, lighting, gamedev]
-    related_skills: [blender-mcp]
+    related_skills: []
 ---
 
 # Unreal Engine MCP Skill
@@ -33,7 +33,7 @@ editor. Works for single actions ("make the sun golden hour") and for
 complete multi-step projects ("build me a moody forest clearing with a
 campfire and render a shot of it").
 
-Don't use for: DCC-style mesh modeling/sculpting (use `blender-mcp` and
+Don't use for: DCC-style mesh modeling/sculpting (model in Blender and
 import the result), or for editing Unreal C++ project source (that's normal
 code work — use the terminal; this skill is about the live editor).
 
@@ -112,7 +112,7 @@ Cache what you learn for the session; re-list only after the editor side
 changes (new plugin enabled, toolset authored, `RefreshTools` run).
 
 The alternative eager mode (`Enable Tool Search` off in Editor Preferences)
-advertises every tool as its own `mcp_unreal_engine_<tool>` entry. Discovery
+advertises every tool as its own `mcp_unreal_engine_{tool}` entry. Discovery
 then happens at `hermes mcp install`/`configure` time instead. Tool-search
 mode is the default and what this skill assumes; it also keeps schema tokens
 out of every API call, so prefer it.

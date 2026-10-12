@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: kiwi
+description: 'Kiwi.com flight search: itineraries with direct booking links.'
+source: https://www.kiwi.com/stories/kiwi-mcp-connector/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://mcp.kiwi.com
+
+auth:
+  type: none
+
+# The server ships exactly two tools: search-flight (the product) and
+# feedback-to-devs (outbound feedback channel — excluded per Hermes policy:
+# no telemetry/feedback tools without explicit user opt-in).
+tools:
+  default_enabled:
+    - search-flight
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - flight search
+    - kiwi.com
+  hosts:
+    - kiwi.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Search only — booking and payment happen on kiwi.com via the returned
+  links, never in-conversation.

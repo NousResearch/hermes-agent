@@ -1,0 +1,21 @@
+name: stream-speed
+repo: https://github.com/olric3015/hermes-plugins
+sha: 4c174f03f7d5305c814257aa3315f352696d3af5
+subdir: stream-speed
+description: "How fast each model starts answering and how fast it writes: /speed shows the median and p90 time to first text and the median characters per second per model, provider or day, for the last 24 hours, any number of hours or days, the latest session or everything recorded, from the streaming hooks. Disclosure — writes per-response stream timings (ids, model, timings, character count, no text) to plugin-data/stream-speed/streams.jsonl, trimmed to 5,000 rows past 2 MB; atexit waits up to 1 s; no network"
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/stream-speed
+version: "1.2.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/4c174f03f7d5305c814257aa3315f352696d3af5/docs/stream-speed-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - on_stream_start
+  - on_stream_delta
+  - on_stream_end
+  provides_middleware: []
+  requires_env: []

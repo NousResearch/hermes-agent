@@ -29,7 +29,7 @@ import {
 } from './terminals'
 
 const RAIL_ACTION =
-  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
+  'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
 
 /** Thin icon "bookmark" strip blended into the terminal surface, shown whenever a
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
@@ -69,7 +69,7 @@ export function TerminalRail() {
         <li className="flex w-full justify-center">
           <Tip
             label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
-            side="left"
+            placement="right-rail"
           >
             <button
               aria-label={t.rightSidebar.terminalNew}
@@ -84,7 +84,7 @@ export function TerminalRail() {
       </ul>
 
       <div className="flex shrink-0 flex-col items-center pb-1.5">
-        <Tip label={t.rightSidebar.terminalHide} side="left">
+        <Tip label={t.rightSidebar.terminalHide} placement="right-rail">
           <button
             aria-label={t.rightSidebar.terminalHide}
             className={cn(RAIL_ACTION, 'opacity-0 transition-opacity group-hover/rail:opacity-100')}
@@ -121,7 +121,10 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
               className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
             />
           )}
-          <Tip label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />} side="left">
+          <Tip
+            label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />}
+            placement="right-rail"
+          >
             <button
               aria-label={label}
               aria-selected={active}

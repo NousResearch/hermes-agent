@@ -25,7 +25,7 @@ platforms:
     enabled: true
     extra:
       port: 8644
-      secret: "generate-a-strong-secret-here"
+      secret: "your-webhook-secret-here"
 ```
 
 Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
@@ -36,7 +36,7 @@ Add to `${HERMES_HOME:-~/.hermes}/.env`:
 ```bash
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
-WEBHOOK_SECRET=generate-a-strong-secret-here
+WEBHOOK_SECRET=your-webhook-secret-here
 ```
 
 After configuration, start (or restart) the gateway:
@@ -185,6 +185,10 @@ hermes webhook subscribe antenna-matches \
 The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
 
 Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
+
+### Let the user reply to a delivery
+
+Each event runs in its own session, so by default the agent in the target chat has no record of what a route delivered ("what are you referring to?"). Add `--mirror-to-session` and each delivered message is also written into that chat's session as `[Webhook delivery: <route>]` + the text. Off by default: the text enters the conversation as if the user had sent it (on `--deliver-only` routes it is the raw payload), so only use it for sources the user trusts. Skipped when the chat has no session yet.
 
 ## Security
 

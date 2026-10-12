@@ -1,25 +1,26 @@
 name: account-pool
 repo: https://github.com/roqianjas/hermes-account-pool
-sha: 1f05c5d0db8b13010d52cfe60b36748167a1e4b4
+sha: d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5
 subdir: plugins/account-pool
-version: "3.10.4"
+version: "3.13.0"
 title: Account Pool
-description: "Run several accounts of one provider in Hermes' credential pool: `hermes account <provider> <action>` adds accounts with email verification, shows live usage per account, keeps the least-used account first (fill_first + a 5-minute balance timer over every provider with accounts), parks accounts for hours or on a weekly schedule, shows which bot is on which account and its tokens at API prices, and alerts on dead logins, a full pool or a runaway bot. Adapters for anthropic and openai-codex; generic commands for any pool provider. Optional Accounts page in Hermes Desktop. Disclosure — it HOLDS and WRITES credentials (not rule-11 compliant, see the PR): park moves an entry with its OAuth tokens to account-pool-parked.json (mode 600) and balance refreshes those tokens with Hermes' refresh functions; live usage and the email check call api.anthropic.com/api/oauth/usage and /profile and chatgpt.com/backend-api/wham/usage with each account's token and Hermes' usage-fetcher client headers; Desktop sign-in runs OAuth in the page backend with Hermes' client ids, and Codex browser sign-in listens on 127.0.0.1:1455 for up to 15 minutes; reads auth.json for the provider list and doctor. Other writes go through Hermes' CredentialPool API or `hermes auth add/remove`. Telegram through `hermes send`; no telemetry. `setup` writes plugins.enabled of every profile, links the tracker into every profile and, with --timer, a systemd user timer. Runs systemctl --user, notify-send, hermes config set, hermes plugins enable, hermes auth, hermes send; reads every profile's config.yaml and state.db (read-only) and /proc. The command registers in the default profile only and provides no tools."
+description: "Run several accounts of one provider in Hermes' credential pool: `hermes account <provider> <action>` adds accounts with email verification, shows live usage per account, keeps the least-used account first (fill_first + a 5-minute balance timer over every provider with accounts), parks accounts for hours or on a weekly schedule, shows which bot is on which account and its tokens at API prices, alerts on dead logins, a full pool or a runaway bot, and can start an idle account's 5-hour window with one tiny request (wake). Adapters for anthropic and openai-codex; generic commands for any pool provider. Optional Accounts page in Hermes Desktop. Linux and Windows. Disclosure — it HOLDS and WRITES credentials (not rule-11 compliant, see the PR): park moves an entry with its OAuth tokens to account-pool-parked.json (mode 600) and balance reads the usage of parked accounts and refreshes their tokens with Hermes' refresh functions; live usage and the email check call api.anthropic.com/api/oauth/usage and /profile and chatgpt.com/backend-api/wham/usage with each account's token and Hermes' usage-fetcher client headers; Desktop sign-in runs OAuth in the page backend with Hermes' client ids, and Codex browser sign-in listens on 127.0.0.1:1455 for up to 15 minutes; wake (a command, a page button, or the timer after the opt-in `wake auto-on`) sends one one-word request per account, through Hermes' Anthropic client or the Codex Responses endpoint, and reads the account's model list; reads auth.json for the provider list and doctor. Other writes go through Hermes' CredentialPool API or `hermes auth add/remove`. Telegram through `hermes send`; no telemetry. `setup` writes plugins.enabled of every profile, links the tracker into every profile and, with --timer, a systemd user timer (Linux) or a Task Scheduler task for the user (Windows, no admin rights). Runs systemctl --user and notify-send (Linux), schtasks and powershell.exe for notifications (Windows), hermes config set, hermes plugins enable, hermes auth, hermes send; reads every profile's config.yaml and state.db (read-only), and /proc on Linux. The command registers in the default profile only and provides no tools."
 maintainer: roqianjas
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/roqianjas/hermes-account-pool/blob/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/README.md
-platforms: [linux]
+docs_url: https://github.com/roqianjas/hermes-account-pool/blob/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/README.md
+platforms: [linux, windows]
 screenshots:
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/accounts.png
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/report.png
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/sessions.png
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/alerts.png
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/add-account.png
-  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/1f05c5d0db8b13010d52cfe60b36748167a1e4b4/docs/screenshots/add-account-codex.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/accounts.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/report.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/sessions.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/alerts.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/add-account.png
+  - https://raw.githubusercontent.com/roqianjas/hermes-account-pool/d9faa6b86a8d60bcbf89c6bfbf9527badd9e4bd5/docs/screenshots/add-account-codex.png
 known_issues:
-  - "Not compliant with catalog rule 11: the plugin holds, refreshes and writes OAuth tokens itself (park, balance, live usage, page sign-in). See the entry PR."
+  - "Not compliant with catalog rule 11: the plugin holds, refreshes and writes OAuth tokens itself (park, balance, live usage, page sign-in, wake). See the entry PR."
+  - "Windows support is new in 3.13.0: tested with a stand-in Task Scheduler and with Windows' own Python, cmd.exe and wscript.exe under Wine, not yet on a Windows machine. On Windows the timer runs only while the user is signed in."
   - "After installing, run `hermes account <provider> setup` (add --timer for the 5-minute balance timer): it lists the plugin in every profile for the Desktop page and links the session tracker into every profile."
   - "Built for plugins.isolation: in_process (the default). Under host, Hermes skips plugin CLI commands, so `hermes account` and the timer's balance are unavailable."
   - "Usage comes from undocumented provider endpoints (api.anthropic.com/api/oauth/usage, chatgpt.com/backend-api/wham/usage) that can change or rate-limit without notice; bots are unaffected when they do."

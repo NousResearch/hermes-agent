@@ -9,7 +9,7 @@ Subcommands:
 - ``hermes vault rm``    remove an item by handle/id.
 
 The vault backs the password-blind browser autofill tools
-(``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
+(``browser_vault`` list / fill): the agent sees handles
 and login identifiers, types the identifier itself, and fills the password
 server-side without ever seeing it.
 """

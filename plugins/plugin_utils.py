@@ -11,7 +11,7 @@ import functools
 import threading
 from typing import Callable, Generic, Optional, TypeVar
 
-__all__ = ["lazy_singleton", "SingletonSlot"]
+__all__ = ["SingletonSlot", "lazy_singleton"]
 
 T = TypeVar("T")
 

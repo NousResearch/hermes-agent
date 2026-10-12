@@ -259,7 +259,7 @@ def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp
         assert len(deliveries) == 1, "an alerted signature must not re-ping on every run"
         rows = inc.list_incidents()
         assert len(rows) == 1 and rows[0]["state"] == "alerted" and rows[0]["alerted_at"]
-        stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+        stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
         assert stored["last_status"] == "error", "the withheld run is still recorded"
 
         # Cooldown elapsed: exactly one reminder, then silent again.

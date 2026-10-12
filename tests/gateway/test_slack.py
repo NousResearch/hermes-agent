@@ -761,7 +761,7 @@ class TestSlackSocketWatchdog:
         """A reconnect must not leave the adapter without a watchdog."""
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 0.01
-        factory, instances = self._make_fake_handler_factory()
+        factory, _instances = self._make_fake_handler_factory()
 
         with contextlib.ExitStack() as stack:
             for p in self._patch_stack(factory):
@@ -4292,7 +4292,6 @@ class TestTrackingStructureBounds:
                 "team_id": "T1",
                 "response_url": f"https://hooks.slack.com/commands/{i}",
             }
-            respond = AsyncMock()
             await adapter._handle_slash_command(command)
         assert len(adapter._slash_command_contexts) <= adapter._SLASH_CTX_MAX
         # Newest stash survives. Keys are workspace-scoped 3-tuples (#20583)

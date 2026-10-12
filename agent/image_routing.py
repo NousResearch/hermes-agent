@@ -563,4 +563,4 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["decide_image_input_mode", "build_native_content_parts", "extract_image_refs"]
+__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs"]

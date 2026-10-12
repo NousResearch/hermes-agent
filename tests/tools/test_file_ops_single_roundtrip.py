@@ -115,7 +115,7 @@ class TestReadFileOneRoundTrip:
         assert r.content == "1|hello"
 
     def test_crlf_bytes_survive(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         r = ops.read_file(_write(tmp_path, "g.txt", b"x\r\ny\r\n"))
         assert r.content == "1|x\r\n2|y\r"
 
@@ -128,13 +128,13 @@ class TestReadFileOneRoundTrip:
         assert second == "2|short"
 
     def test_relative_path_resolves_against_env_cwd(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         _write(tmp_path, "rel.txt", b"here\n")
         r = ops.read_file("rel.txt")
         assert r.error is None and r.content == "1|here"
 
     def test_sentinel_lookalike_in_content_reads_intact(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         lookalike = "__HERMES_RF_" + "ab" * 16 + "__"
         p = _write(tmp_path, "s.txt", f"x\n{lookalike}\ny\n".encode())
         r = ops.read_file(p)
@@ -151,7 +151,7 @@ class TestReadFileNonTextPaths:
         assert any(s.endswith("notes.txt") for s in r.similar_files)
 
     def test_unicode_variant_retry_still_works(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         # A curly apostrophe vs the ASCII one: visually identical in a
         # terminal, and — unlike NFC/NFD — never aliased by the filesystem
         # (APFS resolves NFD lookups to NFC files directly, which would skip
@@ -256,7 +256,7 @@ class TestWriteFileRoundTrips:
         assert p.read_bytes() == b"hi\n"
 
     def test_unparseable_probe_reply_falls_back_to_separate_probes(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         p = tmp_path / "crlf.txt"
         p.write_bytes(b"a\r\nb\r\n")
         real_exec = ops._exec
@@ -454,7 +454,7 @@ class TestNativeReadParity:
 
 class TestCompoundFallback:
     def test_unparseable_reply_falls_back_to_sequential_probes(self, shell, tmp_path):
-        ops, calls = shell
+        ops, _calls = shell
         p = _write(tmp_path, "a.txt", b"one\ntwo\n")
         real_exec = ops._exec
 

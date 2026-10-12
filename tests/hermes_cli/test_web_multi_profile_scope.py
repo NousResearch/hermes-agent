@@ -78,7 +78,7 @@ def test_console_send_for_named_profile_does_not_write_process_env(two_homes, mo
     multi-profile host that must land in the request's scope, never ``os.environ``."""
     from hermes_cli.web_routers.chat_ws import _execute_console_line
 
-    root, b = two_homes
+    _root, _b = two_homes
     seen = {}
 
     def fake_send(args):

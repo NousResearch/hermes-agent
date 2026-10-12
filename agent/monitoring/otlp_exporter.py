@@ -283,5 +283,11 @@ def start_streaming(
 
 
 __all__ = [
-    "OTLPUnavailable", "OTLPStreamer", "build_exporter", "export_batch", "is_available", "is_enabled", "start_streaming",
+    "OTLPStreamer",
+    "OTLPUnavailable",
+    "build_exporter",
+    "export_batch",
+    "is_available",
+    "is_enabled",
+    "start_streaming",
 ]

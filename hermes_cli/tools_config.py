@@ -87,7 +87,6 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -106,7 +105,8 @@ def gui_toolset_label(label: str) -> str:
 
 
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
-# auto-enables when xAI creds exist; its check_fn still gates the schema.
+# auto-enables when xAI creds exist; its check_fn still gates the schema. ``spotify`` and ``a2a`` are plugin
+# toolsets (catalog / bundled plugin) that stay opt-in once installed.
 _DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
@@ -136,7 +136,7 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Platform a platform-less configuration UI should target: a toolset restricted away from ``default``
     must be configured on a supported platform, else the save helper drops it and the UI reports a no-op."""
     allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return default if not allowed or default in allowed else sorted(allowed)[0]
+    return default if not allowed or default in allowed else min(allowed)
 
 
 def _get_effective_configurable_toolsets():
@@ -345,10 +345,6 @@ TOOL_CATEGORIES = {
                  post_setup="browser_use_cli"),
         ],
     },
-    "spotify": {
-        "name": "Spotify", "icon": "🎵",
-        "providers": [_row("Spotify Web API", tag="PKCE OAuth — opens the setup wizard", post_setup="spotify")],
-    },
     "computer_use": {
         "name": "Computer Use (macOS/Windows/Linux)", "icon": "🖱️",
         # Runtime backends ship for macOS, Windows, Linux (X11; Wayland via XWayland). Gaps surface via `computer-use doctor`.
@@ -495,7 +491,7 @@ def _explicit_toolsets(
     toolset_names: list[str], explicit_known_keys: set[str], config: dict, platform: str,
     explicitly_configured: bool) -> set[str]:
     """Enabled set when the saved list names configurable/plugin keys directly (subset inference over
-    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, spotify]``) still expands the
+    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, discord]``) still expands the
     composite; _DEFAULT_OFF_TOOLSETS applies to that implicit expansion only."""
     from toolsets import resolve_toolset, TOOLSETS
 
@@ -524,7 +520,7 @@ def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_conf
 
 
 def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: list[str], plugin_ts_keys: set[str]) -> set[str]:
-    """Plugin toolsets: on by default unless default-off (bundled spotify) or "known" for this platform
+    """Plugin toolsets: on by default unless default-off (catalog spotify) or "known" for this platform
     (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
     return {
@@ -772,7 +768,7 @@ def _provider_env_ready(provider: dict) -> bool:
 
 
 def _toolset_has_keys(
-    ts_key: str, config: dict = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
+    ts_key: str, config: dict | None = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
 ) -> bool:
     """Check if a toolset's required API keys are configured."""
     if config is None:
@@ -1065,7 +1061,7 @@ def _configure_platforms(config: dict, platform_keys: list[str], *, all_platform
     return True
 
 
-def tools_command(args=None, first_install: bool = False, config: dict = None):
+def tools_command(args=None, first_install: bool = False, config: dict | None = None):
     """Entry point for `hermes tools` / `hermes setup tools`. ``first_install`` skips the menu (checklist + key
     prompts); a wizard-passed ``config`` receives platform_toolsets so its final save_config() keeps them."""
     if config is None:

@@ -120,7 +120,7 @@ async def test_local_path_lanes_upload_first(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
     # Connector advertises only the legacy ops — send_media must never hit the wire.
-    adapter, stub, fake = _adapter(
+    adapter, stub, _fake = _adapter(
         supported_ops=("send", "edit", "typing", "get_chat_info")
     )
     result = await adapter.send_image("chat1", "https://x.io/a.png", caption="hi")

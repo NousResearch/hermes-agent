@@ -229,7 +229,7 @@ class TestRunTimeoutIsBounded:
             "time.sleep(20)\n"
         )
         start = time.monotonic()
-        rc, out, err = env_probe._run([sys.executable, "-c", script], timeout=1.0)
+        rc, _out, err = env_probe._run([sys.executable, "-c", script], timeout=1.0)
         elapsed = time.monotonic() - start
 
         assert rc == -1

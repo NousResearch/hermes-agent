@@ -202,7 +202,7 @@ class LoopState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "LoopState":
+    def from_json(cls, raw: str) -> LoopState:
         data = json.loads(raw)
         route = data.get("route")
         kwargs: dict[str, Any] = {
@@ -638,12 +638,12 @@ LOOP_HELP = (
 )
 
 
-def _pause_output(mgr: "LoopManager") -> str:
+def _pause_output(mgr: LoopManager) -> str:
     state = mgr.pause(reason="user-paused")
     return "No loop set." if state is None else f"⏸ Loop paused: {state.prompt}\nUse /loop resume to continue."
 
 
-def _resume_output(mgr: "LoopManager") -> str:
+def _resume_output(mgr: LoopManager) -> str:
     state = mgr.resume()
     return "No loop to resume." if state is None else f"▶ Loop resumed ({state.cadence_label()}): {state.prompt}"
 
@@ -659,7 +659,7 @@ _CONTROL_COMMANDS = {
 
 
 def dispatch_loop_command(
-    mgr: "LoopManager",
+    mgr: LoopManager,
     args: str,
     *,
     route: Optional[dict[str, str]] = None,
@@ -717,9 +717,22 @@ def dispatch_loop_command(
 
 
 __all__ = [
-    "LoopState", "LoopManager", "parse_loop_args", "parse_interval_token", "format_interval",
-    "response_signals_complete", "goal_blocks_loop_tick", "load_loop", "save_loop", "clear_loop",
-    "list_active_loops", "migrate_loop_to_session", "dispatch_loop_command", "LOOP_COMPLETE_MARKER",
-    "WAKEUP_PROMPT_TEMPLATE", "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE", "DEFAULT_MIN_INTERVAL_SECONDS",
     "DEFAULT_MAX_TICKS",
+    "DEFAULT_MIN_INTERVAL_SECONDS",
+    "LOOP_COMPLETE_MARKER",
+    "WAKEUP_PROMPT_TEMPLATE",
+    "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE",
+    "LoopManager",
+    "LoopState",
+    "clear_loop",
+    "dispatch_loop_command",
+    "format_interval",
+    "goal_blocks_loop_tick",
+    "list_active_loops",
+    "load_loop",
+    "migrate_loop_to_session",
+    "parse_interval_token",
+    "parse_loop_args",
+    "response_signals_complete",
+    "save_loop",
 ]

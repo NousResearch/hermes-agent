@@ -6,7 +6,7 @@
   only I/O primitives (cross-process flock, atomic 0o600 writes).
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
 - ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify``/``auth_openrouter`` and are
+  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_openrouter`` and are
   re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import webbrowser
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from functools import partial
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -81,9 +81,6 @@ from hermes_cli.auth_codex import (
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from hermes_cli.auth_spotify import (
-    _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
-    resolve_spotify_runtime_credentials)
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
 from hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
@@ -102,8 +99,7 @@ from hermes_cli.auth_constants import (
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, SPOTIFY_DOCS_URL,
-    DEFAULT_SPOTIFY_SCOPE, SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
+    LMSTUDIO_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
 
 logger = logging.getLogger(__name__)
@@ -802,7 +798,7 @@ def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = N
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
     auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    auth_store["updated_at"] = datetime.now(UTC).isoformat()
     _save_private_json(auth_file, auth_store, fsync_dir=True)
     if target_path is not None:
         # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
@@ -924,14 +920,14 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return _registry_lookup(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
+    return _registry_lookup(normalized) is not None
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
     if normalized in PROVIDER_REGISTRY:
         return PROVIDER_REGISTRY[normalized].name
-    return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
+    return provider_id
 
 
 def is_runtime_provider_routable(provider_id: str) -> bool:
@@ -1728,7 +1724,7 @@ def resolve_provider(
 
 def _utc_now_z() -> str:
     """Current UTC time as an ISO-8601 string with a ``Z`` suffix (last_refresh format)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -1742,7 +1738,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     except Exception:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -1757,19 +1753,19 @@ def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
 
 
 def _last_auth_error_marker(
-    provider: str, error: "AuthError", *, reason: str, default_code: Optional[str] = None,
+    provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
 ) -> dict[str, Any]:
     """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
     return {
         "provider": provider, "message": str(error), "reason": reason, "relogin_required": True,
         "code": error.code if default_code is None else (error.code or default_code),
-        "at": datetime.now(timezone.utc).isoformat()}
+        "at": datetime.now(UTC).isoformat()}
 
 
 _FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
 
 
-def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: "AuthError") -> None:
+def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: AuthError) -> None:
     """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
     subsequent calls fail fast without a network retry (mirrors the Nous / xAI / Codex pattern)."""
     for _k in _FLAT_OAUTH_TOKEN_KEYS:
@@ -1802,7 +1798,7 @@ _NOUS_PORTAL_ALLOWED_HOSTS: frozenset[str] = frozenset({
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.
 _RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
+_RESOLVE_TOKEN_CACHE: dict[str, tuple[float, str]] = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 
@@ -2182,8 +2178,8 @@ def _get_aws_sdk_auth_status(target: str) -> dict[str, Any]:
 
 
 def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
-    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Spotify /
-    Azure Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
+    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Azure
+    Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
     external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
     tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
     target = (provider_id or get_active_provider() or "").strip().lower()
@@ -2202,7 +2198,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
 # auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
-    "spotify": "get_spotify_auth_status",
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: dict[str, str] = {
     "external_process": "get_external_process_provider_status",

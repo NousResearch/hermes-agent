@@ -177,8 +177,8 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
 @list_router.get("/api/sessions")
 def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
-    archived: str = "exclude", order: str = "created", source: str = None, sources: str = None,
-    exclude_sources: str = None, cwd_prefix: str = None, full: bool = False,
+    archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
+    exclude_sources: str | None = None, cwd_prefix: str | None = None, full: bool = False,
     profile: Optional[str] = None):
     """List sessions.
 
@@ -283,8 +283,8 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 
 @search_router.get("/api/sessions/search")
 async def search_sessions(
-    q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
-    sources: str = None, exclude_sources: str = None):
+    q: str = "", limit: int = 20, profile: Optional[str] = None, source: str | None = None,
+    sources: str | None = None, exclude_sources: str | None = None):
     """Search sessions by ID (first) plus FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:

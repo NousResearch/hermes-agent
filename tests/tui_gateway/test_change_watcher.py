@@ -424,7 +424,7 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
 
 
 def test_no_outbox_dir_never_fires_pending(watcher_home):
-    home, events = watcher_home
+    _home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
     server._broadcast_watched_changes(now=10.0)
 

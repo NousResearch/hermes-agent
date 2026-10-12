@@ -86,7 +86,7 @@ class CDropToolCall:
     partial_args: str = '{"path": "x'
 
 
-Step = Union[CText, CTools, CError, CStreamError, CDropToolCall]
+Step = CText | CTools | CError | CStreamError | CDropToolCall
 Responder = Callable[[dict[str, Any]], Step]
 
 _STREAM_ADAPTER = TypeAdapter(CompletionCreateParamsStreaming)
@@ -137,7 +137,7 @@ class FakeChatVariantServer:
         self._seq = 0
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "FakeChatVariantServer":
+    def __enter__(self) -> FakeChatVariantServer:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="fake-chat-variant", daemon=True).start()

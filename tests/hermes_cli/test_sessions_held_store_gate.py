@@ -72,9 +72,9 @@ def _sessions_subparsers():
     from hermes_cli.subcommands.sessions import build_sessions_parser
 
     build_sessions_parser(parser.add_subparsers(dest="command"), cmd_sessions=sessions_cmd.cmd_sessions)
-    subparsers = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)][0]
+    subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     sessions = subparsers.choices["sessions"]
-    nested = [a for a in sessions._actions if isinstance(a, argparse._SubParsersAction)][0]
+    nested = next(a for a in sessions._actions if isinstance(a, argparse._SubParsersAction))
     return nested.choices
 
 

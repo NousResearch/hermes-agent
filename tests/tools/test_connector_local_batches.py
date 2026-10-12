@@ -21,7 +21,7 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "session_search", "arguments": {}},
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
-    name, args, error = resolve_underlying_call({"calls": calls})
+    name, _args, error = resolve_underlying_call({"calls": calls})
     assert name is None and "exactly one entry" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))

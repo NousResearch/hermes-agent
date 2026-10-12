@@ -150,7 +150,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -195,7 +195,7 @@ class TestBusySessionAck:
 
         monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
         monkeypatch.setattr(_gr, "_load_gateway_config", dict)
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -272,7 +272,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
 
@@ -386,7 +386,7 @@ class TestBusySessionAck:
             "_load_gateway_config",
             lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
         )
-        runner, sentinel = _make_runner()
+        runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 

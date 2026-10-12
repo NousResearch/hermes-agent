@@ -90,7 +90,7 @@ def _http_get_json(url: str, timeout: int = 10, retries: int = 2) -> Any:
     return None
 
 
-def _rpc_call(method: str, params: list = None, retries: int = 2) -> Any:
+def _rpc_call(method: str, params: list | None = None, retries: int = 2) -> Any:
     """Send a JSON-RPC request with retry on 429 rate-limit."""
     payload = json.dumps({
         "jsonrpc": "2.0", "id": 1,

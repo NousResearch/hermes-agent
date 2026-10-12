@@ -9,7 +9,7 @@ import json
 import math
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
@@ -18,6 +18,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -106,9 +107,9 @@ def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = 
     intervals = [{
         "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
-        "gap_ms": max(0, int(round((nxt_ts - prev_ts) * 1000))),
-    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
-    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
+    } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=UTC).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {
         "source": "message_timestamps",
@@ -118,7 +119,7 @@ def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = 
         "message_timestamps": {"available": len(timestamped), "missing": len(messages) - len(timestamped)},
         "first_message_at": iso(first_ts) if first_ts is not None else None,
         "last_message_at": iso(last_ts) if last_ts is not None else None,
-        "wall_clock_ms": max(0, int(round((last_ts - first_ts) * 1000))) if timestamped else None,
+        "wall_clock_ms": max(0, round((last_ts - first_ts) * 1000)) if timestamped else None,
         "largest_gap_ms": max(i["gap_ms"] for i in intervals) if intervals else None,
         "role_counts": dict(role_counts),
         "tool_result_count": role_counts.get("tool", 0),
@@ -315,7 +316,7 @@ class SessionPortabilityMixin:
             "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None, include_compacted: bool = False,
+    def export_all(self, source: str | None = None, include_compacted: bool = False,
                    include_inactive: bool = False) -> list[dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup (flags as in
         :meth:`export_session`; that display read dedupes per session, so it skips the batched read).

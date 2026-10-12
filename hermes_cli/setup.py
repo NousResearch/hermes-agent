@@ -103,7 +103,7 @@ def _sanitize_pasted_input(value: str) -> str:
     return _BRACKETED_PASTE_PATTERN.sub("", value) if isinstance(value, str) and value else value
 
 
-def prompt(question: str, default: str = None, password: bool = False) -> str:
+def prompt(question: str, default: str | None = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     display = color(f"{question} [{default}]: " if default else f"{question}: ", Colors.YELLOW)
     try:
@@ -311,7 +311,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
-def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
+def prompt_checklist(title: str, items: list, pre_selected: list | None = None) -> list:
     """Multi-select checklist; returns the sorted indices of selected items. ``pre_selected``
     start checked; Space toggles, Enter confirms, cancel keeps the pre-selection."""
     from hermes_cli.curses_ui import curses_checklist

@@ -72,14 +72,14 @@ def test_existing_main_counts_from_running_detached_code(checkout):
 
 
 def test_same_commit_switch_is_still_a_noop(checkout):
-    root, old, tip = checkout
+    root, _old, tip = checkout
     git(root, "checkout", "-q", "--detach", tip)
     assert prepare(root).commit_count == 0
 
 
 @pytest.mark.parametrize("parked", [False, True])
 def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(checkout, parked):
-    root, old, tip = checkout
+    root, old, _tip = checkout
     if parked:
         git(root, "checkout", "-qb", "feature")
         (root / "local.txt").write_text("local work\n", encoding="utf8")
@@ -105,7 +105,7 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
 
 def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, tmp_path):
     """Another worktree holding the parked branch must not leave the install on broken code."""
-    root, old, tip = checkout
+    root, _old, _tip = checkout
     git(root, "checkout", "-qb", "feature")
     git(root, "commit", "--allow-empty", "-qm", "local")
     feature_tip = git(root, "rev-parse", "HEAD")
@@ -123,7 +123,7 @@ def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, 
     assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
 
 def test_locally_ahead_switch_still_needs_completion(checkout):
-    root, old, tip = checkout
+    root, _old, tip = checkout
     git(root, "checkout", "-q", "--detach", tip)
     git(root, "commit", "--allow-empty", "-qm", "local detached commit")
     before = git(root, "rev-parse", "HEAD")
@@ -138,7 +138,7 @@ def test_merge_that_reports_success_without_moving_stale_main_is_refused(checkou
     """Detached on a side commit with a stale local main: the switch moves HEAD, so a baseline
     taken from the running code (or a bypass for "the switch already moved") would accept a
     merge that returned 0 but left HEAD on the stale main."""
-    root, old, tip = checkout
+    root, old, _tip = checkout
     git(root, "checkout", "-q", "--detach", old)
     git(root, "commit", "--allow-empty", "-qm", "side")
     git(root, "branch", "-f", "main", old)
@@ -200,7 +200,7 @@ def test_fork_sync_after_stale_branch_repair(checkout, monkeypatch, upstream_res
 
 
 def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
-    root, old, tip = checkout
+    root, _old, tip = checkout
     git(root, "checkout", "-q", "main")
     git(root, "commit", "--allow-empty", "-qm", "upstream")
     upstream_tip = git(root, "rev-parse", "HEAD")

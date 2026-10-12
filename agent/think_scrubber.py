@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS"]
+__all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingThinkScrubber"]
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to

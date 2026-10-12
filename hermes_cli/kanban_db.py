@@ -135,7 +135,7 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
+def _assert_not_delegated_child_mutation(path: str | Path | None = None) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
@@ -162,7 +162,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
-def _fire_task_hook(event: str, task: Optional["Task"], task_id: str, run_id: Optional[int], **fields: Any) -> None:
+def _fire_task_hook(event: str, task: Optional[Task], task_id: str, run_id: Optional[int], **fields: Any) -> None:
     """Lifecycle hook for a task transition; ``assignee`` from the (possibly missing) row."""
     _fire_kanban_lifecycle_hook(
         event, task_id, board=get_current_board(),
@@ -192,7 +192,7 @@ def _kanban_observer_consumed(event: str) -> bool:
 
 
 def _fire_worker_spawned_hook(
-    conn: sqlite3.Connection, task: "Task", workspace_path: str, pid: Optional[int], *,
+    conn: sqlite3.Connection, task: Task, workspace_path: str, pid: Optional[int], *,
     board: Optional[str] = None,
 ) -> None:
     """``on_kanban_worker_spawned`` AFTER the PID is durably persisted; best-effort."""
@@ -240,7 +240,7 @@ _TICK_ACTIVITY_FIELDS = (
 
 
 def _fire_dispatch_tick_hook(
-    result: "DispatchResult", *, board: Optional[str] = None, dry_run: bool = False,
+    result: DispatchResult, *, board: Optional[str] = None, dry_run: bool = False,
 ) -> None:
     """``on_kanban_dispatch_tick`` — strictly AFTER ``_dispatch_tick_lock`` is
     released so a slow subscriber cannot stall a sibling dispatcher.
@@ -667,7 +667,7 @@ class Task:
     completion_contract: Optional[str] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Task":
+    def from_row(cls, row: sqlite3.Row) -> Task:
         g = lambda col, default=None: _lossy_text(_row_get(row, col, default))
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
@@ -725,7 +725,7 @@ class Run:
     error: Optional[str]
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Run":
+    def from_row(cls, row: sqlite3.Row) -> Run:
         return cls(
             **{
                 col: _lossy_text(row[col]) for col in (
@@ -749,7 +749,7 @@ class Comment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Comment":
+    def from_row(cls, r: sqlite3.Row) -> Comment:
         return cls(
             id=r["id"], task_id=r["task_id"], author=_lossy_text(r["author"]),
             body=_lossy_text(r["body"]), created_at=r["created_at"],
@@ -770,7 +770,7 @@ class Attachment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Attachment":
+    def from_row(cls, r: sqlite3.Row) -> Attachment:
         return cls(
             id=r["id"], task_id=r["task_id"], filename=r["filename"],
             stored_path=r["stored_path"], content_type=r["content_type"],
@@ -788,7 +788,7 @@ class Event:
     run_id: Optional[int] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Event":
+    def from_row(cls, row: sqlite3.Row) -> Event:
         run_id = _row_get(row, "run_id")
         return cls(
             id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
@@ -2058,7 +2058,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -4185,7 +4185,7 @@ def _to_epoch(val) -> Optional[int]:
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
         from datetime import datetime
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s)
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None

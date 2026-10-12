@@ -321,7 +321,7 @@ def test_run_job_does_not_block_a_valid_no_agent_job(hermes_env):
     script.write_text("echo hello\n")
 
     job = dict(_legacy_empty_job(hermes_env), script="w.sh", no_agent=True)
-    success, doc, final, error = scheduler.run_job(job)
+    success, _doc, final, error = scheduler.run_job(job)
 
     assert success is True
     assert error is None

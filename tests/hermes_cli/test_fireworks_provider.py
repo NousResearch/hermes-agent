@@ -133,7 +133,7 @@ class TestFireworksAuxiliary:
 
     def test_client_sends_attribution_headers(self, monkeypatch):
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        client, model, kwargs = self._resolve("fireworks")
+        client, _model, kwargs = self._resolve("fireworks")
         assert client is not None
         headers = kwargs.get("default_headers", {})
         assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"

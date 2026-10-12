@@ -387,10 +387,10 @@ class SessionMessagesMixin:
                 f"UPDATE sessions SET message_count = message_count + {inc} WHERE id = ?", (*params, session_id))
 
     def append_message(
-        self, session_id: str, role: str, content: str = None, tool_name: str = None, tool_calls: Any = None,
-        tool_call_id: str = None, token_count: int = None, finish_reason: str = None, reasoning: str = None,
-        reasoning_content: str = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
-        codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
+        self, session_id: str, role: str, content: str | None = None, tool_name: str | None = None, tool_calls: Any = None,
+        tool_call_id: str | None = None, token_count: int | None = None, finish_reason: str | None = None, reasoning: str | None = None,
+        reasoning_content: str | None = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
+        codex_message_items: Any = None, platform_message_id: str | None = None, observed: bool = False,
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
@@ -1880,7 +1880,7 @@ class SessionMessagesMixin:
                     "replacement_message_uid": replacement and message_uid_or_none(replacement)}
                    if preserve_compaction_handoff else {})}
 
-    def message_count(self, session_id: str = None) -> int:
+    def message_count(self, session_id: str | None = None) -> int:
         """Count messages, optionally for a specific session."""
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
         return self._read_one(sql, (session_id,) if session_id else ())[0]

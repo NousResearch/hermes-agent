@@ -12,9 +12,10 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 __all__ = [
-    "save_provider_env_credential",
+    "purge_env_credential_references",
     "remove_provider_env_credential",
-    "purge_env_credential_references"]
+    "save_provider_env_credential",
+]
 
 
 def _providers_for_env_var(env_var: str) -> list[str]:

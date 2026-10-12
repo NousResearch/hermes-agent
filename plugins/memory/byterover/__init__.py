@@ -101,7 +101,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     return env
 
 
-def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) -> dict:
+def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
     brv_path = _resolve_brv_path()
@@ -114,6 +114,7 @@ def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) ->
         result = subprocess.run(
             [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=effective_cwd, env=env, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"brv timed out after {timeout}s"}

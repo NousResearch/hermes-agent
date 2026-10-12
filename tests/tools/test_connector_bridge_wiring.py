@@ -84,7 +84,7 @@ def test_resolve_multi_local_batch_echoes_first_entry_as_the_retry_shape():
     # The correction restates the valid single-entry shape with the caller's OWN first
     # entry (a 9B model re-sent the identical two-entry array when told only the rule).
     first = {"name": "some_local_tool", "arguments": {"query": "alpha", "limit": 20}}
-    name, args, err = resolve_underlying_call({"calls": [first, {"name": "another_local", "arguments": {}}]})
+    name, _args, err = resolve_underlying_call({"calls": [first, {"name": "another_local", "arguments": {}}]})
     assert name is None
     assert "you sent 2" in err
     retry = err.split("Retry with only: ", 1)[1].split(" then issue", 1)[0]
@@ -96,7 +96,7 @@ def test_resolve_unknown_name_points_at_tool_search_not_direct_call():
     # NOT be told "call it directly" — that is the opposite of the required correction.
     from tools.registry import registry
 
-    name, args, err = resolve_underlying_call({"name": "not_a_real_tool", "arguments": {}})
+    name, _args, err = resolve_underlying_call({"name": "not_a_real_tool", "arguments": {}})
     assert name is None
     assert "not a known tool name" in err and "call it directly" not in err.lower()
     registry.register(name="mcp__mempalace__mempalace_search", toolset="mcp-mempalace",
@@ -471,7 +471,7 @@ def test_describe_connector_names_fall_to_not_found_when_dark_and_to_connectors_
 
 
 def test_peel_admits_pure_connector_batch_as_sentinel():
-    name, args = _peel_bridge_call(
+    name, _args = _peel_bridge_call(
         "tool_call",
         {"calls": [
             {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
@@ -486,7 +486,7 @@ def test_peel_keeps_mixed_and_local_batches_as_sequential_barrier():
         {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
         {"name": "write_file", "arguments": {"path": "x"}},
     ]}
-    name, args = _peel_bridge_call("tool_call", mixed)
+    name, _args = _peel_bridge_call("tool_call", mixed)
     assert name == "tool_call"  # barrier: local entries never got admission
 
     all_local = {"calls": [

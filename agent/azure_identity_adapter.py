@@ -89,7 +89,7 @@ class EntraIdentityConfig:
         return {"scope": self.scope, "exclude_interactive_browser": self.exclude_interactive_browser}
 
     @classmethod
-    def from_dict(cls, data: Optional[dict[str, Any]], *, default_scope: Optional[str] = None) -> "EntraIdentityConfig":
+    def from_dict(cls, data: Optional[dict[str, Any]], *, default_scope: Optional[str] = None) -> EntraIdentityConfig:
         data = data or {}
         return cls(
             scope=str(data.get("scope") or "").strip() or default_scope or SCOPE_AI_AZURE_DEFAULT,
@@ -318,7 +318,7 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
         raise ValueError("build_bearer_http_client requires a zero-arg callable token provider")
     import httpx
 
-    def _inject_bearer(request: "httpx.Request") -> None:
+    def _inject_bearer(request: httpx.Request) -> None:
         try:
             token = materialize_bearer_for_http(token_provider)
         except ValueError as exc:
@@ -337,7 +337,15 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
 
 
 __all__ = [
-    "EntraIdentityConfig", "SCOPE_AI_AZURE_DEFAULT", "build_bearer_http_client", "build_credential",
-    "build_token_provider", "describe_active_credential", "has_azure_identity_credentials",
-    "has_azure_identity_installed", "is_token_provider", "materialize_bearer_for_http", "reset_credential_cache",
+    "SCOPE_AI_AZURE_DEFAULT",
+    "EntraIdentityConfig",
+    "build_bearer_http_client",
+    "build_credential",
+    "build_token_provider",
+    "describe_active_credential",
+    "has_azure_identity_credentials",
+    "has_azure_identity_installed",
+    "is_token_provider",
+    "materialize_bearer_for_http",
+    "reset_credential_cache",
 ]

@@ -79,7 +79,7 @@ def test_resolve_hermes_argv_isolated_python_bootstraps_without_launcher(
            if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HERMES_BIN"}}
     env["HERMES_HOME"] = str(tmp_path / "home")
     result = subprocess.run(argv + ["--version"], cwd=tmp_path, env=env,
-                            capture_output=True, text=True, timeout=45)
+                            capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == 0, result.stderr[-500:]
     assert str(Path(kbd.__file__).resolve().parents[1]) in result.stdout
 
@@ -154,13 +154,13 @@ def test_resolve_hermes_argv_module_actually_runs():
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
-    import unittest.mock as mock
+    from unittest import mock
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

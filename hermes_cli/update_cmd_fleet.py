@@ -691,7 +691,7 @@ def _run_pending_fleet_restart() -> bool:
 
 def _systemctl(cmd: list, *, timeout: float):
     """Run a systemctl (or sudo systemctl) invocation, capturing utf-8 text with a timeout."""
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: list | None = None):
@@ -917,7 +917,7 @@ def _restart_macos_launchd_gateways(
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
     if require_supervision:
-        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
@@ -1160,10 +1160,10 @@ def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
     are about to elevate.
     """
     try:
-        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5, check=False).returncode == 0:
             return True
         # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
+        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5, check=False).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
@@ -1442,7 +1442,7 @@ class _GatewayRestartOutcome:
 
     incomplete: bool
     phase_errors: list
-    pre_restart_gateway_pids: "list | None"
+    pre_restart_gateway_pids: list | None
     restarted_services: list
     failed_or_stale_units: list
     relaunched_profiles: list

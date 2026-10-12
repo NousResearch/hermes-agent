@@ -231,7 +231,7 @@ def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
 
 
 def sanitize_tool_call_arguments(
-    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
+    messages: list, *, logger=None, session_id: str | None = None, cursor: Optional[dict] = None
 ) -> int:
     """Repair corrupted assistant tool-call argument JSON in-place.
     ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
@@ -2286,7 +2286,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery import reset_codex_reasoning_replay
+    from agent.turn_recovery_codex import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
     if api_key:
         agent.api_key = api_key
@@ -2545,7 +2545,7 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
+                 tool_call_id: Optional[str] = None, messages: list | None = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
@@ -3035,7 +3035,7 @@ def _pair_tool_calls_positionally(messages: list[dict[str, Any]]) -> list[dict[s
                 if variants:
                     # Key on a stable representative of the alias group so a result matching ANY
                     # spelling can consume the call.
-                    declared_calls[sorted(variants)[0]] = (tc, variants)
+                    declared_calls[min(variants)] = (tc, variants)
         elif role == "tool":
             result_variants = tool_result_id_variants(msg.get("tool_call_id"))
             matched = next((k for k, (_tc, v) in declared_calls.items() if v & result_variants), None)
@@ -3497,14 +3497,14 @@ def intent_ack_continuation_mode(agent) -> str:
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Forward reasoning fields onto an API replay message; policy lives in ``agent.message_sanitization.apply_reasoning_content_policy``."""
     from agent.message_sanitization import apply_reasoning_content_policy
-    apply_reasoning_content_policy(source_msg, api_msg, agent._needs_thinking_reasoning_pad())
+    apply_reasoning_content_policy(source_msg, api_msg, *agent._reasoning_replay_route())
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad or strip assistant turns' reasoning_content for the CURRENT provider after a
-    fallback switch: ``api_messages`` is shaped for the primary; require-side providers
+    """Reconcile assistant turns' reasoning keys with the CURRENT route after a fallback switch or
+    a recorded field rejection: ``api_messages`` is shaped for the primary; must-echo providers
     (DeepSeek/Kimi/MiMo) 400 without the pad, strict ones (Mistral, Cerebras, Groq) 400/422
-    with it. Idempotent; returns the number of assistant turns changed.
+    with any reasoning key. Idempotent; returns the number of assistant turns changed.
 
     * Switching TO a strict provider that rejects the field (Mistral, Cerebras, Groq, SambaNova, …):
     assistant turns built under a reasoning primary carry a ``reasoning_content`` pad (often a single space
@@ -3513,7 +3513,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     request falls back to Mistral, and Mistral 422s on the stale pad.
     """
     from agent.message_sanitization import reapply_reasoning_echo
-    return reapply_reasoning_echo(api_messages, agent._needs_thinking_reasoning_pad())
+    return reapply_reasoning_echo(api_messages, *agent._reasoning_replay_route())
 
 
 def _iter_httpx_pools_with_owner(http_client: Any):
@@ -3827,13 +3827,29 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 
 __all__ = [
-    "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
-    "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
-    "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
-    "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
-    "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
-    "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
-    "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api",
-    "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
+    "_iter_pool_sockets",
+    "anthropic_prompt_cache_policy",
+    "apply_pending_steer_to_tool_results",
+    "blank_cache_policy_stub",
+    "convert_to_trajectory_format",
+    "copy_reasoning_content_for_api",
+    "create_openai_client",
+    "drop_thinking_only_and_merge_users",
+    "dump_api_request_debug",
+    "extract_api_error_context",
+    "extract_reasoning",
     "force_close_tcp_sockets",
+    "invoke_tool",
+    "looks_like_codex_intermediate_ack",
+    "plan_cache_sections_for_destination",
+    "prompt_caching_disabled_from_config",
+    "recover_with_credential_pool",
+    "repair_message_sequence",
+    "repair_tool_call",
+    "restore_primary_runtime",
+    "sanitize_api_messages",
+    "sanitize_tool_call_arguments",
+    "strip_think_blocks",
+    "switch_model",
+    "try_recover_primary_transport",
 ]

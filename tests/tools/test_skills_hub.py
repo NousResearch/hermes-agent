@@ -1533,7 +1533,7 @@ class TestInstallPathSafety:
         }))
 
         patch_lock_file(lock_path)
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
         assert ok is False
         assert sibling.exists()
         assert (sibling / "data").read_text() == "nope"
@@ -1561,7 +1561,7 @@ class TestInstallPathSafety:
         }))
 
         patch_lock_file(lock_path)
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 

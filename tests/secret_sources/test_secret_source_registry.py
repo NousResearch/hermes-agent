@@ -181,7 +181,7 @@ class TestApplyAll:
             tmp_path, environ=env,
         )
         assert env["K"] == "v"
-        broken = [s for s in report.sources if s.name == "broken"][0]
+        broken = next(s for s in report.sources if s.name == "broken")
         assert broken.result.error_kind is ErrorKind.NETWORK
 
 

@@ -184,8 +184,8 @@ def _build_codex_gpt5_autoraise_notice(
     else:
         # Static fallback: codex-spark is natively 128K; gpt-5.4/5.5/5.6 are capped at 272K.
         cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = int(round(autoraise["from"] * 100))
-    to_pct = int(round(autoraise["to"] * 100))
+    from_pct = round(autoraise["from"] * 100)
+    to_pct = round(autoraise["to"] * 100)
     return (
         f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
@@ -225,8 +225,8 @@ def _codex_gpt55_autoraise_notice_state(autoraise: dict[str, Any]) -> str:
     different autoraised Codex model re-notifies once.
     """
     model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = int(round(float(autoraise["from"]) * 100))
-    to_pct = int(round(float(autoraise["to"]) * 100))
+    from_pct = round(float(autoraise["from"]) * 100)
+    to_pct = round(float(autoraise["to"]) * 100)
     return f"{model}:{from_pct}:{to_pct}"
 
 
@@ -2359,40 +2359,40 @@ _CALLBACK_PARAMS = (
 
 
 def init_agent(
-    agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
-    acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
+    agent, base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
+    acp_command: str | None = None, acp_args: list[str] | None = None, command: str | None = None,
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
-    enabled_toolsets: list[str] = None, disabled_toolsets: list[str] = None,
+    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
-    tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
-    log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: list[str] = None,
-    providers_ignored: list[str] = None, providers_order: list[str] = None,
-    provider_sort: str = None, provider_require_parameters: bool = False,
-    provider_data_collection: str = None, openrouter_min_coding_score: Optional[float] = None,
-    session_id: str = None, tool_progress_callback: callable = None,
-    tool_start_callback: callable = None, tool_complete_callback: callable = None,
-    thinking_callback: callable = None, reasoning_callback: callable = None,
-    clarify_callback: callable = None, read_terminal_callback: callable = None,
-    read_preview_callback: callable = None, drive_preview_callback: callable = None,
-    read_window_below_callback: callable = None, connection_callback: callable = None,
-    tour_callback: callable = None, setup_choose_callback: callable = None, step_callback: callable = None,
-    stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
-    tool_gen_callback: callable = None, status_callback: callable = None,
-    notice_callback: callable = None, notice_clear_callback: callable = None,
+    tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
+    log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: list[str] | None = None,
+    providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
+    provider_sort: str | None = None, provider_require_parameters: bool = False,
+    provider_data_collection: str | None = None, openrouter_min_coding_score: Optional[float] = None,
+    session_id: str | None = None, tool_progress_callback: Callable[..., Any] | None = None,
+    tool_start_callback: Callable[..., Any] | None = None, tool_complete_callback: Callable[..., Any] | None = None,
+    thinking_callback: Callable[..., Any] | None = None, reasoning_callback: Callable[..., Any] | None = None,
+    clarify_callback: Callable[..., Any] | None = None, read_terminal_callback: Callable[..., Any] | None = None,
+    read_preview_callback: Callable[..., Any] | None = None, drive_preview_callback: Callable[..., Any] | None = None,
+    read_window_below_callback: Callable[..., Any] | None = None, connection_callback: Callable[..., Any] | None = None,
+    tour_callback: Callable[..., Any] | None = None, setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
+    stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
+    tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
+    notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
-    reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int = None,
-    reasoning_config: dict[str, Any] = None, service_tier: str = None,
-    request_overrides: dict[str, Any] = None, prefill_messages: list[dict[str, Any]] = None,
-    platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
-    chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
-    gateway_session_key: str = None, skip_context_files: bool = False,
+    reaction_callback: Optional[Callable[[str], None]] = None, max_tokens: int | None = None,
+    reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
+    request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
+    platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
+    chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
+    gateway_session_key: str | None = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
-    iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-    fallback_model: dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
+    skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
+    iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
+    fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
+    requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
@@ -2449,9 +2449,9 @@ def init_agent(
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
-    # Every (provider, model) that rejected image content this session. build_api_request strips
-    # images from requests to those models only, so history keeps them for any model that can see.
+    # Routes that rejected image content / named reasoning keys; build_api_request strips those from wire copies only.
     agent._image_rejecting_models = set()
+    agent._reasoning_rejecting_routes = {}  # (provider, host, model) -> rejected reasoning keys
     # Models whose Anthropic organization answered a fast request with a fast-mode limit of 0;
     # agent.fast_mode stops sending ``speed`` to them for the rest of the session.
     agent._fast_mode_unavailable_models = set()

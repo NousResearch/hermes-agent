@@ -29,7 +29,7 @@ IMAGE_TURN = [
 
 def test_coerce_message_text_switches_image_rendering():
     """The projection seam: default inlines the URI; ``image_urls=False`` renders ``[image]``."""
-    coerce, history_to_messages = srv._coerce_message_text, srv._history_to_messages  # server.py-bound
+    coerce = srv._coerce_message_text  # server.py-bound
     content = IMAGE_TURN[0]["content"]
     assert DATA_URI in coerce(content)
     assert DATA_URI not in coerce(content, image_urls=False)

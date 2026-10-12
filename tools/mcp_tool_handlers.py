@@ -21,6 +21,7 @@ from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
+from tools.mcp_tool_session_origin import attach_session_origin
 from tools.mcp_tool_errors import (
     _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
@@ -393,6 +394,9 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
+    # Opt-in (mcp_servers.<name>.session_origin): the stdio child cannot see gateway ContextVars, so listed tools
+    # get the calling session's return address here, at the one boundary that still runs in the caller's context.
+    args = attach_session_origin(server, server_name, tool_name, args)
     _call_coro = server.session.call_tool(tool_name, arguments=args)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):

@@ -15,25 +15,9 @@ import pytest
 
 from hermes_state import SessionDB
 from tui_gateway import server
+from tests.fakes.immediate_thread import ImmediateThread
 
 TURN = f"pid={os.getpid()}:turn=tui:platform=tui"
-
-
-class _ImmediateThread:
-    """Run the turn inside ``start()`` so tests observe its final state synchronously."""
-
-    def __init__(self, target=None, daemon=None, **_kwargs):
-        self._target = target
-
-    def start(self):
-        if self._target is not None:
-            self._target()
-
-    def is_alive(self):
-        return False
-
-    def join(self, timeout=None):
-        return None
 
 
 class _Agent:
@@ -87,7 +71,7 @@ def turn_env(monkeypatch, tmp_path, db):
         "_drain_queued_prompt": lambda *_a: False, "_voice_tts_enabled": lambda: False, "_get_db": lambda: db,
     }.items():
         monkeypatch.setattr(server, name, stub)
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
     yield monkeypatch
     for sid in [s for s in server._sessions if s.startswith("ui-106459-")]:
         server._sessions.pop(sid, None)

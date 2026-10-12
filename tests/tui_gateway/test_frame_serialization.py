@@ -53,6 +53,19 @@ def test_coercion_reaches_into_containers(caplog: pytest.LogCaptureFixture) -> N
     assert result["list"][1]["deep"] == "-inf"
 
 
+def test_a_shared_subobject_is_coerced_on_every_path(caplog: pytest.LogCaptureFixture) -> None:
+    """A YAML anchor/alias loads as ONE object reached twice; that is sharing, not a cycle."""
+    shared = {"chat": float("inf"), "title": "Bob"}
+    payload = {"jsonrpc": "2.0", "id": 9, "result": {"hermes-bots": shared, "backup": shared}}
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+        line = serialize_frame(payload, "test", LOGGER)
+
+    result = _strict(line)["result"]
+    assert result["hermes-bots"] == {"chat": "inf", "title": "Bob"}
+    assert result["backup"] == {"chat": "inf", "title": "Bob"}
+
+
 def test_an_ordinary_frame_is_byte_identical_and_silent(caplog: pytest.LogCaptureFixture) -> None:
     """The fast path must not change: no walk, no rewrite, and the *text* "Infinity" stays text."""
     payload = {"jsonrpc": "2.0", "id": 9,

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Iterable
+from typing import Iterator
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -1600,24 +1601,11 @@ def check_respawn_guard(
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
     #    a deliberate "run it again" — otherwise a manual done→ready would sit
     #    silently held until the window elapses.
-    cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    recent_completed = conn.execute(
-        "SELECT ended_at FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
-        "ORDER BY ended_at DESC LIMIT 1",
-        (task_id, cutoff),
-    ).fetchone()
-    if recent_completed:
-        completed_at = _kb._to_epoch(recent_completed["ended_at"]) or 0
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
-        ).fetchone()
-        if not requeued_after:
-            return "recent_success"
+    success = max((t for t, _ in _rows_since(
+        conn, "task_runs", task_id, now - _RESPAWN_GUARD_SUCCESS_WINDOW, "AND outcome = 'completed'")), default=None)
+    if success is not None and not any(_rows_since(
+            conn, "task_events", task_id, success, "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed')")):
+        return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
@@ -1625,27 +1613,36 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
-        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        body = _kb._lossy_text(c["body"])
-        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
-            continue
-        events = conn.execute(
-            # Strictly after: a same-second tie stays guarded (fail closed).
-            "SELECT kind, payload FROM task_events "
-            "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, _kb._to_epoch(c["created_at"]) or now),  # unreadable: guard stays on
-        ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+    pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
+                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
+                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
+    if pr_times:
+        # Strictly after: a same-second tie stays guarded (fail closed).
+        if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
+                conn, "task_events", task_id, max(pr_times),
+                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
             return None
         return "active_pr"
 
     return None
+
+
+_GUARD_TIME_COLS = {"task_runs": "ended_at", "task_events": "created_at", "task_comments": "created_at"}
+
+
+def _rows_since(conn: sqlite3.Connection, table: str, task_id: str, since: int, where: str = "", *,
+                cols: str = "", strict: bool = False, unreadable: Optional[int] = None) -> Iterator[tuple[int, Any]]:
+    """``(epoch, row)`` for ``task_id``'s ``table`` rows timed at/after ``since`` (after, if ``strict``).
+    SQLite sorts TEXT above every INTEGER, so the indexed range also returns every text stamp (written
+    outside the mutators, #97455); those are decided on their parsed epoch. An unreadable time is
+    dropped (never guards or lifts) unless the caller substitutes ``unreadable``."""
+    col = _GUARD_TIME_COLS[table]
+    sql = f"SELECT {col}{cols} FROM {table} WHERE task_id = ? {where} AND {col} {'>' if strict else '>='} ?"
+    for row in conn.execute(sql, (task_id, since)):
+        t = _kb._to_epoch(row[0])
+        t = unreadable if t is None else t
+        if t is not None and (t > since if strict else t >= since):
+            yield t, row
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

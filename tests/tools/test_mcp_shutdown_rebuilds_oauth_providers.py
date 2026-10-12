@@ -39,6 +39,28 @@ def test_stopping_the_loop_rebuilds_oauth_providers_for_the_next_one(lifecycle, 
     assert get_manager().get_or_build_provider("srv", URL, {}) is not first
 
 
+def test_scoped_shutdown_that_leaves_the_loop_running_keeps_providers(lifecycle):
+    """Another profile's server is still connecting, so a scoped shutdown leaves the loop up.
+    Its providers stay cached: a second provider for a live server would race the first one's
+    token refresh."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_loop as _loop
+    from tools.mcp_oauth_manager import get_manager
+
+    other = ("other-profile", "other")
+    _loop._ensure_mcp_loop()
+    provider = get_manager().get_or_build_provider("srv", URL, {})
+    with core._lock:
+        core._server_connecting.add(other)
+    try:
+        lifecycle.shutdown_mcp_servers(scope="this-profile")
+        assert _loop._running_loop() is not None
+        assert get_manager().get_or_build_provider("srv", URL, {}) is provider
+    finally:
+        with core._lock:
+            core._server_connecting.discard(other)
+
+
 def test_provider_built_for_the_next_loop_survives_the_old_loops_teardown(lifecycle, monkeypatch):
     """The loop handle is detached before the old loop is drained and joined. A discovery on
     another thread can start the next loop in that window; its provider must not be swept by

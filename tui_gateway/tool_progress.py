@@ -261,7 +261,7 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
     if not _connector_tool_lifecycle(name, args):
         return _emit(event, sid, payload)
     from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.event_replay import _stamp_event
+    from tui_gateway.event_replay import _stamp_event, emit_frame_lock
 
     payload = connector_ui_payload(payload)
     # Capture the owner after projection so id reuse cannot redirect its link,
@@ -273,10 +273,13 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
         if transport is None:
             transport = current_transport() or _stdio_transport
     frame = _event_frame(event, sid, payload)
-    _stamp_event(frame)
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
-    project_room_member_activity(frame, _sessions)
-    transport.write(frame)
+    # Stamp + write under the session's emit lock — same contract as write_json:
+    # a concurrent worker's frame must not overtake this one in the transport queue.
+    with emit_frame_lock(sid):
+        _stamp_event(frame)
+        project_room_member_activity(frame, _sessions)
+        transport.write(frame)
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):

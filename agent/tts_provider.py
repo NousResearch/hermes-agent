@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import Any, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 from agent.provider_base import CatalogProviderBase
+
+if TYPE_CHECKING:
+    from tools.tts_prepared_types import PreparedSpeechDeclaration
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,8 @@ class TTSProvider(CatalogProviderBase):
 
     streams_pcm: bool = False
     stream_sample_rate: Optional[int] = None
+
+    prepared_speech: Optional[PreparedSpeechDeclaration] = None
 
     def list_voices(self) -> list[dict[str, Any]]:
         """Voice catalog entries: ``{"id"}`` required; ``display`` / ``language``

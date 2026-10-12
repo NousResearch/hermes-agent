@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from agent.relay_resource_scheduler import SchedulerToken, SchedulerWindow, project_window
+from agent.relay_scheduler_windows import SchedulerToken, SchedulerWindow, project_window
 
 IDENTITY = ("boot", "container-start", 4, 5, 6, 7)
 COUNTS = dict(switch_in=19, switch_out=15, runnable_switch_out=5, nonrunnable_switch_out=10,

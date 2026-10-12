@@ -2,7 +2,7 @@ name: context-audit
 version: "0.1.0"
 repo: https://github.com/ZidoCode/context-audit
 # Filled by the publisher at push time: `git rev-parse HEAD` of the tagged commit.
-sha: 07960f7023e9c1b8dc0a112989d689939d060154
+sha: 2aaa96aab2c685798b011a5d6479a4a1fa6a033f
 description: "Context-window forensics: per-turn input/output token estimates, the single largest tool output of each turn, oversized tool calls (args over 50 KB), and compaction events, recorded as metadata only (tool name, byte length, ids, timestamps — never args or results) in a local SQLite DB under HERMES_HOME/plugin-data/context-audit/. Adds a /context-audit slash command that prints the top 5 context eaters over a window with one mitigation per entry."
 maintainer: ZidoCode
 tier: community

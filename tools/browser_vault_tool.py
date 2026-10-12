@@ -445,10 +445,6 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
-        return json.dumps({"success": False, "error_type": "payment_declined",
-                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
-
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
     # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
@@ -477,6 +473,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
+
+    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
+        return json.dumps({"success": False, "error_type": "payment_declined",
+                           "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps

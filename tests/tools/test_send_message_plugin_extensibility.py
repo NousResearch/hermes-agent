@@ -128,7 +128,7 @@ def test_plugin_validator_custom_diagnostic_blocks_delivery(plugin_platform):
 @pytest.mark.parametrize("async_handler", [False, True])
 def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_handler):
     name, entry, seen = plugin_platform
-    platform, pconfig, config = _config_for(name)
+    _platform, _pconfig, config = _config_for(name)
 
     if not async_handler:
         def sync_handler(args, chat_id, platform_name, pconfig):

@@ -170,7 +170,9 @@ describe('I18nProvider', () => {
       expect(screen.getByTestId('label').textContent).toBe('Język')
       // Unregistered keys fall back to English, never to the raw key.
       expect(screen.getByTestId('save').textContent).toBe(TRANSLATIONS.en.common.save)
-      expect(document.documentElement.lang).toBe('pl')
+      // The provider writes <html lang> in a passive effect after the render
+      // commits, so it can trail the rendered locale under load.
+      await waitFor(() => expect(document.documentElement.lang).toBe('pl'))
       expect(configClient.saveConfig).not.toHaveBeenCalled()
     } finally {
       dispose()

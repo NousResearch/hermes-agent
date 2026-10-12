@@ -10,8 +10,6 @@ from __future__ import annotations
 from contextlib import contextmanager, suppress
 import logging
 import os
-import signal
-import subprocess
 import time
 from pathlib import Path
 
@@ -21,24 +19,39 @@ from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 logger = logging.getLogger(__name__)
 
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+# The engine that singleton runs (or is booting). Budgets price ITS devices: the server is shared by
+# every profile this process hosts, so another profile's ``local_runtime.backend`` must not resize it.
+_SERVING_ENGINE = None
+_EXIT_HOOKED = False
+
+
+def _stop_at_exit() -> None:
+    """The process that boots the server stops it on a clean exit, whatever surface it is (the
+    desktop backend also stops it in its shutdown handler; the second call is a no-op). Processes
+    that only adopted another's server never stop it. A hard kill still leaves an orphan, which the
+    next boot adopts or replaces."""
+    global _EXIT_HOOKED
+    if not _EXIT_HOOKED:
+        import atexit
+
+        atexit.register(shutdown_local_runtime)
+        _EXIT_HOOKED = True
 
 
 def _detect_gpu_vendor() -> str | None:
-    """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
-    probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
-    vulkan/cpu); anything else defers to select_backend's fallback ladder."""
-    from hermes_cli.local_runtime.hardware import _nvidia_smi_path
+    """Best-effort GPU vendor for backend selection.
 
-    smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    with suppress(OSError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
-    return None
+    Preserve NVIDIA's detailed name when nvidia-smi is available, then use the
+    platform host facts so Intel and AMD do not silently demote ``auto`` to CPU.
+    """
+    from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
+    from hermes_platform.host.facts import gpu_class
+
+    query = _cached_nvidia_gpu_query()
+    if query is not None and query.get("gpu_name"):
+        return "nvidia " + query["gpu_name"]
+    detected = gpu_class()
+    return detected if detected in {"nvidia", "amd", "intel"} else None
 
 
 def models_dir() -> Path:
@@ -55,7 +68,7 @@ def assets_dir() -> Path:
     return models_dir() / "assets"
 
 
-def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
+def staged_in(models_dir: Path, *, require_complete: bool = True) -> list[Path]:
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
     is not servable and must not surface anywhere as a model."""
@@ -76,7 +89,7 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
     return out
 
 
-def adopt_legacy_models() -> "list[Path]":
+def adopt_legacy_models() -> list[Path]:
     """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
     into the machine-scoped dirs, so everything downstream keeps reading one directory.
 
@@ -120,12 +133,12 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
-def staged_models() -> "list[Path]":
+def staged_models() -> list[Path]:
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
     return staged_in(models_dir())
 
 
-def staged_model_ids() -> "list[str]":
+def staged_model_ids() -> list[str]:
     return [model_id_from_stem(p.stem) for p in staged_models()]
 
 
@@ -141,25 +154,35 @@ def _presets_stale() -> bool:
     return False
 
 
-def _stop_state_server(state: dict) -> None:
-    """Best-effort stop of the server the state file points at (an incumbent this process doesn't
-    supervise). The state pid is ours by contract — the file only ever describes the managed
-    server."""
-    from hermes_cli.local_runtime.endpoint import _pid_alive
+def _stop_state_server() -> None:
+    """Stop the server the state file points at before this process boots a replacement, but only
+    an orphan (recorded owner gone): a live owner's watchdog would respawn its router, so that one
+    is left running and the replacement boots beside it, as it always has. The process comes from
+    the identity-guarded reader, never a bare PID — the endpoint dict callers hold has none."""
+    from hermes_cli.local_runtime.recovery import (
+        _owner_is_dead,
+        is_modern,
+        legacy_recorded_process,
+        read_state,
+        recorded_process,
+    )
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-    try:
-        pid = int(state.get("pid"))
-        if pid <= 0:
+    state = read_state()
+    if is_modern(state):
+        if not _owner_is_dead(state):
+            logger.info("llama-server pid=%s belongs to a live Hermes process; leaving it", state.get("pid"))
             return
-        os.kill(pid, signal.SIGTERM)
-    except (TypeError, ValueError, OSError):
+        proc = recorded_process(state)
+    else:
+        proc = legacy_recorded_process(state)
+    if proc is None:
         return
-    # Give it a moment to release the port and the GPU. Liveness via psutil — on Windows
-    # os.kill(pid, 0) TERMINATES the process, it is not a probe.
-    for _ in range(50):
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.1)
+    try:
+        # Waits for the tree to exit, so the port and the GPU are free for the replacement.
+        LlamaServerSupervisor._terminate_tree(proc, verified_root=True)
+    except Exception as exc:
+        logger.warning("could not stop the incumbent llama-server (pid=%s): %s", proc.pid, exc)
 
 
 def refresh_local_runtime() -> bool:
@@ -176,12 +199,11 @@ def refresh_local_runtime() -> bool:
             state = _state_endpoint()
             if state is None:
                 return False
-            logger.info("bouncing adopted llama-server (pid=%s) to rescan models", state.get("pid"))
-            _stop_state_server(state)
+            _stop_state_server()
         else:
             shutdown_local_runtime()
         return ensure_local_runtime(load_config(), force=True) is not None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("local runtime refresh failed: %s", exc)
         return False
 
@@ -199,7 +221,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
         cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
     if cap != configured:
@@ -231,7 +253,7 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
-    except Exception as exc:  # noqa: BLE001 — policy failure must not block serving
+    except Exception as exc:
         if preset_path.exists():
             logger.error("preset generation failed (%s); serving with the "
                          "PREVIOUS launch policies — models staged since "
@@ -249,7 +271,7 @@ def _launch_budget(capacity, own_bytes: int = 0):
 
     try:
         return launch_budget(capacity, own_bytes=own_bytes)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("free GPU memory probe failed (%s); launch windows use capacity", exc)
         return None
 
@@ -377,11 +399,11 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
         os.close(fd)
 
 
-def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
+def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
-    global _SUPERVISOR
+    global _SUPERVISOR, _SERVING_ENGINE
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):
         return None
@@ -417,7 +439,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 return None
             logger.info("running server's presets predate the staged models; "
                         "replacing it so every model launches with a policy")
-            _stop_state_server(state)
+            _stop_state_server()
 
         try:
             from hermes_cli.local_runtime.binaries import installed_engine
@@ -427,6 +449,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             if engine is None:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None
+            _SERVING_ENGINE = engine
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
@@ -445,25 +468,33 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                     sup.stop()
                 raise
             _SUPERVISOR = sup
+            _stop_at_exit()
             logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
             _start_idle_sweeper(sup)
             return sup
-        except Exception as exc:  # noqa: BLE001 — never break session start
+        except Exception as exc:
+            _SERVING_ENGINE = None
             logger.warning("managed local runtime unavailable: %s", exc)
             return None
 
 
 def shutdown_local_runtime() -> None:
-    global _SUPERVISOR
+    global _SUPERVISOR, _SERVING_ENGINE
     if _SUPERVISOR is not None:
         _SUPERVISOR.stop()
         _SUPERVISOR = None
+    _SERVING_ENGINE = None
 
 
 def get_supervisor():
     """The process-local supervisor, or None (a server may still run under another process —
     check the state file)."""
     return _SUPERVISOR
+
+
+def serving_engine():
+    """The engine the process-local server runs or is booting, or None when there is none."""
+    return _SERVING_ENGINE
 
 
 _SWEEP_EVERY_S = 120
@@ -484,11 +515,11 @@ def _start_idle_sweeper(sup) -> None:
                 last_sweep = time.monotonic()
                 try:
                     sup.sweep_idle()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.debug("idle sweep skipped: %s", exc)
             try:
                 refit_idle_presets(sup)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.debug("launch window re-plan skipped: %s", exc)
 
     threading.Thread(target=_loop, daemon=True, name="local-runtime-idle-sweep").start()

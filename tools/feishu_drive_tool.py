@@ -7,7 +7,7 @@ The lark client is injected per-thread by the feishu_comment event handler.
 
 import logging
 
-from tools.feishu_lark import (  # noqa: F401  (set_client/get_client are imported by feishu_comment)
+from tools.feishu_lark import (
     _check_feishu,
     build_request,
     get_client,

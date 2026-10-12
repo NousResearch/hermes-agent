@@ -133,11 +133,10 @@ export function createSandbox(prefix: string): Sandbox {
     'utf8',
   )
 
-  // Pin Chromium actual-size zoom (level 0) for the suite. Fresh installs
-  // ship DEFAULT_ZOOM_LEVEL at the Appearance 90% preset, but Playwright
-  // click hit-testing and the committed visual baselines were calibrated at
-  // 100%. Without this file every sandbox would inherit the product default
-  // and fail pointer interception + snapshot diffs.
+  // Pin Chromium actual-size zoom (level 0) for the suite. Playwright click
+  // hit-testing and the committed visual baselines were calibrated at 100%,
+  // so the suite must not drift if the product default (DEFAULT_ZOOM_LEVEL)
+  // ever moves off 100% again.
   fs.writeFileSync(
     path.join(userDataDir, 'zoom-state.json'),
     JSON.stringify({ zoomLevel: 0 }, null, 2),

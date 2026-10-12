@@ -48,7 +48,7 @@ async def handle_setup_files_command(
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     async def _reply(text: str) -> None:
-        body: Dict[str, Any] = {"text": text}
+        body: dict[str, Any] = {"text": text}
         if thread_id:
             body["thread"] = {"name": thread_id}
         try:

@@ -394,10 +394,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if unseen:
                 return
             pane = getattr(ctx, "matrix_commentary_pane", None)
-            if pane is not None:
-                if already_streamed or not str(text or "").strip():
-                    return
-                self._schedule(pane.append(text), "matrix commentary pane scheduling error")
+            if pane is not None and not already_streamed:
+                if str(text or "").strip():
+                    self._schedule(pane.append(text), "matrix commentary pane scheduling error")
                 return
             if stream_consumer is not None:
                 # The agent's own streaming may be feeding an execution observer rather than this

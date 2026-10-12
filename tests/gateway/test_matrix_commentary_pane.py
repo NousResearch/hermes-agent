@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -168,11 +168,28 @@ def test_interim_callback_skips_already_streamed_and_empty():
         return None
 
     runner._schedule = _schedule  # type: ignore[method-assign]
-    _, _, cb, want = runner._setup_stream_consumer("matrix")
+    breaks = []
+
+    class _Consumer:
+        def __init__(self, *args, **kwargs):
+            self.stream_deltas_enabled = False
+
+        def on_segment_break(self):
+            breaks.append("break")
+
+        def on_commentary(self, text):
+            breaks.append(text)
+
+    host = runner._runner
+    host._delivery_adapter_for = lambda source: adapter
+    host._build_stream_consumer_config = lambda *args, **kwargs: (SimpleNamespace(), None)
+    with patch("gateway.stream_consumer.GatewayStreamConsumer", _Consumer):
+        _, _, cb, want = runner._setup_stream_consumer("matrix")
     assert want is True
     cb("   ")
     cb("shown already", already_streamed=True)
     assert scheduled == []
+    assert breaks == ["break"]
     cb("I'll inspect the config next.")
     assert len(scheduled) == 1
 

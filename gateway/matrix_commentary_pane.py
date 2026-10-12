@@ -90,14 +90,11 @@ class MatrixCommentaryPane:
         body, _html, metadata = payload
         try:
             if self.root_event_id is None:
-                result = await asyncio.wait_for(
-                    self.adapter.send(
-                        chat_id=self.chat_id,
-                        content=body,
-                        reply_to=self.reply_to,
-                        metadata=metadata,
-                    ),
-                    self.TRANSPORT_TIMEOUT,
+                result = await self.adapter.send(
+                    chat_id=self.chat_id,
+                    content=body,
+                    reply_to=self.reply_to,
+                    metadata=metadata,
                 )
                 if getattr(result, "success", False) and getattr(result, "message_id", None):
                     self.root_event_id = str(result.message_id)

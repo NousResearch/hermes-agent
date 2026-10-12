@@ -160,7 +160,7 @@ def build_models_payload(
     if capabilities:
         _apply_capabilities(rows, metadata_config=metadata_config)
     if featured:
-        _apply_featured(rows, metadata_config=metadata_config)
+        _apply_featured(rows, metadata_config=metadata_config, allow_network=not non_blocking_catalogs)
     _apply_custom_aliases(rows)
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
@@ -597,12 +597,15 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
 _FEATURED_PER_LAB = 5
 
 
-def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
+def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None,
+                    allow_network: bool = True) -> None:
     """Attach a ``featured_models`` shortlist to each routing-aggregator row: newest
     ``_FEATURED_PER_LAB`` per vendor by models.dev ``release_date`` (ranked within the row, never vs.
     today, so it is stable); ties keep curated order. Non-aggregators — including every user-defined
     row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
-    behaviour (#120217)."""
+    behaviour (#120217). ``allow_network=False`` classifies rows from the memory/disk models.dev
+    cache only, like ``_strip_aggregator_overlaps()``, so a cache-only picker read never probes the
+    registry to decide whether a row gets a shortlist."""
     try:
         from agent.models_dev import get_model_info
     except Exception:
@@ -621,7 +624,9 @@ def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) ->
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
 
-        if row.get("is_user_defined") or not (is_routing_aggregator and is_routing_aggregator(slug)):
+        if row.get("is_user_defined") or not (
+            is_routing_aggregator and is_routing_aggregator(slug, allow_network=allow_network)
+        ):
             row["featured_models"] = []
             continue
 

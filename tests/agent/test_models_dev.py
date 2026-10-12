@@ -294,32 +294,40 @@ class TestFetchModelsDev:
         assert md._models_dev_retry_after == 0
 
     @pytest.mark.parametrize(
-        ("cache", "cache_time", "disk_data", "expected"),
+        ("cache", "cache_time", "disk_data", "expected", "schedules_refresh"),
         [
-            (SAMPLE_REGISTRY, lambda md: time.time(), {}, SAMPLE_REGISTRY),
+            (SAMPLE_REGISTRY, lambda md: time.time(), {}, SAMPLE_REGISTRY, False),
             (
                 SAMPLE_REGISTRY,
                 lambda md: time.time() - md._MODELS_DEV_CACHE_TTL - 1,
                 {},
                 SAMPLE_REGISTRY,
+                True,
             ),
-            ({}, lambda _md: 0, {}, {}),
+            ({}, lambda _md: 0, {}, {}, True),
         ],
         ids=["fresh-memory", "stale-memory", "missing"],
     )
     @patch("agent.models_dev.requests.get")
     def test_network_disabled_never_fetches(
-        self, mock_get, cache, cache_time, disk_data, expected
+        self, mock_get, cache, cache_time, disk_data, expected, schedules_refresh
     ):
+        """``allow_network=False`` answers from cache only and never issues the request itself.
+
+        The refresh contract still holds on this path: a stale or missing cache schedules the same
+        deduped background worker a blocking read would (off-thread), while a fresh cache does not.
+        """
         import agent.models_dev as md
 
         md._models_dev_cache = cache
         md._models_dev_cache_time = cache_time(md)
-        with patch.object(md, "_load_disk_cache", return_value=disk_data):
+        with patch.object(md, "_load_disk_cache", return_value=disk_data), \
+             patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
             result = fetch_models_dev(allow_network=False)
 
         assert result == expected
         mock_get.assert_not_called()
+        assert mock_refresh.call_count == (1 if schedules_refresh else 0)
 
 
 

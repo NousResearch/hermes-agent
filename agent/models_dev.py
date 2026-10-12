@@ -441,13 +441,23 @@ def fetch_models_dev(force_refresh: bool = False, *, allow_network: bool = True)
     beats a foreground timeout) → disk of any age (stale triggers the same background refresh) →
     singleflight foreground fetch. A failed refresh suppresses automatic refreshes for 5 minutes.
     ``force_refresh=True`` bypasses the cache fast paths and the backoff, falling back to cached data
-    only if the call fails. ``allow_network=False`` returns any memory/disk cache and never makes a request."""
+    only if the call fails. ``allow_network=False`` answers from memory/disk only and never blocks on a
+    request, but keeps the refresh contract: a stale hit serves the held cache and schedules the same
+    deduped background refresh a blocking read would, and a cold cache schedules one for the next reader."""
     global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
     if not allow_network:
         if not _models_dev_cache and (disk_data := _load_disk_cache()):
             _models_dev_cache = disk_data
             disk_age = _disk_cache_age_seconds()
             _models_dev_cache_time = time.time() - disk_age if disk_age is not None else 0
+        if not _models_dev_cache:
+            # Nothing cached: warming for the next reader is what a cold blocking read would do, and
+            # the worker is deduped + backoff-gated, so repeated cache-only lookups cost one attempt.
+            _start_background_refresh_models_dev()
+        elif (time.time() - _models_dev_cache_time) >= _MODELS_DEV_CACHE_TTL:
+            # Same (cache_time, TTL) predicate as stage 1: stale data is served immediately and the
+            # deduped refresh runs off-thread, so the read path stays free of blocking registry I/O.
+            return _serve_stale("Using stale models.dev cache on a cache-only read; refreshing in background")
         return _models_dev_cache
     if not force_refresh:
         # Stage 1: fresh in-memory cache — the hot path, no I/O.

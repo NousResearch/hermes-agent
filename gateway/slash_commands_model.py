@@ -487,7 +487,7 @@ class GatewayModelCommandsMixin:
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
-                   provider=get_label(ctx.current_provider)), ""]
+                   provider=get_label(ctx.current_provider, allow_network=False)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))

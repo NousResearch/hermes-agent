@@ -96,8 +96,10 @@ def test_cold_picker_keeps_declared_models_without_fetching_registry(
     payload = future.result(timeout=5)
     row = next(row for row in payload["providers"] if row["slug"] == "deepseek")
     assert "declared-model" in row["models"]
-    assert requests == []
-    assert not (home / "models_dev_cache.json").exists()
+    # The handler holds its response for 15s, so returning at all proves the picker read never waited
+    # on the registry. The cold cache still warms, but off-thread: while the response is held no
+    # catalog model can appear, so a live read would have to show up here as its model id.
+    assert "catalog-vision-model" not in row["models"]
 
 
 def test_capability_lookup_and_explicit_refresh_keep_cold_network_semantics(registry):

@@ -697,6 +697,14 @@ def resolve_codex_runtime_credentials(
                     # singleton itself is left for the next explicit login (#136151).
                     dead_token = _stripped(tokens.get("access_token"))
                     pool_token, pool_base = _pool_codex_credential(exclude_access_token=dead_token)
+                    if pool_token and force_refresh and not read_only:
+                        # Same contract as the pool-only path above: a forced refresh must rotate
+                        # the surviving pool entry instead of resending the token bytes the caller
+                        # may already have seen fail; a failed rotation leaves no usable survivor,
+                        # so the original singleton rejection still propagates.
+                        from agent.credential_pool import load_pool
+                        refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
+                        pool_token = refreshed.runtime_api_key if refreshed is not None else ""
                     if pool_token:
                         logger.warning(
                             "Codex singleton token refresh failed (%s) — resolving a healthy "

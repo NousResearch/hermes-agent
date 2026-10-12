@@ -466,9 +466,9 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
     assert hints == ["pool-revoked"]
 
 
-def _expired_codex_jwt() -> str:
+def _expired_codex_jwt(exp: int = 1000000000) -> str:
     """Codex access-token shape with an ``exp`` far in the past, so resolution wants a refresh."""
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": 1000000000}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
     return f"header.{payload}.sig"
 
 
@@ -574,3 +574,64 @@ def test_transient_singleton_refresh_failure_does_not_use_pool(tmp_path, monkeyp
     from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
     assert exc_info.value.code == CODEX_RATE_LIMITED_CODE
     assert exc_info.value.relogin_required is False
+
+
+def test_terminal_singleton_failure_force_refresh_rotates_survivor(tmp_path, monkeypatch):
+    """Regression for the review follow-up: a terminal singleton plus an eligible-but-stale
+    survivor row — ``force_refresh=True`` must rotate the survivor through the pool
+    forced-refresh contract (``try_refresh_matching``), not resend its expired token bytes."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    dead = _expired_codex_jwt()
+    stale = _expired_codex_jwt(exp=1000000001)  # survivor B: expired access, usable refresh token
+    mirror = _codex_pool_row("mirror", "device_code", dead, "rejected" + "-rt")
+    survivor = _codex_pool_row("healthy", "manual:device_code", stale, "healthy" + "-rt")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": _codex_singleton_state(dead, "rejected" + "-rt"),
+        "credential_pool": {"openai-codex": [mirror, survivor]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+    _deny_singleton_refresh(monkeypatch, relogin=True)
+    hints = []
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            hints.append(api_key_hint)
+            return SimpleNamespace(runtime_api_key="pool" + "-rotated")
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True)
+    assert resolved["api_key"] == "pool" + "-rotated"
+    assert resolved["source"] == "credential_pool"
+    # The rotation targeted the survivor row's own token, never the dead singleton's mirror.
+    assert hints == [stale]
+
+
+def test_terminal_singleton_failure_rotation_fails_keeps_error(tmp_path, monkeypatch):
+    """Forced rotation of the survivor returns no refreshed credential — no usable survivor can
+    be obtained, so the original singleton rejection propagates instead of stale pool bytes."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    dead = _expired_codex_jwt()
+    stale = _expired_codex_jwt(exp=1000000001)
+    survivor = _codex_pool_row("healthy", "manual:device_code", stale, "healthy" + "-rt")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": _codex_singleton_state(dead, "rejected" + "-rt"),
+        "credential_pool": {"openai-codex": [survivor]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-cli"))
+    _deny_singleton_refresh(monkeypatch, relogin=True)
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda provider: SimpleNamespace(
+            try_refresh_matching=lambda api_key_hint=None, credential_id=None: None))
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_codex_runtime_credentials(force_refresh=True)
+    assert exc_info.value.code == "codex_invalid_grant"
+    assert exc_info.value.relogin_required is True

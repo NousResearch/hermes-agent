@@ -589,15 +589,23 @@ def _redact_approval_command(cmd: str | None) -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False,
+    smart_unavailable: str | None = None) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs.
+
+    ``smart_unavailable`` is set when the guardian could not run, so the operator learns WHY this
+    prompt exists. It announces a degraded state; it never changes the decision, and the
+    fall-back to asking a human is deliberate. Wording is a literal (not a locale key) for the
+    same reason as the queued card's NOTE: it is diagnostic detail, not platform copy."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
+    notice = (f"\nNOTE: smart approval could not run ({smart_unavailable}) — asking directly "
+              f"instead of a model verdict." if smart_unavailable else "")
 
     choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:
@@ -608,6 +616,7 @@ def _format_exec_approval_fallback(
     return (
         t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
           reason_label=ea_reason_label_text(), reason=description)
+        + notice
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
         + format_approval_deadline_line(approval_timeout_seconds()))

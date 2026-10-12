@@ -207,6 +207,9 @@ class PendingApproval(OpenModel):
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
+    # Set when the guardian LLM could not run and the gate fell back to asking a human. Announces
+    # a degraded state (with the reason) without changing the choice set or the decision.
+    smart_unavailable: str | None = None
     choices: list[str] | None = None
     tool_name: str | None = None
 

@@ -343,6 +343,17 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           </span>
         )}
       </div>
+      {request.smartUnavailable && (
+        // Announcement only: the prompt exists because the guardian could not run, not because a
+        // model judged the command. Without this line the fall-back to human approval is
+        // indistinguishable from a real verdict.
+        <p
+          className="m-0 px-2.5 pb-1 text-xs leading-relaxed text-(--ui-text-secondary)"
+          data-slot="tool-approval-smart-unavailable"
+        >
+          {copy.smartUnavailable(request.smartUnavailable)}
+        </p>
+      )}
       {details.length > 0 && (
         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
           {details}

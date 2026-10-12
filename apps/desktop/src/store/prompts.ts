@@ -90,6 +90,10 @@ export interface ApprovalRequest extends KeyedPrompt {
   requestId?: string
   serverRequestId?: string
   smartDenied?: boolean
+  // Set when the guardian LLM could not run and the gate fell back to asking a human, so the
+  // card can say WHY it is asking. Announcement only: it never changes the choice set, and the
+  // fall-back to a human prompt is deliberate fail-safe behaviour.
+  smartUnavailable?: string
 }
 
 interface ApprovalGateway {
@@ -103,6 +107,7 @@ interface PendingApprovalPayload {
   description?: unknown
   request_id?: unknown
   smart_denied?: boolean
+  smart_unavailable?: unknown
 }
 
 export interface SudoRequest extends KeyedPrompt {
@@ -331,7 +336,9 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
         requestId: pending.request_id,
         sessionId,
-        smartDenied: pending.smart_denied === true
+        smartDenied: pending.smart_denied === true,
+        smartUnavailable:
+          typeof pending.smart_unavailable === 'string' ? pending.smart_unavailable : undefined
       })
     })
   )

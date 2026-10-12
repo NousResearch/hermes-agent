@@ -4103,6 +4103,7 @@ export interface Translations extends NoticeTranslations {
       alwaysTitle: string
       alwaysDescription: (pattern: string) => string
       alwaysAllow: string
+      smartUnavailable: (reason: string) => string
     }
     clarify: {
       notReady: string

@@ -305,6 +305,45 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     assert lookups == ["homeassistant", "homeassistant"]
 
 
+def test_repeated_startup_failures_back_off_exponentially(tmp_path, monkeypatch):
+    """A home whose install can never succeed (version gate, root-owned plugins dir, no route to
+    GitHub) is retried after 1h, 2h, 4h ... up to a week, not every hour forever."""
+    import os
+    import time
+
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    attempts = []
+    monkeypatch.setattr(lcm, "_install_into", lambda h: lambda n: attempts.append(n) or {"ok": False, "error": "x"})
+    stamp = mpm._failure_stamp(home, "homeassistant")
+
+    def start_after(hours: float) -> None:
+        then = time.time() - hours * 3600
+        os.utime(stamp, (then, then))
+        lcm._attempted.clear()  # a fresh agent/gateway process
+        lcm.recover_at_startup(say=lambda _m: None)
+
+    lcm.recover_at_startup(say=lambda _m: None)          # failure 1 → next try after 1h
+    start_after(1.5)                                     # failure 2 → next try after 2h
+    assert len(attempts) == 2
+    start_after(1.5)                                     # inside the 2h window: no network
+    assert len(attempts) == 2
+    start_after(2.5)                                     # failure 3 → 4h
+    start_after(3.5)
+    assert len(attempts) == 3
+    stamp.write_text("40", encoding="utf-8")             # capped at a week, never overflows
+    start_after(24 * 6.9)
+    assert len(attempts) == 3
+    start_after(24 * 7.1)
+    assert len(attempts) == 4
+    stamp.write_text("", encoding="utf-8")               # an older Hermes's empty stamp counts once
+    start_after(1.5)
+    assert len(attempts) == 5
+
+
 @pytest.mark.parametrize(("auth_json", "config", "in_use"), [
     ('{"providers": {"spotify": {"refresh_token": "r"}}}', "", True),
     ('{"providers": {"spotify": {"access_token": "a"}}}', "", True),

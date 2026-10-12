@@ -9,6 +9,7 @@ it is momentarily orphaned. Age decides, not the name.
 
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -33,18 +34,25 @@ def _branches(repo):
 
 @pytest.fixture
 def repo(tmp_path):
-    """One worktree-less branch created now, one whose tip commit is days old."""
+    """A branch cut now from a days-old commit, and one untouched for days.
+
+    The fresh branch's tip commit is old: only its ref update is new, as for a lane
+    branched off a quiet repo's main or a ``pr-*`` head fetched from an old commit.
+    """
+    old = {"GIT_AUTHOR_DATE": STALE_DATE, "GIT_COMMITTER_DATE": STALE_DATE}
     root = tmp_path / "repo"
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "test@test.com")
     _git(root, "config", "user.name", "Test")
-    _git(root, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "base", env=old)
     _git(root, "branch", "hermes/hermes-fresh")
     _git(root, "checkout", "-q", "-b", "hermes/hermes-stale", "main")
-    _git(root, "commit", "-q", "--allow-empty", "-m", "stale",
-         env={"GIT_AUTHOR_DATE": STALE_DATE, "GIT_COMMITTER_DATE": STALE_DATE})
+    _git(root, "commit", "-q", "--allow-empty", "-m", "stale", env=old)
     _git(root, "checkout", "-q", "main")
+    stale_log = root / ".git" / "logs" / "refs" / "heads" / "hermes" / "hermes-stale"
+    days_ago = time.time() - 5 * 86400
+    os.utime(stale_log, (days_ago, days_ago))
     return root
 
 

@@ -1074,20 +1074,27 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None,
     if not orphaned:
         return
 
-    # One call resolves every tip date. If the refs cannot be dated, keep them all:
-    # an unreadable age is not evidence that the work is finished.
+    # A branch's age is its newest activity: the tip commit OR the last ref update (its reflog
+    # file's mtime). The commit date alone dates the BASE, so a branch cut seconds ago from an
+    # old commit (a quiet repo, a fetched `pr-*` head) reads as days old. Undatable = kept.
     try:
         refs = _git_out(["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)",
                          "refs/heads"], repo_root)
-    except Exception:
+        common_dir = _git_out(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo_root)
+    except (OSError, subprocess.SubprocessError):
         return
-    if not refs:
+    if not refs or not common_dir:
         return
     ages = {}
     for line in refs.split("\n"):
         name, _, stamp = line.partition("\t")
-        if name.strip() and stamp.strip().isdigit():
-            ages[name.strip()] = int(stamp.strip())
+        name, stamp = name.strip(), stamp.strip()
+        if name and stamp.isdigit():
+            reflog = Path(common_dir) / "logs" / "refs" / "heads" / name
+            try:
+                ages[name] = max(int(stamp), reflog.stat().st_mtime)
+            except OSError:
+                ages[name] = int(stamp)
 
     cutoff = time.time() - (max_age_hours * 3600)
     stale = [b for b in orphaned if ages.get(b, float("inf")) <= cutoff]

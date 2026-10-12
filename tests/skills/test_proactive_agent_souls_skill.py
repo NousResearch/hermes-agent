@@ -66,8 +66,9 @@ def _filled_contract() -> str:
     text = TEMPLATE.read_text(encoding="utf-8-sig")
     for placeholder, value in (
         ("<observations-path>", "~/notes/OBSERVATIONS.md"),
-        ("<trigger-1>", "two consecutive failed scheduled runs"),
-        ("<trigger-2>", "a watched price crosses the threshold"),
+        ("<rules-path>", "~/notes/PROACTIVITY_RULES.md"),
+        ("<rule-1>", "two consecutive failed scheduled runs"),
+        ("<rule-2>", "a watched price crosses the threshold"),
         ("<what the recipient gets to decide>", "whether to intervene tonight"),
         ("<timezone>", "Europe/Lisbon"),
         ("<N>", "60"),
@@ -75,7 +76,7 @@ def _filled_contract() -> str:
         text = text.replace(placeholder, value)
     text = text.replace("<HH:MM>", "23:00", 1).replace("<HH:MM>", "07:30", 1)
     return text.replace(
-        "Filling this block in is what\nmakes an agent proactive instead of noisy — replace every `<…>` placeholder before saving.",
+        "Replace\nevery `<…>` placeholder before saving.",
         "This block is filled in and live.",
     )
 
@@ -89,8 +90,12 @@ GOOD = _filled_contract()
 def test_skill_ships_the_checker_templates_and_docs():
     for path in (SKILL_MD, SCRIPT, TEMPLATE, LOG_TEMPLATE):
         assert path.is_file(), f"{path} missing from the skill"
-    log_rows = [line for line in LOG_TEMPLATE.read_text(encoding="utf-8-sig").splitlines() if line.startswith("20")]
-    assert len(log_rows) == 2, "the observations template must show two worked rows"
+    log_rows = [
+        line
+        for line in LOG_TEMPLATE.read_text(encoding="utf-8-sig").splitlines()
+        if line.startswith("20")
+    ]
+    assert len(log_rows) == 3, "the observations template must show worked rows for open, confirmed and actioned"
 
 
 def test_frontmatter_obeys_the_authoring_hardline():
@@ -121,6 +126,7 @@ def test_shipped_template_is_rejected_as_an_unfilled_scaffold():
         "observations-log-missing",
         "placeholder",
         "quiet-hours-incomplete",
+        "rules-file-missing",
         "suppression-incomplete",
     }, codes
 
@@ -131,8 +137,9 @@ def test_missing_proactivity_section_is_reported():
 
 
 def test_missing_tier_is_reported():
-    without_tier_two = GOOD.replace(_tier_block(GOOD, 2), "")
-    assert "tier-missing" in _codes(CHECKER.check_text(without_tier_two))
+    for tier in (2, 3, 4):
+        without = GOOD.replace(_tier_block(GOOD, tier), "")
+        assert "tier-missing" in _codes(CHECKER.check_text(without)), tier
 
 
 def test_tiers_out_of_order_are_reported():
@@ -150,7 +157,7 @@ def test_a_tier_defined_twice_is_reported():
 
 def test_a_tier_with_no_body_is_reported():
     emptied = GOOD.replace(
-        _tier_block(GOOD, 3), "### Tier 3 — May send (only on a registered trigger)\n\n"
+        _tier_block(GOOD, 3), "### Tier 3 — Bounded self-heal (act, verify, stay quiet)\n\n"
     )
     assert "tier-empty" in _codes(CHECKER.check_text(emptied))
 
@@ -170,8 +177,21 @@ def test_observations_log_path_is_required():
     assert "observations-log-missing" in codes, codes
 
 
+def test_operator_rules_file_path_is_required():
+    codes = _codes(CHECKER.check_text(GOOD.replace("~/notes/PROACTIVITY_RULES.md", "the rules I wrote")))
+    assert "rules-file-missing" in codes, codes
+
+
+def test_message_quality_bar_is_advisory():
+    findings = CHECKER.check_text(GOOD.replace("### Message quality (Tier 4 only)", "### Notes"))
+    quality = [f for f in findings if f.code == "message-quality-missing"]
+    assert quality and quality[0].severity == CHECKER.WARNING
+
+
 def test_placeholder_left_in_the_file_is_reported():
-    codes = _codes(CHECKER.check_text(GOOD + "\n### Tier 4 — TODO\n\n- <do the thing>\n"))
+    codes = _codes(
+        CHECKER.check_text(GOOD + "\n- TODO: reconcile the log\n- <add the missing rule>\n")
+    )
     assert codes == ["placeholder", "placeholder"], codes
 
 
@@ -183,7 +203,8 @@ def test_quiet_hours_and_suppression_are_advisory():
     without_windows = "\n".join(
         line
         for line in GOOD.splitlines()
-        if "quiet" not in line.lower() and "suppress" not in line.lower()
+        if not line.strip().startswith(("**Quiet hours:**", "**Suppression:**"))
+        and "suppress" not in line.lower()
     )
     findings = CHECKER.check_text(without_windows)
     assert {f.code for f in findings} == {"quiet-hours-missing", "suppression-missing"}

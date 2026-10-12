@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Check an agent identity file (``SOUL.md``) for a well-formed proactivity contract.
 
-The contract a proactive agent stands on is three tiers (silent self-maintenance,
-record-but-don't-send, may-send-on-a-registered-trigger) plus a quiet-hours window, a
-send-suppression window, the delivery silence marker and a path for the observations log.
-Prose in ``SOUL.md`` is model-followed, not enforced — this checker is the mechanical half:
-it catches the contract that was templated and never filled in, the tier copied twice, the
-tier that quietly lost its body, and the identity file grown past the truncation cap.
+The contract a proactive agent stands on is four tiers (silent self-maintenance,
+record-but-don't-send, bounded self-heal, and may-send-only-on-a-rule) plus the operator's
+rules file and observations-log paths, a quiet-hours window, a send-suppression window, and
+the delivery silence marker. Prose in ``SOUL.md`` is model-followed, not enforced — this
+checker is the mechanical half: it catches the contract that was templated and never filled
+in, the tier copied twice, the tier that quietly lost its body, and the identity file grown
+past the truncation cap.
 
 Usage:
     # $HERMES_HOME/SOUL.md (or ~/.hermes/SOUL.md when HERMES_HOME is unset)
@@ -37,6 +38,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 ERROR = "error"
 WARNING = "warning"
@@ -54,7 +56,9 @@ DURATION_RE = re.compile(r"\b\d+\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|ho
 TRIGGER_RE = re.compile(r"\btriggers?\b", re.IGNORECASE)
 SILENCE_MARKER = "[SILENT]"
 OBSERVATIONS_RE = re.compile(r"observations?\b", re.IGNORECASE)
-MARKDOWN_PATH_RE = re.compile(r"[~$\w][\w.$~/-]*\.md\b")
+RULES_RE = re.compile(r"\brules?\b", re.IGNORECASE)
+MESSAGE_QUALITY_RE = re.compile(r"message\s+quality", re.IGNORECASE)
+FILE_PATH_RE = re.compile(r"[~$\w][\w.$~/-]*\.(?:md|ya?ml|json|toml|txt|ini|csv)\b")
 PLACEHOLDER_RE = re.compile(r"\b(?:TODO|TBD|FIXME)\b|<[a-z][a-z0-9 _-]*>", re.IGNORECASE)
 
 # Same context-file cap class as ``agent.context_file_max_chars`` (floor 20K when unset);
@@ -64,7 +68,8 @@ DEFAULT_MAX_CHARS = 20_000
 TIER_NAMES = {
     1: "silent self-maintenance",
     2: "record but do not send",
-    3: "may send on a registered trigger",
+    3: "bounded self-heal",
+    4: "may send on a rule the operator owns",
 }
 
 
@@ -194,13 +199,28 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
             )
         )
     if not any(
-        OBSERVATIONS_RE.search(line) and MARKDOWN_PATH_RE.search(line) for _, line in scoped
+        OBSERVATIONS_RE.search(line) and FILE_PATH_RE.search(line) for _, line in scoped
     ):
         findings.append(
             Finding(
                 "observations-log-missing",
                 "no observations log path — Tier 2 needs a file to record into (name it on a line "
                 "that mentions observations)",
+            )
+        )
+    if not any(RULES_RE.search(line) and FILE_PATH_RE.search(line) for _, line in scoped):
+        findings.append(
+            Finding(
+                "rules-file-missing",
+                "no operator rules-file path — name the file whose rules decide what may be sent",
+            )
+        )
+    if not MESSAGE_QUALITY_RE.search(scope_text):
+        findings.append(
+            Finding(
+                "message-quality-missing",
+                "no message-quality bar for sent messages (title, why it matters, source)",
+                severity=WARNING,
             )
         )
 
@@ -258,11 +278,11 @@ def check_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[Finding]:
     return findings
 
 
-def resolve_targets(raw_paths: list[str], env: dict[str, str] | None = None) -> list[Path]:
+def resolve_targets(raw_paths: list[str], env: Mapping[str, str] | None = None) -> list[Path]:
     """Identity files to check: the arguments, or ``$HERMES_HOME/SOUL.md`` when none given."""
-    env = os.environ if env is None else env
+    environ: Mapping[str, str] = os.environ if env is None else env
     if not raw_paths:
-        home = env.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        home = environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
         return [Path(os.path.expanduser(home)) / "SOUL.md"]
     targets: list[Path] = []
     for raw in raw_paths:

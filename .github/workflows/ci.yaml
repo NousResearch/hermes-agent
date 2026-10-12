@@ -80,6 +80,7 @@ jobs:
       bootstrap: ${{ steps.gate-lanes.outputs.bootstrap }}
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
+      remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -93,19 +94,27 @@ jobs:
         uses: ./.github/actions/detect-changes
         with:
           github-token: ${{ github.token }}
-      - name: Force all lanes on release
-        # Overwrite the classifier outputs with 'true' when inputs.release.
+      - name: Force all lanes on release; E2E only on release or dispatch
+        # Overwrite the classifier outputs with 'true' when inputs.release. The E2E
+        # lanes are forced off unless this is a release run or a manual dispatch
+        # (whose empty diff already turns every lane on): never on a pull request
+        # or a push to main, whatever the diff or labels say.
         id: gate-lanes
         env:
           RELEASE: ${{ inputs.release }}
+          EVENT_NAME: ${{ github.event_name }}
           CLASSIFIED: ${{ toJSON(steps.classify.outputs) }}
         run: |
           python3 - <<'PY'
           import json, os
           values = json.loads(os.environ['CLASSIFIED'])
+          release = os.environ['RELEASE'] == 'true'
+          e2e_allowed = release or os.environ['EVENT_NAME'] == 'workflow_dispatch'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               for lane, value in values.items():
-                  if os.environ['RELEASE'] == 'true' and value in ('true', 'false'):
+                  if lane.startswith('e2e') and not e2e_allowed:
+                      value = 'false'
+                  elif release and value in ('true', 'false'):
                       value = 'true'
                   if '\n' in value or '\r' in value:
                       continue
@@ -117,12 +126,9 @@ jobs:
   # Skipped workflows (if condition is false) don't spin up runners.
   #
   # The E2E suites (e2e, e2e-upgrade, both Desktop suites, and the two
-  # Windows journeys in tests-os) take most of the larger-runner minutes.
-  # On a pull request each runs only when the diff touches that suite or the
-  # code it guards, or the PR carries the `run-e2e` label
-  # (scripts/ci/classify_changes.py::_E2E_LANES). Every push to main runs
-  # all of them, so a regression the path lists miss turns main red after
-  # the merge.
+  # Windows journeys in tests-os) run ONLY on a release run (inputs.release)
+  # or a manual dispatch; the detect gate forces their lanes off for pull
+  # requests and pushes to main.
   # ─────────────────────────────────────────────────────────────────────
   tests:
     name: Python tests
@@ -179,6 +185,16 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
+
+  remote-backends:
+    name: Remote terminal backends
+    needs: detect
+    # The SSH and Docker terminal backends against a real sshd container and the
+    # runner's Docker daemon. Only PRs that touch the backends / terminal tool /
+    # their real tests start it (and every push to main); it runs in parallel with
+    # the other lanes and is required whenever detect selects it.
+    if: needs.detect.outputs.remote_backends == 'true'
+    uses: ./.github/workflows/remote-backends.yml
 
   bootstrap-installer:
     name: Bootstrap installer
@@ -277,6 +293,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  blob-size-check:
+    name: Check no large binaries
+    needs: detect
+    uses: ./.github/workflows/blob-size-check.yml
+
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
@@ -287,6 +308,14 @@ jobs:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
     uses: ./.github/workflows/lockfile-diff.yml
+
+  # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
+  # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
+  prompt-surface-diff:
+    name: Prompt surface diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/prompt-surface-diff.yml
 
   docker-lint:
     name: Lint Docker scripts
@@ -312,7 +341,7 @@ jobs:
   #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
-  #   jobs (history-check, lockfile-diff, supply-chain) and
+  #   jobs (history-check, lockfile-diff, prompt-surface-diff, supply-chain) and
   #   the deferred Desktop E2E (e2e-desktop) may skip. The OSV scan's
   #   findings are advisory, but its execution is required.
   #
@@ -338,6 +367,7 @@ jobs:
       - lint
       - js-tests
       - rust-tests
+      - remote-backends
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -348,8 +378,10 @@ jobs:
       - uv-lockfile
       - infographic-check
       - case-collision-check
+      - blob-size-check
       - lazy-deps-guard
       - lockfile-diff
+      - prompt-surface-diff
       - docker-lint
       - profile-artifact-check
       - icons-freshness-check

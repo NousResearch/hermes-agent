@@ -10,9 +10,7 @@ import json
 
 import pytest
 
-import tools.code_execution_tool as code_execution_tool
-import tools.file_tools as file_tools
-import tools.terminal_tool as terminal_tool
+from tools import code_execution_tool, file_tools, terminal_tool
 import tools.terminal_tool_backends as backends
 
 TASK = "session-abc"

@@ -337,8 +337,7 @@ def _load_dotenv_with_fallback(
         # first key name and silently drop it from os.environ under its canonical name.
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
-            raw = raw[len(codecs.BOM_UTF8) :]
+        raw = raw.removeprefix(codecs.BOM_UTF8)
         text = raw.decode("latin-1")
     # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
     # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.

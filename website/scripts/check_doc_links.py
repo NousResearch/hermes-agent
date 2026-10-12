@@ -67,8 +67,7 @@ def route_for(rel: str, text: str) -> str:
     stem = re.sub(r"\.mdx?$", "", rel)
     if stem == "index":
         return "/"
-    if stem.endswith("/index"):
-        stem = stem[: -len("/index")]
+    stem = stem.removesuffix("/index")
     return "/" + stem
 
 

@@ -112,6 +112,9 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "schema": 1,
         "skipBundles": True,
         "skipTests": False,
+        # macOS Intel and Termux are opt-in, and off unless asked for.
+        "includeMacosIntel": False,
+        "includeTermux": False,
         "version": "0.21.5",
     }
     create = calls[0]
@@ -207,6 +210,102 @@ def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
     with pytest.raises(ReleaseRefused, match="v0.21.5 already has a final tag"):
         _release(source, commit, execute=_must_not_execute)
     assert "rc." not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_a_confirmed_abandon_clears_the_blocking_attempt_and_cuts_the_next(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    asked, calls = [], []
+
+    def inspect(command):
+        if command[1] == "run":
+            return "[]"
+        raise ReleaseRefused("release not found")
+
+    result = _release(source, _advance(source, "fix"), execute=calls.append, inspect=inspect,
+                      confirm_abandon=lambda ref: asked.append(ref) or True)
+
+    assert asked == ["rc.1-v0.21.5"]
+    assert result["tag"] == "rc.2-v0.21.5"
+    assert "refs/tags/abandoned-rc.1-v0.21.5" in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+@pytest.mark.parametrize("confirm_abandon", [None, lambda ref: False])
+def test_an_unconfirmed_abandon_refuses_as_before(source, confirm_abandon):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+
+    with pytest.raises(ReleaseRefused, match="publish or abandon it first"):
+        _release(source, _advance(source, "later"), execute=_must_not_execute,
+                 confirm_abandon=confirm_abandon)
+    assert git(source, "tag", "--list", "*rc.*") == "rc.1-v0.21.5"
+
+
+def test_a_yes_never_clears_a_cut_that_would_be_refused_anyway(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    earlier = git(source, "rev-parse", "HEAD")
+    published = _advance(source, "published")
+    _claim(source, "0.21.5", published)
+    asked = []
+
+    with pytest.raises(ReleaseRefused, match="does not descend from the published stable head"):
+        _release(source, earlier, published=("0.21.4", published), execute=_must_not_execute,
+                 confirm_abandon=lambda ref: asked.append(ref) or True)
+
+    assert asked == []
+    assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_a_yes_abandons_only_the_attempt_it_was_asked_about(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+
+    def another_operator_replaces_the_attempt(_ref):
+        _mark(source, "0.21.5")
+        _claim(source, "0.21.5", commit, attempt=2)
+        return True
+
+    with pytest.raises(ReleaseRefused, match="changed while waiting"):
+        _release(source, _advance(source, "later"), execute=_must_not_execute,
+                 confirm_abandon=another_operator_replaces_the_attempt)
+
+    assert "abandoned-rc.2-v0.21.5" not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+@pytest.mark.parametrize(("stdin_tty", "stdout_tty", "answer", "expected"), [
+    (True, True, "y", True), (True, True, "YES", True), (True, True, "", False),
+    (True, True, "n", False), (True, True, EOFError, False),
+    (False, True, "y", None), (True, False, "y", None), (False, False, "y", None),
+])
+def test_the_abandon_prompt_needs_both_streams_on_a_terminal_and_defaults_to_no(
+        monkeypatch, stdin_tty, stdout_tty, answer, expected):
+    import sys
+
+    from scripts.releases.entrypoint import _abandon_prompt
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: stdin_tty)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: stdout_tty)
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    confirm = _abandon_prompt()
+    if expected is None:
+        assert confirm is None
+        assert prompts == []
+    else:
+        assert confirm("rc.1-v0.21.5") is expected
 
 
 def test_second_cut_after_abandon_is_attempt_two_of_the_same_version(source):

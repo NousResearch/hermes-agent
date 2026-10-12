@@ -283,7 +283,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         local = root + sandbox
         sh = lambda c: subprocess.run(["bash", "-c", c.replace(sandbox, local)],
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, check=False)
         self.assertEqual(sh(mkdir_cmd).returncode, 0)
         for d in (local, f"{local}/rpc"):
             self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)
@@ -902,7 +902,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
             def accept(self):
                 if self._served:
-                    raise socket.timeout()
+                    raise TimeoutError()
                 self._served = True
                 return self._conn, ("peer", 0)
 

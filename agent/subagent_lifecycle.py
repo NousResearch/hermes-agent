@@ -77,7 +77,7 @@ class SubagentHandle:
         return dataclasses.asdict(self)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "SubagentHandle":
+    def from_dict(cls, value: Mapping[str, Any]) -> SubagentHandle:
         try:
             return cls(**dict(value))
         except (TypeError, ValueError) as exc:

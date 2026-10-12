@@ -518,9 +518,7 @@ class _Runtime:
             tool_call = None
             if _text(event, "tool_call_id"):
                 observed_identity = self._tool_call_identity(event)
-                if connectors_.is_connector_batch(event) and connectors_.batch_entry_ran(
-                        task.completed_tool_call_ids, observed_identity):
-                    task.completed_tool_call_ids.add(observed_identity)
+                if self._settle_connector_batch(session, task, observed_identity, event):
                     return
                 if observed_identity in task.completed_tool_call_ids:
                     return
@@ -552,6 +550,24 @@ class _Runtime:
             chain = session.connectors.observe(event)
             if chain is not None:
                 self._mark(session, task, contract.CONNECTOR_CHAIN_MARK, chain)
+
+    def _settle_connector_batch(
+        self, session: _MetricsSession, task: _TaskRun, wrapper: tuple[str, str, str], event: dict[str, Any],
+    ) -> bool:
+        """A connector batch wrapper's post is not a call of its own once an entry started: entries
+        still open (the executor timed out or abandoned the batch) end with the wrapper's outcome.
+        True when the wrapper was settled this way; a batch refused before any entry counts as itself."""
+        if not connectors_.is_connector_batch(event):
+            return False
+        started = [key for key in session.tool_calls
+                   if key[0] == task.task_id and connectors_.is_batch_entry(key[1:], wrapper)]
+        if not started and not connectors_.batch_entry_ran(task.completed_tool_call_ids, wrapper):
+            return False
+        for key in started:
+            task.completed_tool_call_ids.add(key[1:])
+            self._finish_tool_call(task, session.tool_calls.pop(key), event)
+        task.completed_tool_call_ids.add(wrapper)
+        return True
 
     def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
         """Emit one allowlisted skill fact without its local identity."""

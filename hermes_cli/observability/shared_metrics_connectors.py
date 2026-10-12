@@ -41,11 +41,14 @@ def is_connector_batch(event: dict[str, Any]) -> bool:
     return bool(entries) and all(is_connector_name(entry.get("name")) for entry in entries)
 
 
+def is_batch_entry(identity: tuple[str, str, str], wrapper: tuple[str, str, str]) -> bool:
+    """Whether ``identity`` is an entry (``<id>#<n>``) of the batch whose wrapper has identity ``wrapper``."""
+    return bool(wrapper[2]) and identity[2].startswith(f"{wrapper[2]}#") and identity[:2] == wrapper[:2]
+
+
 def batch_entry_ran(identities: Iterable[tuple[str, str, str]], wrapper: tuple[str, str, str]) -> bool:
     """Whether an entry of the batch whose wrapper has identity ``wrapper`` was already counted."""
-    prefix = f"{wrapper[2]}#"
-    return bool(wrapper[2]) and any(
-        identity[2].startswith(prefix) and identity[:2] == wrapper[:2] for identity in identities)
+    return any(is_batch_entry(identity, wrapper) for identity in identities)
 
 
 def _described_names(args: Any) -> list[str]:

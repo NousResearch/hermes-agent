@@ -133,6 +133,24 @@ def test_a_batch_rejected_before_any_entry_still_counts_as_tool_call(fake_relay)
     assert (end["tool_name"], end["outcome"]) == ("tool_call", "failed")
 
 
+def test_a_batch_the_executor_abandons_mid_entry_counts_that_entry_once(fake_relay):
+    """The executor times out during entry 0: the entry never posts, the wrapper posts the timeout.
+    The open entry takes the wrapper's outcome; the wrapper is not a second call."""
+    lifecycle.invoke_hook("pre_llm_call", **_BASE)
+    entry = {**_BASE, "tool_call_id": "tc1#0", "tool_name": "connectors__gmail__SEND_EMAIL", "args": {}}
+    lifecycle.invoke_hook("pre_tool_call", **entry)
+    lifecycle.invoke_hook(
+        "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="tool_call", status="timeout",
+        error_type="tool_timeout", result="timed out",
+        args={"calls": [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]})
+    _end_turn()
+    [end] = [event[2] for event in fake_relay.events if event[0] == "tool.call_end"]
+    assert (end["tool_name"], end["tool_category"], end["outcome"]) == ("connector", "connector", "timed_out")
+    [task_end] = [event[2]["output"] for event in fake_relay.events
+                  if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"]
+    assert task_end["tool_call_count_bucket"] == "1"
+
+
 def test_chain_row_counts_searches_since_the_last_execute_and_whether_the_tool_was_described(
     fake_relay,
 ):

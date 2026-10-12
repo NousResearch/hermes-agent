@@ -1,0 +1,25 @@
+name: rubika-platform
+label: Rubika
+kind: platform
+version: 0.1.0
+description: >
+  Rubika messenger gateway adapter for Hermes Agent. Connects to Rubika's
+  Bot API via polling and relays messages between Rubika chats and the
+  Hermes agent. Supports text, images, documents, audio, chat/inline
+  keypads, and group chats.
+author: Nous Community
+requires_env:
+  - name: RUBIKA_BOT_TOKEN
+    description: "Bot token from BotFather@ on Rubika"
+    prompt: "Rubika Bot API token"
+    url: "https://rubika.ir/botapi"
+    password: true
+optional_env:
+  - name: RUBIKA_ALLOWED_USERS
+    description: "Comma-separated sender IDs allowed to talk to the bot (* = any)"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: RUBIKA_HOME_CHANNEL
+    description: "Default chat_id for cron / notification delivery"
+    prompt: "Home channel chat_id"
+    password: false

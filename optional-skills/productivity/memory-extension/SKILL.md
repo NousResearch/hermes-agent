@@ -1,7 +1,7 @@
 ---
 name: memory-extension
 description: "Extend Hermes memory: index + on-demand detail files."
-version: 1.3.2
+version: 1.3.3
 author: Franck Iribaren (misstyka), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -87,6 +87,8 @@ bash scripts/check-memory-contradictions.sh "$HERMES_HOME"
 ```
 
 **Pass 2 — LLM (default provider, direct API):** `scripts/check-memory-contradictions-llm.py` sends the memory in overlapping chunks (peak-hour latency → automatic retries on any 5xx + 429: 524/520/503/502… and non-JSON replies) and writes `$HERMES_HOME/memories/contradictions-report.md`. It reads the default model + token from `config.yaml`/`auth.json` — no manual key management.
+
+**Known pitfall (fixed in 1.3.3):** reasoning-heavy models (e.g. `deepseek-v4-flash`) loop in hidden chain-of-thought on personal/ambiguous chunks — `finish_reason=length`, 100% of the output budget spent on `reasoning_tokens`, empty `content`, all 6 retries exhaust (verified 2026-10-13 on a real 57 KB memory: chunk 4/44 failed deterministically). Two fixes: the prompt now explicitly forbids long reasoning (`reply [] immediately if ambiguous`), and `max_tokens` is 8000 so the JSON always fits even after moderate reasoning. Default model is `z-ai/glm-5.2` (clean JSON in ~12 s, no loop); any model in `config.yaml` still overrides.
 
 ```bash
 python scripts/check-memory-contradictions-llm.py "$HERMES_HOME"

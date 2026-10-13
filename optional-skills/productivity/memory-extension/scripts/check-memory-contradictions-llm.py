@@ -31,6 +31,7 @@ Find CONTRADICTIONS between facts: two statements that cannot both be true (e.g.
 Rules:
 - Report ONLY real contradictions, not mere phrasing differences, nor compatible pairs (e.g. "HIBP check shows no breach" vs "SFR leak" are compatible if the leak is not in HIBP).
 - A nuance (e.g. "registry says Win10, Win32_OperatingSystem is authoritative") is NOT a contradiction if explicitly resolved.
+- DO NOT ENTER A LONG CHAIN OF REASONING: decide fast. If the fragment is ambiguous or no obvious contradiction emerges, reply [] immediately. (Long reasoning loops on personal/ambiguous data and exhausts the output budget before emitting the JSON — verified 2026-10-13.)
 - Cite the exact source (MEMORY.md, USER.md, extended/<file>.md) for each fact.
 - Reply STRICTLY with a single valid JSON array, with NO other text before or after (no commentary, no explanation, no thinking). Format:
 [{{"fait_a": "...", "source_a": "...", "fait_b": "...", "source_b": "...", "raison": "..."}}]
@@ -51,7 +52,11 @@ def load_config(hermes_home: Path) -> dict:
     auth_path = hermes_home / "auth.json"
     provider = "nous"
     base_url = "https://inference-api.nousresearch.com/v1"
-    model = "deepseek/deepseek-v4-flash"
+    # Default to glm-5.2: deepseek-v4-flash loops in hidden reasoning on
+    # personal/ambiguous chunks (finish_reason=length, 100% reasoning_tokens,
+    # empty content) and exhausts all retries — verified 2026-10-13. glm-5.2
+    # returns clean JSON in ~12s. Any provider/model from config.yaml overrides.
+    model = "z-ai/glm-5.2"
     token = None
 
     if cfg_path.exists():
@@ -166,7 +171,7 @@ def call_llm_once(cfg: dict, prompt: str) -> list:
     body = json.dumps({
         "model": cfg["model"],
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 800,
+        "max_tokens": 8000,
         "temperature": 0.1,
     }).encode("utf-8")
     url = cfg["base_url"].rstrip("/") + "/chat/completions"

@@ -3110,6 +3110,11 @@ class _StreamingCall(StreamingWaitMonitor):
             if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
                 upstream_provider = chunk.provider  # OpenRouter stamps who served
                 _diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
+            # A relay's null SSE event (``data: null``) reaches the loop as a None chunk:
+            # dereferencing ``.choices`` on it ended the turn with "'NoneType' object has no
+            # attribute 'choices'" instead of the empty-stream retry that shape deserves.
+            if chunk is None:
+                continue
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
@@ -3236,6 +3241,15 @@ class _StreamingCall(StreamingWaitMonitor):
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
         session to non-streaming and replay its content as deltas."""
+        if not getattr(final_response, "choices", None):
+            # A completed body with nothing in it says nothing about whether the route can
+            # stream, so it must not latch the session to non-streaming — and it cannot be
+            # replayed either. Surface it as an empty stream: the stream layer retries on a
+            # fresh connection, where a silently empty answer is indistinguishable from a
+            # real (empty) reply. ``_replay_final_response`` keeps reading ``choices``
+            # directly: only the probe caller relies on an unreplayable probe failing loudly.
+            raise EmptyStreamError(
+                "provider returned a completed response instead of a stream, with no choices")
         logger.info("Streaming request returned a final response object instead of an iterator; "
             "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
             self.agent.model or "unknown")

@@ -31,7 +31,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
-from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_reasoning_floor import codex_responses_reasoning, remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -1496,22 +1496,8 @@ class _CodexCompletionsAdapter:
             service_tier = extra_body.get("service_tier")
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
-                # Shared per-model vocabulary with the main transport ("max" only where the model publishes it; "minimal"/"ultra"
-                # clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
-                # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
-                # since an omitted field leaves the model's default effort on (#75227).
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
-                supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
-                if supported and reasoning_cfg.get("enabled") is not False:
-                    # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
-                    effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
-                    resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
-                elif "none" in supported and not is_xai:
-                    resp_kwargs["reasoning"] = {"effort": "none"}
+            resp_kwargs.update(codex_responses_reasoning(
+                extra_body.get("reasoning"), model, host, is_codex_backend=route.is_codex_backend, is_xai=is_xai))
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:

@@ -321,7 +321,7 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
                     # again, not an "unchanged" stub pointing at a body that is gone (#32106).
                     from agent.conversation_compression import _reset_read_dedup_caches
 
-                    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+                    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", agent=agent)
             if _before != len(messages):
                 logger.info("Micro-compaction: %d -> %d messages", _before, len(messages))
     except Exception as _mc_err:

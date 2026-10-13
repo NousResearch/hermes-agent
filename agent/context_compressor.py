@@ -33,7 +33,11 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_background import _LEAN_BACKGROUND_HEADING, _build_background_section
+from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
+from agent.compaction_lean_carry import lean_anchor_index, strip_lean_section
+from agent.compaction_user_quotes import _build_verbatim_user_section
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -830,8 +834,8 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 
 def _is_summary_stub(content: str) -> bool:
-    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
-    return content.startswith("[") and " chars)" in content and len(content) < 400
+    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary or a lean-tail demotion stub."""
+    return content.startswith("[") and " chars)" in content and len(content) < 400 or is_demoted_stub(content)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -925,21 +929,6 @@ _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
 _LEAN_RECOVERY_HEADING = "## Context Recovery"
-# Demote tool results older than the newest N rounds so the tail budget binds
-# (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
-_LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
-_LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
-
-
-def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
-    """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
-    return (
-        f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
-        f"chars preserved in session history.{hint}]"
-    )
-
-
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
@@ -951,36 +940,6 @@ def _synthetic_user_row(content: str) -> bool:
     if not isinstance(content, str) or not content.strip():
         return True
     return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
-
-
-def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
-    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
-    collected: list[str] = []
-    used = 0
-    for msg in reversed(turns):
-        if msg.get("role") != "user":
-            continue
-        content = _content_text_for_contains(msg.get("content"))
-        if _synthetic_user_row(content):
-            continue
-        remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
-        if remaining <= 0:
-            break
-        text = content.strip()
-        if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
-            break  # no room for marker + content: a marker-only quote would overshoot the budget
-        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
-        collected.append("> " + text.replace("\n", "\n> "))
-        used += len(text)
-    if not collected:
-        return ""
-    return (
-        "\n\n" + _LEAN_USER_MESSAGES_HEADING + "\n"
-        + "\n\n".join(collected)
-        + "\n(Every real user message from the compacted region, quoted "
-        "verbatim. These are the user's actual words and override any "
-        "paraphrase of them above.)"
-    )
 
 
 def _build_recovery_footer(session_id: str, region_len: int) -> str:
@@ -1000,8 +959,6 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
     )
 
 
-# Detailed session log comes from the SAME single summary request (one aux LLM
-# call per attempt); coverage via input sampling, exact needles via anchor index.
 # One flat 2-3K-token summary cannot carry a 400K+ region's specifics — the eval showed recall collapsing to
 # ~33% when the big tail (which accidentally archived restated facts) shrank. The detailed,
 # identifier-preserving session log is produced by the SAME single summary request as the narrative summary
@@ -1663,10 +1620,10 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
 
 def _sum_terminal(name, args, content, content_len, line_count):
-    cmd = _str_arg(args, "command")
-    cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+    cmd = c if len(c := _str_arg(args, "command")) <= 80 else c[:77] + "..."
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
-    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+    m = re.fullmatch(r"\[terminal\] ran `.*; background session_id=([\w.:-]{1,40})", content, re.DOTALL) if content.startswith("[terminal] ran `") else re.search(r'"session_id"\s*:\s*"([\w.:-]{1,40})"', content)
+    return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output" + (f"; background session_id={m[1]}" if m else "")
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
@@ -3651,44 +3608,23 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return self._augment_summary_lean(summary, turns_to_summarize)
 
     def _demote_stale_tail_tools(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
-        """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
-        recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
-        session_id = getattr(self, "_session_id", "") or ""
-        rounds_seen = 0
-        protected: set[int] = set()
-        prev_idx = None
-        for i in (i for i in range(len(messages) - 1, tail_start - 1, -1) if messages[i].get("role") == "tool"):
-            rounds_seen += prev_idx is None or prev_idx - i > 1
-            prev_idx = i
-            if rounds_seen > _LEAN_TAIL_KEEP_TOOL_ROUNDS:
-                break
-            protected.add(i)
-        result = list(messages)
-        demoted = 0
-        for i in range(tail_start, len(messages)):
-            msg = messages[i]
-            content = msg.get("content")
-            if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
-                continue
-            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
-                continue
-            result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
-            demoted += 1
+        """Lean mode: demote stale tail tool results to recovery stubs (``demote_stale_tail_tools``)."""
+        result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "")
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: list[dict[str, Any]]) -> str:
-        """Append deterministic lean-mode sections to a summary; no-op in legacy mode."""
+        """Rebuild the deterministic lean-mode sections (a model-written copy is replaced); no-op in legacy mode."""
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
-        for heading, build in (
-            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
-            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
+        for heading, build in (  # quotes and anchors in Hermes' own previous summary carry forward
+            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(lean_anchor_index(turns_to_summarize, getattr(self, "_anchor_source_messages", None), self._previous_summary))),
+            (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize, self._previous_summary))),
+            (_LEAN_BACKGROUND_HEADING, lambda: _redact_compaction_text(_build_background_section(self))),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):
-            if heading not in summary:
-                summary += build()
+            summary = strip_lean_section(summary, heading) + build()
         return summary
 
     @classmethod
@@ -5569,7 +5505,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
         # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
         # assembled and measured from the pruned copy (#61932).
-        canonical_messages = self._drop_blank_echoes(messages)
+        canonical_messages = self._anchor_source_messages = self._drop_blank_echoes(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,

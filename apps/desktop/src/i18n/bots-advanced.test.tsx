@@ -32,6 +32,12 @@ const mocks = vi.hoisted(() => ({
       return { applied: { skills: true } }
     }
 
+    // Contract shape (McpServersAddResult): every mcp.servers.* result carries
+    // `ok`, and a fulfilled add that doesn't affirm it is a failed setup.
+    if (method === 'mcp.servers.add') {
+      return { ok: true, name: 'my-server' }
+    }
+
     return {}
   }),
   notify: vi.fn()
@@ -114,7 +120,10 @@ it('localizes the advanced editor and hub without translating capability IDs or 
 })
 it('localizes MCP setup actions while retaining the profile, preset and environment identifiers', async () => {
   mount(
-    <McpSetupButton entry={{ name: 'my-server', requires: ['MY_SERVER_TOKEN'], fromCatalog: true }} profile="writer" />
+    <McpSetupButton
+      entry={{ name: 'my-server', requires: ['MY_SERVER_TOKEN'], fromCatalog: true }}
+      target={{ route: null, profile: 'writer' }}
+    />
   )
   const zh = translateBotsIn('zh')
   fireEvent.click(await screen.findByRole('button', { name: zh('tools.setUp') }))

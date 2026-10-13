@@ -3055,10 +3055,12 @@ First-touch onboarding hints and the first-message offer:
 onboarding:
   profile_build: "ask"   # "ask" (default) | "off"
   seen: {}               # internal latch — leave empty
+  run: null              # desktop first-run onboarding: null (fresh install) | true | false
 ```
 
-- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. In the Microsoft Store desktop app the offer is instead one closing line that points at `/initiate-setup` (`/initiate_setup` on Telegram, `/hermes initiate-setup` on Slack). The offer is skipped when the first message is `/initiate-setup` itself, and always in the desktop app's setup profile. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile. `/initiate-setup` sends a short block of facts about the computer; see [What the setup chat knows about your computer](./desktop.md#what-the-setup-chat-knows-about-your-computer).
+- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile.
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
+- `run` — whether the desktop app opens its first-run onboarding chat on the next launch. Unset means only on a fresh install (no sessions and no profiles yet). Hermes writes `true` when onboarding starts and `false` when it is finished or skipped. It always lives in the default profile's `config.yaml`, whichever profile the app runs. Set `false` to never show it; managed installs can pin it in the managed config.
 
 ## Dashboard
 

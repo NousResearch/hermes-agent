@@ -26,7 +26,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
-    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
+    defaults = {"HERMES_PREVIEW_FULL_CONNECTORS": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
     monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
     request = BuildRequest.create(repo, tag=None, commit=sha, variant=variant,
                                   work=tmp_path / "work", cache=tmp_path / "cache", bundle_env=defaults)

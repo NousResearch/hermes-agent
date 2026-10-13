@@ -14,7 +14,7 @@ import {
   HUD_TEXT
 } from '@/app/floating-hud'
 import { SESSION_IMPORT_ROUTE } from '@/app/routes'
-import { leaveIntro } from '@/components/onboarding-chat/intro'
+import { leaveIntro } from '@/components/onboarding/first-run/intro'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'

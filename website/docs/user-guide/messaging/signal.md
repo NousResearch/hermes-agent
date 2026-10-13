@@ -145,6 +145,20 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 
 ## Features
 
+### Silent reaction awareness (private DMs)
+
+Signal reactions in DMs are processed in a separate background lane rather than as
+message turns. When `SIGNAL_ALLOWED_USERS` contains exactly one explicit Signal
+identity (not `*`), Hermes can silently interpret that person's reaction using the
+configured model and attach a short, explicitly untrusted note to later DM context.
+Only successfully acknowledged textual messages with a bounded body are indexed as
+targets; unresolved targets are ignored. Each reaction can incur one model request.
+The bounded local outbox and notes are profile-scoped, expire after 30 days, and are
+stored with owner-only permissions where supported. Reactions do not send a reply,
+start typing, or expose tools to the model. Notes are context only and never grant
+authority or confirm an action's outcome. Group reactions are not processed by this
+immediate lane.
+
 ### Attachments
 
 The adapter supports sending and receiving media in both directions.

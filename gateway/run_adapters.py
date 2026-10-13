@@ -841,7 +841,13 @@ class GatewayAdapterLifecycleMixin:
             carry_inbound_dedup(info.get("predecessor"), adapter)
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
-            success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            if self._multiplex_on():
+                from gateway.run import _profile_runtime_scope
+                from hermes_constants import get_default_hermes_root
+                with _profile_runtime_scope(get_default_hermes_root()):
+                    success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            else:
+                success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             if success:
                 await self._install_reconnected_adapter(platform, adapter)
             elif adapter.has_fatal_error and not adapter.fatal_error_retryable:

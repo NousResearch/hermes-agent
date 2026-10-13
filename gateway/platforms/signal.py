@@ -9,10 +9,12 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
@@ -63,6 +65,8 @@ _SKIP_IMAGE_LOG = {
     "oversize": lambda url, detail: ("Signal: image too large (%d bytes), skipping %s", detail, url)}
 _QUOTE_AUTHOR_KEYS = (
     "author", "authorNumber", "authorUuid", "authorAci", "authorServiceId", "authorServiceIdString")
+_SIGNAL_REACTION_IDENTIFIER_RE = re.compile(
+    r"(?:\+[0-9]{7,15}|(?:(?:ACI|PNI|uuid|u):)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
 
 
 def _parse_comma_list(value: str) -> list[str]:
@@ -160,6 +164,22 @@ def _looks_like_e164_number(value: str) -> bool:
     return bool(value) and value.startswith("+") and value[1:].isdigit() and 7 <= len(value) - 1 <= 15
 
 
+def _safe_reaction_identifier(value: Any) -> Optional[str]:
+    value = value.strip() if isinstance(value, str) else ""
+    return value if _SIGNAL_REACTION_IDENTIFIER_RE.fullmatch(value) else None
+
+
+def _safe_reaction_emoji(value: Any) -> Optional[str]:
+    value = value.strip() if isinstance(value, str) else ""
+    if not value or len(value) > 16:
+        return None
+    categories = [unicodedata.category(char) for char in value]
+    allowed = {"So", "Sk", "Mn", "Me", "Cf", "Nd"}
+    if not all(category in allowed for category in categories):
+        return None
+    return value if any(category == "So" for category in categories) or "\u20e3" in value else None
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal runtime dependencies are available."""
     return True
@@ -216,6 +236,9 @@ class SignalAdapter(BasePlatformAdapter):
         # replies to this bot are recognised after the echo was consumed.
         self._sent_message_timestamps: OrderedDict[str, None] = OrderedDict()
         self._max_sent_message_timestamps = 500
+        self._reaction_awareness_callback = None
+        self._reaction_awareness_note_getter = None
+        self.gateway_runner = None
         # Best-effort number↔ACI/PNI UUID mapping so sends can upgrade a number to the UUID signal-cli prefers.
         self._recipient_uuid_by_number: dict[str, str] = {}
         self._recipient_number_by_uuid: dict[str, str] = {}
@@ -250,6 +273,7 @@ class SignalAdapter(BasePlatformAdapter):
                 return False
             self._running = True
             self._last_sse_activity = time.time()
+            await self._start_reaction_awareness()
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
             logger.info("Signal: connected to %s", self.http_url)
@@ -262,6 +286,45 @@ class SignalAdapter(BasePlatformAdapter):
                 if lock_acquired:
                     self._release_platform_lock()
 
+    async def _start_reaction_awareness(self) -> None:
+        try:
+            from gateway.platforms.signal_reaction_awareness_runtime import start_awareness
+            await start_awareness(self)
+        except Exception:
+            logger.warning("Signal reaction awareness could not start", exc_info=True)
+
+    async def _stop_reaction_awareness(self) -> None:
+        try:
+            from gateway.platforms.signal_reaction_awareness_runtime import stop_awareness
+            await stop_awareness(self)
+        except Exception:
+            logger.warning("Signal reaction awareness could not stop", exc_info=True)
+
+    def set_reaction_awareness_callback(self, callback) -> None:
+        self._reaction_awareness_callback = callback
+
+    def set_reaction_awareness_note_getter(self, getter) -> None:
+        self._reaction_awareness_note_getter = getter
+
+    def _feedback_scope(self, source) -> tuple[str, str]:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home().resolve()), self._source_session_key(source)
+
+    def _notify_reaction_awareness(self, payload: dict) -> None:
+        callback = self._reaction_awareness_callback
+        if callback is None:
+            return
+        try:
+            result = callback(payload)
+            if asyncio.iscoroutine(result):
+                result.close()
+                raise TypeError("reaction awareness callback must be synchronous")
+        except Exception:
+            logger.warning("Signal reaction awareness receipt registration failed", exc_info=True)
+
+    def _reaction_authorized(self, source) -> bool:
+        return self._is_sender_authorized(source.user_id, source.chat_type, source.chat_id) is True
+
     async def _close_client(self) -> None:
         if self.client:
             await self.client.aclose()
@@ -270,6 +333,7 @@ class SignalAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
         self._running = False
+        await self._stop_reaction_awareness()
         for task in (self._sse_task, self._health_monitor_task):
             await cancel_task(task)
         for task in self._typing_tasks.values():
@@ -442,6 +506,33 @@ class SignalAdapter(BasePlatformAdapter):
         if is_group and not self._group_allowed(group_id):
             return
         chat_id = f"group:{group_id}" if is_group else sender
+        reaction = data_message.get("reaction")
+        if reaction is not None:
+            if is_group or not isinstance(reaction, dict):
+                return
+            target_author = _safe_reaction_identifier(
+                reaction.get("targetAuthorNumber") or reaction.get("targetAuthorUuid") or reaction.get("targetAuthor"))
+            safe_sender = _safe_reaction_identifier(sender)
+            target_timestamp = reaction.get("targetSentTimestamp", reaction.get("targetTimestamp"))
+            envelope_timestamp = envelope_data.get("timestamp")
+            removed = reaction.get("isRemove") is True or reaction.get("remove") is True
+            emoji = "" if removed else _safe_reaction_emoji(reaction.get("emoji"))
+            if (not safe_sender or not target_author or emoji is None
+                    or isinstance(target_timestamp, bool) or not isinstance(target_timestamp, int)
+                    or not 0 < target_timestamp < 2**63 or isinstance(envelope_timestamp, bool)
+                    or not isinstance(envelope_timestamp, int) or not 0 < envelope_timestamp < 2**63):
+                return
+            source = self.build_source(chat_id=chat_id, chat_name=sender_name, chat_type="dm", user_id=sender,
+                                       user_name=sender_name or sender, user_id_alt=sender_uuid or None)
+            if not self._reaction_authorized(source):
+                return
+            profile, scope = self._feedback_scope(source)
+            self._notify_reaction_awareness({"kind": "reaction", "profile": profile, "scope": scope,
+                "event_id": f"{safe_sender}:{envelope_timestamp}", "sender": safe_sender,
+                "target_author": target_author, "target_timestamp": target_timestamp,
+                "action": "removed" if removed else "added", "emoji": emoji,
+                "event_timestamp": envelope_timestamp, "chat_type": "dm"})
+            return
         text = data_message.get("message", "")
         if text and (mentions := data_message.get("mentions", [])):
             text = _render_mentions(text, mentions)
@@ -464,17 +555,24 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: skipping contentless envelope from %s (%d attachments)", redact_phone(sender),
                          len(media_urls) if media_urls else 0)
             return
+        ts_ms = envelope_data.get("timestamp", 0)
         source = self.build_source(
             chat_id=chat_id, chat_name=group_info.get("groupName") if group_info else sender_name,
             chat_type="group" if is_group else "dm", user_id=sender,
             user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None)
+        if (source.chat_type == "dm" and isinstance(ts_ms, int) and not isinstance(ts_ms, bool)
+                and 0 < ts_ms < 2**63 and isinstance(text, str) and text.strip()
+                and len(text.encode("utf-8", "ignore")) <= 8192 and _safe_reaction_identifier(sender)
+                and self._reaction_authorized(source)):
+            profile, scope = self._feedback_scope(source)
+            self._notify_reaction_awareness({"kind": "target", "profile": profile, "scope": scope,
+                "timestamp": ts_ms, "author": sender, "body": text, "chat_type": "dm"})
         # First matching MIME prefix wins; everything else (application/*, text/*, unknown) is a DOCUMENT
         # so run.py's document-context injection surfaces the cached path.
         msg_type = MessageType.TEXT if not media_types else next(
             (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
             MessageType.DOCUMENT)
-        ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
         timestamp = datetime.now(tz=UTC)
         if ts_ms:
             with suppress(ValueError, OSError):
@@ -488,6 +586,8 @@ class SignalAdapter(BasePlatformAdapter):
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
             reply_to_is_own_message=self._quote_references_own_message(reply_to_id, reply_to_author),
+            metadata={"signal_reaction_awareness": self._reaction_awareness_note_getter(*self._feedback_scope(source))}
+                     if (self._reaction_awareness_note_getter and source.chat_type == "dm") else {},
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
@@ -691,7 +791,7 @@ class SignalAdapter(BasePlatformAdapter):
             return chunks
         return [(f"{txt} ({idx}/{len(chunks)})", st) for idx, (txt, st) in enumerate(chunks, start=1)]
 
-    async def _rpc_send(self, params: dict[str, Any], fail_error: str) -> tuple[Any, Optional[SendResult]]:
+    async def _rpc_send(self, params: dict[str, Any], fail_error: str, *, chat_id: str, body: Optional[str] = None) -> tuple[Any, Optional[SendResult]]:
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
         if (result := await self._rpc("send", params)) is None:
             return None, SendResult(success=False, error=fail_error)
@@ -699,6 +799,16 @@ class SignalAdapter(BasePlatformAdapter):
         if not success:
             return None, SendResult(success=False, error=err_msg, raw_response=result)
         self._track_sent_timestamp(result)
+        timestamp = result.get("timestamp") if isinstance(result, dict) else None
+        if (isinstance(timestamp, int) and not isinstance(timestamp, bool) and timestamp > 0
+                and not chat_id.startswith("group:") and body and body.strip()
+                and len(body.encode("utf-8", "ignore")) <= 8192 and _safe_reaction_identifier(self._account_normalized)):
+            source = self.build_source(chat_id=chat_id, chat_name=chat_id, chat_type="dm",
+                                      user_id=chat_id, user_name=chat_id)
+            if self._reaction_authorized(source):
+                profile, scope = self._feedback_scope(source)
+                self._notify_reaction_awareness({"kind": "target", "profile": profile, "scope": scope,
+                    "timestamp": timestamp, "author": self._account_normalized, "body": body, "chat_type": "dm"})
         return result, None
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
@@ -718,7 +828,7 @@ class SignalAdapter(BasePlatformAdapter):
                 params["textStyles"] = text_styles
             logger.info("[Signal] Sending response chunk %d/%d (%d chars) to %s", idx, len(chunks), len(plain_text),
                         chat_id)
-            last_result, err = await self._rpc_send(params, "RPC send failed")
+            last_result, err = await self._rpc_send(params, "RPC send failed", chat_id=chat_id, body=plain_text)
             if err:
                 return err
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
@@ -879,7 +989,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Send one local file as a Signal attachment via the ``send`` RPC."""
         params = await self._with_target(
             {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
-        _, err = await self._rpc_send(params, fail_error)
+        _, err = await self._rpc_send(params, fail_error, chat_id=chat_id, body=caption or "")
         return err or SendResult(success=True)
 
     async def _send_attachment(self, chat_id: str, file_path: str, media_label: str,

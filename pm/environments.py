@@ -30,6 +30,58 @@ def dependency_home_root() -> Path:
     return get_default_hermes_root(home=override) if override else get_default_hermes_root()
 
 
+def contained_in_dependency_state(path: Path, *, role: str) -> bool:
+    """True when *path* stays inside Hermes state, including a relocated live profile.
+
+    The dependency root is unresolved (``get_default_hermes_root``), so a profile
+    directory that is a symlink onto another volume resolves outside that root.
+    Those real paths are contained only when *path* is a registered live profile
+    itself (``role="home"``), that profile's ``config.yaml`` (``role="config"``),
+    or exactly ``<profile>/plugins/<name>`` (``role="plugin"``). A sibling on the
+    same volume is not contained — the volume is not a new root.
+    """
+    try:
+        resolved = path.resolve()
+        if resolved.is_relative_to(dependency_home_root().resolve()):
+            return True
+    except OSError:
+        return False
+    if role not in {"home", "config", "plugin"}:
+        return False
+    for real in _live_profile_real_paths():
+        if role == "home" and resolved == real:
+            return True
+        if role == "config" and resolved == real / "config.yaml":
+            return True
+        if role == "plugin" and resolved.parent == real / "plugins" and resolved.name not in {"", ".", ".."}:
+            return True
+    return False
+
+
+def _live_profile_real_paths() -> list[Path]:
+    """Real directories of registered live profiles, excluding the dependency root itself.
+
+    Same live-profile gate as ``pm.plugins_state.dependency_homes`` (imported lazily:
+    that module's import surface is stdlib, and this lookup runs only after a path
+    has already left the dependency root).
+    """
+    try:
+        from pm.plugins_state import dependency_homes
+        homes = dependency_homes()
+    except (OSError, ValueError):
+        return []
+    root = dependency_home_root()
+    reals: list[Path] = []
+    for home in homes:
+        if home == root:
+            continue
+        try:
+            reals.append(home.resolve())
+        except OSError:
+            continue
+    return reals
+
+
 def installs_root() -> Path:
     return dependency_home_root() / "installs"
 

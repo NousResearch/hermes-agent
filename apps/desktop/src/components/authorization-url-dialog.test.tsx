@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AuthorizationUrlDialog } from './authorization-url-dialog'
 import { dismissAuthorizationUrl, presentAuthorizationUrl } from '@/lib/authorization-url'
+
+import { AuthorizationUrlDialog } from './authorization-url-dialog'
 
 const windowsMock = vi.hoisted(() => ({
   isHudWindow: vi.fn(() => false),

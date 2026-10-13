@@ -672,9 +672,9 @@ class GatewayTurnPrepareMixin:
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 
-        # Keep human text separate from skills, sender metadata, and other model context.
-        # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
-        title_user_message = event.text or None
+        # Title from human text only; voice-only (Discord's no-text placeholder) uses the transcript below.
+        _typed = (event.text or "").strip() not in ("", self._EMPTY_TEXT_PLACEHOLDER)
+        title_user_message = event.text if _typed else None
 
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
         _auto = getattr(event, "auto_skill", None)
@@ -718,6 +718,7 @@ class GatewayTurnPrepareMixin:
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)
         )
+        title_user_message = title_user_message or (persist_user_message or "").strip() or None
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
         # cannot leak them into the next turn.

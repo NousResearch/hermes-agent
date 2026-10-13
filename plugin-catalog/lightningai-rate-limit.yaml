@@ -1,6 +1,6 @@
 name: lightningai-rate-limit
 repo: https://github.com/dinosauria123/hermes-lightningai-rate-limit
-sha: 87f8cef8d0922fae523bd5dee44905c84c9d80f1
+sha: dc7911a946f0b209a81cf680c168382177bb13bf
 description: >-
   Per-process throttle for Lightning AI (https://lightning.ai/api/v1) keeping LLM requests
   within the ~15 requests/min limit, using an in-memory token bucket. Gates only calls whose
@@ -11,7 +11,7 @@ maintainer: dinosauria123
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools: []

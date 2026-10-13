@@ -1,6 +1,5 @@
 """Cron subcommand for hermes CLI."""
 
-import ast
 import contextlib
 import json
 import re
@@ -17,10 +16,17 @@ from hermes_cli.colors import Colors, color
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[list[str]]:
     """Deduped, stripped skill names; None when neither argument was given."""
+    from cron.skill_lists import unwrap_skill_repr
     if skills is None and single_skill is None:
         return None
+    if isinstance(skills, str):
+        given: list[Any] = [skills]
+    elif skills is not None:
+        given = list(skills)
+    else:
+        given = [single_skill]
     normalized: list[str] = []
-    for item in list(skills) if skills is not None else [single_skill]:
+    for item in unwrap_skill_repr(given):
         text = str(item or "").strip()
         if text and text not in normalized:
             normalized.append(text)
@@ -695,30 +701,36 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     amount = f"{overdue_s / 3600:.1f}h" if overdue_s >= 3600 else f"{overdue_s / 60:.0f}m"
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
+def _stored_jobs_by_id() -> dict[str, dict[str, Any]]:
+    """Raw job records keyed by id — what is actually on disk, before the read path heals it."""
+    from cron.jobs import load_jobs
+    stored: dict[str, dict[str, Any]] = {}
+    for record in load_jobs():
+        if isinstance(record, dict):
+            stored[str(record.get("id") or "")] = record
+    return stored
 
-def _unwrap_test(value: str) -> Optional[Any]:
-    """``ast.literal_eval`` wrapper used by the doctor repr check (issue #132867)."""
-    try:
-        return ast.literal_eval(value.strip())
-    except (ValueError, SyntaxError, MemoryError, RecursionError):
-        return value
 
-
-def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
+def _cron_doctor_issues_for_job(job: dict[str, Any], *,
+                                stored: dict[str, Any] | None = None) -> list[str]:
+    from cron.skill_lists import unwrap_skill_repr
     issues: list[str] = []
-    # A skills field holding the Python repr of a list ("['a', 'b']") loads zero skills at
-    # fire time (the loader skips the bogus name silently) and used to read as clean here.
-    # The storage layer heals repr-shaped entries on read; doctor still flags pre-heal
-    # stores so the user learns the job was silently running without its skills (#132867).
+    # A skills field holding the Python repr of a list ("['a', 'b']") loads zero skills at fire
+    # time: the loader skips the bogus name silently. The storage layer heals that shape on read,
+    # so ``job`` — always a normalized record — can never show the corruption still sitting in the
+    # store. Inspect the stored record when the caller has one (cron_doctor does) and fall back to
+    # ``job`` otherwise, so a direct call still judges whatever it was handed (#132867).
+    source = stored if isinstance(stored, dict) else job
     for field in ("skills", "skill"):
-        value = job.get(field)
-        if (isinstance(value, str) and value.strip().startswith(("['", "[\"", "(\"", "('"))
-                and _unwrap_test(value) is not value):
+        value = source.get(field)
+        if unwrap_skill_repr(value) is not value:
             issues.append(
-                f"skills field holds a string repr of a list, so no skill ever loads: "
-                f"{field}={value!r}. Re-save the job with an actual list "
+                f"skills field holds a string repr of a list, so the stored record is "
+                f"malformed and only works because reads heal it: {field}={value!r}. "
+                f"Re-save the job with an actual list "
                 f"(e.g. cronjob(action='update', job_id=..., skills=[...])).")
             break
+
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
@@ -758,7 +770,10 @@ def cron_doctor() -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
     from cron.jobs import list_jobs
     jobs = list_jobs(include_disabled=False)
-    findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
+    stored = _stored_jobs_by_id()
+    findings = [(job, issues) for job in jobs
+                if (issues := _cron_doctor_issues_for_job(
+                    job, stored=stored.get(str(job.get("id") or ""))))]
     if not findings:
         print(color("✓ Cron doctor found no issues", Colors.GREEN))
         note = f"  Checked {len(jobs)} active job(s)." if jobs else "  No active jobs configured."

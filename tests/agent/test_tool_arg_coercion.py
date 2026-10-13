@@ -269,6 +269,23 @@ class TestCoerceToolArgsNested:
                 "zip": "A-001",
             }
 
+    def test_scalar_args_behind_a_ref_are_coerced(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"Count": {"type": "integer"}, "Flag": {"type": "boolean"}},
+                "properties": {
+                    "count": {"$ref": "#/$defs/Count"},
+                    "verbose": {"$ref": "#/$defs/Flag", "description": "a keyword beside $ref"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"count": "5", "verbose": "true"})
+            assert result == {"count": 5, "verbose": True}
+
     def test_array_item_referenced_via_defs_is_parsed(self):
         schema = {
             "name": "test_tool",

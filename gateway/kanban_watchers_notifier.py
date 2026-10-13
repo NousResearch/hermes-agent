@@ -654,7 +654,10 @@ class _KanbanNotification:
         # dashboard/group flows). handle_message() get_or_create_session's the target, so a mismatch only
         # ever degrades to a fresh session, never an exception.
         _delivery_meta = sub.get("delivery_metadata") or {}
-        _chat_type = str(sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip()
+        from hermes_cli.kanban_db_notify import session_chat_type
+        # Rows stored before add_notify_sub normalized Discord's "channel" label still wake the chat.
+        _chat_type = session_chat_type(getattr(self.plat, "value", self.plat), str(
+            sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip())
         _source = SessionSource(
             platform=self.plat, chat_id=sub["chat_id"], chat_type=_chat_type or "group",
             thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),

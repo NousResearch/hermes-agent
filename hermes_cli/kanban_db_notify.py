@@ -64,6 +64,15 @@ def _decode_notify_delivery_metadata(raw: Any) -> dict[str, Any]:
     return {str(key): value for key, value in data.items() if isinstance(value, _SCALAR_TYPES)}
 
 
+def session_chat_type(platform: Optional[str], chat_type: Optional[str]) -> Optional[str]:
+    """The gateway session type a subscription's ``chat_type`` stands for. Discord keys its
+    sessions ``dm``, ``thread`` or ``group``; ``channel`` is only the channel directory's label
+    for a guild text channel (``get_chat_info``), and a wake keyed with it opens a new session."""
+    if str(platform or "").lower() == "discord" and str(chat_type or "").strip().lower() == "channel":
+        return "group"
+    return chat_type
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -91,6 +100,7 @@ def add_notify_sub(
     caught up (``last_event_id`` =
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
+    chat_type = session_chat_type(platform, chat_type)
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no

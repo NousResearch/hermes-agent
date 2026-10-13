@@ -502,6 +502,33 @@ def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     assert ":group:" not in wake_key
 
 
+def test_notifier_wakes_a_legacy_discord_channel_row_into_the_group_session(tmp_path, monkeypatch):
+    """A row stored with Discord's channel-directory label "channel" (before add_notify_sub
+    normalized it) must wake the chat's group session, not open a separate one."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "legacy-discord.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="discord requester", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chan-1",
+                           chat_type="group", delivery_mode="notify+wake")
+        conn.execute("UPDATE kanban_notify_subs SET chat_type = 'channel' WHERE task_id = ?", (tid,))
+        conn.commit()
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner.adapters = {Platform.DISCORD: adapter}
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.handled) == 1
+    assert adapter.handled[0].source.chat_type == "group"
+    from gateway.session import build_session_key
+    assert ":group:" in build_session_key(adapter.handled[0].source)
+
+
 def _unseen_terminal_events_for(tid, chat_id):
     conn = kbc.connect()
     try:

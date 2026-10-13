@@ -351,6 +351,17 @@ class MCPServerTransportMixin:
                     _stdio_starttimes.pop(pid, None)
         _core._update_death_supervisor("unregister", released_pgids)
 
+    def _bind_spawned_children(self, transport_cm, pids_before) -> set[int]:
+        """The stdio children this attempt owns: exactly the process the SDK spawned for this
+        context when that is readable. Otherwise the snapshot delta, read in the before-sample's
+        scope, minus non-MCP children (slash_worker, LSP) racing into the window: they share the
+        TUI's pgid, so ledgering them would killpg() the TUI."""
+        pid = _lifecycle._sdk_spawned_pid(transport_cm)
+        if pid is not None:
+            return {pid}
+        after = _lifecycle._snapshot_spawn_children(pids_before.scope)
+        return _filter_mcp_children(_lifecycle._spawned_child_delta(pids_before, after))
+
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
         if config.get("identity_header") is not None:  # copy-pasted HTTP block: warn, don't mislead
@@ -387,7 +398,6 @@ class MCPServerTransportMixin:
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)
-        pids_before = _lifecycle._snapshot_child_pids(calling_thread_only=True)  # so the new child can be identified after spawn
         # Reap any orphaned subprocesses from prior failed connection attempts before spawning a new one.
         # Without this, each retry in the run() reconnect loop spawns a fresh process pair while the
         # previous failed pair lingers — leading to rapid zombie accumulation (see #57355, #57228). The
@@ -399,27 +409,41 @@ class MCPServerTransportMixin:
         # Subprocess stderr goes to ~/.hermes/logs/mcp-stderr.log so banners can't corrupt the TUI.
         _config._write_stderr_log_header(self.name)
         stderr = _config._StderrTee(_config._get_mcp_stderr_log())
+        # Held from the before-snapshot until the new children are ledgered, never across the
+        # handshake: concurrent connects on the MCP loop must not see each other's spawn.
+        spawn_window = _lifecycle._stdio_spawn_window_lock()
+        in_window = False
         try:
-            async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
-                # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing
-                # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
-                new_pids = _filter_mcp_children(
-                    _lifecycle._snapshot_child_pids(calling_thread_only=True) - pids_before)
-                if new_pids:
-                    self._track_spawned_children(new_pids)
-                self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
+            await spawn_window.acquire()
+            in_window = True
+            pids_before = _lifecycle._snapshot_spawn_children()  # so the new child can be identified after spawn
+            transport_cm = _core.stdio_client(server_params, errlog=stderr.sink)
+            async with transport_cm as (read_stream, write_stream):
+                try:
+                    new_pids = self._bind_spawned_children(transport_cm, pids_before)
+                    if new_pids:
+                        self._track_spawned_children(new_pids)
+                    self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
+                finally:
+                    in_window = False
+                    spawn_window.release()
                 async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
         except Exception as exc:
+            if in_window:  # the spawn itself failed: don't hold other connects behind the stderr drain
+                in_window = False
+                spawn_window.release()
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
             abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
             if abi_error is not None:
                 raise abi_error from exc
             raise
         finally:  # clean exit, exceptions AND cancellation
+            if in_window:
+                spawn_window.release()
             stderr.close(timeout=0)
             if new_pids:
                 self._release_spawned_children(new_pids)

@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.prefix_request import enabled as prefix_request_enabled
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -103,6 +104,9 @@ def build_api_request(
     )
 
     agent._reset_stream_delivery_tracking()
+    if prefix_request_enabled(agent):
+        # The history rows behind this request. The provider call copies them with its final body.
+        agent._prefix_source_messages = messages
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may

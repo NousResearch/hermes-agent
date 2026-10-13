@@ -23,17 +23,19 @@ from agent.compression_marker import (
 from agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
-    _coerce_llm_message,
     _is_connection_error,
-    _message_field,
     aux_interrupt_protection,
     call_llm,
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
+from agent.context_compressor_refusal import (  # noqa: F401 -- re-exported for callers and tests
+    _SUMMARY_REFUSAL_PREFIX_RE, _is_refusal_response, _is_summary_refusal, _response_refusal_text,
+)
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
+from agent.context_compressor_warm import WarmHandoffMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -159,56 +161,6 @@ def _response_finish_reason(response: Any) -> str:
 # compaction checkpoint would silently truncate the conversation's memory and feed the cut-off text back
 # into every subsequent iterative-update prompt. (Ported from earendil-works/pi#7048 / commit 97fa14e39.)
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
-
-# A provider can return a natural-language refusal with finish_reason="stop". It is
-# non-empty, so the usual response validation accepts it, but it contains none of
-# the checkpoint needed to safely replace the compacted turns. Keep this narrow:
-# a real summary may mention a refusal in a recorded turn, while a refusal as the
-# whole response begins with one of these phrases and refers to the requested
-# summary/checkpoint.
-_SUMMARY_REFUSAL_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologi[sz]e|as\s+an\s+ai)"
-    r"\s*[,;:]?\s*(?:but\s+)?)?(?:i|we)\s+"
-    r"(?:can(?:\s*not|['’]t)|could\s*not|couldn['’]t|won['’]t|will\s+not|must\s+decline|"
-    r"refuse\s+to|am\s+unable\s+to|am\s+not\s+able\s+to)\b"
-    r"|^\s*(?:i['’]?m|i\s+am)\s+(?:unable|not\s+able)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_summary_refusal(content: str) -> bool:
-    """Return whether a complete response is a refusal instead of a summary."""
-    normalized = " ".join(content.split())
-    if not _SUMMARY_REFUSAL_PREFIX_RE.match(normalized):
-        return False
-    # A refusal-only body never carries the template's "## " section headings; a real summary
-    # that merely opens with a hedging preamble ("I cannot see earlier turns, but here is...") does.
-    if re.search(r"(?m)^##\s", content):
-        return False
-    # Limit the search to the opener so a structured checkpoint that records a
-    # historical refusal elsewhere is not rejected. Stems catch summary/summarize/summarise.
-    return any(term in normalized[:400].casefold() for term in ("summar", "checkpoint"))
-
-
-def _response_refusal_text(response: Any) -> str:
-    """Explicit provider ``choices[0].message.refusal`` (str, or dict with message/reason/text); ``""`` when absent.
-
-    OpenAI-style structured-output refusals put the refusal here and leave ``content`` as filler or
-    empty, so the prose detector never sees it.
-    """
-    refusal = _message_field(_coerce_llm_message(response), "refusal")
-    if isinstance(refusal, dict):
-        refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
-    return refusal.strip() if isinstance(refusal, str) else ""
-
-
-def _is_refusal_response(response: Any, content: str) -> bool:
-    """Single refusal predicate for both summarizer paths.
-
-    An explicit provider ``message.refusal`` wins even when ``content`` looks like a
-    summary; otherwise fall back to the prose detector on the extracted content.
-    """
-    return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
 
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
@@ -2147,7 +2099,8 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 
 class ContextCompressor(
-    SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin, ContextEngine,
+    WarmHandoffMixin, SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
+    ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2808,9 +2761,10 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, warm_handoff: Any = "off",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        self._init_warm_handoff(warm_handoff)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -4013,7 +3967,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
-            content = self._call_summary_llm(prompt, prompt_started_at)
+            content = self._warm_handoff_text(has_user_turn, focus_topic) or self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content
@@ -5531,7 +5485,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._reset_proactive_prune_rearm()
         return compressed
 
-    def compress(
+    def _compress_messages(
         self, messages: list[dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
     ) -> list[dict[str, Any]]:

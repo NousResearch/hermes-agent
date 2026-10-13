@@ -770,6 +770,17 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # Warm handoff: off | on | auto (default: off). A compaction first sends the
+  # last main-model request again, plus the rows after it and one instruction,
+  # so the main model writes the summary on its cached prompt. A server with
+  # prefix caching (vLLM, SGLang, llama.cpp, LM Studio, hosted prompt caches)
+  # then reads only the new rows instead of the whole conversation. "auto" uses
+  # it only when auxiliary.compression resolves to the main model and the
+  # server reported cached tokens for a request less than 5 minutes old (an
+  # expired cache would make it a full-price read). Any failure falls back to
+  # the normal auxiliary summary in the same attempt.
+  warm_handoff: "off"
+
   # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
   # after at least this many seconds of inactivity compacts its accumulated
   # history up front, before the first reply, so a long-lived thread you come

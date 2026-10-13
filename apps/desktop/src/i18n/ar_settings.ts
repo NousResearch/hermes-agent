@@ -459,6 +459,7 @@ export const arSettings = {
       'compression.codexGpt55Autoraise': 'الرفع التلقائي لضغط Codex',
       'compression.targetRatio': 'هدف الضغط',
       'compression.protectLastN': 'الرسائل الأخيرة المحمية',
+      'compression.warmHandoff': 'التسليم الدافئ',
       'auxiliary.compression.timeout': 'مهلة نموذج الضغط (ثانية)',
       'delegation.model': 'نموذج الوكيل الفرعي',
       'delegation.provider': 'مزود الوكيل الفرعي',
@@ -495,6 +496,8 @@ export const arSettings = {
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
+      'compression.warmHandoff':
+        'يكتب النموذج الرئيسي ملخص الضغط على موجّهه المخزّن مؤقتًا، فيقرأ الخادم الذي يدعم التخزين المؤقت للموجّهات الرسائل الجديدة فقط. أسرع عندما يستخدم الضغط النموذج نفسه. تلقائي: فقط عندما يستخدم الضغط النموذج الرئيسي ويُبلغ الخادم عن رموز مخزّنة مؤقتًا. تشغيل: المحاولة دائمًا. إيقاف: استخدام نموذج الضغط دائمًا. عند أي فشل يُستخدم الملخص العادي.',
       'auxiliary.compression.timeout':
         'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',

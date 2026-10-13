@@ -67,6 +67,7 @@ class ToolCall:
     args: dict[str, Any] | str = field(default_factory=dict)
     parallel: list[tuple[str, dict[str, Any] | str]] = field(default_factory=list)
     text: str | None = None
+    cached_tokens: int = 0
 
 
 @dataclass
@@ -404,6 +405,9 @@ def _message_for(
     message = {"role": "assistant", "content": resp.text, "tool_calls": tool_calls}
     pt = 100 if prompt_tokens is None else prompt_tokens
     usage = {"prompt_tokens": pt, "completion_tokens": 10, "total_tokens": pt + 10}
+    if resp.cached_tokens:
+        # A caching server reports the cache on every reply, a tool-call turn included.
+        usage["prompt_tokens_details"] = {"cached_tokens": resp.cached_tokens}
     return message, "tool_calls", usage
 
 

@@ -35,7 +35,7 @@ from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.prefix_request_capture import bind_stream_capture, open_main_chat_stream
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
@@ -2951,20 +2951,6 @@ class _StreamingCall(StreamingWaitMonitor):
             finish_reason = "stop"
         return usage, finish_reason
 
-    def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
-        # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
-        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
-        if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
-            stream_kwargs["stream_options"] = {"include_usage": True}
-        request_client = self._attempt_request_client = self.clients.set_client(
-            self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
-        self.last_chunk_time["t"] = time.time()
-        self.agent._touch_activity("waiting for provider response (streaming)")
-        # #93650: as above — the streaming path carries the same bulk
-        # messages/tools payload and pays the same client-side walk.
-        stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
-        return request_client.chat.completions.create(**stream_kwargs)
-
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
@@ -3064,9 +3050,11 @@ class _StreamingCall(StreamingWaitMonitor):
         detail_watch = RunawayStreamWatch()
         runaway = None
 
+        capture_store = {}
+
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
-            return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
+            return open_main_chat_stream(self, {**next_api_kwargs, "stream": True, "timeout": timeout}, capture_store)
 
         def _flush_pending_stream_text():
             pending_parts = list(pending_text_parts)
@@ -3216,7 +3204,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
         if stream.final_response is not None:
-            return self._adopt_final_response(stream.final_response)
+            return bind_stream_capture(self.agent, capture_store, self._adopt_final_response(stream.final_response))
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
@@ -3225,7 +3213,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
-        return response
+        return bind_stream_capture(self.agent, capture_store, response)
 
     def _log_runaway_cut(self, channel: str) -> None:
         logger.warning(

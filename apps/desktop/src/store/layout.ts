@@ -47,6 +47,7 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 export const SIDEBAR_FILTERED_PAGE_SIZE = 300
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
+const SIDEBAR_PINNED_SORT_STORAGE_KEY = 'hermes.desktop.pinnedSort'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
@@ -302,6 +303,9 @@ const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile',
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
+/** What the Pinned section can be ordered by: the same keys, plus `manual` —
+ *  Pinned's own hand-dragged pin order, which is what it ships with. */
+export const PINNED_SORT_KEYS: readonly SidebarOrdering[] = ['manual', ...SIDEBAR_SORT_KEYS]
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
 // projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that
@@ -335,6 +339,21 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   'updated',
   oneOf(SIDEBAR_SORT_KEYS, 'updated')
 )
+
+// Pinned ships in pin order — the sequence you build by dragging a row to the
+// top. Picking a key here re-orders that one section; the flat list has its own
+// Ordering in the filter menu. Connection-scoped for the same reason the pin
+// order is: the ids it ranks name rows in one gateway's state.db.
+export const $pinnedSortKey = connectionScopedAtom<SidebarOrdering>(
+  SIDEBAR_PINNED_SORT_STORAGE_KEY,
+  'manual',
+  oneOf(PINNED_SORT_KEYS, 'manual'),
+  { includeProfile: false }
+)
+
+export function setPinnedSortKey(key: SidebarOrdering) {
+  $pinnedSortKey.set(key)
+}
 
 // Simple mode rests the rows on what was said and when, without touching
 // this preference.
@@ -429,14 +448,16 @@ export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
   [
     $sidebarGrouping,
     $sidebarOrdering,
+    $pinnedSortKey,
     $sidebarRowMeta,
     $sidebarCardRows,
     $sidebarShowAllSessions,
     $sidebarFiltersActive
   ],
-  (grouping, ordering, rowMeta, cardRows, showAllSessions, filtersActive) =>
+  (grouping, ordering, pinnedSort, rowMeta, cardRows, showAllSessions, filtersActive) =>
     grouping !== SIDEBAR_DEFAULT_GROUPING ||
     ordering !== SIDEBAR_DEFAULT_ORDERING ||
+    pinnedSort !== 'manual' ||
     !sameRowMeta(rowMeta, SIDEBAR_DEFAULT_ROW_META) ||
     cardRows ||
     showAllSessions ||
@@ -945,6 +966,7 @@ export function resetSidebarView() {
   $sidebarFlatAgentsGrouped.set(false)
   $sidebarAllProfilesAgentsGrouped.set(false)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
+  setPinnedSortKey('manual')
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   $sidebarCardRows.set(false)
   $sidebarShowAllSessions.set(false)

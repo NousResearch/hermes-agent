@@ -15,6 +15,7 @@ A's last output into job B's prompt), `workdir` (run with that directory's `AGEN
 loaded), multi-platform delivery.
 
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
+
 - **Inactivity watchdog** on cron agent sessions (`_cron_inactivity_seconds()`): default 600s idle,
   `HERMES_CRON_TIMEOUT` overrides, `0` = unlimited. It is idle time, not wall-clock — a stalled
   session is hard-interrupted so it cannot monopolise the scheduler, while a long-but-active job
@@ -34,7 +35,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   threads (module globals race). Everything a tick touches lives inside that guard: store open,
   lock path, backoff/failure counters (`_note_tick_failure`), job env construction, and the
   `on_session_end` flush of a finished job. Supervision (`scheduler_thread.py::
-  SupervisedTickerThread`; start on gateway boot, stand down for homes another gateway already
+SupervisedTickerThread`; start on gateway boot, stand down for homes another gateway already
   serves, re-enumerate when a profile dir appears or is tombstoned) is per served home, not per
   process. Why: a store opened before the scope was entered wrote a secondary profile's run
   records into the launch profile's `jobs.json`.
@@ -64,7 +65,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   republished every cycle and reaps the departed homes' parallel pools; pools used to live until
   `atexit`, so each home ever ticked kept a ThreadPoolExecutor and its worker threads forever.
 - **The host gateway stands down for a profile that runs its OWN gateway.** `run.py::
-  _cron_profile_gate` (the same gate `hermes_cli/web_server.py` passes) keeps the launch process
+_cron_profile_gate` (the same gate `hermes_cli/web_server.py` passes) keeps the launch process
   and a per-profile gateway off one store: the tick lock stops a simultaneous double-run but not
   the race, and when the launch process wins, delivery goes through `SharedRouteAdapters`/
   fail-closed instead of that profile's live adapters. The gate compares the liveness PID against
@@ -74,7 +75,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   checkout — and, on a PM install, the committed generation's `site-packages` — on the child's
   `PYTHONPATH` and marks it `_HERMES_CRON_WORKER_BOOT`; the child's package entry
   (`cron/__init__.py` → `cron/worker_bootstrap.py`, ahead of the `cron.jobs` import — `-m
-  cron.scheduler` runs the package first) then runs PM's `activate_dependencies`, which
+cron.scheduler` runs the package first) then runs PM's `activate_dependencies`, which
   leases the committed generation for the worker's lifetime, runs its `.pth` files and
   activates it before the first third-party import. A failed activation is fatal: the worker
   exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
@@ -89,6 +90,8 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
   briefs are labelled user turns appended at a turn boundary, preserving role alternation.
+  An empty seeded session includes the redacted job prompt before the final response; populated
+  sessions append only the response. The separate cron execution's tool transcript is not copied.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means
   "spawned by the app", not "a GUI is watching" (root: capability is a property of the session).
 - Background `delegate_task` is process-local; work that must survive restarts is a cron job or a
@@ -102,13 +105,13 @@ zero outside a kanban task (footprint ladder rung 3).
 
 - **CLI:** `hermes_cli/kanban.py` facade + 14 `kanban_*.py` siblings (`boards`, `db`, `db_connect`,
   `db_dispatch`, `db_notify`, `db_graph` (task initialization and decomposition), `workspace`, ...). Verbs: `init, create, list (ls), show, assign, link,
-  unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
-  reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
-  notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
+unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
+reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
+notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
 - **Toolset:** `tools/kanban_tools.py` — `kanban_show, kanban_complete, kanban_request_review,
-  kanban_request_changes, kanban_block, kanban_schedule, kanban_heartbeat, kanban_comment,
-  kanban_create, kanban_link,
-  kanban_attach, kanban_attach_url, kanban_attachments`; platforms whose saved selection enables
+kanban_request_changes, kanban_block, kanban_schedule, kanban_heartbeat, kanban_comment,
+kanban_create, kanban_link,
+kanban_attach, kanban_attach_url, kanban_attachments`; platforms whose saved selection enables
   `kanban` (`hermes tools enable kanban --platform <p>`; default-off, in `CONFIGURABLE_TOOLSETS`) get
   the full set plus `kanban_list`/`kanban_unblock` for board routing. The check_fn reads the schema
   build's own selection (`tools/kanban_toolset_context.py`), never the legacy top-level `toolsets`

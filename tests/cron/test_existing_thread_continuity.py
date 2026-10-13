@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.scheduler_delivery import _seed_live_delivery_sessions
+from cron.scheduler_delivery import _cron_mirror_message, _seed_live_delivery_sessions
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
 
@@ -102,6 +102,70 @@ def test_existing_origin_thread_preserves_history_and_appends_once(tmp_path):
         assert transcript[:-1] == history
         assert len(transcript) == len(history) + 1
         assert transcript[-1]["role"] == "user"
+    finally:
+        store.close_all_db_handles()
+
+
+@pytest.mark.parametrize("opened_thread_id", [None, "100.000000"])
+def test_cold_thread_retains_kickoff_and_final_response_once(
+    tmp_path, opened_thread_id
+):
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    job = {
+        "id": "research",
+        "name": "research",
+        "attach_to_session": True,
+        "prompt": "Research the project, cite evidence, and draft the report for the planning team.",
+    }
+    final_response = (
+        "Evidence: source A supports option B. Decision: use B. Draft: proposed report."
+    )
+    delivery = target(
+        store, job=job, opened_thread_id=opened_thread_id, mirror_text=final_response
+    )
+    try:
+        _seed_live_delivery_sessions(delivery, "100.000001")
+        entry = store.get_or_create_session(reply_source())
+        transcript = store.load_transcript(entry.session_id)
+        assert len(transcript) == 1
+        assert transcript[0]["content"] == _cron_mirror_message(
+            job,
+            f"[Cron task]\n{job['prompt']}\n\n{final_response}",
+        )
+        store.close_all_db_handles()
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        assert (
+            store.get_or_create_session(reply_source()).session_id == entry.session_id
+        )
+        assert store.load_transcript(entry.session_id) == transcript
+        followup_response = (
+            "Updated draft: retain option B and add the requested appendix."
+        )
+        store.append_to_transcript(
+            entry.session_id, {"role": "assistant", "content": "Ready for revisions"}
+        )
+        history = store.load_transcript(entry.session_id)
+        delivery.mirror_text = followup_response
+        _seed_live_delivery_sessions(delivery, "100.000002")
+        updated = store.load_transcript(entry.session_id)
+        assert updated[:-1] == history
+        assert updated[-1]["content"] == _cron_mirror_message(job, followup_response)
+    finally:
+        store.close_all_db_handles()
+
+
+def test_cold_thread_redacts_kickoff_secrets(tmp_path):
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    secret = "sk-" + "A" * 32
+    delivery = target(store)
+    delivery.job["prompt"] = f"Research the project. Token: {secret}"
+    try:
+        _seed_live_delivery_sessions(delivery, "100.000001")
+        entry = store.get_or_create_session(reply_source())
+        transcript = store.load_transcript(entry.session_id)
+        assert len(transcript) == 1
+        assert secret not in transcript[0]["content"]
+        assert transcript[0]["content"].endswith(delivery.mirror_text)
     finally:
         store.close_all_db_handles()
 

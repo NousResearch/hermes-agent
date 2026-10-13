@@ -296,8 +296,7 @@ def _seed_cron_session(
         except (ValueError, KeyError):
             platform_enum = None
         if platform_enum is not None:
-            # Discord keys in-thread messages with chat_id == thread_id; Slack/Telegram use the
-            # parent channel.
+            # Discord uses the thread as chat_id; Slack/Telegram use the parent channel.
             seed_chat_id = (
                 str(thread_id)
                 if discord_keys_on_thread and platform_enum == Platform.DISCORD
@@ -308,10 +307,11 @@ def _seed_cron_session(
                 chat_type=chat_type,
                 user_id=user_id, user_name=user_name, thread_id=thread_id,
                 scope_id=str(scope_id) if scope_id else None)
-            # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
-            # bails on populated chats.
+            # Explicit session id avoids ambiguous origin scans on populated chats.
             _entry = session_store.get_or_create_session(dest_source)
             seeded_session_id = getattr(_entry, "session_id", None)
+            if job.get("prompt") and seeded_session_id and not session_store.load_transcript(seeded_session_id):
+                text = f"[Cron task]\n{_redact_cron_payload(job['prompt'], 'task prompt')}\n\n{text}"
     return mirror_to_session(
         platform_name, str(chat_id), _cron_mirror_message(job, text),
         source_label="cron", thread_id=thread_id, user_id=user_id, role="user",

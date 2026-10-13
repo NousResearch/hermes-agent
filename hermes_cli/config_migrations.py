@@ -744,9 +744,9 @@ def _migrate_to_51(results: dict[str, Any], quiet: bool) -> None:
                 _c.save_env_value("STEPFUN_CN_API_KEY", existing_key)
                 _c.save_env_value("STEPFUN_API_KEY", "")
                 notes.append("env STEPFUN_API_KEY → STEPFUN_CN_API_KEY (China account key)")
-    except Exception:
+    except OSError as exc:
         # Best effort: a failed .env write must not abort the provider rename.
-        pass
+        logger.warning("StepFun migration could not update .env: %s", exc)
 
     suffix = f" ({'; '.join(notes)})" if notes else ""
     _commit(

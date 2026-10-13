@@ -651,12 +651,32 @@ def _rate_limit_reply(text: str) -> str:
     return t("gateway.errors.usage_limit_resets", window=format_reset_window(seconds))
 
 
-def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+def _gateway_provider_error_reply(
+        text: str, *, model: Optional[str] = None, provider: Optional[str] = None) -> str:
+    """Map raw provider/API errors to a short user-safe Telegram reply.
+
+    When the turn's route is known, name it: the SDK frequently raises with no usable detail
+    (``openai.APIConnectionError: Connection error.`` keeps no cause), and a user who can see
+    WHICH model/endpoint failed can fix it (``/model``) or report it without grepping logs.
+    """
     for pattern, reply_key in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
-            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)
-    return t("gateway.errors.provider_kept_failing")
+            reply = _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)
+            return _append_route_context(reply, model, provider)
+    return _append_route_context(t("gateway.errors.provider_kept_failing"), model, provider)
+
+
+def _append_route_context(
+        reply: str, model: Optional[str] = None, provider: Optional[str] = None) -> str:
+    """Append the failing turn's route to a provider-error reply.
+
+    Only known values are named; with neither in scope the reply is returned unchanged, so
+    every existing caller and pinned reply string stays byte-identical.
+    """
+    parts = [f"model {m}" for m in (model,) if m] + [f"provider {p}" for p in (provider,) if p]
+    if not parts:
+        return reply
+    return f"{reply}\n\nRoute: {' · '.join(parts)}."
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
@@ -683,7 +703,8 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+def _sanitize_gateway_final_response(
+        platform: Any, text: str, *, model: Optional[str] = None, provider: Optional[str] = None) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
     categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
     if not text or _gateway_surface_passes_raw_text(platform):
@@ -716,7 +737,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
+        return _gateway_provider_error_reply(redacted, model=model, provider=provider)
     return redacted
 
 

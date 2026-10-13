@@ -25,7 +25,10 @@ class _KanbanArgumentParser(argparse.ArgumentParser):
     def parse_known_args(self, args=None, namespace=None):
         if not self._intermixed:
             return super().parse_known_args(args, namespace)
-        # argparse's intermixed implementation calls parse_known_args twice.
+        # Protect the delimiter across argparse's two passes: its first pass
+        # can consume a leading '--' while positionals are suppressed.
+        if args is not None and "--" in args:
+            return super().parse_known_args(args, namespace)
         self._intermixed = False
         try:
             return self.parse_known_intermixed_args(args, namespace)

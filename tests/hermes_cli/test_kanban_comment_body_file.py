@@ -73,3 +73,14 @@ def test_comment_file_refuses_invalid_input_without_writes(task_id, tmp_path, mo
     assert comments(task_id) == []
     assert "Comment added" in kc.run_slash(f'comment {task_id} "inline still works"')
     assert comments(task_id)[-1].body == "inline still works"
+
+
+def test_comment_delimiter_keeps_flags_literal(task_id):
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers())
+    for prefix in (["--", task_id], [task_id, "--"]):
+        args = parser.parse_args(["kanban", "comment", *prefix, "--body-file", "-", "--author", "literal"])
+        assert args.body_file is None
+        assert args.author is None
+        assert kc.kanban_command(args) == 0
+        assert comments(task_id)[-1].body == "--body-file - --author literal"

@@ -207,6 +207,28 @@ def _dashboard_subcommand_index(argv: list[str]) -> int | None:
     return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard")), None)
 
 
+def _canonical_dashboard_argv(argv: list[str]) -> list[str]:
+    """Return logical Hermes argv for direct and canonical inline-bootstrap launchers."""
+    import ast
+
+    try:
+        source = argv[argv.index("-c") + 1]
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Attribute) and target.attr == "argv"
+                       and isinstance(target.value, ast.Name) and target.value.id == "sys"
+                       for target in node.targets):
+                continue
+            value = ast.literal_eval(node.value)
+            if isinstance(value, list) and all(isinstance(token, str) for token in value):
+                return value
+    except (ValueError, SyntaxError, TypeError, IndexError):
+        pass
+    return argv
+
+
 def _profile_flag_value(argv: list[str]) -> str | None:
     """Value of the first ``--profile X`` / ``-p X`` / ``--profile=X`` in *argv*."""
     for i, tok in enumerate(argv):
@@ -223,6 +245,7 @@ def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
 
     See #78821.
     """
+    argv = _canonical_dashboard_argv(argv)
     if _dashboard_subcommand_index(argv) is None:
         return False
     return any((tok == "--port" and i + 1 < len(argv) and str(argv[i + 1]) == "0")

@@ -359,8 +359,6 @@ def setup_logging(
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
-    backups = backup_count or cfg_backup or 3
 
     from agent.redact import RedactingFormatter  # lazy: circular at module load
 
@@ -368,11 +366,19 @@ def setup_logging(
 
     # (filename, level, max_bytes, backup_count, component) — a component gates
     # the file on ``mode`` and restricts it to that component's logger prefixes.
+    # Every file feeds the ``max_size_mb``/``backup_count`` params and the
+    # ``logging.*`` config keys; the per-file sizes below only apply while
+    # both are unset.
+    size_mb = max_size_mb or cfg_max_size
+    backups_resolved = backup_count or cfg_backup
+    max_bytes = (size_mb or 5) * 1024 * 1024
+    backups = backups_resolved or 3
+    comp_bytes = (size_mb or 0) * 1024 * 1024
     handler_specs = (
         ("agent.log", level, max_bytes, backups, None),
-        ("errors.log", logging.WARNING, 2 * 1024 * 1024, 2, None),
-        ("gateway.log", logging.INFO, 5 * 1024 * 1024, 3, "gateway"),
-        ("gui.log", logging.INFO, 10 * 1024 * 1024, 5, "gui"),
+        ("errors.log", logging.WARNING, comp_bytes or 2 * 1024 * 1024, backups_resolved or 2, None),
+        ("gateway.log", logging.INFO, comp_bytes or 5 * 1024 * 1024, backups_resolved or 3, "gateway"),
+        ("gui.log", logging.INFO, comp_bytes or 10 * 1024 * 1024, backups_resolved or 5, "gui"),
     )
     for filename, lvl, size, count, component in handler_specs:
         if component is not None and mode != component:

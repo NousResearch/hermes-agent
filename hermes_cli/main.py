@@ -592,6 +592,14 @@ def explicit_cli_profile() -> str | None:
     return _explicit_cli_profile
 
 
+def _stdin_is_interactive() -> bool:
+    """``sys.stdin.isatty()``; False when stdin is closed or invalid (service context)."""
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     global _explicit_cli_profile
@@ -607,6 +615,16 @@ def _apply_profile_override() -> None:
     # `hermes profile use` and the gateway should honour it (#22502).
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
+        return
+
+    # A HERMES_HOME exported by the user's own interactive shell is direct
+    # intent — "operate THIS home" — and must not be silently rewritten to the
+    # sticky profile (mcp add/list then read/write the wrong config.yaml,
+    # #137656). Machine-set values (systemd's hardcoded root from #22502, cron,
+    # containers, spawned children) carry no controlling stdin and keep the
+    # sticky-profile behaviour. An explicit -p flag is unaffected: it names a
+    # profile here and skips this early return.
+    if profile_name is None and hermes_home_env and _stdin_is_interactive():
         return
 
     if (profile_name is None and not _under_gateway_supervisor(argv)

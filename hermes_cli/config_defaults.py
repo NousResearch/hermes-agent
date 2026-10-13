@@ -846,6 +846,8 @@ DEFAULT_CONFIG = {
         "tui_auto_resume_recent": False,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
+        # Copy a finished TUI mouse selection; None keeps the platform default (on for macOS only).
+        "tui_copy_on_select": None,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,

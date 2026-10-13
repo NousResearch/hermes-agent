@@ -3553,6 +3553,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
 _TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
+    ("/copy-on-select", "Set copy on select [on|off|auto|status]", "TUI"),
     ("/density", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]", "TUI"),

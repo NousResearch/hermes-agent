@@ -78,7 +78,14 @@ export const slashCmdCoreEn = {
       nothingToCopy: 'nothing to copy — start a conversation first',
       sentOsc52: 'sent OSC52 copy sequence (terminal support required)',
       copied: 'copied to clipboard',
-      failed: (error: string) => `copy failed: ${error}`
+      copiedTmuxBuffer: 'copied to tmux buffer'
+    },
+    copyOnSelect: {
+      usage: 'usage: /copy-on-select [on|off|auto|status]',
+      // {0}=on|off|auto, or the auto string below
+      state: (mode: string) => `copy on select: ${mode}`,
+      // {0}=on|off, the platform default auto currently resolves to
+      auto: (effective: string) => `auto (currently ${effective})`
     },
     paste: {
       usage: 'usage: /paste'

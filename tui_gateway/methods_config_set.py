@@ -429,6 +429,15 @@ def _set_toggle(rid, params, key, value, session):
     return _kv(rid, key, report(nv))
 
 
+def _set_copy_on_select(rid, params, key, value, session):
+    raw = _word(value)
+    modes = {"on": True, "off": False, "auto": None}
+    if raw not in modes:
+        return _err(rid, 4002, f"unknown copy-on-select value: {value}")
+    _write_config_key("display.tui_copy_on_select", modes[raw])
+    return _kv(rid, key, raw)
+
+
 def _set_cwd(rid, params, key, value, session):
     raw = str(value or "").strip()
     if not raw:
@@ -490,6 +499,7 @@ _CONFIG_SETTERS = {
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "copy-on-select": _set_copy_on_select,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}

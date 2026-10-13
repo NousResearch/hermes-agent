@@ -188,6 +188,33 @@ class ProviderNotConfiguredError(RuntimeError):
     """
 
 
+def flat_model_schema_hint() -> str:
+    """Pointed suffix for the "no provider configured" errors when config.yaml carries the
+    removed flat model schema. ``model_provider:`` (and a ``model:`` string) is the pre-1.0
+    layout; the loader reads only the structured ``model:`` dict, so a flat config silently
+    resolves to "nothing configured" and the user gets the generic setup message with no hint
+    that their YAML is the problem (#75651 part 2)."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        flat_keys = []
+        if cfg.get("model_provider"):
+            flat_keys.append("model_provider")
+        if isinstance(cfg.get("model"), str):
+            flat_keys.append("model")
+        if flat_keys:
+            return (
+                " Your config.yaml uses the removed flat model schema ("
+                + ", ".join(f"`{k}:`" for k in flat_keys)
+                + "). Move it under the structured `model:` dict, e.g.\n"
+                "  model:\n"
+                "    default: <model id>\n"
+                "    provider: <provider>\n"
+                "    base_url: <endpoint, for custom providers>"
+            )
+    return ""
+
+
 def missing_provider_credentials_message(provider_id: str) -> str:
     """The "Provider 'X' is set in config.yaml but …" error for an explicit provider with no credentials.
 

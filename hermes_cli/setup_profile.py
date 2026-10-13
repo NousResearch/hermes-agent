@@ -86,7 +86,7 @@ def ensure_setup_profile() -> SetupProfile:
     try:
         _write_soul(path)
         _replace_dir(path / "memories")
-        _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path), _OWNER: owner})
+        _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path, get_hermes_home()), _OWNER: owner})
     except BaseException:
         profiles_mod.delete_profile(name, yes=True)
         raise
@@ -102,7 +102,7 @@ def reset_setup_profile(launch_home: Path) -> SetupProfile:
     added = _read_state(path).get(_ADDED_DISABLED) or []
     _write_soul(path)
     _replace_dir(path / "memories")
-    added = list(dict.fromkeys([*added, *_write_setup_config(path)]))
+    added = list(dict.fromkeys([*added, *_write_setup_config(path, source)]))
     _replace_dir(path / "skills")
     if (source / "skills").is_dir():
         profiles_mod._copytree_keep_junctions(source / "skills", path / "skills",
@@ -295,12 +295,14 @@ def _set_section(config: dict, section: str, key: str, value) -> None:
         config.pop(section, None)
 
 
-def _write_setup_config(path: Path) -> list[str]:
-    """Give the setup profile its tool limits; returns the toolsets it disabled that were not disabled already."""
+def _write_setup_config(path: Path, source: Path) -> list[str]:
+    """Give the setup profile its tool limits, and *source*'s ``onboarding.model`` (a dev override) or else its own
+    ``model``; returns the toolsets it disabled that were not disabled already."""
     from agent.skill_utils import parse_config_string_list
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, read_user_config_raw
     config_path = path / "config.yaml"
     config = read_user_config_raw(config_path)
+    source_config = read_user_config_raw(source / "config.yaml")
     agent = config.get("agent") or {}
     disabled = parse_config_string_list(agent.get("disabled_toolsets"))
     config["agent"] = {**agent, "coding_context": "off", "reasoning_effort": "low",
@@ -308,7 +310,12 @@ def _write_setup_config(path: Path) -> list[str]:
     config["platform_toolsets"] = {**(config.get("platform_toolsets") or {}), "cli": list(_SETUP_TOOLSETS)}
     config["tools"] = {**(config.get("tools") or {}), "tool_search": {"defer": list(_SETUP_DEFERRED_TOOLS)}}
     config["display"] = {**(config.get("display") or {}), "show_reasoning": False}
-    atomic_config_write(config_path, config)
+    model = (source_config.get("onboarding") or {}).get("model") or source_config.get("model")
+    if model:
+        config["model"] = model
+    else:
+        config.pop("model", None)
+    atomic_config_replace(config_path, config)
     return [name for name in _SETUP_DISABLED_TOOLSETS if name not in disabled]
 
 

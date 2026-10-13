@@ -2319,12 +2319,12 @@ DEFAULT_CONFIG = {
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
     },
-    # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
-    # `seen`; wipe the section to re-see all hints.
+    # First-touch onboarding (agent/onboarding.py); each hint is latched once under `seen`, wipe to re-see.
     "onboarding": {
         "seen": {},
         # First-ever message: ask = offer; off = plain intro only.
         "profile_build": "ask",
+        "model": {},  # dev override of the desktop setup chat's `model` section, applied on setup create/reset
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and transmission to Nous (`send`) are SEPARATE opt-ins; see

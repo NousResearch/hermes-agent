@@ -3417,7 +3417,7 @@ display:
     bounded: "iteración {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (modelo '{task_model}') no se pudo enrutar ({error}); usando {provider}/{model} como alternativa"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' no tiene efecto mientras el modelo de revisión no sea el modelo principal"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' no tiene efecto mientras la revisión se ejecute en el modelo principal"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' parchada: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

@@ -3417,7 +3417,7 @@ display:
     bounded: "반복 {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (모델 '{task_model}')을(를) 라우팅할 수 없어요 ({error}). {provider}/{model}(으)로 대체해요"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}'은(는) 리뷰 모델이 메인 모델이 아닐 때는 효과가 없어요"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}'은(는) 리뷰가 메인 모델에서 실행되는 동안에는 효과가 없어요"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 스킬 '{name}' 패치됨: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 스킬 '{name}' {verb}: {description}"

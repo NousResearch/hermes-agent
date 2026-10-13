@@ -3417,7 +3417,7 @@ display:
     bounded: "yineleme {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' ('{task_model}' modeli) yönlendirilemedi ({error}); {provider}/{model} kullanılıyor"
-    reasoning_effort_warning: "⚠ inceleme modeli ana model değilken auxiliary.background_review.reasoning_effort='{effort}' ayarının bir etkisi yok"
+    reasoning_effort_warning: "⚠ inceleme ana modelde çalışırken auxiliary.background_review.reasoning_effort='{effort}' ayarının bir etkisi yok"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 '{name}' skill'i yamalandı: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 '{name}' skill'i {verb}: {description}"

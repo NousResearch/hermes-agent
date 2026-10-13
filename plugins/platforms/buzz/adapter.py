@@ -233,7 +233,7 @@ def _load_sibling(name: str):
 
 
 _nostr_auth = _load_sibling("nostr_auth")
-_typing = _load_sibling("typing_indicator")
+_typing, _presence = _load_sibling("typing_indicator"), _load_sibling("presence")
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
 from gateway.authz_mixin import (
@@ -700,6 +700,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         with contextlib.suppress(Exception):
             self._release_platform_lock()
+        await _presence.publish_offline(self, _nostr_auth.sign_event)  # while the socket is still open
         await cancel_task(self._ws_task)
         self._ws_task = None
         await cancel_task(self._poll_task)
@@ -1121,6 +1122,7 @@ class BuzzAdapter(BasePlatformAdapter):
                     tasks = {
                         asyncio.create_task(self._ws_read_loop(websocket, subscriptions)),
                         asyncio.create_task(self._ws_discovery_loop(websocket, subscriptions)),
+                        asyncio.create_task(_presence.heartbeat_loop(self, websocket, _nostr_auth.sign_event)),
                     }
                     try:
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

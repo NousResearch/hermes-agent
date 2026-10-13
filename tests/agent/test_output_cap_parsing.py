@@ -197,6 +197,47 @@ class TestParseVllmTokenBasedOutputCap:
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
 
+class TestParseVllmMaxTotalTokensOutputCap:
+    """#102494: vLLM rejects max_tokens > window with ``max_model_len=max_total_tokens=<window>``.
+
+    It states only the window, never the input, so the recovery path must
+    clamp max_tokens (it subtracts its own input estimate) rather than treat
+    the 400 as prompt-too-long and loop through compression.
+    """
+
+    _MSG = (
+        "max_tokens=393216 cannot be greater than "
+        "max_model_len=max_total_tokens=262144. Please request fewer output tokens."
+    )
+
+    def test_parses_window_from_max_total_tokens(self):
+        assert parse_available_output_tokens_from_error(self._MSG) == 262144
+
+    def test_is_classified_as_output_cap_error(self):
+        assert is_output_cap_error(self._MSG) is True
+
+    def test_case_and_wrapping_are_tolerated(self):
+        wrapped = (
+            "Error code: 400 - {'object': 'error', 'message': \"" + self._MSG.upper()
+            + "\", 'type': 'BadRequestError', 'code': 400}"
+        )
+        assert parse_available_output_tokens_from_error(wrapped) == 262144
+        assert is_output_cap_error(wrapped) is True
+
+    def test_other_cannot_be_greater_than_errors_are_not_output_caps(self):
+        msg = "temperature cannot be greater than 2"
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
+    def test_genuine_vllm_input_overflow_is_not_matched(self):
+        msg = (
+            "This model's maximum context length is 32768 tokens. However, your "
+            "request has 40000 input tokens. Please reduce the length of the input prompt."
+        )
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+
+
 class TestParseAdvertisedCeilingWordings:
     """Azure and SGLang name the ceiling without any phrase the parser knew (#78405, #83521).
     Unrecognized, the 400 carried the bare ``max_tokens`` substring (or nothing at all) into

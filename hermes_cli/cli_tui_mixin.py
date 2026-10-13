@@ -38,6 +38,7 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
+from hermes_cli.cli_composer_nav import ComposerNavMixin
 from hermes_cli.cli_footer_split import FooterSplit
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
@@ -129,7 +130,7 @@ def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
     return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
-class CLITuiMixin:
+class CLITuiMixin(ComposerNavMixin):
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
@@ -1749,6 +1750,8 @@ class CLITuiMixin:
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
         self._tui_last_text_change = time.monotonic()
+        # A new edit invalidates the parked pre-walk cursor: the next walk parks the new one.
+        self._tui_composer_cursor_before_walk = None
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
@@ -1803,15 +1806,6 @@ class CLITuiMixin:
         """Enter in the browse panel restores the highlighted draft."""
         self._tui_restore_stash_payload(event, self._prompt_stash.restore_at_cursor())
         event.app.invalidate()
-
-    def _tui_history_up(self, event):
-        """Up: browse history when on the first line, else move the cursor up."""
-        buf = event.app.current_buffer
-        self._tui_recall_without_recollapse(buf, lambda: buf.auto_up(count=event.arg))
-
-    def _tui_history_down(self, event):
-        buf = event.app.current_buffer
-        self._tui_recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
 
     def _tui_image_bar_fragments(self):
         from cli import _format_image_attachment_badges

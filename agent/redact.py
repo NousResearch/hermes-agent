@@ -886,8 +886,11 @@ def _redact_phone(m):
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, secret_file: bool = False,
-                          redact_url_credentials: bool = False) -> str:
+                          redact_url_credentials: bool = False, phones: bool = True) -> str:
     """Apply all redaction patterns to a block of text.
+
+    ``phones=False`` skips the E.164 phone mask: a phone number is contact data, not a credential,
+    so a boundary that REFUSES credential-shaped content (the memory store) must not refuse it.
 
     Safe on any string. Enabled by default (``security.redact_secrets: false``
     disables); ``force=True`` is for safety boundaries that must never return
@@ -990,7 +993,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    if "+" in text:
+    if phones and "+" in text:
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text

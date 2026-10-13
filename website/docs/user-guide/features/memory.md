@@ -214,6 +214,8 @@ The memory system automatically rejects exact duplicate entries. If you try to a
 
 Memory entries are scanned for injection and exfiltration patterns before being accepted, since they're injected into the system prompt. Content matching threat patterns (prompt injection, credential exfiltration, SSH backdoors) or containing invisible Unicode characters is blocked.
 
+Credential-shaped **values** are refused too: an API key, access token, password in a connection string or private-key block pasted into an entry is rejected with the masked form of the entry in the error, so the agent can keep the fact ("the deploy key lives in `.env` as `DEPLOY_KEY`") and drop the secret. Prose *about* credentials passes. This uses the same secret-pattern list as tool-output redaction and is always on — `security.redact_secrets: false` does not open it, because a secret in memory would ride into every future system prompt and sit in the file forever. A credential already on disk (a hand edit, an entry written before this gate) is masked in the system prompt at load time while the raw entry stays in the file for you to replace.
+
 ## Session Search
 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:

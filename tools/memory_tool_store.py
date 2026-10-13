@@ -25,10 +25,32 @@ MEMORY_BLOCK_HEADERS = {
 ENTRY_DELIMITER = "\n§\n"
 
 
+def _mask_credentials(content: str) -> str:
+    """*content* with credential-shaped material masked by the one shared secret-pattern list
+    (``agent.redact``), as the secret-file read path masks it: ``force`` because memory is a
+    model-facing boundary the ``security.redact_secrets`` preference does not get to open, and
+    the non-reusable sentinel so a masked entry can never be written back as a dead key. Phone
+    numbers are contact facts the user may well ask to have remembered, not credentials."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(content, force=True, file_read=True, secret_file=True, phones=False)
+
+
 def _scan_memory_content(content: str) -> Optional[str]:
-    """Error string if *content* matches injection/exfil patterns. Strict scope:
-    memory enters the system prompt, so a poisoned entry persists across sessions."""
-    return _first_threat_message(content, scope="strict")
+    """Error string if *content* matches injection/exfil patterns or carries a credential.
+    Strict scope: memory enters the system prompt, so a poisoned entry persists across sessions
+    — and a pasted API key would ride into every future prompt and sit in the file forever.
+    The scan is lenient toward prose about credentials (where a key lives, which manager holds it)
+    and refuses only credential-shaped VALUES; the error names the masked form so the model can
+    keep the fact and drop the secret. Ported from code-yeongyu/oh-my-openagent#9655."""
+    if threat := _first_threat_message(content, scope="strict"):
+        return threat
+    masked = _mask_credentials(content)
+    if masked == content:
+        return None
+    return ("Blocked: content contains credential-shaped material (an API key, token, password or "
+            "private key). Memory is injected into every future system prompt and persisted on disk, so "
+            "secrets are never stored there — keep them in .env or the vault and remember WHERE the "
+            f"credential lives instead. Masked form: {masked}")
 
 
 # Why the last refusal/failure in this context happened, for the shared metric only (a closed name from
@@ -186,19 +208,25 @@ class MemoryStore:
 
     def load_from_disk(self):
         """Load MEMORY.md / USER.md and capture the frozen system-prompt snapshot.
-        Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
-        live lists keep the raw text so the user can see and remove poisoned entries
-        (dropping them silently would hide the attack)."""
+        Threat hits are replaced by a ``[BLOCKED: …]`` placeholder and credential-shaped
+        material is masked in the SNAPSHOT only; live lists keep the raw text so the user can
+        see and remove poisoned entries (dropping them silently would hide the attack)."""
         from tools.threat_patterns import scan_for_threats
 
         def _sanitize(entry, filename):
             # Strict scope, same as writes; empty / already-blocked entries pass through.
             findings = scan_for_threats(entry, scope="strict") if entry and not entry.startswith("[BLOCKED:") else None
-            if not findings:
-                return entry
-            logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
-            return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+            if findings:
+                logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
+                return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
+                        f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+            # A credential that reached the file past the write gate (hand edit, pre-gate store, an external
+            # writer) is masked rather than dropped: the fact around it still loads, the secret never does.
+            masked = _mask_credentials(entry) if entry else entry
+            if masked != entry:
+                logger.warning("Memory entry from %s carries credential-shaped material; masked in the system "
+                               "prompt. Remove the secret from the entry with memory(action=replace).", filename)
+            return masked
 
         for target in ("memory", "user"):
             path = self._path_for(target)

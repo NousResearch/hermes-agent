@@ -448,7 +448,7 @@ class GatewayTurnMixin:
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
-            resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id)
+            resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id, event_metadata.get("gateway_proven_session_id") or "", event_metadata.get("gateway_completion_ids") or ())
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
@@ -1315,7 +1315,7 @@ class GatewayTurnMixin:
                 # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
-                    task_id=session_entry.session_id or "default",
+                    task_id=session_entry.session_id or "default", trigger="gateway_hygiene",
                 ),
             )
             # Register the live worker with shutdown NOW, not only once it is deferred: the default
@@ -2537,7 +2537,7 @@ class GatewayTurnMixin:
                         )
                         await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
 
-        except Exception as e:
+        except Exception:
             logger.exception("Background task %s failed", task_id)
             # Automatic failure diagnostic (the task produced no requested result to deliver).
             with suppress(Exception):

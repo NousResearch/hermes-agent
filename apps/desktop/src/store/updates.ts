@@ -514,6 +514,8 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    rollback: Boolean(res.rollback_to),
+    sourceVersion: res.rollback_to ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
@@ -625,6 +627,70 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
     $updateStatus.set(fallback)
 
     return fallback
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
+export type SourceUpdateChannel = 'main' | 'stable'
+
+/** What a source checkout follows, for display; null where a package owns the channel. */
+export type SourceUpdateTrack = { kind: 'stable' } | { kind: 'main' } | { kind: 'branch'; name: string }
+
+export function sourceUpdateTrack(status: DesktopUpdateStatus | null): SourceUpdateTrack | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return { kind: 'stable' }
+  }
+
+  if (status.channel !== undefined || !status.branch) {
+    return null
+  }
+
+  return status.branch === 'main' ? { kind: 'main' } : { kind: 'branch', name: status.branch }
+}
+
+/**
+ * The selectable channel of a source checkout, or null where the selector must not
+ * appear: packages own their channel, runtimes older than the flag cannot save one,
+ * and a custom branch is neither stable releases nor every commit on main.
+ */
+export function sourceUpdateChannel(status: DesktopUpdateStatus | null): SourceUpdateChannel | null {
+  const source = status?.mechanism === 'posix-handoff' || status?.mechanism === 'windows-handoff'
+
+  if (!status?.supported || !source || !status.channelSelectable) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return 'stable'
+  }
+
+  return status.channel === undefined && status.branch === 'main' ? 'main' : null
+}
+
+/**
+ * Persist the source checkout's channel; the reply is a fresh check against it.
+ * An unreachable release still returns a status naming the saved channel.
+ */
+export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<DesktopUpdateStatus> {
+  const setChannel = window.hermesDesktop?.updates?.setChannel
+
+  if (!setChannel) {
+    throw new Error('This installation cannot change its update channel.')
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const status = await setChannel(channel)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status, 'client')
+
+    return status
   } finally {
     $updateChecking.set(false)
   }

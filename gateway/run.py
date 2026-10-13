@@ -254,7 +254,7 @@ async def run_codex_hygiene_compaction(
     # copy_context carries profile secret scope / HERMES_HOME override (executors don't propagate ContextVars).
     worker_future = asyncio.get_running_loop().run_in_executor(
         None, copy_context().run,
-        lambda: agent._compress_context(history, "", approx_tokens=approx_tokens, task_id=session_id or "default"))
+        lambda: agent._compress_context(history, "", approx_tokens=approx_tokens, task_id=session_id or "default", trigger="gateway_hygiene"))
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
     if callable(track_worker):
         # ``wait_for`` only cancels the asyncio wrapper; keep the running executor thread visible to shutdown.
@@ -1828,7 +1828,7 @@ async def _async_profile_runtime_scope(profile_home: Path):
         yield
 
 
-def load_gateway_config_for_runner() -> GatewayConfig:
+def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
     still runs per-profile gateways standalone). Multiplexed: set multiplex-active, then reload
@@ -1898,7 +1898,7 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
-def _platform_has_bot_credential(platform: Platform, platform_config: PlatformConfig) -> bool:
+def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
     """Return True when a token-authenticated platform has a usable bot credential; platforms not using
     ``PlatformConfig.token`` (Signal session paths, port-binding HTTP adapters) always return True."""
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform

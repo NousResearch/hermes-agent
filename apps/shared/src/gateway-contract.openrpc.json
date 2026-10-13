@@ -601,6 +601,24 @@
       }
     },
     {
+      "name": "connectors.accounts.rename",
+      "summary": "Name or rename one hosted connector account owned by the scoped member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectorAccountsRenameParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectorAccountRow"
+        }
+      }
+    },
+    {
       "name": "connectors.catalog",
       "summary": "The hosted connector catalog available to the scoped member.",
       "params": [
@@ -2415,6 +2433,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PingResult"
+        }
+      }
+    },
+    {
+      "name": "plugins.catalog.lookup",
+      "summary": "One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginCatalogLookupParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PluginCatalogLookupResult"
         }
       }
     },
@@ -9285,6 +9321,24 @@
         "title": "ConnectionAnswerTarget",
         "type": "object"
       },
+      "ConnectionDisplay": {
+        "additionalProperties": false,
+        "description": "``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested.",
+        "properties": {
+          "suggested": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggested",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggested"
+        ],
+        "title": "ConnectionDisplay",
+        "type": "object"
+      },
       "ConnectionOperationParams": {
         "additionalProperties": false,
         "properties": {
@@ -9479,6 +9533,18 @@
             ],
             "default": null,
             "title": "Connection Id"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
           },
           "attempt": {
             "anyOf": [
@@ -9814,6 +9880,17 @@
             ],
             "default": null,
             "title": "Tool Call Id"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionDisplay"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10181,6 +10258,11 @@
             "title": "Active",
             "type": "boolean"
           },
+          "disabled": {
+            "default": false,
+            "title": "Disabled",
+            "type": "boolean"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -10296,6 +10378,39 @@
           "status"
         ],
         "title": "ConnectorAccountsRemoveResult",
+        "type": "object"
+      },
+      "ConnectorAccountsRenameParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "connection_id": {
+            "minLength": 1,
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "alias": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+            "title": "Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "alias"
+        ],
+        "title": "ConnectorAccountsRenameParams",
         "type": "object"
       },
       "ConnectorAccountsResult": {
@@ -11184,6 +11299,32 @@
             "default": false,
             "title": "Reconnect",
             "type": "boolean"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
           }
         },
         "required": [
@@ -22269,6 +22410,97 @@
         "title": "PluginActivation",
         "type": "object"
       },
+      "PluginCatalogLookupEntry": {
+        "additionalProperties": false,
+        "description": "The fields an install needs: the same ones the embedded catalog picker posts on a pick.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "sha": {
+            "title": "Sha",
+            "type": "string"
+          },
+          "subdir": {
+            "title": "Subdir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "repo",
+          "sha",
+          "subdir"
+        ],
+        "title": "PluginCatalogLookupEntry",
+        "type": "object"
+      },
+      "PluginCatalogLookupParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PluginCatalogLookupParams",
+        "type": "object"
+      },
+      "PluginCatalogLookupResult": {
+        "additionalProperties": false,
+        "description": "``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;\n``unavailable`` means neither the live catalog nor the in-tree fallback could be read.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/PluginCatalogLookupStatus"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCatalogLookupEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PluginCatalogLookupResult",
+        "type": "object"
+      },
+      "PluginCatalogLookupStatus": {
+        "enum": [
+          "found",
+          "invalid_name",
+          "unknown",
+          "unavailable"
+        ],
+        "title": "PluginCatalogLookupStatus",
+        "type": "string"
+      },
       "PluginLiveNow": {
         "additionalProperties": false,
         "properties": {
@@ -26681,6 +26913,18 @@
             ],
             "default": null,
             "title": "Confirm Empty Truncate"
+          },
+          "confirm_deep_truncate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Deep Truncate"
           },
           "rebind_survivor_row_ids": {
             "anyOf": [
@@ -40031,7 +40275,8 @@
           "FORBIDDEN_SCOPE",
           "ORG_REQUIRED",
           "ORG_ACCESS_DENIED",
-          "INVALID_POLICY"
+          "INVALID_POLICY",
+          "ALIAS_TAKEN"
         ]
       }
     }

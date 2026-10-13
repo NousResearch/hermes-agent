@@ -267,7 +267,7 @@ class Platform(Enum):
         return cls._add_pseudo_member(value) if registered else None
 
     @classmethod
-    def _add_pseudo_member(cls, value: str) -> Platform:
+    def _add_pseudo_member(cls, value: str) -> "Platform":
         pseudo = object.__new__(cls)
         pseudo._value_ = value
         pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
@@ -359,7 +359,7 @@ class HomeChannel:
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> HomeChannel:
+    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
@@ -386,7 +386,7 @@ class ChannelOverride:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ChannelOverride:
+    def from_dict(cls, data: dict[str, Any]) -> "ChannelOverride":
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
@@ -442,7 +442,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PlatformConfig:
+    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -518,7 +518,7 @@ class StreamingConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> StreamingConfig:
+    def from_dict(cls, data: dict[str, Any]) -> "StreamingConfig":
         if not isinstance(data, dict) or not data:
             return cls()
 
@@ -721,7 +721,7 @@ class GatewayConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> GatewayConfig:
+    def from_dict(cls, data: dict[str, Any]) -> "GatewayConfig":
         data = _coerce_dict(data)
         nested_gateway = _coerce_dict(data.get("gateway"))
 

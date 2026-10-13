@@ -121,7 +121,7 @@ class _CronStorePaths:
     output_dir: Path
 
     @classmethod
-    def for_dir(cls, cron_dir: Path) -> _CronStorePaths:
+    def for_dir(cls, cron_dir: Path) -> "_CronStorePaths":
         return cls(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 

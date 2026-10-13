@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -285,6 +285,7 @@ def _systemd_run_user_scope_available() -> bool:
                             stdin=subprocess.DEVNULL, capture_output=True,
                             timeout=3,
                             env=systemd_user_bus_env(),
+                            check=False,
                         )
                         if not (result.returncode and _SYSTEMD_RUN_NO_EXPAND
                                 and b"expand-environment" in (result.stderr or b"")):
@@ -488,6 +489,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
             timeout=15,
             stdin=subprocess.DEVNULL,
             env=systemd_user_bus_env(),
+            check=False,
         )
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
@@ -516,14 +518,14 @@ def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
 
-def _output_tail(session: ProcessSession, n: int) -> str:
+def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
     from tools.ansi_strip import strip_ansi
 
     return strip_ansi(session.output_buffer[-n:])
 
 
-def _completion_output(session: ProcessSession) -> dict:
+def _completion_output(session: "ProcessSession") -> dict:
     """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
 
     Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
@@ -1894,10 +1896,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # drain, so a requeue would pin the event forever. 'async_delegation'
             # is the result itself and is NEVER suppressed.
             _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+            if is_child_process_notification(evt):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not should_surface_notification(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "

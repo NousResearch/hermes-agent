@@ -353,15 +353,16 @@ _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
 # Per-prompt safety-filter blocks: deterministic for the unchanged request, so
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
-# #32421, CommandCode gateway moderation #115218) — never a generic word like
-# "policy" that collides with billing/auth.
+# #32421, CommandCode gateway moderation #115218, Alibaba Model Studio
+# guardrail `data_inspection_failed`, input and output side) — never a generic
+# word like "policy" that collides with billing/auth.
 # "content_filter" deliberately excludes the space variant seen in echoed config.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
-    "content exists risk",
+    "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
 )
 
 # Auth patterns (non-status-code signals).

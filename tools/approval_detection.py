@@ -698,6 +698,46 @@ _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
+# Brief the smart-approval guardian reads for a pattern key, over and above the key itself. Some
+# keys name the trigger, not the target: `rm -f /tmp/scratch.md` arrives as "delete in root path",
+# and a guardian reading that key alone treats routine cleanup as a system-root deletion. Each
+# entry states what the rule really matches, so the guardian judges the operand the command names.
+# Keys are the same identifiers the allowlist, the decision journal and standing approvals match on
+# (see detect_dangerous_command); the brief is additive and reaches the guardian prompt only, so no
+# operator-facing label changes.
+_PATTERN_JUDGE_BRIEFS = {
+    "delete in root path": (
+        # no-tmp: ok — quotes the targets the regex matches, it is not a path this code writes to
+        "rm on an absolute path; the rule fires on ANY absolute target (/tmp, /var/tmp, a project "
+        "worktree) and is not limited to /: judge the target the command itself names"
+    ),
+    "script execution via -e/-c flag": (
+        "interpreter inline code (python/perl/ruby/node -e|-c 'CODE'); the rule marks the form, and "
+        "the code itself is in the command text"
+    ),
+    "script execution via heredoc": (
+        "script piped to an interpreter on stdin (python/perl/ruby/node << 'EOF'); the rule marks "
+        "the shell form, and the script body itself is in the command text"
+    ),
+    "execute_code": (
+        "the session runs a script of its own in a child process, so the commands inside it are not "
+        "gated one by one and this approval is one-shot for the run; the script text is in the "
+        "command, so judge the operations it names"
+    ),
+}
+
+
+def pattern_judge_brief(pattern_key: str | None) -> str | None:
+    """Extra text the smart-approval guardian reads for ``pattern_key``, or None.
+
+    Only the guardian's user prompt resolves through here. The key itself is unchanged for every
+    other surface: the operator prompt, `hermes approvals suggest`, the TUI, the allowlist and the
+    decision journal all keep reading the bare key.
+    """
+    if not pattern_key:
+        return None
+    return _PATTERN_JUDGE_BRIEFS.get(pattern_key)
+
 
 def _command_parser_limit_exceeded(command: str) -> bool:
     """Bound all parser work before normalization/tokenization. Separator counting is deliberately

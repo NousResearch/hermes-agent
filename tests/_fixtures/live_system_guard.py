@@ -168,8 +168,14 @@ def _live_system_guard(request, monkeypatch):
         monkeypatch.setattr(_os, "killpg", _guarded_killpg)
 
     # ── Subprocess command-string inspection (whole-line) ──────────
+    # Any hermes-owned systemd unit, not just the gateway: a mutating call on
+    # ``hermes-dashboard``/``hermes-serve`` restarts the operator's live unit
+    # just the same (#125988 — the gateway-only list let a test trip the
+    # dashboard's start-limit on a host running real units).
     _HERMES_TOKENS = (
         "hermes-gateway",
+        "hermes-dashboard",
+        "hermes-serve",
         "hermes.service",
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",

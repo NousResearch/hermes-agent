@@ -2266,7 +2266,7 @@ def _is_free_model(model: Optional[str]) -> bool:
     if not model:
         return False
     normalized = str(model).strip()
-    return normalized.endswith(":free") or normalized.startswith("stealth/")
+    return normalized == "openrouter/free" or normalized.endswith(":free") or normalized.startswith("stealth/")
 
 
 def _aux_openrouter_settings() -> tuple[bool, str]:

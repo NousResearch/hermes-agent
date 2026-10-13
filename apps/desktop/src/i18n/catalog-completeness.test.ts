@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { TRANSLATIONS } from './catalog'
 import { deOverrides } from './de'
 import { esOverrides } from './es'
-import { itOverrides } from './it'
 import { frOverrides } from './fr'
+import { itOverrides } from './it'
 import type { BundledLocale } from './types'
 
 // Locales that shipped fully translated. They are `defineLocale` overlays like

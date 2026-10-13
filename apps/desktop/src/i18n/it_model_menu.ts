@@ -21,7 +21,7 @@ export const itModelMenu = {
       : `${provider} ha raggiunto il limite di utilizzo. Puoi già scegliere un modello per quando si azzera.`,
   modelResets: (time: string) => `si azzera alle ${time}`,
   modelLimitedTip: (time: string) =>
-    `Questo modello ha raggiunto il suo limite e si azzera alle ${time}. Gli altri modelli di qui continuano a funzionare.`,
+    `Questo modello ha raggiunto il suo limite e si azzera alle ${time}. Gli altri modelli qui continuano a funzionare.`,
   usageLeft: (percent: number, time: null | string) =>
     time ? `Rimane ${percent} % · si azzera ${time}` : `Rimane ${percent} %`,
   poolAccounts: (count: number) => `${count} account`,
@@ -31,5 +31,10 @@ export const itModelMenu = {
   poolUnavailable: 'Accedi di nuovo',
   usageTip: (provider: string) => `${provider} è vicino al limite di utilizzo.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
-    time ? `${label}: rimane ${percent} %, si azzera ${time}` : `${label}: rimane ${percent} %`
+    time ? `${label}: rimane ${percent} %, si azzera ${time}` : `${label}: rimane ${percent} %`,
+  localSetup: {
+    title: 'Esecuzione locale · gratuito, privato',
+    text: (model: string, size: string) => `${model} gira su questo computer · ${size} di download`,
+    action: 'Configura'
+  }
 }

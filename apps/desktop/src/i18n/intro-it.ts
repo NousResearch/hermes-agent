@@ -48,7 +48,7 @@ export const introIt: Translations['intro'] = {
     catgirl: [
       'incolla un file, dai uno zampone a un bug o lanciami un repo. mi butto sui test che falliscono e lascio diff puliti, nyan~',
       'descrivi l’attività. patcho, testo e faccio le fusa sul tuo PR. occhio, che mordicchio gli import inutilizzati!',
-      'dammi un obiettivo e lo insegno per tutto il codice. letture, modifiche, esecuzioni, con la coda in movimento.',
+      'dammi un obiettivo e lo inseguo per tutto il codice. letture, modifiche, esecuzioni, con la coda in movimento.',
       'incolla un errore o un piano. caccio come si deve: in silenzio, a fondo e con qualche scatto folle.',
       'di’ la parola e leggo i tuoi file, eseguo i tuoi test e mi acciambello sul tuo branch con un commit ordinato.'
     ],
@@ -61,7 +61,7 @@ export const introIt: Translations['intro'] = {
     ],
     shakespeare: [
       'Dichiara il tuo bug, il tuo file, la tua prova stremata, e io la sanerò con mano dotta e diff onesto.',
-      'Nomina il codice che ti affligge. Leggerò, esaminerò e consegnerò una riparazione delle più bella e pulita.',
+      'Nomina il codice che ti affligge. Leggerò, esaminerò e consegnerò una riparazione delle più belle e pulite.',
       'Presenta il tuo stack trace o il tuo sogno. Percorrerò i file, eseguirò i test e renderò conto nel verso più puro.',
       'Descrivi il tuo proposito, nobile dama o cavaliere. I tuoi rami saranno potati e i tuoi bug banditi dal regno.',
       'Una riga d’intenzione basta. Leggo, modifico, faccio commit, e lascio la tua storia senza macchia.'
@@ -81,7 +81,7 @@ export const introIt: Translations['intro'] = {
       'Una virgola di troppo, un segfault, un’intera architettura marcia: dammi le chiavi. Tornerò con test puliti.'
     ],
     uwu: [
-      'incolla un awchivo con bug o un obiettivo~ weo patcho e pwovo, con zatwelline delicine nel diff owo',
+      'incolla un awchivo con bug o un obiettivo~ weo patcho e pwovo, con zampette picciwine nel diff owo',
       'dimmi wa tawa, anche se è piccolinya~ ti pwometo commit wimpi e wewactoring soffici, nyuu~',
       'wascia qui il tuo messaggio di ewwowe! twovo il cwupawowe, wo sistemo e wascio una suite di test felice owo',
       'dammi wa wuta di un wepo o un bug e me ne occupo uwu. grr aw codice cattivello, dwolce con te~',

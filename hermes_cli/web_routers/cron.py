@@ -668,14 +668,21 @@ def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
 _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 
 
+def _public_job(job):
+    """A job as the dashboard may show it: secret_env as names and schemes only (CORP-764)."""
+    from cron.secret_env import public_job_view
+
+    return public_job_view(job)
+
+
 @router.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
-    return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
+    return [_public_job(job) for job in await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)]
 
 
 @router.get("/api/cron/jobs/{job_id}")
 async def get_cron_job(job_id: str, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile)
+    return _public_job(await _run_cron_dashboard_io(_get_cron_job_sync, job_id, profile))
 
 
 @router.get("/api/cron/jobs/{job_id}/runs")
@@ -685,7 +692,7 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 
 @router.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
+    return _public_job(await _run_cron_dashboard_io(_create_cron_job_sync, body, profile))
 
 
 @router.get("/api/cron/delivery-targets")
@@ -716,22 +723,22 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
 
 @router.put("/api/cron/jobs/{job_id}")
 async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile)
+    return _public_job(await _run_cron_dashboard_io(_update_cron_job_sync, job_id, body, profile))
 
 
 @router.post("/api/cron/jobs/{job_id}/pause")
 async def pause_cron_job(job_id: str, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
+    return _public_job(await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile))
 
 
 @router.post("/api/cron/jobs/{job_id}/resume")
 async def resume_cron_job(job_id: str, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
+    return _public_job(await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile))
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
 async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
-    return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
+    return _public_job(await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile))
 
 
 @router.delete("/api/cron/jobs/{job_id}")

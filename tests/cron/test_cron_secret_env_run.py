@@ -2,6 +2,8 @@
 
 Real ``run_job`` / ``_execute_job_now`` against a temp ``HERMES_HOME``; the only fake is the
 ``wincred`` backend, swapped for an in-memory one (the credential store is never touched).
+A run that resolves anything locks the script first, which only Windows can do: elsewhere
+secret_env fails closed (``test_cron_secret_env_boundaries.py``), so those tests run on Windows.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 
 import pytest
 
@@ -87,6 +90,7 @@ def _expected_sha() -> str:
     return "sha=" + hashlib.sha256(FAKE_VALUE.encode()).hexdigest()
 
 
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("redact_enabled", [True, False])
 def test_no_agent_script_receives_the_value_and_output_is_scrubbed(
         hermes_env, backend, monkeypatch, caplog, redact_enabled):
@@ -109,6 +113,7 @@ def test_no_agent_script_receives_the_value_and_output_is_scrubbed(
     assert backend.calls == [TARGET]
 
 
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("redact_enabled", [True, False])
 def test_failed_script_output_is_scrubbed_everywhere_it_persists(
         hermes_env, backend, monkeypatch, caplog, redact_enabled):
@@ -130,6 +135,7 @@ def test_failed_script_output_is_scrubbed_everywhere_it_persists(
     assert NAME not in os.environ
 
 
+@pytest.mark.platforms("windows")
 def test_manual_run_succeeds_and_persists_nothing_sensitive(hermes_env, backend, caplog):
     from tools.cronjob_tools import _execute_job_now
 
@@ -143,6 +149,7 @@ def test_manual_run_succeeds_and_persists_nothing_sensitive(hermes_env, backend,
     assert FAKE_VALUE not in caplog.text and TARGET not in caplog.text
 
 
+@pytest.mark.platforms("windows")
 def test_resolution_failure_never_starts_the_script(hermes_env, monkeypatch, caplog):
     from cron import secret_env
     from cron.scheduler import run_job
@@ -161,6 +168,7 @@ def test_resolution_failure_never_starts_the_script(hermes_env, monkeypatch, cap
         assert TARGET not in text and FAKE_VALUE not in text
 
 
+@pytest.mark.platforms("windows")
 def test_changed_script_is_neither_resolved_nor_started(hermes_env, backend):
     from cron.jobs import get_job, update_job
     from cron.scheduler import run_job
@@ -197,6 +205,7 @@ def test_wake_gate_and_monitor_scripts_never_receive_the_value(hermes_env, backe
     assert backend.calls == []
 
 
+@pytest.mark.platforms("windows")
 def test_a_sibling_job_without_secret_env_gets_nothing(hermes_env, backend):
     from cron.jobs import create_job
     from cron.scheduler import run_job
@@ -211,7 +220,8 @@ def test_a_sibling_job_without_secret_env_gets_nothing(hermes_env, backend):
     assert backend.calls == [TARGET]
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("windows")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (Git Bash on Windows)")
 def test_shell_script_receives_the_value(hermes_env, backend):
     from cron.scheduler import run_job
 
@@ -221,6 +231,7 @@ def test_shell_script_receives_the_value(hermes_env, backend):
     assert success is True and final_response == f"len={len(FAKE_VALUE)}"
 
 
+@pytest.mark.platforms("windows")
 def test_hand_edited_raw_value_fails_closed(hermes_env, backend):
     from cron.scheduler import run_job
 

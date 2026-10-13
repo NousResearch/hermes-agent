@@ -217,3 +217,67 @@ def test_cli_errors_do_not_echo_a_pasted_value_as_a_name(cron_env, capsys):
     assert _run("edit", job_id, "--remove-secret-env", FAKE_VALUE) == 1
     out = _all_output(capsys)
     assert "<invalid name>" in out and FAKE_VALUE not in out
+
+
+# Hand-edited entries that must never be presented as usable, nor leak their reference.
+_MIXED = {
+    NAME: f"wincred://{TARGET}",
+    "SLACK_BOT_TOKEN": "wincred://hermes/reserved-name",
+    "lower_name": "wincred://hermes/malformed-name",
+    "GOOD_NAME": "fake://hermes/unsupported-scheme",
+    "RAW_VALUE": FAKE_VALUE,
+}
+_SHOWN = [f"{NAME} (wincred)"] + ["<invalid entry>"] * 4
+
+
+def _assert_nothing_leaks(text: str) -> None:
+    for secret in (TARGET, "hermes/reserved-name", "hermes/malformed-name",
+                   "hermes/unsupported-scheme", FAKE_VALUE, "wincred://", "fake://"):
+        assert secret not in text
+
+
+def _hand_edited_job() -> dict:
+    from cron.jobs import load_jobs, save_jobs
+
+    job = create_job(prompt=None, schedule="every 1h", script="notice.py", no_agent=True,
+                     secret_env={NAME: f"wincred://{TARGET}"}, secret_env_script_sha256="a" * 64)
+    jobs = load_jobs()
+    for record in jobs:
+        if record["id"] == job["id"]:
+            record["secret_env"] = dict(_MIXED)
+    save_jobs(jobs)
+    return job
+
+
+def test_list_marks_hand_edited_entries_invalid(cron_env, capsys):
+    _hand_edited_job()
+    cron_command(argparse.Namespace(cron_command="list", all=True))
+    out = capsys.readouterr().out
+    assert ", ".join(_SHOWN) in out
+    _assert_nothing_leaks(out)
+
+
+def test_dashboard_responses_show_names_and_schemes_only(dashboard, monkeypatch):
+    from hermes_cli import web_server_cron
+
+    client, _ = dashboard
+    job = _hand_edited_job()
+    monkeypatch.setattr(web_server_cron, "_fire_cron_job_for_profile", lambda *a, **k: True)
+    params = {"profile": "default"}
+    responses = [
+        client.get("/api/cron/jobs", params=params),
+        client.get("/api/cron/jobs"),
+        client.get(f"/api/cron/jobs/{job['id']}", params=params),
+        client.put(f"/api/cron/jobs/{job['id']}", params=params, json={"updates": {"name": "renamed"}}),
+        client.post(f"/api/cron/jobs/{job['id']}/pause", params=params),
+        client.post(f"/api/cron/jobs/{job['id']}/resume", params=params),
+        client.post(f"/api/cron/jobs/{job['id']}/trigger", params=params),
+    ]
+    for response in responses:
+        assert response.status_code == 200, response.text
+        _assert_nothing_leaks(response.text)
+        body = response.json()
+        shown = body[0] if isinstance(body, list) else body
+        assert shown["secret_env"] == _SHOWN
+    # Persistence is untouched: the store still holds every reference.
+    assert get_job(job["id"])["secret_env"] == _MIXED

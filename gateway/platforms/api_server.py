@@ -1066,6 +1066,7 @@ try:
     from cron.scheduler import (
         CronSchedulerRegistrationError as _CronSchedulerRegistrationError,
         create_job_with_scheduler_registration as _cron_create)
+    from cron.secret_env import public_job_view as _public_job_view  # secret_env: names + schemes only
     _CRON_AVAILABLE = True
 except ImportError:
     _cron_list = _cron_get = _cron_create = _cron_update = None
@@ -3847,12 +3848,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
         """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
         try:
-            job = fn(job_id)
-            if not job:
+            if not (job := fn(job_id)):
                 return web.json_response({"error": "Job not found"}, status=404)
             if notify:
                 _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
+            return web.json_response({"job": _public_job_view(job)})
         except Exception as e:
             return self._cron_error_response(e)
 
@@ -3867,7 +3867,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
-            return web.json_response({"jobs": _cron_list(include_disabled=include_disabled)})
+            return web.json_response({"jobs": [_public_job_view(j) for j in _cron_list(include_disabled=include_disabled)]})
         except Exception as e:
             return self._cron_error_response(e)
 
@@ -3905,7 +3905,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
-            return web.json_response({"job": _cron_create(**kwargs)})
+            return web.json_response({"job": _public_job_view(_cron_create(**kwargs))})
         except _CronSchedulerRegistrationError as e:
             return web.json_response(e.to_dict(), status=424)
         except ValueError as e:

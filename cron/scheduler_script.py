@@ -22,7 +22,7 @@ import time
 from cron.env_settings import cron_env_setting
 from cron.jobs import _ensure_cron_dir
 from pathlib import Path
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, ContextManager, Optional, TYPE_CHECKING
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -432,7 +432,7 @@ def _script_argv(
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
-    *, secret_env_resolver: Optional[Callable[[Path], dict[str, str]]] = None,
+    *, secret_env_resolver: Optional[Callable[[Path], ContextManager[dict[str, str]]]] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -446,6 +446,7 @@ def _run_job_script(
     ``.py`` scripts (#8714). secret_env_resolver: only the no_agent path passes one (wake-gate
     and monitor scripts never do); its values are layered over the scrubbed env right before
     Popen and exact-match scrubbed from every output, whatever ``security.redact_secrets`` says.
+    It is entered before Popen and left after the run: it keeps the verified script locked.
     """
     from cron.secret_env import SecretResolveError, scrub_secret_values
 
@@ -454,6 +455,7 @@ def _run_job_script(
         return False, err
     script_timeout = _get_script_timeout()
     secret_values: list[str] = []
+    script_lock = contextlib.ExitStack()
     try:
         argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
@@ -489,7 +491,7 @@ def _run_job_script(
         if secret_env_resolver is not None:
             # After the scrub: build_subprocess_env's filters would drop a name passed as extra=.
             try:
-                secrets = secret_env_resolver(path)
+                secrets = script_lock.enter_context(secret_env_resolver(path))
             except SecretResolveError as exc:
                 return False, str(exc)
             secret_values = list(secrets.values())
@@ -548,6 +550,8 @@ def _run_job_script(
         return True, stdout
     except Exception as exc:
         return False, scrub_secret_values(f"Script execution failed: {exc}", secret_values)
+    finally:
+        script_lock.close()
 
 
 def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.Thread]:

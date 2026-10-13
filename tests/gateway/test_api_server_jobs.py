@@ -10,6 +10,7 @@ Covers:
 - Cron module unavailability (501 when _CRON_AVAILABLE is False)
 """
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -581,3 +582,46 @@ class TestSecretEnvIsNotSettableOverHttp:
         assert not set(self._FIELDS) & set(mock_create.call_args[1])
         assert resp.status == 400
         mock_update.assert_not_called()
+
+
+class TestSecretEnvTargetsNeverLeaveOverHttp:
+    """Every /api/jobs response shows a job's secret_env as validated names plus supported
+    schemes only: never a credential target, and never a hand-edited entry as if it were valid."""
+
+    _JOB = {**SAMPLE_JOB, "no_agent": True, "script": "s.py", "secret_env_script_sha256": "a" * 64,
+            "secret_env": {"NOTICE_REPORT_SLACK_TOKEN": "wincred://hermes/notice-target",
+                           "SLACK_BOT_TOKEN": "wincred://hermes/reserved-target",
+                           "lower_name": "wincred://hermes/malformed-target",
+                           "GOOD_NAME": "fake://hermes/unsupported-target",
+                           "RAW_VALUE": "FAKE-SECRET-VALUE-0123456789"}}
+    _SHOWN = ["NOTICE_REPORT_SLACK_TOKEN (wincred)"] + ["<invalid entry>"] * 4
+
+    @pytest.mark.asyncio
+    async def test_list_detail_and_mutation_responses(self, adapter):
+        app = _create_app(adapter)
+        job = lambda *a, **k: json.loads(json.dumps(self._JOB))  # fresh copy per call
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), \
+                 patch(f"{_MOD}._cron_list", lambda **k: [job()]), \
+                 patch(f"{_MOD}._cron_get", job), patch(f"{_MOD}._cron_create", job), \
+                 patch(f"{_MOD}._cron_update", job), patch(f"{_MOD}._cron_pause", job), \
+                 patch(f"{_MOD}._cron_resume", job), patch(f"{_MOD}._cron_trigger", job), \
+                 patch(f"{_MOD}._notify_cron_provider_jobs_changed", lambda: None):
+                responses = [
+                    await cli.get("/api/jobs"),
+                    await cli.get(f"/api/jobs/{VALID_JOB_ID}"),
+                    await cli.post("/api/jobs", json={"name": "n", "schedule": "*/5 * * * *", "prompt": "p"}),
+                    await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json={"name": "renamed"}),
+                    await cli.post(f"/api/jobs/{VALID_JOB_ID}/pause"),
+                    await cli.post(f"/api/jobs/{VALID_JOB_ID}/resume"),
+                    await cli.post(f"/api/jobs/{VALID_JOB_ID}/run"),
+                ]
+                bodies = [(resp.status, await resp.text()) for resp in responses]
+        for status, text in bodies:
+            assert status == 200, text
+            for secret in ("notice-target", "reserved-target", "malformed-target",
+                           "unsupported-target", "FAKE-SECRET-VALUE", "wincred://", "fake://"):
+                assert secret not in text
+            payload = json.loads(text)
+            shown = payload["jobs"][0] if "jobs" in payload else payload["job"]
+            assert shown["secret_env"] == self._SHOWN

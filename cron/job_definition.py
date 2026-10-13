@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
 from cron.quota_hold import clear_state as _clear_quota_hold
+from cron.secret_env import SECRET_ENV_PINNED_FIELDS
 from hermes_time import now as _hermes_now
 
 JOB_DEFINITION_FIELDS = frozenset({
@@ -25,6 +26,14 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
     past one-shot for a live job)."""
     merged = {key: value for key, value in local.items() if key not in JOB_DEFINITION_FIELDS}
     merged.update((key, authored[key]) for key in JOB_DEFINITION_FIELDS if key in authored)
+    if local.get("secret_env"):
+        # Its secret_env and pin stay local, so neither may the program they were pinned for:
+        # retargeting needs `hermes cron edit --repin-script` on this machine.
+        for key in SECRET_ENV_PINNED_FIELDS:
+            if key in local:
+                merged[key] = local[key]
+            else:
+                merged.pop(key, None)
     merged["repeat"] = {
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),

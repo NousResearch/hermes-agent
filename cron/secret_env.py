@@ -7,23 +7,33 @@ written. Any failure is fail-closed: the script does not start, and the error na
 variable and a failure class (never the target, the value or the backend's own message).
 
 ``secret_env_script_sha256`` pins the script body: a script rewritten after the pin (an agent's
-``write_file`` included) runs no resolution at all until ``hermes cron edit --repin-script``.
+``write_file`` included) runs no resolution at all until ``hermes cron edit --repin-script``. The
+pin is checked against bytes read through a handle that locks the script for the whole run, so
+the program that receives the values is the one that was verified (Windows only: POSIX has no
+such lock, and no secret_env resolves there).
 """
 
 from __future__ import annotations
 
-import concurrent.futures
+import contextlib
 import hashlib
+import os
 import re
-from collections.abc import Iterable, Mapping
+import sys
+import threading
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, ContextManager, Optional, Protocol
 
 from agent.secret_sources.base import ErrorKind
 
 SECRET_ENV_MAX_ENTRIES = 8
 SECRET_ENV_RESOLVE_TIMEOUT = 10.0
 SECRET_ENV_REDACTION = "[REDACTED-SECRET-ENV]"
+SECRET_ENV_INVALID_ENTRY = "<invalid entry>"
+# Backend calls that outlived their timeout and are still running. A thread cannot be killed, so
+# past this many new resolutions fail closed at once instead of piling up more stuck threads.
+SECRET_ENV_MAX_STUCK_RESOLVERS = 2
 
 _NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _REF_RE = re.compile(r"(?P<scheme>[a-z][a-z0-9]*)://(?P<target>[A-Za-z0-9._/-]{1,128})")
@@ -134,6 +144,8 @@ SECRET_ENV_FIELD_NORMALIZERS = {
 # What decides which program, run where, receives the values. The pin hashes only the script
 # file, so changing any of these from any door (CLI, dashboard) must come with a fresh pin.
 _RETARGET_FIELDS = ("script", "interpreter", "workdir")
+# Everything a profile distribution must leave alone on a job that carries secret_env.
+SECRET_ENV_PINNED_FIELDS = ("no_agent", *_RETARGET_FIELDS)
 
 
 def apply_secret_env_update(
@@ -160,23 +172,45 @@ def script_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_stuck = {"count": 0}
+_stuck_lock = threading.Lock()
+
+
 def _resolve_one(backend: SecretBackend, name: str, target: str, timeout: float) -> str:
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cron-secret-env")
-    try:
-        value = executor.submit(backend.resolve, target).result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        kind = ErrorKind.TIMEOUT
-    except SecretBackendError as exc:
-        kind = exc.kind
-    except Exception:  # health: allow BLE001 -- backend text may hold the target; class only
-        kind = ErrorKind.INTERNAL
-    else:
-        if isinstance(value, str) and value.strip():
-            return value
-        kind = ErrorKind.EMPTY_VALUE
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-    raise SecretResolveError(name, kind)
+    """One backend call on a daemon thread (a stuck call never holds up interpreter shutdown);
+    a call still running at its timeout counts as stuck until it returns."""
+    with _stuck_lock:
+        if _stuck["count"] >= SECRET_ENV_MAX_STUCK_RESOLVERS:
+            raise SecretResolveError(name, ErrorKind.TIMEOUT)
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
+
+    def call() -> None:
+        try:
+            outcome["value"] = backend.resolve(target)
+        except SecretBackendError as exc:
+            outcome["kind"] = exc.kind
+        except Exception:  # health: allow BLE001 -- backend text may hold the target; class only
+            outcome["kind"] = ErrorKind.INTERNAL
+        finally:
+            with _stuck_lock:
+                if outcome.get("abandoned"):
+                    _stuck["count"] -= 1
+                done.set()
+
+    from agent.memory_provider import spawn_context_thread
+
+    spawn_context_thread(call, name="cron-secret-env").start()
+    done.wait(timeout)
+    with _stuck_lock:
+        if not done.is_set():
+            outcome["abandoned"] = True
+            _stuck["count"] += 1
+            raise SecretResolveError(name, ErrorKind.TIMEOUT)
+    value = outcome.get("value")
+    if isinstance(value, str) and value.strip():
+        return value
+    raise SecretResolveError(name, outcome.get("kind", ErrorKind.EMPTY_VALUE))
 
 
 def resolve_job_secret_env(
@@ -199,46 +233,114 @@ def resolve_job_secret_env(
             for name, scheme, target in entries}
 
 
+_FILE_SHARE_READ = 0x1
+
+
+def _handle_final_path(handle: int) -> Optional[str]:
+    """The real path of the file a handle refers to (reparse points resolved), or None."""
+    import ctypes
+    from ctypes import wintypes
+
+    get_final = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_final.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+    get_final.restype = wintypes.DWORD
+    buf = ctypes.create_unicode_buffer(32768)
+    if not get_final(handle, buf, len(buf), 0):
+        return None
+    final = buf.value
+    if final.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + final[8:]
+    return final.removeprefix("\\\\?\\")
+
+
+@contextlib.contextmanager
+def _locked_script_bytes(script: Path) -> Iterator[bytes]:
+    """The script's bytes, read through a handle that shares read access only: until the block
+    ends nobody can write, replace, rename or delete it, or rename a directory above it, while
+    the interpreter can still open it. Opening fails while another handle can write to it."""
+    if sys.platform != "win32":
+        raise SecretResolveError("<script>", ErrorKind.NOT_CONFIGURED, (
+            "Secret env blocked: the script cannot be locked against changes on this platform "
+            "(secret_env runs on Windows only)."))
+    import _winapi
+    import msvcrt
+
+    try:
+        handle = _winapi.CreateFile(str(script), _winapi.GENERIC_READ, _FILE_SHARE_READ, 0,
+                                    _winapi.OPEN_EXISTING, 0, 0)
+    except OSError:
+        raise SecretResolveError("<script>", ErrorKind.REF_INVALID, (
+            "Secret env blocked: the script could not be locked for this run (it is missing, "
+            "or another program has it open for writing).")) from None
+    with open(msvcrt.open_osfhandle(handle, os.O_RDONLY), "rb") as locked:  # windows-footgun: ok (binary)
+        # The lock pins the opened file and its real folders. Reached through a junction or
+        # symlink, the path Popen walks is not among them and could be swapped back later.
+        final = _handle_final_path(handle)
+        if final is None or os.path.normcase(final) != os.path.normcase(str(script)):
+            raise SecretResolveError("<script>", ErrorKind.REF_INVALID, (
+                "Secret env blocked: the script path goes through a link (junction, symlink or "
+                "substituted drive); point the job at the script's real path."))
+        yield locked.read()
+
+
+@contextlib.contextmanager
 def resolve_for_script(
     job: Mapping[str, Any], script: Path, *, backends: Optional[Mapping[str, SecretBackend]] = None,
     timeout: float = SECRET_ENV_RESOLVE_TIMEOUT,
-) -> dict[str, str]:
-    """Check the script pin, then resolve. Raises only SecretResolveError."""
+) -> Iterator[dict[str, str]]:
+    """Lock the script, check its pin against the locked bytes, then resolve. The lock lasts for
+    the caller's block (the script's whole run). Raises only SecretResolveError."""
     pinned = job.get("secret_env_script_sha256")
-    try:
-        current = script_sha256(script)
-    except OSError:
-        current = None
-    if not pinned or current != pinned:
-        raise SecretResolveError("<script>", ErrorKind.REF_INVALID, (
-            "Secret env blocked: the script changed since it was pinned (or was never pinned). "
-            f"Review it, then run `hermes cron edit {job.get('id')} --repin-script`."))
-    try:
-        return resolve_job_secret_env(job, backends=backends, timeout=timeout)
-    except SecretResolveError:
-        raise
-    except Exception:  # health: allow BLE001 -- fail closed without echoing backend/config text
-        raise SecretResolveError("<secret_env>", ErrorKind.INTERNAL) from None
+    with _locked_script_bytes(script) as body:
+        if not pinned or hashlib.sha256(body).hexdigest() != pinned:
+            raise SecretResolveError("<script>", ErrorKind.REF_INVALID, (
+                "Secret env blocked: the script changed since it was pinned (or was never pinned). "
+                f"Review it, then run `hermes cron edit {job.get('id')} --repin-script`."))
+        try:
+            values = resolve_job_secret_env(job, backends=backends, timeout=timeout)
+        except SecretResolveError:
+            raise
+        except Exception:  # health: allow BLE001 -- fail closed without echoing backend/config text
+            raise SecretResolveError("<secret_env>", ErrorKind.INTERNAL) from None
+        yield values
 
 
-def job_secret_env_resolver(job: Mapping[str, Any]) -> Optional[Callable[[Path], dict[str, str]]]:
-    """The resolver ``_run_job_script`` calls right before Popen, or None for a plain job."""
+def job_secret_env_resolver(
+    job: Mapping[str, Any],
+) -> Optional[Callable[[Path], ContextManager[dict[str, str]]]]:
+    """What ``_run_job_script`` enters right before Popen and leaves after the run, or None for a
+    plain job."""
     if not job.get("secret_env"):
         return None
     return lambda script: resolve_for_script(job, script)
 
 
 def secret_env_display(mapping: Any) -> list[str]:
-    """``["NAME (scheme)", ...]`` for list/detail/tool output: never the target, and never a
-    hand-edited key or reference that does not even look like one (it may be the value)."""
-    if not isinstance(mapping, Mapping):
+    """``["NAME (scheme)", ...]`` for every outward view: never the target. An entry a run would
+    refuse (malformed or reserved name, unsupported scheme, not a reference) shows as
+    ``<invalid entry>`` with no detail: a hand-edited key or reference may be the value itself."""
+    if mapping is None:
         return []
+    if not isinstance(mapping, Mapping):
+        return [SECRET_ENV_INVALID_ENTRY]
+    schemes = tuple(_default_backends())
     shown = []
     for name, ref in mapping.items():
-        match = _REF_RE.fullmatch(ref.strip()) if isinstance(ref, str) else None
-        label = name if isinstance(name, str) and _NAME_RE.fullmatch(name) else "<invalid name>"
-        shown.append(f"{label} ({match['scheme'] if match else 'invalid reference'})")
+        try:
+            name, scheme, _target = _check_entry(name, ref, schemes)
+        except ValueError:
+            shown.append(SECRET_ENV_INVALID_ENTRY)
+        else:
+            shown.append(f"{name} ({scheme})")
     return shown
+
+
+def public_job_view(job: Any) -> Any:
+    """A job record for an outward response (API server, dashboard): ``secret_env`` becomes its
+    display list. The stored record is not touched."""
+    if not isinstance(job, Mapping) or "secret_env" not in job:
+        return job
+    return {**job, "secret_env": secret_env_display(job["secret_env"])}
 
 
 def scrub_secret_values(text: str, values: Iterable[str]) -> str:

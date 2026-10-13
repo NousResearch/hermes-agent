@@ -254,6 +254,7 @@ def _assert_safe(exc: BaseException) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("windows")
 def test_resolve_for_script_checks_digest_before_any_backend_call(tmp_path):
     from cron.secret_env import SecretResolveError, resolve_for_script
 
@@ -263,18 +264,20 @@ def test_resolve_for_script_checks_digest_before_any_backend_call(tmp_path):
     backend = FakeBackend({TARGET: FAKE_VALUE})
     job = _job({"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{TARGET}"}, secret_env_script_sha256=digest)
 
-    assert resolve_for_script(job, script, backends={"wincred": backend}) == {
-        "NOTICE_REPORT_SLACK_TOKEN": FAKE_VALUE}
+    with resolve_for_script(job, script, backends={"wincred": backend}) as values:
+        assert values == {"NOTICE_REPORT_SLACK_TOKEN": FAKE_VALUE}
 
     script.write_text("print('tampered')\n")
     backend.calls.clear()
     with pytest.raises(SecretResolveError, match="repin-script"):
-        resolve_for_script(job, script, backends={"wincred": backend})
+        with resolve_for_script(job, script, backends={"wincred": backend}):
+            pass
     assert backend.calls == []
 
     unpinned = _job({"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{TARGET}"})
     with pytest.raises(SecretResolveError, match="repin-script"):
-        resolve_for_script(unpinned, script, backends={"wincred": backend})
+        with resolve_for_script(unpinned, script, backends={"wincred": backend}):
+            pass
     assert backend.calls == []
 
 

@@ -2941,10 +2941,15 @@ class GatewayTurnMixin:
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from gateway.display_config import resolve_display_setting as _base_resolve_display_setting, resolve_tool_progress as _base_resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        chat_type = getattr(source, "chat_type", None)
+        def resolve_display_setting(config, platform, setting, fallback=None):
+            return _base_resolve_display_setting(config, platform, setting, fallback, chat_type)
+        def resolve_tool_progress(config, platform, env_mode=None):
+            return _base_resolve_tool_progress(config, platform, env_mode, chat_type)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.

@@ -224,7 +224,7 @@ class TestIndentationPreservation:
         new = "\t\tfor i in range(3):\n\t\t\tprint(i * 2)\n\t\t\tbreak"
         out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
         assert err is None and count == 1 and strategy != "exact"
-        assert out == ("func f() -> void:\n\tif a > 0:\n\"
+        assert out == ("func f() -> void:\n\tif a > 0:\n"
             "\t\tfor i in range(3):\n\t\t\tprint(i * 2)\n\t\t\tbreak\n\t\treturn\n")
 
     def test_spaces_anchor_in_tab_file(self):

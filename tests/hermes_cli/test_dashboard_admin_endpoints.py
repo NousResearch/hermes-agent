@@ -93,6 +93,81 @@ class TestMcpEndpoints:
 
         assert _get_mcp_servers()["oauth-server"]["auth"] == "oauth"
 
+    def test_delete_mcp_server_removes_its_oauth_tokens(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "oauth-server",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+            },
+        )
+        assert response.status_code == 200
+
+        token_dir = get_hermes_home() / "mcp-tokens"
+        token_dir.mkdir()
+        token_file = token_dir / "oauth-server.json"
+        token_file.write_text('{"access_token":"test-token"}', encoding="utf-8")
+
+        response = self.client.delete("/api/mcp/servers/oauth-server")
+
+        assert response.status_code == 200
+        assert "oauth-server" not in _get_mcp_servers()
+        assert not token_file.exists()
+
+    def test_delete_reports_manager_failure_without_restoring_config(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "oauth-server",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+            },
+        )
+        assert response.status_code == 200
+        token_dir = get_hermes_home() / "mcp-tokens"
+        token_dir.mkdir()
+        token_file = token_dir / "oauth-server.json"
+        token_file.write_text('{"access_token":"test-token"}', encoding="utf-8")
+
+        class _FailingManager:
+            def remove(self, _name):
+                token_file.unlink()
+                raise OSError("simulated manager cleanup failure")
+
+        monkeypatch.setattr(
+            "tools.mcp_oauth_manager.get_manager", lambda: _FailingManager()
+        )
+
+        response = self.client.delete("/api/mcp/servers/oauth-server")
+
+        assert response.status_code == 500
+        assert "removed from config" in response.json()["detail"]
+        assert "simulated manager cleanup failure" in response.json()["detail"]
+        assert "oauth-server" not in _get_mcp_servers()
+        assert not token_file.exists()
+
+    def test_delete_unknown_server_stays_not_found(self):
+        response = self.client.delete("/api/mcp/servers/missing-server")
+
+        assert response.status_code == 404
+
+    def test_delete_plugin_server_stays_conflict(self, monkeypatch):
+        monkeypatch.setattr(
+            "tui_gateway.mcp_rpc_helpers.server_configs_with_sources",
+            lambda _config: ({}, {"plugin-server": "example-plugin"}),
+        )
+
+        response = self.client.delete("/api/mcp/servers/plugin-server")
+
+        assert response.status_code == 409
+
     @pytest.mark.parametrize(
         ("payload", "error"),
         [

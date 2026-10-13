@@ -529,6 +529,16 @@ def _resolve_child_runtime(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+        # Copilot and OpenCode Zen/Go serve several wires behind one provider and pick one per model, as /model
+        # and resume do (#96066): a delegation.model of another family on the parent's wire hits the wrong endpoint.
+        if effective_model != getattr(parent_agent, "model", None):
+            from hermes_cli.model_switch import model_derived_api_mode
+            from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+            derived = model_derived_api_mode(effective_provider or "", effective_model)
+            if derived:
+                effective_api_mode = derived
+                if opencode_provider_family(effective_provider or "") is not None and isinstance(effective_base_url, str):
+                    effective_base_url = normalize_opencode_base_url(effective_provider, derived, effective_base_url)
     # A pinned transport that cannot run must fail the spawn loudly, never fall
     # back silently (delegate_task pre-validates; this covers direct callers).
     _require_pinned_command(

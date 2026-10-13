@@ -120,7 +120,8 @@ def _agent_thinking_update(sid: str, text: str) -> None:
     # They are not reasoning blocks; display.show_reasoning must not swallow them.
     if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
         return
-    _emit("thinking.delta", sid, {"text": text})
+    # Explicitly distinguish status captions from legacy reasoning-bearing events.
+    _emit("thinking.delta", sid, {"text": text, "status_only": True})
 
 
 def _agent_notice_update(sid: str, notice) -> None:

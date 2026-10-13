@@ -87,6 +87,22 @@ export function deriveUpdateStatus(input: UpdateStatusInput): UpdateStatusView {
   return ordinaryUpdateStatus(input)
 }
 
+/** The waiting update, or the older stable release it would move back to. */
+function availableLine(
+  status: DesktopUpdateStatus | null,
+  behind: number,
+  u: Translations['updates'],
+  rollback?: (version: string) => string
+): string {
+  const back = rollbackRelease(status)
+
+  if (rollback && back) {
+    return rollback(back)
+  }
+
+  return behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown
+}
+
 function ordinaryUpdateStatus({
   apply,
   checking,
@@ -123,11 +139,9 @@ function ordinaryUpdateStatus({
   }
 
   if (updateAvailable) {
-    const back = rollback ? rollbackRelease(status) : null
-
     return {
       applying,
-      line: back && rollback ? rollback(back) : behind > 0 ? u.updateReady(behind) : u.updateReadyUnknown,
+      line: availableLine(status, behind, u, rollback),
       supported,
       tone: 'available',
       updateAvailable

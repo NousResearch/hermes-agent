@@ -68,6 +68,39 @@ export interface VersionStatusResult {
   unknown: boolean
 }
 
+interface PendingLinesInput {
+  available: boolean
+  behind: number
+  branch?: string
+  copy: VersionStatusCopy
+  latestTag: null | string
+  rollback?: string
+  stable: boolean
+}
+
+/** The tooltip lines naming what is waiting: a rollback, a newer release, or commits behind. */
+function pendingLines({ available, behind, branch, copy, latestTag, rollback, stable }: PendingLinesInput): string[] {
+  if (rollback) {
+    return available ? [rollback] : []
+  }
+
+  const lines: string[] = []
+
+  if (available && stable && latestTag) {
+    lines.push(copy.releaseAvailable(latestTag))
+  }
+
+  if (!stable && behind > 0) {
+    lines.push(copy.commitsBehind(behind, branch || '...'))
+  }
+
+  if (available && (stable ? !latestTag : behind <= 0)) {
+    lines.push(copy.update)
+  }
+
+  return lines
+}
+
 export function resolveVersionStatus({
   applyMessage,
   applying,
@@ -114,10 +147,7 @@ export function resolveVersionStatus({
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    !busy && available && rollback,
-    !busy && available && !rollback && stable && latestTag && copy.releaseAvailable(latestTag),
-    !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && available && !rollback && (stable ? !latestTag : behind <= 0) && copy.update,
+    ...(busy ? [] : pendingLines({ available, behind, branch: client ? branch : 'main', copy, latestTag, rollback, stable })),
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on

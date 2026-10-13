@@ -68,6 +68,39 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
         self.assertEqual(by_id["15551234567@s.whatsapp.net"]["kind"], "dm")
         self.assertGreater(chats[0]["last_seen"] or 0, chats[1]["last_seen"] or 0)
 
+    def test_numeric_session_name_is_replaced_by_the_bridge_subject(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            conn = sqlite3.connect(home / "state.db")
+            conn.execute(
+                "CREATE TABLE sessions (chat_id TEXT, chat_type TEXT, display_name TEXT, title TEXT, "
+                "started_at REAL, ended_at REAL, session_key TEXT, origin_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "120363431353336060@g.us",
+                    "group",
+                    "120363431353336060",
+                    None,
+                    10.0,
+                    None,
+                    "agent:fpx_market:whatsapp:group:120363431353336060@g.us",
+                    None,
+                ),
+            )
+            conn.commit()
+            conn.close()
+            chats = collect_whatsapp_seen_chats(
+                [home],
+                bridge_chats=[{
+                    "chat_id": "120363431353336060@g.us",
+                    "name": "FPX Marketing",
+                    "kind": "group",
+                }],
+            )
+        self.assertEqual(chats[0]["name"], "FPX Marketing")
+
 
 if __name__ == "__main__":
     unittest.main()

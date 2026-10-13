@@ -57,7 +57,12 @@ export function WhatsAppProfileRoutesPanel({
   const routeCounts = useMemo(() => whatsappRouteCountsByProfile(routes), [routes]);
   const seenById = useMemo(() => {
     const map = new Map<string, WhatsAppSeenChatView>();
-    for (const chat of seenChats) map.set(chat.chat_id, chat);
+    for (const chat of seenChats) {
+      map.set(chat.chat_id, chat);
+      const local = chat.chat_id.split("@")[0];
+      if (local && !map.has(local)) map.set(local, chat);
+      if (!chat.chat_id.includes("@")) map.set(`${chat.chat_id}@g.us`, chat);
+    }
     return map;
   }, [seenChats]);
   const unassignedChats = useMemo(
@@ -139,7 +144,7 @@ export function WhatsAppProfileRoutesPanel({
       errors.chat_id = "That chat already has a route.";
     }
     const seen = seenById.get(draftChatId);
-    const label = whatsappChatLabel(draftChatId, seen?.name);
+    const label = whatsappChatLabel(draftChatId, seen?.name, seen?.kind);
     const taken = new Set(
       routes
         .filter((_, index) => !(modal?.mode === "edit" && index === modal.index))
@@ -256,7 +261,7 @@ export function WhatsAppProfileRoutesPanel({
                   routes.map((row, index) => {
                     const seen = seenById.get(row.chat_id);
                     const kind = whatsappChatKind(row.chat_id, seen?.kind);
-                    const label = whatsappChatLabel(row.chat_id, seen?.name);
+                    const label = whatsappChatLabel(row.chat_id, seen?.name, seen?.kind);
                     const lastSeen = formatWhatsAppLastSeen(seen?.last_seen);
                     return (
                     <tr key={`${row.chat_id}-${index}`} className="border-b border-border/60">
@@ -363,7 +368,11 @@ export function WhatsAppProfileRoutesPanel({
                 <Label htmlFor="wa-route-chat">{copy?.fieldChat ?? "Chat"} *</Label>
                 {modal.mode === "edit" ? (
                   <p className="text-sm" title={draftChatId}>
-                    {whatsappChatLabel(draftChatId, seenById.get(draftChatId)?.name)}
+                    {whatsappChatLabel(
+                      draftChatId,
+                      seenById.get(draftChatId)?.name,
+                      seenById.get(draftChatId)?.kind,
+                    )}
                   </p>
                 ) : unassignedChats.length === 0 ? (
                   <p id="wa-route-chat" className="text-xs text-muted-foreground">
@@ -386,7 +395,7 @@ export function WhatsAppProfileRoutesPanel({
                   >
                     {unassignedChats.map((chat) => (
                       <SelectOption key={chat.chat_id} value={chat.chat_id}>
-                        {whatsappChatLabel(chat.chat_id, chat.name)}
+                        {whatsappChatLabel(chat.chat_id, chat.name, chat.kind)}
                       </SelectOption>
                     ))}
                   </Select>

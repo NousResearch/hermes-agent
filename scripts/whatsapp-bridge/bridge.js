@@ -377,6 +377,21 @@ function rememberSentId(id) {
 
 let sock = null;
 let connectionState = 'disconnected';
+const groupSubjects = new Map();
+
+async function rememberGroupSubject(chatId) {
+  if (!sock || !chatId || !String(chatId).endsWith('@g.us')) return '';
+  const cached = groupSubjects.get(chatId);
+  if (cached) return cached;
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const subject = String(metadata?.subject || '').trim();
+    if (subject) groupSubjects.set(chatId, subject);
+    return subject;
+  } catch {
+    return '';
+  }
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -742,6 +757,10 @@ async function startSocket() {
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
       event.fromOwner = fromOwner;
+      if (isGroup) {
+        const subject = await rememberGroupSubject(chatId);
+        if (subject) event.chatName = subject;
+      }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
@@ -1096,6 +1115,28 @@ app.post('/read', async (req, res) => {
   } catch (err) {
     console.warn('[bridge] failed to send read receipt:', err.message);
     return res.status(500).json({ error: 'Failed to send read receipt' });
+  }
+});
+
+// Group titles for the dashboard route table. Subjects come from the live
+// socket; the numeric JID is not a name.
+app.get('/chats', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.json({ chats: [] });
+  }
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const chats = [];
+    for (const group of Object.values(groups || {})) {
+      const chatId = group?.id;
+      const name = String(group?.subject || '').trim();
+      if (!chatId || !name) continue;
+      groupSubjects.set(chatId, name);
+      chats.push({ chat_id: chatId, name, kind: 'group' });
+    }
+    return res.json({ chats });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list WhatsApp chats', chats: [] });
   }
 });
 

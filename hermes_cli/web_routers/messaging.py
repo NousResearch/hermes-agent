@@ -563,11 +563,22 @@ def list_whatsapp_seen_chats():
     Does not start the bridge or restart the gateway.
     """
     from hermes_cli.profiles import list_profiles
-    from hermes_cli.whatsapp_seen_chats import collect_whatsapp_seen_chats
+    from hermes_cli.whatsapp_seen_chats import (
+        _fetch_bridge_chats,
+        collect_whatsapp_seen_chats,
+        remember_whatsapp_aliases,
+    )
 
     try:
-        homes = [item.path for item in list_profiles(lazy_skill_count=True)]
-        chats = collect_whatsapp_seen_chats(homes)
+        infos = list_profiles(lazy_skill_count=True)
+        homes = [item.path for item in infos]
+        chats = collect_whatsapp_seen_chats(homes, bridge_chats=_fetch_bridge_chats())
+        host = next((item.path for item in infos if getattr(item, "is_default", False)), None)
+        if host is not None:
+            remember_whatsapp_aliases(
+                host,
+                {chat["chat_id"]: chat["name"] for chat in chats if chat.get("name")},
+            )
     except Exception as exc:
         _log.exception("GET /api/messaging/whatsapp/seen-chats failed")
         raise HTTPException(status_code=500, detail="Could not list WhatsApp chats.") from exc

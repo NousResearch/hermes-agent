@@ -115,10 +115,21 @@ export function whatsappChatKind(chatId: string, kind?: string | null): "group" 
   return "dm";
 }
 
-export function whatsappChatLabel(chatId: string, name?: string | null): string {
+export function whatsappChatLabel(
+  chatId: string,
+  name?: string | null,
+  kind?: string | null,
+): string {
   const trimmed = name?.trim() ?? "";
-  if (trimmed && trimmed !== chatId) return trimmed;
-  return chatId.toLowerCase().endsWith("@g.us") ? "Unnamed group" : "Unnamed contact";
+  const local = chatId.split("@")[0];
+  const placeholder =
+    !trimmed ||
+    trimmed === chatId ||
+    trimmed === local ||
+    /^\d+$/.test(trimmed) ||
+    /@(g\.us|s\.whatsapp\.net|lid)$/i.test(trimmed);
+  if (!placeholder) return trimmed;
+  return whatsappChatKind(chatId, kind) === "group" ? "Unnamed group" : "Unnamed contact";
 }
 
 export function formatWhatsAppLastSeen(unix: number | null | undefined): string {

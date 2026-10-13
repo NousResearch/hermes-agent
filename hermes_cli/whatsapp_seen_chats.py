@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -20,9 +22,18 @@ def whatsapp_chat_kind(chat_id: str, chat_type: Optional[str] = None) -> str:
     return "dm"
 
 
+def _jid_local(chat_id: str) -> str:
+    return chat_id.split("@", 1)[0]
+
+
 def _clean_name(name: Any, chat_id: str) -> Optional[str]:
+    """A display name. The bridge's placeholder is the JID local part, which is not a title."""
     text = str(name or "").strip()
-    if not text or text == chat_id:
+    local = _jid_local(chat_id)
+    if not text or text in {chat_id, local} or text.isdigit():
+        return None
+    lowered = text.lower()
+    if lowered.endswith(("@g.us", "@s.whatsapp.net", "@lid")):
         return None
     return text
 
@@ -57,6 +68,8 @@ def _absorb(
         }
         return
     if name and not current.get("name"):
+        current["name"] = name
+    elif name and current.get("name") != name and _clean_name(current.get("name"), chat_id) is None:
         current["name"] = name
     if last_seen is not None and (
         current.get("last_seen") is None or last_seen > current["last_seen"]
@@ -168,13 +181,76 @@ def _row_is_whatsapp(record: dict[str, Any]) -> bool:
     return '"platform": "whatsapp"' in origin or '"platform":"whatsapp"' in origin
 
 
-def collect_whatsapp_seen_chats(homes: Iterable[Path], *, limit: int = 400) -> list[dict[str, Any]]:
+def _fetch_bridge_chats(port: int = 3000, timeout: float = 4) -> list[dict[str, Any]]:
+    """Group titles from the live bridge. Empty when the bridge is not connected."""
+    url = f"http://127.0.0.1:{port}/chats"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+        return []
+    chats = payload.get("chats") if isinstance(payload, dict) else None
+    return [chat for chat in chats if isinstance(chat, dict)] if isinstance(chats, list) else []
+
+
+def _apply_bridge_chats(found: dict[str, dict[str, Any]], bridge_chats: Iterable[dict[str, Any]]) -> None:
+    for chat in bridge_chats:
+        chat_id = str(chat.get("chat_id") or "").strip()
+        name = _clean_name(chat.get("name"), chat_id)
+        if not chat_id or not name:
+            continue
+        _absorb(
+            found,
+            chat_id,
+            name=name,
+            kind=whatsapp_chat_kind(chat_id, str(chat.get("kind") or "")),
+            last_seen=None,
+        )
+        # Routes and session rows sometimes store the bare number.
+        local = _jid_local(chat_id)
+        if local in found and local != chat_id:
+            found[local]["name"] = name
+            if found[local].get("kind") != "group":
+                found[local]["kind"] = "group"
+
+
+def remember_whatsapp_aliases(home: Path, names: dict[str, str]) -> None:
+    """Keep learned group titles in channel_aliases.json so the table still has them later."""
+    path = Path(home) / "channel_aliases.json"
+    data = _read_json_dict(path)
+    current = data.get("whatsapp")
+    if not isinstance(current, dict):
+        current = {}
+    changed = False
+    for chat_id, name in names.items():
+        cleaned = _clean_name(name, chat_id)
+        if not cleaned or current.get(chat_id) == cleaned:
+            continue
+        current[chat_id] = cleaned
+        changed = True
+    if not changed:
+        return
+    data["whatsapp"] = current
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def collect_whatsapp_seen_chats(
+    homes: Iterable[Path],
+    *,
+    limit: int = 400,
+    bridge_chats: Optional[Iterable[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
     """Merge seen WhatsApp chats across profile homes. Newest activity first."""
     found: dict[str, dict[str, Any]] = {}
     for home in homes:
         path = Path(home)
         _chats_from_directory(path, found)
         _chats_from_sessions(path, found)
+    if bridge_chats:
+        _apply_bridge_chats(found, bridge_chats)
     chats = list(found.values())
     chats.sort(key=lambda chat: (chat.get("last_seen") is not None, chat.get("last_seen") or 0), reverse=True)
     return chats[:limit]

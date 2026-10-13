@@ -73,6 +73,9 @@ describe("whatsapp chat labels", () => {
   it("shows a group name and hides the JID", () => {
     expect(whatsappChatLabel("120363@g.us", "Job Quest")).toBe("Job Quest");
     expect(whatsappChatLabel("120363@g.us", "120363@g.us")).toBe("Unnamed group");
+    expect(whatsappChatLabel("120363431353336060@g.us", "120363431353336060")).toBe(
+      "Unnamed group",
+    );
     expect(whatsappChatLabel("1555@s.whatsapp.net", "")).toBe("Unnamed contact");
   });
 

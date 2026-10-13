@@ -118,24 +118,34 @@ def _archive_problem(path: Path, data: bytes) -> str | None:
 
 
 _SINGLE_STREAM = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}
+# Only plain data may ship compressed. Code compressed out of sight would skip every
+# text gate (self-updater, credential reads, reviewer greps), so it must be committed as-is.
+_COMPRESSED_DATA_SUFFIXES = frozenset({".txt", ".tsv", ".csv", ".json", ".jsonl", ".ndjson"})
+_COMPRESSED_TEXT_CAP = 64 * 1024 * 1024
 
 
 def _single_stream_problem(path: Path, data: bytes) -> str | None:
-    """A compressed single file (``words.tsv.gz``) is reviewable when the name it
-    decompresses to is source and its content is not a compiled binary."""
+    """A compressed single data file (``words.tsv.gz``) is reviewable when it
+    decompresses to plain UTF-8 text under a data suffix."""
     opener = _SINGLE_STREAM.get(path.suffix.lower())
     if opener is None:
         return "archive could not be opened for review"
     inner = path.name[: -len(path.suffix)]
+    if Path(inner).suffix.lower() not in _COMPRESSED_DATA_SUFFIXES:
+        return f"compressed file is not plain data (commit code uncompressed): {inner}"
     try:
         with opener(io.BytesIO(data)) as stream:
-            head = stream.read(8)
+            text = stream.read(_COMPRESSED_TEXT_CAP + 1)
     except (OSError, EOFError, lzma.LZMAError):
         return "archive could not be opened for review"
-    if not _is_source_member(inner):
-        return f"compressed file is not reviewable source: {inner}"
-    if _magic_kind(head):
-        return f"compressed file is a compiled binary: {inner}"
+    if len(text) > _COMPRESSED_TEXT_CAP:
+        return f"compressed file expands past {_COMPRESSED_TEXT_CAP >> 20} MiB: {inner}"
+    if b"\0" in text:
+        return f"compressed file is not text: {inner}"
+    try:
+        text.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"compressed file is not UTF-8 text: {inner}"
     return None
 
 

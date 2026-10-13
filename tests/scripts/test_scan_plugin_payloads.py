@@ -95,9 +95,10 @@ def test_tarball_with_unknown_blob_member_fails(tmp_path):
 
 
 @pytest.mark.parametrize("name, body, expect", [
-    ("words.tsv.gz", b"haus\thaeuser\n", None),             # gzipped text data: reviewable
-    ("tool.py.gz", b"\x7fELF" + b"\x00" * 40, "compiled binary"),  # ELF under a source name
-    ("payload.bin.gz", b"opaque", "not reviewable source"),
+    ("words.tsv.gz", "haus\thäuser\n".encode(), None),       # gzipped UTF-8 data: reviewable
+    ("tool.py.gz", b"import os\n", "not plain data"),          # code may not hide compressed
+    ("words.txt.gz", b"\x7fELF" + b"\x00" * 40, "not text"),   # binary under a data name
+    ("payload.bin.gz", b"opaque", "not plain data"),
 ])
 def test_single_compressed_file_is_judged_by_what_it_decompresses_to(tmp_path, name, body, expect):
     import gzip

@@ -419,6 +419,7 @@ _MAX_COMPLETION_KEYS = ("max_completion_tokens", "max_output_tokens", "max_token
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 # Docker / Podman / Lima DNS names that resolve to the host machine
 _CONTAINER_LOCAL_SUFFIXES = (".docker.internal", ".containers.internal", ".lima.internal")
+_K8S_CLUSTER_DNS_SUFFIXES = (".cluster.local", ".svc")  # not mDNS (#138053)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -674,8 +675,7 @@ def _reconcile_local_cached_context_length(model: str, base_url: str, cached: in
 
 def is_local_endpoint(base_url: str) -> bool:
     """True for loopback, container-internal DNS, unqualified hosts, RFC-1918,
-    link-local and Tailscale CGNAT (so a trusted Ollama box over Tailscale gets
-    the same timeout auto-bumps as localhost)."""
+    link-local, Tailscale CGNAT; False for Kubernetes cluster DNS (#138053)."""
     try:
         parsed = _parse_base_url(base_url)
         host = parsed.hostname or "" if parsed is not None else None
@@ -683,10 +683,10 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host is None:
         return False
-    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
-    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
-    # they are excluded here and classified by scope below (a global address is not local).
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
+    # Unqualified / `*.local` (mDNS) are local; IPv6 by scope. K8s `*.cluster.local`/`*.svc` are not.
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES):
+        return True
+    if not host.endswith(_K8S_CLUSTER_DNS_SUFFIXES) and (host.endswith(".local") or (host and "." not in host and ":" not in host)):
         return True
     try:
         addr = ipaddress.ip_address(host)

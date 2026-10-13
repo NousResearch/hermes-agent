@@ -1923,6 +1923,12 @@ DEFAULT_CONFIG = {
         # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
         # cap. Set an explicit value to override the derived default in either direction.
         "max_in_progress": None,
+        # Per-board spawn ceilings: board slug -> positive int. Each named board may hold at most
+        # its ceiling of concurrent workers inside the global budget above — the ceilings ALLOCATE
+        # that budget, they never raise it, and a board not named here keeps kanban.max_spawn. Set
+        # this so a deep queue on one board cannot take the whole host budget from the others.
+        # {} = no per-board ceiling (every board spawns against kanban.max_spawn, as before).
+        "max_spawn_by_board": {},
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
         # when fan-out would saturate one profile's model/API quota/browser pool.

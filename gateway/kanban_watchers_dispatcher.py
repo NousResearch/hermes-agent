@@ -11,7 +11,7 @@ import contextlib
 import os
 import sqlite3
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,6 +42,82 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # Per-board spawn ceilings (board slug -> positive int) from
+    # ``kanban.max_spawn_by_board``. A board named here spawns against its own
+    # ceiling instead of the global ``kanban.max_spawn``; every other board
+    # keeps ``max_spawn``, and an empty map is today's behaviour exactly.
+    max_spawn_by_board: dict = field(default_factory=dict)
+
+    def max_spawn_for_board(self, slug: str) -> Any:
+        """Spawn ceiling for *slug* this tick: its own, else the global one.
+
+        The ceilings ALLOCATE the one host budget instead of raising it:
+        ``_tick_spawn_budget`` still applies ``max_in_progress`` across every
+        board, so a board capped below the host budget can never hold more than
+        its ceiling and leaves the remainder for the other boards, in whatever
+        order they are ticked. Resolution is a per-slug lookup, so the mapping's
+        own order never decides which board gets which slice.
+        """
+        return self.max_spawn_by_board.get(slug, self.max_spawn)
+
+
+def _parse_max_spawn_by_board(kanban_cfg: dict, kb: Any) -> dict:
+    """``kanban.max_spawn_by_board`` -> ``{board slug: positive int}``; ``{}`` when unset.
+
+    Opt-in and purely additive: only a board named here is bounded, every other
+    board keeps the global ``kanban.max_spawn``. A non-mapping value, a ceiling
+    below 1, and a slug that names no board in the inventory are each IGNORED
+    with a warning — a typo must be visible, never fatal and never silently
+    ineffective. Entries are validated in slug order so the resolved map (and
+    the warnings) do not depend on the mapping's own order. An unreadable board
+    inventory leaves the map as configured: an entry nothing serves simply never
+    matches, so a read failure can never drop a real ceiling.
+    """
+    raw = kanban_cfg.get("max_spawn_by_board")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "kanban dispatcher: kanban.max_spawn_by_board=%r is not a mapping; ignoring", raw
+        )
+        return {}
+    known: Optional[set] = None
+    try:
+        known = {b.get("slug") or kb.DEFAULT_BOARD for b in kb.list_boards()}
+    except Exception:
+        logger.debug(
+            "kanban dispatcher: could not enumerate boards to validate max_spawn_by_board",
+            exc_info=True,
+        )
+    parsed: dict[str, int] = {}
+    for slug in sorted(raw, key=str):
+        value = raw[slug]
+        key = str(slug).strip()
+        try:
+            ceiling = int(value)
+        except (TypeError, ValueError):
+            ceiling = None
+        if ceiling is None or isinstance(value, bool) or ceiling < 1:
+            logger.warning(
+                "kanban dispatcher: invalid kanban.max_spawn_by_board[%r]=%r; ignoring", slug, value
+            )
+            continue
+        if not key:
+            logger.warning(
+                "kanban dispatcher: kanban.max_spawn_by_board[%r]=%r names no board; ignoring",
+                slug, value,
+            )
+            continue
+        if known is not None and key not in known:
+            logger.warning(
+                "kanban dispatcher: kanban.max_spawn_by_board names unknown board %r; ignoring",
+                key,
+            )
+            continue
+        parsed[key] = ceiling
+    if parsed:
+        logger.info("kanban dispatcher: max_spawn_by_board=%s", parsed)
+    return parsed
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -115,6 +191,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Per-board spawn ceilings; resolved to one board's value per tick in
+        # ``max_spawn_for_board`` (see the allocation note there).
+        max_spawn_by_board=_parse_max_spawn_by_board(kanban_cfg, kb),
     )
 
 
@@ -183,7 +262,14 @@ class _KanbanDispatcher:
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):
             return None
-        kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        # ``interval`` is not a dispatch_once kwarg, and ``max_spawn_by_board``
+        # is resolved to THIS board's ceiling here (once per tick) rather than
+        # passed on as the raw map.
+        kwargs = {
+            k: v for k, v in asdict(self.settings).items()
+            if k not in ("interval", "max_spawn_by_board")
+        }
+        kwargs["max_spawn"] = self.settings.max_spawn_for_board(slug)
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

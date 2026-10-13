@@ -175,3 +175,23 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_virtual_member_with_lint_only_pyproject_gains_name_and_version(tmp_path):
+    """Regression for #137483: a plugin whose pyproject.toml carries only lint
+    config (no [project] table at all) must still yield a buildable workspace
+    member. uv/the installer rejects a [project] table that has a name but no
+    version ("project.version ... neither set nor present"), which got the
+    plugin disabled on every update."""
+    import tomllib
+
+    plugin = tmp_path / "hermes-lcm"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 100\n", encoding="utf-8")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    member = ws._workspace_member(plugin, root, identity=plugin)
+    document = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))
+    assert document["project"]["name"].startswith("hermes-plugin-")
+    assert document["project"]["version"], "uv requires [project].version"

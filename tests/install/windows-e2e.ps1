@@ -1006,6 +1006,13 @@ function Invoke-PhaseInstallGui {
 
     $env:HERMES_HOME = $HermesHome
     New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
+    # The installer launches the app, and a fresh desktop install opens the first-run
+    # onboarding chat with a live model turn that can hold the window open past the
+    # close below. This journey tests install and update: record onboarding as done.
+    $rootConfig = Join-Path $HermesHome 'config.yaml'
+    if (-not (Test-Path -LiteralPath $rootConfig)) {
+        Set-Content -LiteralPath $rootConfig -Value "onboarding:`n  run: false" -Encoding ascii
+    }
 
     $recorder = Start-DesktopRecorder (Join-Path $proof "desktop-frames")
     $ahkLog = Join-Path $proof "ahk.log"

@@ -34,6 +34,12 @@ MERGED_CARRIER = (
     f"{STANDALONE_SUMMARY}"
 )
 REAL_USER = "test the browser controller again"
+LCM_MERGED_CARRIER = (
+    "[Current user objective preserved from compacted history]\n"
+    "Please continue the task.\n\n---\n\n"
+    "[Recent Summary (d0, node 1)]\n"
+    "Internal LCM summary text."
+)
 
 
 def _row(role: str, content, **extra) -> dict:
@@ -130,6 +136,19 @@ class TestMessageProjection:
         )
 
         assert projected["content"] == [{"type": "text", "text": REAL_USER}]
+
+    def test_lcm_carrier_preserves_objective_without_internal_summary(self):
+        message = _row(
+            "user",
+            LCM_MERGED_CARRIER,
+            tool_calls=[{"id": "stale"}],
+        )
+
+        assert _is_compressed_summary_message(message) is True
+        projected = APIServerAdapter._message_response(message)
+        assert projected["content"] == "Please continue the task."
+        assert "Recent Summary" not in projected["content"]
+        assert "tool_calls" not in projected
 
     def test_real_message_that_mentions_marker_text_is_untouched(self):
         message = _row(

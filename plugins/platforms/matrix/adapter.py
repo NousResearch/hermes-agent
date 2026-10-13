@@ -2172,6 +2172,14 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
         if self._is_self_sender(sender):
             return
+        # Session-bridge room (patch 0005): desktop-session mirroring owns this room —
+        # its events are OUTPUT and remote replies are steered by the bridge itself, so
+        # the gateway's Matrix session machinery must never answer here (double-reply).
+        with suppress(ImportError):
+            from gateway.session_bridge import is_bridge_room
+            if is_bridge_room(room_id):
+                logger.debug("Matrix: ignoring event in session-bridge room %s", room_id)
+                return
         # Bridge/system identities must never reach the pairing flow (echo loop once paired).
         # Ignore own messages (case-insensitive; also drops when our own user_id hasn't been resolved yet —
         # see _is_self_sender docstring and issue #15763).

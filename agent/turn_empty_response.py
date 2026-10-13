@@ -206,9 +206,9 @@ def recover_empty_response(
         and not _has_inline_thinking  # thinking model still working — let prefill handle
     ):
         agent._post_tool_empty_retried = True
-        # Clear stale narration so it doesn't resurface on a later empty response.
-        agent._last_content_with_tools = None
-        agent._last_content_tools_all_housekeeping = False
+        # NOTE: `_last_content_with_tools` is deliberately NOT cleared here. If the
+        # nudge, the prefill ladder, every retry, and the fallback hop all fail, the
+        # last-resort branch below surfaces this narration instead of "(empty)".
         logger.info("Empty response after tool calls — nudging model " "to continue processing")
         agent._buffer_diagnostic_status("⚠️ Model returned empty after tool calls — " "nudging to continue")
         # tool → assistant("(empty)") → user keeps the sequence valid.
@@ -289,6 +289,32 @@ def recover_empty_response(
             # call so a mid-turn fallback doesn't eat the iteration budget (#77305).
             api_call_count = _refund_api_call(agent, api_call_count)
             return _verdict("continue")
+
+    # Last-resort: the model narrated alongside a *substantive* tool call, then went
+    # silent through the nudge, the prefill ladder, every retry, and the fallback hop.
+    # The narration was already streamed as an interim message, so reuse it as the final
+    # answer rather than emitting the "(empty)" sentinel — a partial visible answer beats
+    # silence. The housekeeping-only case was handled earlier (before the nudge) and
+    # consumed the cache, so reaching here means substantive tools were involved.
+    # ``fallback_prior_turn_content`` is reused on purpose: the explainer catalog and the
+    # turn finalizer already consume that reason, so nothing new needs wiring.
+    _last_resort = getattr(agent, "_last_content_with_tools", None)
+    if _last_resort and agent._has_content_after_think_block(_last_resort):
+        _turn_exit_reason = "fallback_prior_turn_content"
+        logger.info(
+            "Empty response exhausted — using prior-turn content as last-resort fallback "
+            "(model=%s provider=%s)", agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status("↻ Model went silent — using earlier content as final answer")
+        agent._last_content_with_tools = None
+        agent._last_content_tools_all_housekeeping = False
+        final_response = agent._strip_think_blocks(_last_resort).strip()
+        # The text was streamed as interim: name that identity so a client settles what it
+        # already paints instead of rendering it a second time (same contract as the
+        # housekeeping reuse path above).
+        agent._response_was_previewed = True
+        agent._reused_response_text = final_response
+        return _verdict("break")
 
     _turn_exit_reason = "empty_response_exhausted"
     final_response = _terminal_empty(agent, assistant_message, finish_reason, messages)

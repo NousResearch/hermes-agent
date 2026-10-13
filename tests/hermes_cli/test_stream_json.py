@@ -92,7 +92,6 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
     monkeypatch.setattr(cli_entry, "_pin_kanban_board_env", lambda: None)
     monkeypatch.setattr(cli_entry, "_confirm_startup_expensive_model_override", lambda _a: None)
     monkeypatch.setattr(cli_entry, "_warn_retired_xai_models", lambda: None)
-    monkeypatch.setattr("hermes_cli.free_tier_bootstrap.run_bootstrap", lambda **_k: None)
     monkeypatch.setattr("hermes_cli.quiet_single_query.continue_quiet_notify_completions", lambda *_a, **_k: None)
 
     parser, _, _ = build_top_level_parser()

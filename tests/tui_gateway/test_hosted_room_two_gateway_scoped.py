@@ -20,7 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-import hermes_cli.urllib_security as urllib_security
+from hermes_cli import urllib_security
 from gateway import hosted_room_driver as driver
 from gateway.config import PlatformConfig
 from gateway.hosted_room_peer import GatewayRoomCatalog

@@ -149,7 +149,6 @@ async def test_stop_racing_admission_never_acknowledges_live_work(tmp_path, monk
         async def pause_mailbox(*args, **kwargs):
             entered.set()
             await release.wait()
-            return None
 
         monkeypatch.setattr(owner, "_admit_to_live_bot_chat", pause_mailbox)
     try:

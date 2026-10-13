@@ -4,7 +4,7 @@ import pytest
 
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
-from tests.tui_gateway.test_groups_methods import home as home, _result
+from tests.tui_gateway.test_groups_methods import home as home, _result  # noqa: PLC0414  pytest fixture re-export; a bare import trips F811
 from tui_gateway import server as srv
 
 

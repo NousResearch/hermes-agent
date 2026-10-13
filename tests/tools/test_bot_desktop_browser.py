@@ -4,8 +4,11 @@ and when a human opened that browser first, the agent attaches to it instead of 
 
 from __future__ import annotations
 
+import http.server
+import json
 import os
 import socket
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,6 +94,53 @@ def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
     os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
     assert browser.running_instance_cdp_port(str(tmp_path)) is None
     assert browser.running_instance_cdp_port(str(tmp_path / "missing")) is None
+
+
+class _DevToolsVersion(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"Browser": "Chrome/154", "webSocketDebuggerUrl":
+                           f"ws://127.0.0.1:{self.server.server_address[1]}/devtools/browser/abc"}).encode()
+        self.send_response(200 if self.path == "/json/version" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_running_instance_port_survives_a_deleted_devtools_active_port(tmp_path):
+    """Regression for #137777: agent-browser deletes ``DevToolsActivePort`` before launching onto a profile
+    whose Chromium is still running (and that launch dies on the profile lock). The live owner still serves
+    DevTools, so its port is recovered from the listener it holds instead of reporting no instance — which
+    made every later browser call relaunch onto the locked profile and die the same way."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _DevToolsVersion)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        _fake_running_instance(tmp_path, os.getpid(), port)
+        os.unlink(tmp_path / "DevToolsActivePort")
+        assert browser.running_instance_cdp_port(str(tmp_path)) == port
+        # A dead owner is still not trusted, file or no file.
+        os.unlink(tmp_path / "SingletonLock")
+        os.symlink("host-2147483000", tmp_path / "SingletonLock")
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_recovered_port_must_answer_as_devtools(tmp_path):
+    """Without the file, only a listener that answers ``/json/version`` as DevTools counts: any other socket
+    the live pid holds is not an attach target."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    try:
+        os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+        assert browser.running_instance_cdp_port(str(tmp_path)) is None
+    finally:
+        listener.close()
 
 
 def test_agent_attaches_to_human_started_browser(monkeypatch):

@@ -123,17 +123,28 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     connection before it is trusted. An instance agent-browser launched for ``exclude_session`` itself is
     reported as ``None``: its daemon already owns that browser, and handing it ``--cdp`` would make it
     close the browser as a config change and then attach to the port that just died with it.
+
+    ``DevToolsActivePort`` can also vanish while its Chromium keeps running: agent-browser deletes it
+    before launching onto a profile, even one whose browser is still up (that launch then dies on the
+    profile lock). The live owner is still attachable, so its port is recovered from the DevTools
+    listener it holds (see :func:`_listening_devtools_port`) instead of giving up for good.
     """
     try:
-        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
-            port_line = fh.readline().strip()
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:
         return None
     _host, _, pid_text = target.rpartition("-")
-    if not (port_line.isdigit() and pid_text.isdigit()) or not _pid_alive(int(pid_text)):
+    if not pid_text.isdigit() or not _pid_alive(int(pid_text)):
         return None
-    if exclude_session and _launched_by_session(int(pid_text)) == exclude_session:
+    pid = int(pid_text)
+    if exclude_session and _launched_by_session(pid) == exclude_session:
+        return None
+    try:
+        with open(os.path.join(user_data_dir, "DevToolsActivePort"), encoding="utf-8-sig") as fh:
+            port_line = fh.readline().strip()
+    except OSError:
+        return _listening_devtools_port(pid)
+    if not port_line.isdigit():
         return None
     port = int(port_line)
     try:
@@ -142,6 +153,34 @@ def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[s
     except OSError:
         return None
     return port
+
+
+def _listening_devtools_port(pid: int) -> Optional[int]:
+    """Loopback port on which ``pid`` serves the DevTools HTTP endpoint, or ``None``.
+
+    Only sockets ``pid`` itself listens on are considered, and a port counts only once it answers
+    ``/json/version`` with a ``webSocketDebuggerUrl``, so an unrelated listener is never mistaken for one.
+    """
+    import psutil
+    try:
+        conns = psutil.Process(pid).net_connections(kind="inet4")
+    except (psutil.Error, OSError):
+        return None
+    ports = sorted({c.laddr.port for c in conns
+                    if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.ip in ("127.0.0.1", "0.0.0.0")})
+    return next((port for port in ports if _serves_devtools(port)), None)
+
+
+def _serves_devtools(port: int) -> bool:
+    import json
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=0.5) as resp:
+            info = json.loads(resp.read(65536).decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(info, dict) and str(info.get("webSocketDebuggerUrl", "")).startswith("ws://")
 
 
 def _launched_by_session(chromium_pid: int) -> Optional[str]:

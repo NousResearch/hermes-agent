@@ -28,6 +28,7 @@ BUNDLED_LANGUAGE_INFO: dict[str, tuple[str, bool]] = {
     "fr": ("Français", False),
     "ga": ("Gaeilge", False),
     "hu": ("Magyar", False),
+    "id": ("Bahasa Indonesia", False),
     "it": ("Italiano", False),
     "ja": ("日本語", False),
     "ko": ("한국어", False),

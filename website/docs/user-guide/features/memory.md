@@ -94,6 +94,7 @@ The agent uses the `memory` tool with these actions:
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
+- **patch** — Rewrite just the matched span inside an entry (uses a regex via `pattern`)
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
 
@@ -110,7 +111,21 @@ memory(action="replace", target="memory",
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
-`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+`replace` overwrites the **whole matched entry** with `content`. `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+
+### Regex Patching
+
+`replace` swaps the whole entry and only finds it via an exact `old_text` substring, so it fails whenever the wording or whitespace has drifted. `patch` locates the entry with a regex (`IGNORECASE | DOTALL`) and rewrites only the matched span, leaving the rest of the entry's formatting alone:
+
+```python
+# If memory contains "Deploy target is staging.example.com (rebuild nightly)"
+memory(action="patch", target="memory",
+       pattern=r"staging\.example\.com",
+       content="prod.example.com")
+# -> "Deploy target is prod.example.com (rebuild nightly)"
+```
+
+`content` is inserted literally. Backslashes and group references like `\1` are not expanded. If the pattern matches nothing, the response lists the closest existing entries so the pattern can be refined without re-reading the whole store; if it matches several distinct entries, the write is refused and you're asked to tighten it. `patch` is single-op only. It can't appear inside the batch `operations` array. A staged `patch` is pinned to the full entry that was reviewed, the same way `replace` and `remove` are.
 
 ## Two Targets Explained
 
@@ -335,7 +350,7 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
-A staged `replace` or `remove` (the background review stages these even with the
+A staged `replace`, `patch`, or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
 the write is refused and stays pending for you to reject. A `replace`/`remove`

@@ -51,3 +51,23 @@ def test_memory_alias_persists_with_content_precedence(tmp_path, monkeypatch):
                                              "new_text": "Household owns a coupe."}])
     assert result["success"], result
     assert sink.writes[-1] == ("replace", "user", "Household owns a coupe.")
+
+
+def test_memory_alias_forwards_pattern(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+    agent = SimpleNamespace(_memory_store=store, _memory_manager=None)
+    ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+    added = json.loads(INLINE_TOOL_EXECUTORS["memory"](
+        agent, {"action": "add", "target": "memory", "content": "Deploy target is staging.example.com"}, ctx))
+    assert added["success"], added
+    patched = json.loads(INLINE_TOOL_EXECUTORS["memory"](
+        agent,
+        {"action": "patch", "target": "memory", "pattern": r"staging\.example\.com", "content": "prod.example.com"},
+        ctx,
+    ))
+    assert patched["success"], patched
+    text = (tmp_path / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "prod.example.com" in text
+    assert "staging.example.com" not in text

@@ -324,6 +324,17 @@ def _status_result(client: Any, connectors: list[str]) -> str:
         "replaced by a reconnect and is kept only for the record.")}, ensure_ascii=False)
 
 
+def _display_result(client: Any, suggested: list[str], *, session_id: Optional[str], tool_call_id: Optional[str],
+                    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]], call: Any) -> str:
+    """The desktop card when one can draw; elsewhere the status list and where to connect."""
+    from tools.connectors.display import OFF_DESKTOP_NOTE, run_display
+
+    if connection_callback is None:
+        return json.dumps({**json.loads(_status_result(client, [])), "note": OFF_DESKTOP_NOTE}, ensure_ascii=False)
+    return run_display(client, suggested, session_key=operation_session_key(session_id), tool_call_id=tool_call_id,
+                       connection_callback=connection_callback, call=call)
+
+
 def _rename_result(target: HostedTarget) -> str:
     """Rename the one account of ``target.name`` called ``target.alias`` (or, when unnamed, labelled
     so) to ``target.to``. Synchronous: no operation and no card."""
@@ -367,6 +378,7 @@ def run_managed_action(
     turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
+    card_surface: bool = False,
 ) -> str:
     from tools.managed_gateway_identity import CallRef
 
@@ -377,6 +389,9 @@ def run_managed_action(
             return _rename_result(targets[0])
         call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
         client = client_factory() if client_factory else managed_client(call=call)
+        if action == "display":
+            return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
+                                   connection_callback=connection_callback if card_surface else None, call=call)
         if action == "status":
             return _status_result(client, [t.name for t in targets])
         if not targets:

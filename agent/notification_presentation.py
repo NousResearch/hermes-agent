@@ -24,7 +24,7 @@ def event_presentation_muted(event: str, session_id: str) -> bool:
 def diagnostic_process_event(event: dict) -> bool:
     """Early failure/monitor diagnostics, not the explicitly requested final result."""
     return bool(event.get("task_failure_notice")) or event.get("type") in {
-        "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+        "heartbeat", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
     }
 
 

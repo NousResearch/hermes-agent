@@ -22,7 +22,10 @@ Exit 0 = clean, 1 = a payload was found (lines on stdout), 2 = bad usage.
 """
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
 import os
 import subprocess
 import sys
@@ -105,11 +108,35 @@ def _archive_problem(path: Path, data: bytes) -> str | None:
                 if fobj is not None and _magic_kind(fobj.read(8)):
                     return f"archive member is a compiled binary: {member.name}"
             return None
+    except tarfile.ReadError:
+        return _single_stream_problem(path, data)
     except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError):
         # Not a parseable archive we recognise. A file carrying an archive
         # suffix we cannot open is itself unreviewable.
         return "archive could not be opened for review"
     return "archive could not be opened for review"
+
+
+_SINGLE_STREAM = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}
+
+
+def _single_stream_problem(path: Path, data: bytes) -> str | None:
+    """A compressed single file (``words.tsv.gz``) is reviewable when the name it
+    decompresses to is source and its content is not a compiled binary."""
+    opener = _SINGLE_STREAM.get(path.suffix.lower())
+    if opener is None:
+        return "archive could not be opened for review"
+    inner = path.name[: -len(path.suffix)]
+    try:
+        with opener(io.BytesIO(data)) as stream:
+            head = stream.read(8)
+    except (OSError, EOFError, lzma.LZMAError):
+        return "archive could not be opened for review"
+    if not _is_source_member(inner):
+        return f"compressed file is not reviewable source: {inner}"
+    if _magic_kind(head):
+        return f"compressed file is a compiled binary: {inner}"
+    return None
 
 
 def _file_problem(path: Path, rel: str) -> str | None:

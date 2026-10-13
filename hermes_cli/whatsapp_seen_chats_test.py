@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hermes_cli.whatsapp_seen_chats import collect_whatsapp_seen_chats, whatsapp_chat_kind
+from hermes_cli.whatsapp_seen_chats import (
+    bridge_chats_for_editor,
+    bridge_subjects_for_chats,
+    collect_whatsapp_seen_chats,
+    whatsapp_chat_kind,
+)
 
 
 class WhatsAppSeenChatsTest(unittest.TestCase):
@@ -134,6 +139,54 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
 
         self.assertIsNone(chats[0]["name"])
         self.assertEqual(saved["whatsapp"], {})
+
+    def test_per_chat_lookup_keeps_a_subject_and_skips_the_numeric_placeholder(self):
+        group_id = "120363431353336060@g.us"
+
+        def lookup(chat_id):
+            if chat_id == group_id:
+                return {"name": "FPX Marketing", "isGroup": True}
+            return {"name": chat_id.split("@", 1)[0], "isGroup": True}
+
+        subjects = bridge_subjects_for_chats(
+            [group_id, "120363428138939295@g.us", "15551234567"],
+            lookup,
+        )
+        self.assertEqual(subjects, [{
+            "chat_id": group_id,
+            "name": "FPX Marketing",
+            "kind": "group",
+        }])
+
+    def test_missing_chats_route_falls_back_to_per_chat_subjects(self):
+        group_id = "120363412396471379@g.us"
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            conn = sqlite3.connect(home / "state.db")
+            conn.execute(
+                "CREATE TABLE sessions (chat_id TEXT, chat_type TEXT, display_name TEXT, title TEXT, "
+                "started_at REAL, ended_at REAL, session_key TEXT, origin_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (group_id, "group", group_id.split("@", 1)[0], "Hermes?", 10.0, None,
+                 f"agent:jbq:whatsapp:group:{group_id}", None),
+            )
+            conn.commit()
+            conn.close()
+            bridge = bridge_chats_for_editor(
+                [group_id],
+                None,
+                lambda chat_id: {"name": "Job Quest", "isGroup": True},
+            )
+            chats = collect_whatsapp_seen_chats([home], bridge_chats=bridge)
+        self.assertEqual(chats[0]["name"], "Job Quest")
+
+    def test_empty_bridge_list_does_not_ask_each_chat(self):
+        def lookup(_chat_id):
+            raise AssertionError("disconnected bridge must not be queried per chat")
+
+        self.assertEqual(bridge_chats_for_editor(["120363@g.us"], [], lookup), [])
 
 
 if __name__ == "__main__":

@@ -286,6 +286,28 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return result
 
 
+_BRIDGE_SOURCE_FILES = ("bridge.js", "bridge_helpers.js", "package.json", "package-lock.json")
+
+
+def sync_newer_bridge_files(source: Path, dest: Path) -> None:
+    """Copy bridge sources onto a volume mirror when the image copy is newer.
+
+    The first boot copies the whole tree once. Later image updates must refresh
+    bridge.js itself, or the gateway keeps running the old script from HERMES_HOME.
+    """
+    import shutil
+
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in _BRIDGE_SOURCE_FILES:
+        src = source / name
+        if not src.is_file():
+            continue
+        target = dest / name
+        if target.is_file() and target.stat().st_mtime >= src.stat().st_mtime:
+            continue
+        shutil.copy2(src, target)
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
     /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
@@ -300,6 +322,10 @@ def resolve_whatsapp_bridge_dir() -> Path:
     except OSError:
         pass
     if hermes_home_bridge.exists():
+        try:
+            sync_newer_bridge_files(install_bridge, hermes_home_bridge)
+        except OSError:
+            pass
         return hermes_home_bridge
     try:
         hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)

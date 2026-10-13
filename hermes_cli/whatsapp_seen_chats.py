@@ -203,16 +203,78 @@ def _row_is_whatsapp(record: dict[str, Any]) -> bool:
     return '"platform": "whatsapp"' in origin or '"platform":"whatsapp"' in origin
 
 
-def _fetch_bridge_chats(port: int = 3000, timeout: float = 4) -> list[dict[str, Any]]:
-    """Group titles from the live bridge. Empty when the bridge is not connected."""
+def _fetch_bridge_chats(port: int = 3000, timeout: float = 4) -> Optional[list[dict[str, Any]]]:
+    """Group titles from GET /chats.
+
+    None means that route is missing (an older bridge copy on the volume).
+    An empty list means the bridge answered and has no subjects right now.
+    """
     url = f"http://127.0.0.1:{port}/chats"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return None if exc.code == 404 else []
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
         return []
     chats = payload.get("chats") if isinstance(payload, dict) else None
     return [chat for chat in chats if isinstance(chat, dict)] if isinstance(chats, list) else []
+
+
+def _lookup_bridge_chat(chat_id: str, port: int = 3000, timeout: float = 3) -> Optional[dict[str, Any]]:
+    """One group title from GET /chat/:id, which older bridges already serve."""
+    url = f"http://127.0.0.1:{port}/chat/{urllib.request.quote(chat_id, safe='')}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def bridge_subjects_for_chats(
+    chat_ids: Iterable[str],
+    lookup,
+) -> list[dict[str, Any]]:
+    """Ask the bridge for each group JID. Digit placeholders are not titles."""
+    subjects: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in chat_ids:
+        chat_id = str(raw or "").strip()
+        if not chat_id.lower().endswith("@g.us") or chat_id in seen:
+            continue
+        seen.add(chat_id)
+        try:
+            payload = lookup(chat_id)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        name = _clean_name(payload.get("name"), chat_id)
+        if not name:
+            continue
+        subjects.append({"chat_id": chat_id, "name": name, "kind": "group"})
+    return subjects
+
+
+def bridge_chats_for_editor(
+    known_chat_ids: Iterable[str],
+    listed: Optional[list[dict[str, Any]]],
+    lookup,
+) -> list[dict[str, Any]]:
+    """Prefer GET /chats. When that route is missing, or a routed group is absent, use GET /chat/:id.
+
+    An empty list from /chats means the socket is down. Don't fan out per chat.
+    """
+    if listed is not None and not listed:
+        return []
+    listed_chats = [chat for chat in (listed or []) if isinstance(chat, dict)]
+    have = {str(chat.get("chat_id") or "").strip() for chat in listed_chats}
+    if listed is None:
+        missing = list(known_chat_ids)
+    else:
+        missing = [chat_id for chat_id in known_chat_ids if str(chat_id).strip() not in have]
+    return listed_chats + bridge_subjects_for_chats(missing, lookup)
 
 
 def _apply_bridge_chats(found: dict[str, dict[str, Any]], bridge_chats: Iterable[dict[str, Any]]) -> None:

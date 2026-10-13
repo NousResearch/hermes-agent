@@ -555,6 +555,28 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
+def _whatsapp_route_chat_ids() -> list[str]:
+    """Group and contact ids already on the host route table."""
+    try:
+        config = load_config()
+    except Exception:
+        return []
+    gateway = config.get("gateway") if isinstance(config, dict) else None
+    routes = gateway.get("profile_routes") if isinstance(gateway, dict) else None
+    if not isinstance(routes, list):
+        return []
+    chat_ids: list[str] = []
+    for row in routes:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("platform") or "").strip().lower() != "whatsapp":
+            continue
+        chat_id = str(row.get("chat_id") or "").strip()
+        if chat_id:
+            chat_ids.append(chat_id)
+    return chat_ids
+
+
 @router.get("/api/messaging/whatsapp/seen-chats")
 def list_whatsapp_seen_chats():
     """Chats the WhatsApp bridge has already seen, with display names when known.
@@ -565,14 +587,29 @@ def list_whatsapp_seen_chats():
     from hermes_cli.profiles import list_profiles
     from hermes_cli.whatsapp_seen_chats import (
         _fetch_bridge_chats,
+        _lookup_bridge_chat,
+        bridge_chats_for_editor,
         collect_whatsapp_seen_chats,
         remember_whatsapp_aliases,
+        whatsapp_chat_kind,
     )
 
     try:
         infos = list_profiles(lazy_skill_count=True)
         homes = [item.path for item in infos]
-        chats = collect_whatsapp_seen_chats(homes, bridge_chats=_fetch_bridge_chats())
+        listed = _fetch_bridge_chats()
+        known_ids = _whatsapp_route_chat_ids()
+        if listed is None:
+            preliminary = collect_whatsapp_seen_chats(homes)
+            known_ids.extend(
+                str(chat.get("chat_id") or "")
+                for chat in preliminary
+                if whatsapp_chat_kind(str(chat.get("chat_id") or ""), chat.get("kind")) == "group"
+            )
+        chats = collect_whatsapp_seen_chats(
+            homes,
+            bridge_chats=bridge_chats_for_editor(known_ids, listed, _lookup_bridge_chat),
+        )
         host = next((item.path for item in infos if getattr(item, "is_default", False)), None)
         if host is not None:
             remember_whatsapp_aliases(

@@ -470,7 +470,7 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
 
 def _locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
-    (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
+    (profile-local > create_dir > external > project, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
     skill_md)``; skill_md set iff no error."""
     from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
@@ -486,8 +486,8 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
             (tier_of[root], str(root), skill_candidate_rank(c[1], root), c[1]) for c, root in owned])
         if won is not None:
             if dropped := [str(smd) for i, (_sd, smd) in enumerate(candidates) if i != won]:
-                logger.info("Skill '%s' resolved to %s by precedence (project > local > create_dir > "
-                            "external_dirs, then identical same-root copies); not loaded: %s",
+                logger.info("Skill '%s' resolved to %s by precedence (profile > create_dir > external > "
+                            "project, then identical same-root copies); not loaded: %s",
                             name, candidates[won][1], "; ".join(dropped))
             candidates = [candidates[won]]
         else:

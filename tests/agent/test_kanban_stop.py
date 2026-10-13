@@ -137,6 +137,52 @@ def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+@pytest.fixture
+def pinned_worker(tmp_path, clear_kanban_env):
+    """A claimed card on a real board, with the env the dispatcher pins on its worker."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    clear_kanban_env.setenv("HERMES_HOME", str(home))
+    clear_kanban_env.setattr(Path, "home", lambda: tmp_path)
+    db_path = kb.kanban_db_path(board="default")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="in flight", assignee="coder")
+        kb.claim_task(conn, tid, claimer=kb._claimer_id())
+        run_id = kb._current_run_id(conn, tid)
+        clear_kanban_env.setenv("HERMES_KANBAN_TASK", tid)
+        clear_kanban_env.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+        clear_kanban_env.setenv("HERMES_KANBAN_DB", str(db_path))
+        yield kb, conn, tid
+
+
+_NARRATED_STOP = [{"role": "assistant", "content": "I'll write the file next."}]
+
+
+def test_nudge_fires_while_the_board_still_has_the_run(pinned_worker):
+    assert build_kanban_stop_nudge(messages=_NARRATED_STOP) is not None
+
+
+@pytest.mark.parametrize("settle", [
+    lambda kb, conn, tid: kb.block_task(conn, tid, reason="linear: stopped by Pat", kind="needs_input"),
+    lambda kb, conn, tid: kb.archive_task(conn, tid),
+    lambda kb, conn, tid: kb.complete_task(conn, tid, result="done by a human"),
+], ids=["blocked-externally", "archived", "completed-externally"])
+def test_no_nudge_once_the_board_took_the_task_away(pinned_worker, settle):
+    """A Stop lands on the board, never in the transcript: the worker must end its turn, not
+    be told to "finish any remaining deliverable" and call kanban_complete."""
+    kb, conn, tid = pinned_worker
+    assert settle(kb, conn, tid) is True
+
+    assert build_kanban_stop_nudge(messages=_NARRATED_STOP) is None
+
+
 def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     """Widening the set must not swallow the case the guard exists for."""
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")

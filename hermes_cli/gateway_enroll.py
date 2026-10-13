@@ -224,24 +224,13 @@ def _warn_if_secondary_multiplex_profile() -> bool:
         except ValueError:
             return False  # default profile or custom layout — not a secondary
 
-        # Multiplex precedence mirrors gateway.config: recognized env override wins, else a RAW read
-        # of the DEFAULT root's config.yaml (the active profile's load_gateway_config() is the wrong
-        # owner and runs the full enablement pass, whose log output has no place in enroll output).
-        from gateway.config import _env_multiplex_profiles_override
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
+        # The LIVE default gateway's served record, else the operator's explicit flag (env override
+        # wins, then a RAW read of the DEFAULT root's config.yaml — the active profile's
+        # load_gateway_config() is the wrong owner and runs the full enablement pass, whose log output
+        # has no place in enroll output). An unset flag is settled by the gateway at boot, not here.
+        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        if not default_gateway_multiplexes(default_root):
             return False
-        if env_multiplex is not True:
-            cfg_path = default_root / "config.yaml"
-            if not cfg_path.exists():
-                return False
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path) or {}
-            if not bool(
-                cfg.get("multiplex_profiles")
-                or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
-            ):
-                return False
 
         print(
             "  ⚠ This profile is a SECONDARY profile of a multiplexed gateway.\n"

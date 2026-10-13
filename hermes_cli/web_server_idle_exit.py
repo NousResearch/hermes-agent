@@ -94,28 +94,53 @@ def wrap_asgi_with_ws_tracking(app, tracker: IdleClientTracker):
 _probe_failure_logged = False
 
 
-def turn_in_flight() -> Optional[bool]:
-    """True/False from the gateway's running-session table OR the in-process cron scheduler; None
-    when neither can be read. The session table lives on ``tui_gateway.server`` (the voice mixin's
-    helper is bound into that namespace). Cron runs live outside that table
-    (``cron.scheduler.get_running_job_ids``, the same ledger the gateway shutdown drain reads):
-    without it a daily job mid-run reported "no turn" and the exit killed it (#107485). None keeps
-    the backend alive forever, so the cause is logged once — a silent never-exits would be the
-    original bug with a new face."""
+def _session_work_in_flight(session: dict) -> bool:
+    if any(session.get(key) for key in ("running", "queued_prompt", "queued_prompts", "_auto_continue_scheduled")):
+        return True
+    return any(thread.is_alive() for key in ("_run_thread", "_agent_build_thread")
+               if (thread := session.get(key)) is not None)
+
+
+def busy_ledger() -> Optional[str]:
+    """Name the ledger that holds work — ``"retirement_admission"``, ``"session:<id>"``,
+    ``"delegation"``, ``"cron:<job ids>"`` — ``""`` when every ledger is empty, ``None`` when one
+    cannot be read. The Desktop's idle probe reports this so a backend that will not retire says
+    WHICH work it is protecting, instead of an opaque "turn in flight".
+
+    Session work lives on ``tui_gateway.server`` (the voice mixin's helper is bound into that
+    namespace). Cron runs live outside that table (``cron.scheduler.get_running_job_ids``, the same
+    ledger the gateway shutdown drain reads): without it a daily job mid-run reported "no turn" and
+    the exit killed it (#107485). None keeps the backend alive forever, so the cause is logged once —
+    a silent never-exits would be the original bug with a new face."""
     global _probe_failure_logged
     try:
         import tui_gateway.server as gateway
+        from hermes_cli.backend_retirement import retirement
+
+        if retirement.active_count():
+            return "retirement_admission"
         with gateway._sessions_lock:
-            running = any(s.get("running") for s in gateway._sessions.values())
-        if running:
-            return True
+            busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
+        if busy_sessions:
+            return "session:" + ",".join(str(sid) for sid in busy_sessions)
+        from tools.async_delegation import active_count
         from cron.scheduler import get_running_job_ids
-        return bool(get_running_job_ids())
+        if active_count():
+            return "delegation"
+        running_jobs = get_running_job_ids()
+        return "cron:" + ",".join(sorted(running_jobs)) if running_jobs else ""
     except Exception:
         if not _probe_failure_logged:
             _probe_failure_logged = True
             _log.warning("idle-exit turn probe unavailable; this backend will not self-retire", exc_info=True)
         return None
+
+
+def turn_in_flight() -> Optional[bool]:
+    """Bool view of :func:`busy_ledger`, kept so ``should_exit_idle`` / the idle watchdog and injected
+    test probes keep their ``Optional[bool]`` contract; None when the ledgers cannot be read."""
+    ledger = busy_ledger()
+    return None if ledger is None else bool(ledger)
 
 
 def should_exit_idle(tracker: IdleClientTracker, grace_s: float,

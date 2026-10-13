@@ -18,18 +18,22 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
 from hermes_cli.web_deps import late
+from hermes_cli.web_routers._common import destructive_profile
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_files_policy, _managed_response_meta,
-    _path_is_under, _resolve_managed_path,
+    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_files_policy,
+    _managed_response_meta, _path_is_under, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsCreate, FsDelete, FsRename, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
@@ -42,6 +46,8 @@ router = APIRouter()
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
+load_env = late("load_env", "hermes_cli.config")
+_require_token = late("_require_token")
 # Image types GET /api/media serves — extension-allowlisted so an authenticated
 # caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -172,16 +178,44 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     return target, st
 
 
-def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
-    """Read (a prefix of) ``target``; 403/400 on failure."""
+@contextlib.contextmanager
+def _serve_offline(target: Path):
+    """Hold ``offline_file_access`` for serving ``target``; 409 while a SQLite connection to it is live.
+
+    Callers keep the block open through the file's close: a raw close cancels this process's
+    SQLite POSIX locks on it."""
     try:
-        if limit is None:
-            return target.read_bytes()
-        with target.open("rb") as handle:
-            return handle.read(limit)
+        with offline_file_access(target, what="serve"):
+            yield
+    except LiveConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _refuse_live_database(target: Path) -> None:
+    """Point-in-time 409 before streaming ``target`` while a SQLite connection to it is live.
+
+    ``FileResponse`` opens and closes the file in-process, and that raw close cancels the
+    connection's POSIX locks. The registry lock can't be held across a streamed response
+    (never across an await/yield), so streamed routes only get this admission check. It
+    takes the global registry lock, which other threads hold across whole-file reads, so
+    call it via ``asyncio.to_thread``."""
+    with _serve_offline(target):
+        pass
+
+
+def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
+    """Read (a prefix of) ``target``; 403/400 on failure, 409 while a SQLite connection to it is live."""
+    try:
+        with _serve_offline(target):
+            if limit is None:
+                return target.read_bytes()
+            with target.open("rb") as handle:
+                return handle.read(limit)
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -218,13 +252,82 @@ def _fs_default_cwd() -> str:
 
 def _fs_git_branch(cwd: str) -> str:
     try:
-        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": 2, "check": False}
+        # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
+        # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
+        run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
+                                      "errors": "replace", "timeout": 2}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()
-        result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs)
+        result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs, check=False)
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _fs_backend(profile: Optional[str] = None):
+    """Return the profile's SSH workspace adapter, or None for host-local FS."""
+    from hermes_cli.ssh_workspace_fs import get_ssh_workspace_fs
+
+    with _profile_scope(profile):
+        terminal = dict(load_config().get("terminal") or {})
+        profile_env = load_env()
+    for key, env_name in {
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+    }.items():
+        if not terminal.get(key) and profile_env.get(env_name):
+            terminal[key] = profile_env[env_name]
+    profile_key = (profile or "current").strip().lower() or "current"
+    return get_ssh_workspace_fs(profile_key, terminal)
+
+
+def _fs_mutation_backend(profile: Optional[str] = None):
+    """Select the same local/SSH workspace as reads, refusing other configured backends."""
+    backend = _fs_backend(profile)
+    if backend is not None:
+        return backend
+    with _profile_scope(profile):
+        configured = str((load_config().get("terminal") or {}).get("backend") or "local").strip().lower()
+    if configured != "local":
+        raise HTTPException(
+            status_code=501,
+            detail=f"Filesystem mutations are not supported for terminal backend '{configured}'",
+        )
+    return None
+
+
+def _raise_fs_backend_error(exc: Exception) -> None:
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    if not isinstance(exc, SshWorkspaceFsError):
+        raise exc
+    status = {
+        "EUNSUPPORTED": 501,
+        "EACCES": 403,
+        "EEXIST": 409,
+        "ENOTEMPTY": 409,
+        "ECONN": 503,
+        "EFBIG": 413,
+        "EINVAL": 400,
+        "EIO": 502,
+        "ENOENT": 404,
+        "ENOTREG": 400,
+    }.get(exc.code, 400)
+    detail = {
+        "EUNSUPPORTED": "SSH rename requires Python 3 and filesystem support for atomic no-replace rename",
+        "EACCES": "File is not readable",
+        "EEXIST": "Path already exists",
+        "ENOTEMPTY": "Directory is not empty (enable recursive delete)",
+        "ECONN": "SSH workspace is unavailable",
+        "EFBIG": "File too large",
+        "EINVAL": "Invalid path",
+        "EIO": "SSH workspace request failed",
+        "ENOENT": "File not found",
+        "ENOTREG": "Only regular files can be read",
+    }.get(exc.code, str(exc) or "Filesystem request failed")
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def _media_serve_roots() -> list[Path]:
@@ -239,6 +342,14 @@ def _media_serve_roots() -> list[Path]:
         except (OSError, RuntimeError):
             continue
     return out
+
+
+def _read_base64_file(path: Path) -> str:
+    """Read and encode a bounded file from a worker thread; 409 while a SQLite connection to it is live."""
+    with _serve_offline(path):
+        data = path.read_bytes()
+    # Encode after release: only the open/read/close needs the registry lock.
+    return base64.b64encode(data).decode("ascii")
 
 
 @router.get("/api/media")
@@ -261,8 +372,70 @@ async def get_media(path: str):
     if target.stat().st_size > _MEDIA_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
 
-    encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+# Remote image URLs an authenticated proxy may fetch for a client that cannot
+# reach the CDN itself (#74564: a Desktop on a restricted network renders an
+# agent-generated FAL image inline; the direct link is blocked, but the GATEWAY
+# hosts a working route to the CDN and already holds the generation credentials).
+# Host-allowlisted + size-capped like the rest of the media surface.
+_MEDIA_PROXY_ALLOWED_HOSTS = (
+    "fal.media", "fal.run", "v3.fal.media", "storage.googleapis.com",
+    "*.fal.media", "*.fal.run",
+)
+_MEDIA_PROXY_TIMEOUT_S = 20.0
+
+
+def _media_proxy_host_allowed(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return any(
+        host == allowed.lstrip("*.") or (allowed.startswith("*.") and host.endswith(allowed[1:]))
+        for allowed in _MEDIA_PROXY_ALLOWED_HOSTS
+    )
+
+
+@router.get("/api/media/proxy")
+async def proxy_remote_media(url: str, request: Request):
+    """Fetch a remote image URL the gateway can reach but the client cannot
+    (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
+    allowlisted image CDNs; the bytes stay behind the size cap."""
+    _require_token(request)
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="A remote image URL is required") from exc
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="A remote image URL is required")
+    if not _media_proxy_host_allowed(parsed.hostname):
+        raise HTTPException(status_code=403, detail="Image host not allowed")
+    if not parsed.path or Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+        # Generated-image CDN URLs are content-hash paths with no extension;
+        # a missing extension is expected, so only reject explicit non-image
+        # extensions and let content type be sniffed from the response.
+        if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+            raise HTTPException(status_code=415, detail="Unsupported media type")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
+            response = await client.get(url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Image fetch returned HTTP {response.status_code}")
+    content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type not in _MEDIA_CONTENT_TYPES.values():
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    data = response.content
+    if len(data) > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"data_url": f"data:{content_type};base64,{encoded}"}
 
 
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
@@ -366,11 +539,14 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
-        entries = [
-            _managed_file_entry(policy, Path(entry.path))
-            for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
-        ]
+        entries = []
+        for entry in scan:
+            entry_path = Path(entry.path)
+            if _is_sensitive_path(entry_path):
+                continue
+            metadata = _managed_file_entry(policy, entry_path, skip_missing=True)
+            if metadata is not None:
+                entries.append(metadata)
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
     locked_root = policy.locked_root
@@ -382,8 +558,9 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 
 def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str, int, str]:
     """Resolve + guard a managed file for reading: existence, regular file,
-    sensitive-path denylist, size cap. Returns (policy, target, display_path,
-    size, mime_type)."""
+    sensitive-path denylist. Returns (policy, target, display_path, max_bytes,
+    mime_type). Callers own the live-SQLite 409 (held through the read for
+    /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
@@ -411,7 +588,7 @@ async def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
-        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        encoded = await asyncio.to_thread(_read_base64_file, target)
     return {
         "name": target.name,
         "path": display_path,
@@ -422,7 +599,7 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
-def _managed_file_response(
+async def _managed_file_response(
     request: Request,
     path: str,
     *,
@@ -434,6 +611,7 @@ def _managed_file_response(
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     _managed_file_size(target, max_bytes)
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=mime_type,
@@ -455,7 +633,7 @@ async def download_managed_file(request: Request, path: str):
     """
     fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
     is_media_subresource = fetch_destination in {"audio", "video"}
-    return _managed_file_response(
+    return await _managed_file_response(
         request,
         path,
         content_disposition_type="inline" if is_media_subresource else "attachment",
@@ -470,7 +648,7 @@ async def stream_managed_file(request: Request, path: str):
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
     as download."""
-    return _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
+    return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
@@ -608,13 +786,20 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str):
+async def fs_list(path: str, request: Request, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
+    _hosted_fs_read_guard(target, request)
     try:
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -631,11 +816,36 @@ async def fs_list(path: str):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, size, target = await asyncio.to_thread(
+                backend.read_bytes,
+                path,
+                max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
+                read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
+            )
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        return {
+            "binary": _fs_looks_binary(data[:4096]),
+            "byteSize": size,
+            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target_path.suffix.lower(), "text"),
+            "mimeType": _fs_mime_type(target_path),
+            "path": target,
+            "text": data.decode("utf-8", errors="replace"),
+            "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
+        }
+    target = _fs_path(path)
+    _hosted_fs_read_guard(target, request)
+    target, st = _fs_regular_file(target)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
+    data = await asyncio.to_thread(
+        _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
+    )
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -648,7 +858,7 @@ async def fs_read_text(path: str):
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText):
+async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -657,8 +867,21 @@ async def fs_write_text(payload: FsWriteText):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save).
     """
-    target = _fs_path(payload.path)
     text = payload.content or ""
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, byte_size = await asyncio.to_thread(
+                backend.write_text,
+                payload.path,
+                text,
+                max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
+            )
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target, "byteSize": byte_size}
+
+    target = _fs_path(payload.path, decode_fallback=False)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -691,11 +914,68 @@ async def fs_write_text(payload: FsWriteText):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
-# POSIX allows renaming OVER an existing target; refuse it with an atomic
-# O_EXCL-style rename when the platform supports no-replace semantics. Python
-# has no cross-platform no-replace rename, so serialize the check-and-mutate
-# window per parent dir (same process — the gateway single event loop).
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically rename without replacing a concurrently-created destination."""
+    if os.name == "nt":
+        os.rename(source, destination)  # Windows rename is no-replace.
+        return
+
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    src = os.fsencode(source)
+    dst = os.fsencode(destination)
+    if sys.platform.startswith("linux"):
+        operation = getattr(libc, "renameat2", None)
+        if operation is None:
+            raise NotImplementedError("atomic no-replace rename is unavailable")
+        result = operation(-100, ctypes.c_char_p(src), -100, ctypes.c_char_p(dst), 1)
+    elif sys.platform == "darwin":
+        operation = getattr(libc, "renamex_np", None)
+        if operation is None:
+            operation = getattr(libc, "renameatx_np", None)
+            if operation is None:
+                raise NotImplementedError("atomic no-replace rename is unavailable")
+            result = operation(-2, ctypes.c_char_p(src), -2, ctypes.c_char_p(dst), 0x00000004)
+        else:
+            result = operation(ctypes.c_char_p(src), ctypes.c_char_p(dst), 0x00000004)
+    else:
+        raise NotImplementedError("atomic no-replace rename is unavailable")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+def _is_junction(path: Path) -> bool:
+    check = getattr(path, "is_junction", None)
+    if os.name == "nt" and not callable(check):
+        raise HTTPException(status_code=501, detail="Windows junction detection is unavailable")
+    return bool(check and check())
+
+
+# Serialize destination checks against other /api/fs mutations in this process.
 _rename_locks: dict[str, asyncio.Lock] = {}
+
+
+def _fs_mutation_policy_guard(target: Path, request: Request, *, remote: bool = False) -> None:
+    """Apply the managed-files lock boundary to filesystem mutations."""
+    policy = _managed_files_policy(request, create_root=False)
+    root = policy.locked_root
+    if root is None:
+        return
+    if remote or not _path_is_under(root, target):
+        raise HTTPException(status_code=403, detail="Path is outside the managed files root")
+
+
+def _fs_expanduser_path(raw_path: str) -> Path:
+    return Path(raw_path).expanduser()
+
+
+def _fs_mutation_policy_guard_raw(
+    raw_path: str, request: Request, *, remote: bool = False, expanduser: bool = False
+) -> None:
+    target = Path(raw_path).expanduser() if expanduser else Path(raw_path)
+    _fs_mutation_policy_guard(target, request, remote=remote)
 
 
 def _fs_parent_lock(parent: Path) -> asyncio.Lock:
@@ -731,6 +1011,8 @@ def _fs_mutation_target(raw_path: str) -> Path:
         # no legit caller passes a symlinked dir for a mutation.
         probe = parent
         while probe != probe.parent:
+            if _is_junction(probe):
+                raise HTTPException(status_code=400, detail="Cannot mutate through a junction directory")
             if probe.is_symlink():
                 raise HTTPException(status_code=400, detail="Cannot mutate through a symbolic-link directory")
             probe = probe.parent
@@ -747,19 +1029,20 @@ def _fs_valid_new_name(name: str) -> str:
 
 
 @router.post("/api/fs/create")
-async def fs_create(payload: FsCreate):
-    """Create an empty regular file or a directory (``directory: true``).
+async def fs_create(payload: FsCreate, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/fs/create")
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True)
+        try:
+            target = await asyncio.to_thread(backend.create, payload.path, directory=payload.directory)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target, "isDirectory": bool(payload.directory)}
 
-    Mirrors the Electron ``hermes:fs:writeText`` hardening: the parent must
-    already exist (never build trees; resolved without following any symlinked
-    dir so a create inside ``link/`` never escapes the shown folder), and
-    creation is ATOMIC-exclusive — ``O_EXCL`` for files, ``mkdir`` without
-    ``exist_ok`` for directories — so two concurrent creates or a racing
-    writer yield exactly one success and the other a 409, never a clobber
-    (``Path.touch()`` defaults to ``exist_ok=True`` and would silently accept
-    an existing name).
-    """
-    target = _fs_mutation_target(payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
     async with _fs_parent_lock(target.parent):
         with _io_errors("Parent directory is not writable", "Could not create"):
             if payload.directory:
@@ -783,29 +1066,28 @@ async def fs_create(payload: FsCreate):
 
 
 @router.post("/api/fs/rename")
-async def fs_rename(payload: FsRename):
-    """Rename a file/folder in place; the destination is resolved in the SAME
-    parent dir so a rename can never move the item elsewhere or traverse out.
-    Mirrors the Electron ``hermes:fs:rename`` handler (same-name guard, refuses
-    a name collision).
+async def fs_rename(payload: FsRename, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/fs/rename")
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True)
+        try:
+            target = await asyncio.to_thread(backend.rename, payload.path, _fs_valid_new_name(payload.name))
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target}
 
-    The check-and-mutate window is serialized per parent dir (single-process
-    gateway event loop) so a racing create of the destination between the
-    existence check and ``rename()`` cannot cause POSIX to silently replace the
-    colliding entry — the check and the rename happen atomically with respect
-    to other /api/fs mutations of the same folder.
-    """
     name = _fs_valid_new_name(payload.name)
-    target = _fs_mutation_target(payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
     destination = target.parent / name
+    await asyncio.to_thread(_fs_mutation_policy_guard, destination, request)
 
-    if destination == target:
-        return {"ok": True, "path": str(target)}
-    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
-    # this endpoint renames the LINK itself, so broken links must still be
-    # renameable (is_symlink() is lexical and does not follow).
     if not (target.is_symlink() or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
+    if destination == target:
+        return {"ok": True, "path": str(target)}
     if destination.exists() or destination.is_symlink():
         raise HTTPException(status_code=409, detail=f'"{name}" already exists')
 
@@ -815,29 +1097,40 @@ async def fs_rename(payload: FsRename):
         if destination.exists() or destination.is_symlink():
             raise HTTPException(status_code=409, detail=f'"{name}" already exists')
         with _io_errors("Path is not writable", "Could not rename"):
-            target.rename(destination)
+            try:
+                _rename_noreplace(target, destination)
+            except FileExistsError:
+                raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+            except NotImplementedError as exc:
+                raise HTTPException(status_code=501, detail=str(exc))
+            except OSError as exc:
+                if exc.errno in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
+                    raise HTTPException(status_code=501, detail="Atomic no-replace rename is unavailable on this filesystem")
+                raise
     return {"ok": True, "path": str(destination)}
 
 
 @router.delete("/api/fs/delete")
-async def fs_delete(payload: FsDelete, request: Request):
-    """Delete a file, or a directory with ``recursive: true``.
-
-    The managed root AND the filesystem root can never be deleted — including
-    through an ancestor: ``/opt`` with ``recursive: true`` must not ``rmtree``
-    a locked `/opt/data` underneath it, so the guard rejects any deleted target
-    that IS the locked root or one of its ancestors. The final component is
-    never followed: a symlink is unlinked AS the link, not chased to its
-    referent. Unlike the OS-trash path the local Electron tree uses, this is
-    permanent — the desktop confirm dialog says so in remote mode.
-
-    With ``recursive: false`` an empty directory is removed with ``rmdir()``
-    (same semantics as the managed-files route); only a non-empty directory
-    needs the recursive opt-in.
-    """
+async def fs_delete(payload: FsDelete, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "DELETE /api/fs/delete")
     if not payload.path or payload.path.startswith("file:"):
         raise HTTPException(status_code=400, detail="Invalid path")
-    target = _fs_mutation_target(payload.path)
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True, expanduser=True)
+        try:
+            target = await asyncio.to_thread(backend.delete, payload.path, recursive=payload.recursive)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target}
+
+    policy = await asyncio.to_thread(_managed_files_policy, request, create_root=False)
+    requested = await asyncio.to_thread(_fs_expanduser_path, payload.path)
+    if policy.locked_root is not None and await asyncio.to_thread(_path_is_under, requested, policy.locked_root):
+        raise HTTPException(status_code=400, detail="Cannot delete the managed directory root or its ancestor")
+    await asyncio.to_thread(_fs_mutation_policy_guard, requested, request)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
     # exists() FOLLOWS the final symlink, so a dangling link reports missing;
     # a delete unlinks the LINK itself (unlink never chases the referent), so
     # broken links must still be deletable.
@@ -858,6 +1151,8 @@ async def fs_delete(payload: FsDelete, request: Request):
             # referent instead, so test is_symlink() BEFORE the directory branch.
             if target.is_symlink():
                 target.unlink()
+            elif _is_junction(target):
+                target.rmdir()
             elif target.is_dir():
                 if payload.recursive:
                     shutil.rmtree(target)
@@ -896,25 +1191,53 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
 
 @router.get("/api/fs/read-data-url")
 async def fs_read_data_url(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, _size, target = await asyncio.to_thread(
+                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+            )
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        encoded = base64.b64encode(data).decode("ascii")
+        return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
+    target = await _fs_download_path(path, profile, session_id)
+    _hosted_fs_read_guard(target, request)
+    target, st = _fs_regular_file(target)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+    encoded = await asyncio.to_thread(
+        lambda: base64.b64encode(_fs_read_bytes(target)).decode("ascii"),
+    )
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
 @router.get("/api/fs/download")
 async def fs_download(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
-    target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, _size = await asyncio.to_thread(backend.inspect_file, path)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        if _is_sensitive_path(target_path):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+        filename = urllib.parse.quote(target_path.name)
+        return StreamingResponse(
+            backend.stream_file(target),
+            media_type=_fs_mime_type(target_path),
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        )
+    target = await _fs_download_path(path, profile, session_id)
+    _hosted_fs_read_guard(target, request)
+    target, _st = _fs_regular_file(target)
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),
@@ -924,7 +1247,13 @@ async def fs_download(
 
 
 @router.get("/api/fs/git-root")
-async def fs_git_root(path: str):
+async def fs_git_root(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return {"root": await asyncio.to_thread(backend.git_root, path)}
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
         st = target.stat()
@@ -935,6 +1264,14 @@ async def fs_git_root(path: str):
 
 
 @router.get("/api/fs/default-cwd")
-async def fs_default_cwd():
+async def fs_default_cwd(profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        cwd = backend.cwd
+        try:
+            branch = await asyncio.to_thread(backend.git_branch, cwd)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

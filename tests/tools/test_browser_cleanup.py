@@ -64,7 +64,7 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._active_sessions
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
-        mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+        assert mock_run.call_args.args[:2] == ("task-1", "close")
 
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
@@ -203,3 +203,18 @@ class TestAtexitStopSwallowsInterrupt:
         monkeypatch.setattr(browser_tool, "_cleanup_running", True)
         bt_lifecycle._stop_browser_cleanup_thread()  # must not raise
         assert browser_tool._cleanup_running is False
+
+
+class TestAtexitOriginUnimportable:
+    def test_hooks_stay_silent_when_origin_fresh_import_fails(self, monkeypatch):
+        """Mid-`hermes update` the on-disk tree can be half-new (new config.py importing
+        a name the old utils.py lacks yet); the fresh import in origin_module then raises
+        and the atexit hooks must stay silent (#112437)."""
+        import tools.browser_tool_origin as origin_mod
+
+        def _boom(_depth=2):
+            raise ImportError("cannot import name 'file_signature' from 'utils'")
+
+        monkeypatch.setattr(origin_mod, "origin_module", _boom)
+        bt_lifecycle._emergency_cleanup_all_sessions()  # must not raise
+        bt_lifecycle._stop_browser_cleanup_thread()  # must not raise

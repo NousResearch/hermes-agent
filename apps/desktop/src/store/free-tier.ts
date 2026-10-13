@@ -1,5 +1,8 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
+import { runFreeTierChallenge } from '@/store/free-tier-challenge'
+import { setModeContext } from '@/store/interface-mode'
+import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -22,6 +25,20 @@ export type FreeTierRequester = <T = unknown>(method: string, params?: Record<st
  */
 export const $freeTierStatus = atom<FreeTierStatus | null>(null)
 
+/**
+ * A signed-out free-tier user who should see the standing Sign in: the tier is
+ * on with an identity (`available`; a sign-in replaces that identity, so it
+ * reads false afterwards) and no guided setup owns the moment. The statusbar
+ * chip shows on it, and Simple mode keeps the statusbar up on it.
+ */
+export const $freeTierSignInOpen = computed(
+  [$freeTierStatus, $onboardingGate],
+  status => Boolean(status?.available) && !guidedOnboardingActive()
+)
+
+// Fed here, beside the atom, so every importer of this store gets the same link.
+$freeTierSignInOpen.subscribe(open => setModeContext({ freeTierSignInOpen: open }))
+
 function isFreeTierStatus(value: unknown): value is FreeTierStatus {
   return typeof value === 'object' && value !== null && typeof (value as FreeTierStatus).has_guest === 'boolean'
 }
@@ -31,24 +48,117 @@ function isFreeTierStatus(value: unknown): value is FreeTierStatus {
  * cadence (the ambient status snapshot) or a seam that just changed the answer
  * (boot, a completed sign-in, an acknowledged notice).
  *
+ * `isCurrent` lets a caller whose read belongs to one backend/profile drop a
+ * reply that lands after that scope moved: the atom is single and shared, so an
+ * in-flight read from the previous profile must not repaint the new one. Omit
+ * it where the read cannot outlive its scope.
+ *
  * A failed read leaves the last known answer in place rather than blanking the
  * chrome — an older backend without the method, or a gateway flap, is not
  * evidence that the free tier went away.
  */
-export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+export async function refreshFreeTierStatus(
+  requestGateway: FreeTierRequester,
+  isCurrent?: () => boolean
+): Promise<FreeTierStatus | null> {
   try {
     const status = await requestGateway<FreeTierStatus>('free_tier.status')
 
-    if (!isFreeTierStatus(status)) {
+    if (!isFreeTierStatus(status) || (isCurrent && !isCurrent())) {
       return $freeTierStatus.get()
     }
 
     $freeTierStatus.set(status)
+    // A client that connected after the `free_tier.challenge` event still has
+    // a window to open; the run is de-duplicated per URL.
+    void runFreeTierChallenge(status.challenge, requestGateway)
 
     return status
   } catch {
     return $freeTierStatus.get()
   }
+}
+
+/**
+ * Why the free tier is not set up, when the backend says it tried and could
+ * not. `null` when there is an identity, when the tier is off, or when the
+ * backend never reported a failure (an older backend, or no boot yet).
+ *
+ * `door` is which way forward the copy may honestly offer. The account service
+ * that refused is the same one a sign-in goes through: when it is unreachable
+ * or erroring, offering sign-in walks the user into a second failure, so those
+ * codes get "try again / another provider" only.
+ */
+export interface FreeTierSetupFailure {
+  /** One of the backend's `anon_*` codes (`hermes_cli/anon_auth.py`), or a newer one this build does not know. */
+  code: string
+  door: 'retry' | 'sign_in'
+  message: string
+  retryAfter: number
+  retryable: boolean
+}
+
+const UNREACHABLE_CODES = new Set<string>(['anon_server_error', 'anon_unreachable'])
+
+export function freeTierSetupFailure(status: FreeTierStatus | null): FreeTierSetupFailure | null {
+  if (!status || !status.enabled || status.has_guest) {
+    return null
+  }
+
+  const code = typeof status.error_code === 'string' ? status.error_code.trim() : ''
+
+  if (!code) {
+    return null
+  }
+
+  return {
+    code,
+    door: UNREACHABLE_CODES.has(code) ? 'retry' : 'sign_in',
+    message: typeof status.error === 'string' ? status.error : '',
+    retryAfter: Math.max(0, Math.round(Number(status.retry_after) || 0)),
+    retryable: status.retryable === true
+  }
+}
+
+/**
+ * A rounded, spoken duration for copy — "a few seconds", "about a minute",
+ * "about 5 minutes", "about an hour" — mirroring the backend's `friendly_wait`
+ * so a wait reads the same whichever side phrased it. Never a raw second count.
+ */
+export function friendlyWait(seconds: number): string {
+  const s = Math.max(0, Number.isFinite(seconds) ? seconds : 0)
+
+  if (s <= 15) {
+    return 'a few seconds'
+  }
+
+  if (s < 90) {
+    return 'about a minute'
+  }
+
+  if (s < 3600) {
+    return `about ${Math.round(s / 60)} minutes`
+  }
+
+  const hours = Math.round(s / 3600)
+
+  return hours <= 1 ? 'about an hour' : `about ${hours} hours`
+}
+
+/**
+ * The user's own retry of the free-tier set-up (`free_tier.provision`): the one
+ * attempt that may run inside the backend's cooldown. Re-reads the status
+ * afterwards so every surface keyed on it moves together. Returns the fresh
+ * status, or the last known one when the call itself failed.
+ */
+export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
+  try {
+    await requestGateway('free_tier.provision')
+  } catch {
+    // The status read below still reports what the backend knows.
+  }
+
+  return refreshFreeTierStatus(requestGateway)
 }
 
 /** Persist the one-time notice acknowledgement, then re-read so every surface
@@ -71,7 +181,7 @@ export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Prom
 }
 
 /**
- * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier`, keyed on the
+ * Whether the SELECTED route runs on the free tier: `setup.runtime_check.free_tier_route`, keyed on the
  * endpoint the backend resolved, not on profile state. `null` until a readiness round answers. A
  * free-tier identity beside the user's own key reads `false` here while `$freeTierStatus.available`
  * stays true — that split is what picks the intro's shape.

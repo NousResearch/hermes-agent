@@ -11,11 +11,13 @@ import {
 } from '@/components/ui/context-menu'
 import { translateNow, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isSubmitEnter } from '@/lib/ime'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import {
   $creatingEntry,
   $fileActionDialog,
+  $renamingScope,
   beginInlineRename,
   cancelInlineRename,
   cancelNewEntry,
@@ -84,16 +86,14 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             <ContextMenuSeparator />
           </>
         )}
+        {isDirectory && !localFs && (
+          <ContextMenuItem onSelect={() => void requestNewEntry({ directory: true, parentDir: path })}>
+            {m.newFolder}
+          </ContextMenuItem>
+        )}
         {isDirectory && (
           <>
-            <ContextMenuItem
-              onSelect={() => void requestNewEntry({ directory: true, parentDir: path })}
-            >
-              {m.newFolder}
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() => void requestNewEntry({ directory: false, parentDir: path })}
-            >
+            <ContextMenuItem onSelect={() => void requestNewEntry({ directory: false, parentDir: path })}>
               {m.newFile}
             </ContextMenuItem>
             <ContextMenuSeparator />
@@ -127,9 +127,8 @@ export function FileActionDialogs() {
   const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
   const deleting = dialog?.kind === 'delete'
-  // Local delete goes to the OS trash (recoverable); remote delete through the
-  // gateway FS API is permanent — say so in the confirm copy.
-  const remoteDelete = isDesktopFsRemoteMode()
+  // Keep the confirmation wording and backend pinned to the row's original scope.
+  const remoteDelete = dialog?.scope.mode === 'remote'
 
   return (
     <ConfirmDialog
@@ -139,7 +138,7 @@ export function FileActionDialogs() {
       onClose={closeFileActionDialog}
       onConfirm={() => {
         if (deleting) {
-          return executeFileDelete(dialog.path)
+          return executeFileDelete(dialog.path, dialog.scope)
         }
       }}
       open={deleting}
@@ -163,6 +162,7 @@ interface InlineRenameInputProps {
  *  pre-select, and a first-tab-all select). */
 export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
   const creating = useStore($creatingEntry)
+  const renamingScope = useStore($renamingScope)
   const creatingHere = creating && creating.parentDir === path
   const seedName = creatingHere ? '' : name
   const [value, setValue] = useState(seedName)
@@ -185,9 +185,9 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
     if (commit && next) {
       try {
         if (creatingHere) {
-          await executeEntryCreate(creating.directory, creating.parentDir, next)
+          await executeEntryCreate(creating, next)
         } else if (next !== name) {
-          await executeFileRename(path, next)
+          await executeFileRename(path, next, renamingScope || undefined)
         }
       } catch (error) {
         // Caller-owned failure toast (the store functions no longer notify);
@@ -244,7 +244,7 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
       onKeyDown={event => {
         event.stopPropagation()
 
-        if (event.key === 'Enter') {
+        if (isSubmitEnter(event)) {
           event.preventDefault()
           void finish(true)
         } else if (event.key === 'Escape') {

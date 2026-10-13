@@ -4,7 +4,9 @@ import type { StatusResponse } from '@/types/hermes'
  *  multiplexer, in display order (default first, then as recorded). `null` for a standalone
  *  gateway or an older backend that does not report `gateway_shared_with` — those keep the
  *  plain no-dialog restart. A record naming only one profile is not shared either. */
-export function sharedGatewayProfiles(status: Pick<StatusResponse, 'gateway_shared_with'> | null | undefined): null | string[] {
+export function sharedGatewayProfiles(
+  status: Pick<StatusResponse, 'gateway_shared_with'> | null | undefined
+): null | string[] {
   const shared = status?.gateway_shared_with
 
   if (!Array.isArray(shared)) {

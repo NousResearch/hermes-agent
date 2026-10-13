@@ -97,3 +97,55 @@ class TestSwitchModelKeyEnvScope:
         finally:
             secret_scope.reset_secret_scope(token)
         assert captured["key"] == "this-profile-key"
+
+
+class TestPickerKeyEnvDotenv:
+    """``key_env`` must resolve through the chat path's chain (``get_env_prefer_dotenv``): a key
+    that lives only in ``$HERMES_HOME/.env`` authenticates the ``/model`` verification probe, and
+    a scoped multiplex read never borrows the ``.env``/process value of another profile."""
+
+    def _dotenv(self, monkeypatch, tmp_path, value):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text(f"ACME_RELAY_KEY={value}\n", encoding="utf-8")
+        from hermes_cli.config import invalidate_env_cache
+        invalidate_env_cache()
+
+    def test_switch_probe_uses_dotenv_key_over_stale_process_env(self, monkeypatch, tmp_path):
+        self._dotenv(monkeypatch, tmp_path, "fresh-dotenv")
+        monkeypatch.setenv("ACME_RELAY_KEY", "stale-process")
+        import hermes_cli.model_switch as ms
+        import hermes_cli.models_validate as mv
+
+        captured = {}
+
+        def _fake_runtime(requested, explicit_api_key=None, explicit_base_url=None, target_model=None, **kw):
+            return {"api_key": explicit_api_key or "", "base_url": explicit_base_url, "api_mode": ""}
+
+        def _fake_validate(model, provider, api_key=None, base_url=None, api_mode=None, headers=None, **kw):
+            captured["api_key"] = api_key
+            return {"accepted": True, "persist": True, "recognized": True, "message": ""}
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
+        monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
+        monkeypatch.setattr(mv, "validate_requested_model", _fake_validate)
+
+        ms.switch_model(
+            "some-model", current_provider="openrouter", current_model="x", explicit_provider="acme",
+            user_providers={"acme": {"base_url": "https://api.acme.test/v1", "key_env": "ACME_RELAY_KEY"}},
+        )
+
+        assert captured["api_key"] == "fresh-dotenv"
+
+    def test_multiplex_scoped_miss_never_borrows_dotenv_or_process_env(self, monkeypatch, tmp_path):
+        self._dotenv(monkeypatch, tmp_path, "default-profile-key")
+        monkeypatch.setenv("ACME_RELAY_KEY", "other-profile-key")
+        secret_scope.set_multiplex_active(True)
+        try:
+            assert _scoped_key_env("ACME_RELAY_KEY") == ""  # no scope installed: fail closed
+            token = secret_scope.set_secret_scope({"OTHER": "x"})
+            try:
+                assert _scoped_key_env("ACME_RELAY_KEY") == ""  # scoped miss: no fallthrough
+            finally:
+                secret_scope.reset_secret_scope(token)
+        finally:
+            secret_scope.set_multiplex_active(False)

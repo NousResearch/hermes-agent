@@ -1,10 +1,12 @@
-import { hermesApi } from '@/api/client'
+import { hermesApi, hermesApiAs, type ResolvedOwner } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
+  HermesReadFileErrorResult,
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { translateNow } from '@/i18n'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -26,7 +28,9 @@ function connectionCacheKey(connection: HermesConnection | null) {
   // registry id is the isolation boundary, including for SSH connections; the
   // stable host identity below is only the fallback for legacy connections.
   if (connection.connectionId) {
-    return `connection:${connection.connectionId}:${connection.profile || ''}`
+    const mode = connection.mode === 'remote' ? 'remote' : 'local'
+
+    return `connection:${mode}:${connection.connectionId}:${connection.profile || ''}`
   }
 
   const target =
@@ -51,6 +55,32 @@ export function desktopFsProfile(): string | undefined {
   return $connection.get()?.profile || undefined
 }
 
+export interface DesktopFsOperationScope extends ResolvedOwner {
+  cacheKey: string
+  mode: 'local' | 'remote'
+}
+
+export function captureDesktopFsOperationScope(): DesktopFsOperationScope {
+  const connection = $connection.get()
+
+  return {
+    cacheKey: desktopFsCacheKey(connection),
+    connectionId: connection?.connectionId || null,
+    mode: connection?.mode === 'remote' ? 'remote' : 'local',
+    profile: connection?.profile || null
+  }
+}
+
+function assertCurrentOperationScope(scope?: DesktopFsOperationScope): DesktopFsOperationScope {
+  const captured = scope ?? captureDesktopFsOperationScope()
+
+  if (captured.cacheKey !== desktopFsCacheKey()) {
+    throw new Error('The active connection changed before the file operation could start')
+  }
+
+  return captured
+}
+
 function fsPath(endpoint: string, filePath: string) {
   return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
 }
@@ -68,11 +98,12 @@ function bridge() {
 function remoteFsApi<T>(
   path: string,
   body?: Record<string, unknown>,
-  method: 'DELETE' | 'POST' = 'POST'
+  method: 'DELETE' | 'POST' = 'POST',
+  owner?: ResolvedOwner
 ): Promise<T> {
-  return hermesApi<T>(
-    body ? { body, method, path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+  const request = body ? { body, method, path } : { path }
+
+  return owner ? hermesApiAs(owner, request) : hermesApi<T>({ ...request, profile: desktopFsProfile() })
 }
 
 // Reject a user-entered name that would break out of its parent dir. Mirrors the
@@ -86,6 +117,34 @@ function assertSafeEntryName(name: string, purpose: 'create' | 'rename'): void {
   }
 }
 
+/** True when a bridge read returned the main process's structured "file is not
+ *  on disk" answer (the main process returns this instead of rejecting, so a
+ *  restored preview tab or transcript reference to a deleted/moved file does
+ *  not spam Electron's console with a stack trace per probe). Callers that
+ *  already try/catch their read get the same behavior as a rejection: throw
+ *  with the original message. */
+export function isReadFileErrorResult(value: unknown): value is HermesReadFileErrorResult {
+  return !!value && typeof value === 'object' && (value as { ok?: unknown }).ok === false
+}
+
+function throwForReadErrorResult(result: HermesReadFileErrorResult): never {
+  throw new DesktopFileMissingError(result)
+}
+
+/** Thrown by the facade when the main process answered that the file is simply
+ *  not on disk (the structured `{ ok:false }` result). Callers that need to
+ *  tell expected absence apart from real failures check `instanceof`; everyone
+ *  else sees an ordinary error whose message matches the old rejection. */
+export class DesktopFileMissingError extends Error {
+  readonly code: string
+
+  constructor(result: HermesReadFileErrorResult) {
+    super(result.message || `File read failed: ${result.error}`)
+    this.name = 'DesktopFileMissingError'
+    this.code = result.error
+  }
+}
+
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readDir(path)
@@ -96,7 +155,13 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
 
 export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileText(path)
+    const result = await bridge().readFileText(path)
+
+    if (isReadFileErrorResult(result)) {
+      throwForReadErrorResult(result)
+    }
+
+    return result
   }
 
   return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
@@ -122,9 +187,23 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
+// Create a folder on the connected backend (POST /api/files/mkdir). Remote-only:
+// in local mode the picker is the native dialog, which creates folders itself.
+export async function createRemoteDir(path: string): Promise<string> {
+  const result = await remoteFsApi<{ path?: string }>('/api/files/mkdir', { path })
+
+  return result.path || path
+}
+
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
-    return bridge().readFileDataUrl(path)
+    const result = await bridge().readFileDataUrl(path)
+
+    if (isReadFileErrorResult(result)) {
+      throwForReadErrorResult(result)
+    }
+
+    return result
   }
 
   const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
@@ -141,9 +220,13 @@ export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<st
   try {
     const local = await window.hermesDesktop?.readFileDataUrl?.(path)
 
-    if (local) {
+    if (local && !isReadFileErrorResult(local)) {
       return local
     }
+
+    // A structured missing-file result from local is the same outcome as a
+    // rejection: fall through to the remote fallback below (or throw in local
+    // mode via readDesktopFileDataUrl's own guard).
   } catch (error) {
     if (!isDesktopFsRemoteMode()) {
       throw error
@@ -174,18 +257,34 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
 }
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
+// The bridge answers `false` when the path is not on this computer (a remote
+// backend's workspace) — surface it instead of a silent no-op.
 export async function revealDesktopPath(path: string): Promise<void> {
-  await bridge().revealPath?.(path)
+  const revealed = await bridge().revealPath?.(path)
+
+  if (revealed === false) {
+    throw new Error(translateNow('fileMenu.revealMissing'))
+  }
 }
 
 // Rename a file/folder in place; returns the new absolute path. Local renames
 // go through the Electron IPC handler; remote renames hit the dashboard's
 // POST /api/fs/rename (same-parent resolution + collision refusal there).
-export async function renameDesktopPath(path: string, newName: string): Promise<string> {
+export async function renameDesktopPath(
+  path: string,
+  newName: string,
+  scope?: DesktopFsOperationScope
+): Promise<string> {
   assertSafeEntryName(newName, 'rename')
+  const operation = assertCurrentOperationScope(scope)
 
-  if (isDesktopFsRemoteMode()) {
-    const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/rename', { name: newName, path })
+  if (operation.mode === 'remote') {
+    const result = await remoteFsApi<{ ok?: boolean; path?: string }>(
+      '/api/fs/rename',
+      { name: newName, path },
+      'POST',
+      operation
+    )
 
     return result.path || path
   }
@@ -206,11 +305,17 @@ export async function renameDesktopPath(path: string, newName: string): Promise<
 // creation hits the dashboard's POST /api/fs/create (same hardening, handles
 // both files and folders, never clobbers). Local folder creation has no
 // Electron capability yet, so it errors clearly until one ships.
-export async function createDesktopEntry(parentDir: string, name: string, directory: boolean): Promise<string> {
+export async function createDesktopEntry(
+  parentDir: string,
+  name: string,
+  directory: boolean,
+  scope?: DesktopFsOperationScope
+): Promise<string> {
   assertSafeEntryName(name, 'create')
+  const operation = assertCurrentOperationScope(scope)
   const joined = `${parentDir.replace(/[/\\]+$/, '')}/${name}`
 
-  if (!isDesktopFsRemoteMode()) {
+  if (operation.mode !== 'remote') {
     const desktop = bridge()
 
     if (directory || !desktop.createTextFileExclusive) {
@@ -225,10 +330,12 @@ export async function createDesktopEntry(parentDir: string, name: string, direct
     return joined
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/create', {
-    directory,
-    path: joined
-  })
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>(
+    '/api/fs/create',
+    { directory, path: joined },
+    'POST',
+    operation
+  )
 
   return result.path || joined
 }
@@ -240,9 +347,11 @@ export async function createDesktopEntry(parentDir: string, name: string, direct
 // opts into recursive deletion — a folder delete must not fail on non-empty
 // contents that the user just clicked Delete on. (The flag is ignored for
 // regular files by the server.)
-export async function trashDesktopPath(path: string): Promise<void> {
-  if (isDesktopFsRemoteMode()) {
-    await remoteFsApi('/api/fs/delete', { path, recursive: true }, 'DELETE')
+export async function trashDesktopPath(path: string, scope?: DesktopFsOperationScope): Promise<void> {
+  const operation = assertCurrentOperationScope(scope)
+
+  if (operation.mode === 'remote') {
+    await remoteFsApi('/api/fs/delete', { path, recursive: true }, 'DELETE', operation)
 
     return
   }

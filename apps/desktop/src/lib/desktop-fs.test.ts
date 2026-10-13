@@ -4,9 +4,12 @@ import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
+  captureDesktopFsOperationScope,
   createDesktopEntry,
+  createRemoteDir,
   desktopDefaultCwd,
   desktopFileDiff,
+  DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
   readDesktopDir,
@@ -20,8 +23,8 @@ import {
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
-const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
-const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
+const readFileText = vi.fn(async (): Promise<unknown> => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
+const readFileDataUrl = vi.fn(async (): Promise<unknown> => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 const writeTextFile = vi.fn(async (path: string) => ({ path }))
@@ -45,6 +48,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path === '/api/files/mkdir') {
+    return { ok: true, path: '/home/user/new folder' }
   }
 
   if (path.startsWith('/api/git/file-diff?')) {
@@ -135,6 +142,19 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('creates remote folders through the backend mkdir route for the active profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'team-remote' } as never)
+
+    await expect(createRemoteDir('/home/user/new folder')).resolves.toBe('/home/user/new folder')
+
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/home/user/new folder' },
+      method: 'POST',
+      path: '/api/files/mkdir',
+      profile: 'team-remote'
+    })
   })
 
   it('does not retry the same unreadable path through the local facade', async () => {
@@ -340,7 +360,7 @@ describe('desktop filesystem facade', () => {
   })
 
   it('routes mutations through the gateway FS API in remote mode', async () => {
-    $connection.set({ mode: 'remote' } as never)
+    $connection.set({ connectionId: 'gw-files', mode: 'remote', profile: 'team-remote' } as never)
 
     await expect(renameDesktopPath('/remote/old.txt', 'new.txt')).resolves.toBe('/remote/renamed.txt')
     await expect(createDesktopEntry('/remote/project', 'notes.md', false)).resolves.toBe('/remote/new-entry')
@@ -350,17 +370,26 @@ describe('desktop filesystem facade', () => {
     expect(api).toHaveBeenCalledWith({
       body: { name: 'new.txt', path: '/remote/old.txt' },
       method: 'POST',
-      path: '/api/fs/rename'
+      path: '/api/fs/rename',
+      connectionId: 'gw-files',
+      priority: 'foreground',
+      profile: 'team-remote'
     })
     expect(api).toHaveBeenCalledWith({
       body: { directory: false, path: '/remote/project/notes.md' },
       method: 'POST',
-      path: '/api/fs/create'
+      path: '/api/fs/create',
+      connectionId: 'gw-files',
+      priority: 'foreground',
+      profile: 'team-remote'
     })
     expect(api).toHaveBeenCalledWith({
       body: { directory: true, path: '/remote/project/subdir' },
       method: 'POST',
-      path: '/api/fs/create'
+      path: '/api/fs/create',
+      connectionId: 'gw-files',
+      priority: 'foreground',
+      profile: 'team-remote'
     })
     // Remote delete hits the registered DELETE route (not POST), and opts into
     // recursive deletion — the confirm dialog already says the delete is
@@ -368,10 +397,66 @@ describe('desktop filesystem facade', () => {
     expect(api).toHaveBeenCalledWith({
       body: { path: '/remote/gone.txt', recursive: true },
       method: 'DELETE',
-      path: '/api/fs/delete'
+      path: '/api/fs/delete',
+      connectionId: 'gw-files',
+      priority: 'foreground',
+      profile: 'team-remote'
     })
     expect(writeTextFile).not.toHaveBeenCalled()
     expect(createTextFileExclusive).not.toHaveBeenCalled()
+  })
+
+  it('refuses a pending mutation after its filesystem scope changes', async () => {
+    $connection.set({ connectionId: 'gateway-a', mode: 'remote', profile: 'alice' } as never)
+    const scope = captureDesktopFsOperationScope()
+    $connection.set({ connectionId: 'gateway-b', mode: 'remote', profile: 'alice' } as never)
+
+    await expect(renameDesktopPath('/home/alice/old.txt', 'new.txt', scope)).rejects.toThrow('connection changed')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('invalidates captured mutations when a registered connection changes mode', async () => {
+    const renamePath = vi.fn(async (path: string) => ({ path }))
+    const trashPath = vi.fn(async () => true)
+
+    vi.stubGlobal('window', {
+      hermesDesktop: { createTextFileExclusive, renamePath, trashPath }
+    })
+    $connection.set({ connectionId: 'same-connection', mode: 'remote', profile: 'alice' } as never)
+    const remoteScope = captureDesktopFsOperationScope()
+    const remoteKey = desktopFsCacheKey()
+    $connection.set({ connectionId: 'same-connection', mode: 'local', profile: 'alice' } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(remoteKey)
+    await expect(createDesktopEntry('/home/alice', 'new.txt', false, remoteScope)).rejects.toThrow('connection changed')
+    await expect(renameDesktopPath('/home/alice/old.txt', 'new.txt', remoteScope)).rejects.toThrow('connection changed')
+    await expect(trashDesktopPath('/home/alice/gone.txt', remoteScope)).rejects.toThrow('connection changed')
+    expect(api).not.toHaveBeenCalled()
+    expect(createTextFileExclusive).not.toHaveBeenCalled()
+    expect(renamePath).not.toHaveBeenCalled()
+    expect(trashPath).not.toHaveBeenCalled()
+  })
+
+  it('does not route local captured mutations through a newly active remote connection', async () => {
+    const renamePath = vi.fn(async (path: string) => ({ path }))
+    const trashPath = vi.fn(async () => true)
+
+    vi.stubGlobal('window', {
+      hermesDesktop: { createTextFileExclusive, renamePath, trashPath }
+    })
+    $connection.set({ connectionId: 'same-connection', mode: 'local', profile: 'alice' } as never)
+    const localScope = captureDesktopFsOperationScope()
+    const localKey = desktopFsCacheKey()
+    $connection.set({ connectionId: 'same-connection', mode: 'remote', profile: 'alice' } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(localKey)
+    await expect(createDesktopEntry('/home/alice', 'new.txt', false, localScope)).rejects.toThrow('connection changed')
+    await expect(renameDesktopPath('/home/alice/old.txt', 'new.txt', localScope)).rejects.toThrow('connection changed')
+    await expect(trashDesktopPath('/home/alice/gone.txt', localScope)).rejects.toThrow('connection changed')
+    expect(api).not.toHaveBeenCalled()
+    expect(createTextFileExclusive).not.toHaveBeenCalled()
+    expect(renamePath).not.toHaveBeenCalled()
+    expect(trashPath).not.toHaveBeenCalled()
   })
 
   it('refuses traversal names and basic-unsafe names for create and rename', async () => {
@@ -410,5 +495,41 @@ describe('desktop filesystem facade', () => {
     await trashDesktopPath('/work/a.txt')
 
     expect(api).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a missing-file bridge result as a thrown error (not an object)', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    // The main process answers "file not on disk" with a structured result
+    // instead of rejecting the IPC call (so a restored preview tab pointing at
+    // a deleted file doesn't spam Electron's console). The facade converts it
+    // back into a rejection so every existing try/catch caller keeps working.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    readFileDataUrl.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.'
+    })
+
+    await expect(readDesktopFileDataUrl('/gone.png')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    // The rejection is the typed missing-file error, so callers can tell
+    // expected absence apart from real failures without string matching.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'gone',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
   })
 })

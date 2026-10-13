@@ -177,6 +177,9 @@ def _model_flow_custom(config):
     def _apply_endpoint(model: dict) -> None:
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        # A previous endpoint's key_env pointer would outrank the credential written below.
+        model.pop("key_env", None)
+        model.pop("api_key_env", None)
         if custom_key_env:
             model["api_key"] = f"${{{custom_key_env}}}"
         if api_mode:
@@ -331,9 +334,11 @@ def _model_flow_named_custom(config, provider_info):
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
 
-    # Resolve key from env var if api_key not set directly
+    # Resolve key_env through the profile secret scope (fresh .env; never another
+    # profile's process env under multiplexing), like the runtime does (#67935).
     if not api_key and key_env:
-        api_key = os.environ.get(key_env, "")
+        from agent.secret_scope import get_secret_str
+        api_key = get_secret_str(key_env, "")
     # Only configured credentials may be persisted, never a short-lived probe token.
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
@@ -384,6 +389,10 @@ def _model_flow_named_custom(config, provider_info):
     # Activate and save the model to the custom_providers entry
     _save_model_choice(model_name)
     cfg, model = _load_config_model_section()
+    # The endpoint being activated owns the credential: drop the previous endpoint's pointer
+    # (key_env outranks the provider entry's own key at resolution time).
+    model.pop("key_env", None)
+    model.pop("api_key_env", None)
     if provider_key:
         model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)

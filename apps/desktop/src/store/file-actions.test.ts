@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { desktopFsCacheKey } from '@/lib/desktop-fs'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
-vi.mock('@/lib/media', () => ({
-  downloadGatewayMediaFile: vi.fn()
-}))
-
-const media = await import('@/lib/media')
-const downloadGatewayMediaFile = vi.mocked(media.downloadGatewayMediaFile)
-
-const { downloadRemoteFile, shouldOfferRemoteFileDownload, $fileActionDialog, $renamingPath, $creatingEntry } =
-  await import('./file-actions')
-
-const { $connection } = await import('@/store/session')
+const {
+  downloadRemoteFile,
+  shouldOfferLocalReveal,
+  shouldOfferRemoteFileDownload,
+  $fileActionDialog,
+  $renamingPath,
+  $creatingEntry,
+  requestFileDelete,
+  beginInlineRename,
+  requestNewEntry
+} = await import('./file-actions')
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {
@@ -24,27 +26,45 @@ describe('shouldOfferRemoteFileDownload', () => {
   })
 })
 
+describe('shouldOfferLocalReveal', () => {
+  // The OS file manager can only show what is on this computer (#115167): the
+  // focused row's backend decides; the primary's mode only when it is untagged.
+  it.each([
+    ['', false, true],
+    ['', true, false],
+    ['local', true, true],
+    ['mini', false, false],
+    [undefined, true, false]
+  ])('connection %s with primaryRemote=%s -> %s', (connectionId, primaryRemote, expected) => {
+    expect(shouldOfferLocalReveal(connectionId, primaryRemote)).toBe(expected)
+  })
+})
+
 describe('downloadRemoteFile', () => {
+  const saveGatewayFile = vi.fn()
+
   beforeEach(() => {
     clearNotifications()
-    downloadGatewayMediaFile.mockReset()
+    saveGatewayFile.mockReset()
+    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
   })
 
   afterEach(() => {
     clearNotifications()
+    vi.unstubAllGlobals()
   })
 
   it('saves a remote gateway file through the native download bridge', async () => {
-    downloadGatewayMediaFile.mockResolvedValue({ path: '/Users/me/Downloads/notes.md', saved: true })
+    saveGatewayFile.mockResolvedValue({ path: '/Users/me/Downloads/notes.md', saved: true })
 
     await downloadRemoteFile('/home/linux/project/notes.md')
 
-    expect(downloadGatewayMediaFile).toHaveBeenCalledWith('/home/linux/project/notes.md')
+    expect(saveGatewayFile).toHaveBeenCalledWith(expect.objectContaining({ path: '/home/linux/project/notes.md' }))
     expect($notifications.get()[0]?.message).toBe('Saved')
   })
 
   it('stays quiet when the save dialog is canceled', async () => {
-    downloadGatewayMediaFile.mockResolvedValue({ canceled: true, saved: false })
+    saveGatewayFile.mockResolvedValue({ canceled: true, saved: false })
 
     await downloadRemoteFile('/home/linux/project/notes.md')
 
@@ -52,7 +72,7 @@ describe('downloadRemoteFile', () => {
   })
 
   it('toasts when the gateway download fails', async () => {
-    downloadGatewayMediaFile.mockRejectedValue(new Error('Desktop file download bridge is unavailable'))
+    vi.stubGlobal('hermesDesktop', {})
 
     await downloadRemoteFile('/home/linux/project/notes.md')
 
@@ -63,10 +83,10 @@ describe('downloadRemoteFile', () => {
 
 describe('pending file actions cancel on connection-scope change', () => {
   function connection(
-    overrides: Partial<Record<'connectionId' | 'profile' | 'baseUrl' | 'remoteIdentity', string>>
+    overrides: Partial<Record<'connectionId' | 'mode' | 'profile' | 'baseUrl' | 'remoteIdentity', string>>
   ): HermesConnection {
     return {
-      mode: 'remote' as const,
+      mode: (overrides.mode as 'remote' | 'local' | undefined) ?? 'remote',
       baseUrl: overrides.baseUrl ?? 'https://gw.example',
       profile: overrides.profile,
       remoteIdentity: overrides.remoteIdentity,
@@ -97,6 +117,36 @@ describe('pending file actions cancel on connection-scope change', () => {
     expect($creatingEntry.get()).toEqual({ directory: false, parentDir: '/home/alice/p' })
   })
 
+  it('cancels pending create, rename, and delete when the registered connection changes mode', async () => {
+    const remote = connection({ connectionId: 'g1', profile: 'alice', mode: 'remote' })
+    const local = connection({ connectionId: 'g1', profile: 'alice', mode: 'local' })
+    expect(desktopFsCacheKey(remote)).not.toBe(desktopFsCacheKey(local))
+
+    $connection.set(remote)
+    await requestNewEntry({ directory: false, parentDir: '/home/alice' })
+    beginInlineRename('/home/alice/old.txt')
+    requestFileDelete({ path: '/home/alice/gone.txt', name: 'gone.txt', isDirectory: false })
+
+    $connection.set(local)
+
+    expect($creatingEntry.get()).toBeNull()
+    expect($renamingPath.get()).toBeNull()
+    expect($fileActionDialog.get()).toBeNull()
+  })
+
+  it('cancels pending actions when local/remote routing changes even if gateway fields match', () => {
+    const remote = connection({ profile: 'alice', remoteIdentity: 'legacy-host', mode: 'remote' })
+    const local = connection({ profile: 'alice', remoteIdentity: 'legacy-host', mode: 'local' })
+    expect(desktopFsCacheKey(remote)).not.toBe(desktopFsCacheKey(local))
+    $connection.set(remote)
+    $creatingEntry.set({ directory: false, parentDir: '/home/alice/p' })
+
+    // The active backend changed; a duplicated partial key must not preserve an editor.
+    $connection.set(local)
+
+    expect($creatingEntry.get()).toBeNull()
+  })
+
   it('cancels pending create when the active PROFILE changes on the same gateway', () => {
     $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
     $creatingEntry.set({ directory: false, parentDir: '/home/alice/p' })
@@ -111,7 +161,7 @@ describe('pending file actions cancel on connection-scope change', () => {
   it('cancels pending rename and delete dialogs when the scope changes', () => {
     $connection.set(connection({ connectionId: 'g1', profile: 'alice' }))
     $renamingPath.set('/home/alice/a.txt')
-    $fileActionDialog.set({ kind: 'delete', path: '/home/alice/a.txt', name: 'a.txt', isDirectory: false })
+    requestFileDelete({ path: '/home/alice/a.txt', name: 'a.txt', isDirectory: false })
 
     $connection.set(connection({ baseUrl: 'https://other-gateway' }))
 

@@ -1,79 +1,107 @@
-import { atom } from 'nanostores'
+import type { OnboardingStateResult } from '@hermes/shared'
+import { atom, computed } from 'nanostores'
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
-import { readKey, writeKey } from '@/lib/storage'
 
-import { hasSeenIntroReveal } from './intro-reveal'
+import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
+import { resetTips } from './tips'
 
-const PHASE_KEY = 'hermes-onboarding-phase-v1'
-
-export const ONBOARDING_PHASES = ['idle', 'cinematic', 'guided', 'skipped', 'handoff', 'done'] as const
+// `left`: the user walked out of the intro (sidebar, another chat, a layout pick) without skipping;
+// the setup chat is a normal chat from then on and can still finish the guide.
+const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'left', 'skipped', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
-function isOnboardingPhase(value: string | null): value is OnboardingPhase {
-  return ONBOARDING_PHASES.some(phase => phase === value)
-}
+export type GuideKickoffResult = 'started' | 'off' | 'failed'
 
 export interface OnboardingGateState {
   phase: OnboardingPhase
   guideQueued: boolean
+  guideKickoff: 'idle' | 'starting' | 'started'
 }
 
-type GuideKickoff = { status: 'idle' } | { status: 'starting'; promise: Promise<boolean> } | { status: 'started' }
+type GuideKickoff =
+  { status: 'idle' } | { status: 'starting'; promise: Promise<GuideKickoffResult> } | { status: 'started' }
 
-function loadGate(): OnboardingGateState {
-  const saved = readKey(PHASE_KEY)
+export const $onboardingGate = atom<OnboardingGateState>({ phase: 'idle', guideQueued: false, guideKickoff: 'idle' })
 
-  const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
+/** `onboarding.state` has answered (or failed) in this window. */
+export const $onboardingStateRead = atom(false)
 
-  // Two phases owe a kickoff at boot. `cinematic` with the film already seen
-  // is the film-to-guide seam. `guided` is a relaunch mid-guide: without a
-  // kickoff the normal app boots around the persisted solo layout (the
-  // connected splash, the stock composer and model picker, a small window
-  // whose sidebars cannot open) while the gate still says the guide is on.
-  // The kickoff adopts the existing guide chat by title, so nothing is lost.
-  return { phase, guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided' }
-}
-
-export const $onboardingGate = atom<OnboardingGateState>(loadGate())
+/** The setup profile's name, from `onboarding.state` or from the kickoff that creates it; `null` when none is known. */
+export const $setupProfileName = atom<null | string>(null)
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
 
-function setPhase(phase: OnboardingPhase): void {
-  writeKey(PHASE_KEY, phase === 'idle' ? null : phase)
-  $onboardingGate.set({ phase, guideQueued: false })
+const guidedPhase = (phase: OnboardingPhase) => phase === 'pending' || phase === 'guided'
+
+/**
+ * Guided first run is behind the user: finished, skipped, or never due. The phase is only
+ * trusted once the backend's `onboarding.state` (its `intro`) has been read.
+ */
+export const $guidedOnboardingSettled = computed(
+  [$onboardingGate, $onboardingStateRead],
+  (gate, read) => !isOnboardingEnabled() || (read && !guidedPhase(gate.phase))
+)
+
+export const $guideOpening = computed(
+  $onboardingGate,
+  gate =>
+    isOnboardingEnabled() && (gate.phase === 'pending' || gate.phase === 'guided') && gate.guideKickoff !== 'started'
+)
+
+function setGuideKickoff(state: GuideKickoff): void {
+  guideKickoff = state
+  $onboardingGate.set({ ...$onboardingGate.get(), guideKickoff: state.status })
 }
 
-/** The guided first launch is on screen or mid-handoff. Ambient chrome that
- *  would send the user elsewhere (the provider picker, the free-tier chip)
- *  yields to it: the free tier IS the provider for those phases, and the
- *  guide's ready screen is where sign-in is offered. */
+function setPhase(phase: OnboardingPhase): void {
+  $onboardingGate.set({ ...$onboardingGate.get(), phase, guideQueued: false })
+}
+
+function reportOnboarding(method: 'onboarding.mark_seen' | 'onboarding.record_failed_start'): void {
+  void $gateway
+    .get()
+    ?.request(method, {})
+    .catch(error => console.warn(`[onboarding] ${method} failed`, error))
+}
+
 export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
-  return isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided' || phase === 'handoff')
+  return isOnboardingEnabled() && guidedPhase(phase)
 }
 
-export function beginOnboardingFlow(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'idle' && !hasSeenIntroReveal()) {
-    setPhase('cinematic')
+export function markOnboardingStateRead(): void {
+  $onboardingStateRead.set(true)
+}
+
+export function afterOnboardingStateRead(run: () => void): void {
+  if (!isOnboardingEnabled() || $onboardingStateRead.get()) {
+    run()
+
+    return
   }
+
+  const stop = $onboardingStateRead.listen(() => {
+    stop()
+    run()
+  })
 }
 
-export function queueGuideAfterIntro(): void {
-  const state = $onboardingGate.get()
-
-  if (isOnboardingEnabled() && state.phase === 'cinematic' && !state.guideQueued && hasSeenIntroReveal()) {
-    $onboardingGate.set({ ...state, guideQueued: true })
+export function beginOnboardingFlow(state: OnboardingStateResult): void {
+  if (!isOnboardingEnabled() || !state.eligible || state.intro !== 'unseen' || $onboardingGate.get().phase !== 'idle') {
+    return
   }
+
+  setPhase('pending')
+  $onboardingGate.set({ ...$onboardingGate.get(), guideQueued: true })
 }
 
-/** The kickoff returns true only after the guided session's seed is durable. */
-export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolean> {
+export function runGuideKickoff(kickoff: () => Promise<GuideKickoffResult>): Promise<GuideKickoffResult> {
   if (!isOnboardingEnabled()) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
   if (guideKickoff.status === 'starting') {
@@ -81,78 +109,82 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
   }
 
   if (guideKickoff.status === 'started') {
-    return Promise.resolve(true)
+    return Promise.resolve('started')
   }
 
   if (!$onboardingGate.get().guideQueued) {
-    return Promise.resolve(false)
+    return Promise.resolve('off')
   }
 
-  // Defer the callback until the shared promise is installed, including for
-  // callers that re-enter synchronously while starting the session.
   const promise = Promise.resolve()
     .then(kickoff)
     .then(
-      started => {
-        guideKickoff = { status: started ? 'started' : 'idle' }
+      result => {
+        setGuideKickoff({ status: result === 'started' ? 'started' : 'idle' })
 
-        if (started && $onboardingGate.get().phase === 'cinematic') {
+        if (result === 'started' && $onboardingGate.get().phase === 'pending') {
           setPhase('guided')
         }
 
-        return started
+        return result
       },
       error => {
-        guideKickoff = { status: 'idle' }
+        setGuideKickoff({ status: 'idle' })
 
         throw error
       }
     )
 
-  guideKickoff = { status: 'starting', promise }
+  setGuideKickoff({ status: 'starting', promise })
 
   return promise
 }
 
-export function beginOnboardingHandoff(): void {
+/** A setup `start_chat` started the task chat: the guide is complete (the backend recorded it). */
+export function completeGuide(): void {
   const { phase } = $onboardingGate.get()
 
-  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'skipped')) {
-    setPhase('handoff')
+  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'left' || phase === 'skipped')) {
+    setPhase('done')
   }
 }
 
-/** Called when the handoff receipt is accepted. */
-export function completeOnboardingFlow(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'handoff') {
-    setPhase('done')
+export function leaveGuide(): void {
+  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'guided') {
+    setPhase('left')
+    reportOnboarding('onboarding.mark_seen')
   }
 }
 
 export function skipGuide(): void {
   const { phase } = $onboardingGate.get()
 
-  if (isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided')) {
+  if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
     setPhase('skipped')
+    reportOnboarding('onboarding.mark_seen')
   }
 }
 
-export function devResetOnboardingFlow(): void {
-  if (!import.meta.env.DEV) {
-    return
-  }
+export function abandonGuide(result: Exclude<GuideKickoffResult, 'started'>): void {
+  const { phase } = $onboardingGate.get()
 
-  guideKickoff = { status: 'idle' }
-  setPhase('idle')
-  setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })
-}
+  if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
+    setPhase('skipped')
 
-declare global {
-  interface Window {
-    __onboarding?: { reset: typeof devResetOnboardingFlow }
+    if (result === 'failed') {
+      reportOnboarding('onboarding.record_failed_start')
+    }
   }
 }
 
-if (import.meta.env.DEV) {
-  window.__onboarding = { reset: devResetOnboardingFlow }
+/** Settings → Advanced → Developer: rebuild the setup profile and clear its marker, so the next
+ *  launch runs the first run from zero. The primary profile is left as it is. The caller reloads.
+ *  `request` is the ambient gateway requester (reconnects a stale socket); the params stay bare. */
+export async function resetOnboarding(
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+): Promise<void> {
+  await request('onboarding.reset_setup_profile', {})
+  setOnboardingAnswers({ ...DEFAULT_ANSWERS })
+  // Skip retired the tutorial tips; from zero means they come back.
+  resetTips()
 }

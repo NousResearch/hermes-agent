@@ -17,12 +17,13 @@ _DEFAULT_SIZES = {"image_size_preset": _PRESET_SIZES, "aspect_ratio": _ASPECT_SI
 
 def _model(
     display: str, speed: str, strengths: str, price: str, *, style: str = "image_size_preset",
-    sizes: Optional[Dict[str, Any]] = None, defaults: Dict[str, Any], supports: set,
+    sizes: Optional[dict[str, Any]] = None, defaults: dict[str, Any], supports: set,
     edit_endpoint: Optional[str] = None, edit_supports: Optional[set] = None,
-    max_reference_images: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Build one catalog entry; edit keys are present only for edit-capable models."""
-    entry: Dict[str, Any] = {
+    max_reference_images: Optional[int] = None, edit_image_param: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build one catalog entry; edit keys are present only for edit-capable models. ``edit_image_param``
+    names the source-image key when the edit endpoint takes a singular ``image_url`` instead of ``image_urls``."""
+    entry: dict[str, Any] = {
         "display": display, "speed": speed, "strengths": strengths, "price": price,
         "size_style": style, "sizes": sizes if sizes is not None else _DEFAULT_SIZES[style],
         "defaults": defaults, "supports": supports, "upscale": False,
@@ -31,10 +32,12 @@ def _model(
         entry["edit_endpoint"] = edit_endpoint
         entry["edit_supports"] = edit_supports
         entry["max_reference_images"] = max_reference_images
+        if edit_image_param:
+            entry["edit_image_param"] = edit_image_param
     return entry
 
 
-FAL_MODELS: Dict[str, Dict[str, Any]] = {
+FAL_MODELS: dict[str, dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": _model(
         "FLUX 2 Klein 9B", "<1s", "Fast, crisp text", "$0.006/MP",
         defaults={
@@ -346,6 +349,21 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "prompt", "image_urls", "num_images", "output_format", "resolution", "quality", "sync_mode",
         },
         max_reference_images=3,
+    ),
+    # 1K and 2K cost the same ($0.028/img) so 2K is the default. The i2i endpoint takes a SINGULAR
+    # `image_url` (one reference image), unlike every other FAL edit endpoint's `image_urls` list.
+    "fal-ai/kling-image/v3/text-to-image": _model(
+        "Kling Image v3", "~10s", "Kuaishou. Realistic detail, cheap native 2K, wide AR set", "$0.028/image",
+        style="aspect_ratio",
+        defaults={"num_images": 1, "output_format": "png", "resolution": "2K"},
+        supports={
+            "prompt", "aspect_ratio", "num_images", "output_format", "resolution", "negative_prompt", "sync_mode",
+        },
+        edit_endpoint="fal-ai/kling-image/v3/image-to-image",
+        edit_supports={
+            "prompt", "image_url", "aspect_ratio", "num_images", "output_format", "resolution", "sync_mode",
+        },
+        max_reference_images=1, edit_image_param="image_url",
     ),
     "meta/muse-image/text-to-image": _model(
         "Meta Muse Image", "~5s", "Meta. Realism + typography at commodity price", "$0.01/image",

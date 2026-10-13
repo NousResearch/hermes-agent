@@ -4,6 +4,7 @@ Every git call goes through ``_git``/``_git_out``/``_git_quiet`` (UTF-8 text, ca
 bounded timeout). Classification helpers fail SAFE toward "preserve". ``cli`` re-exports
 these names; ``_cprint`` is imported lazily from ``cli`` to avoid a cycle.
 """
+import atexit
 import concurrent.futures
 import json
 import logging
@@ -18,7 +19,9 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_cli._subprocess_compat import kill_process_tree, noninteractive_git_env
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger("cli")
 
@@ -30,7 +33,7 @@ def _cprint(text: str) -> None:
 
 def _git(args, cwd, timeout: float = 10, **kwargs):
     """Run ``git *args`` in *cwd* capturing UTF-8 text; raises like ``subprocess.run``."""
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8",
+    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
                           errors="replace", timeout=timeout, cwd=cwd, **kwargs)
 
 
@@ -76,6 +79,20 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def release_lsp_clients(wt_path: str) -> None:
+    """Shut down this process's language servers for ``wt_path`` before ``git worktree remove``.
+
+    A gateway outlives the sessions it runs, so without this the ``(server, root)`` client for the
+    removed tree stays registered (tsserver heaps of several GiB pointed at a deleted worktree).
+    Best-effort: LSP trouble must never block worktree removal.
+    """
+    try:
+        from agent.lsp import release_workspace
+        release_workspace(wt_path)
+    except Exception as e:
+        logger.debug("LSP release for worktree %s failed: %s", wt_path, e)
+
+
 def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
     """Sweep the leftovers of a failed/timed-out ``git worktree add`` (fail-soft).
 
@@ -90,13 +107,80 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
         if wt_path.exists():
             shutil.rmtree(wt_path, ignore_errors=True)
         # `remove` needs the dir; `prune` drops the admin entry when it is already gone.
-        _git_quiet(["worktree", "prune"], repo_root, timeout=15)
-        _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15)
+        _git_quiet(["worktree", "prune"], repo_root, timeout=15,
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+        # A ref update runs the repository's reference-transaction hook (core.hooksPath).
+        _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15,
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     except Exception as e:
         logger.debug("cleanup after failed worktree add: %s", e)
 
 
 _PACK_SPRAWL_THRESHOLD = 15
+_REPACK_TIMEOUT = 1800
+# One repack attempt per clone per interval, box-wide. Every ``hermes -w`` launch on a shared clone
+# used to start its own ``git repack -a`` of the whole store; on a multi-agent box that stacked 50+
+# concurrent multi-GB repacks (each too slow under the others to ever finish inside the timeout).
+_REPACK_MIN_INTERVAL = 6 * 3600
+_REPACK_LOCK = "hermes-repack.lock"
+
+
+def _claim_repack_slot(git_dir: Path) -> bool:
+    """Exactly one process per clone gets to repack per ``_REPACK_MIN_INTERVAL``.
+
+    The lock file's mtime is the stamp: younger than the interval means another launch is
+    repacking (or just tried and timed out) — skip. A stale lock is taken over by ``replace``,
+    which only one of N racing processes can win; the O_EXCL create then serializes against a
+    process that found no lock at all.
+    """
+    lock = git_dir / _REPACK_LOCK
+    try:
+        st = lock.stat()
+    except FileNotFoundError:
+        pass
+    else:
+        if time.time() - st.st_mtime < _REPACK_MIN_INTERVAL:
+            return False
+        try:
+            lock.replace(lock.with_suffix(".stale"))
+        except OSError:
+            return False
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    lock.with_suffix(".stale").unlink(missing_ok=True)
+    return True
+
+
+def _run_bounded_repack(repo_root: str) -> None:
+    """Incremental geometric repack whose whole process tree dies with the timeout or with us.
+
+    ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the parent and
+    left the grandchild packing for days, and a daemon thread's child outlived the CLI the same
+    way. A new session/process group + ``atexit`` reaps both cases.
+    """
+    cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
+    if os.name == "posix":
+        cmd = ["nice", "-n", "19", *cmd]
+        group_kw: dict = {"process_group": 0}
+    else:
+        group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, **group_kw)
+
+    def _reap() -> None:
+        if proc.poll() is None:
+            kill_process_tree(proc)
+
+    atexit.register(_reap)
+    try:
+        proc.wait(timeout=_REPACK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _reap()
+        logger.info("git repack exceeded %ds; killed (next attempt in %dh)", _REPACK_TIMEOUT, _REPACK_MIN_INTERVAL // 3600)
 
 
 def _maintain_pack_health(repo_root: str) -> None:
@@ -112,14 +196,15 @@ def _maintain_pack_health(repo_root: str) -> None:
         packs = len(list(pack_dir.glob("*.pack")))
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
+        if not _claim_repack_slot(pack_dir.parent.parent):
+            return
+        from hermes_cli.gitlock import clear_stale_tmp_packs
+        clear_stale_tmp_packs(Path(repo_root))
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        cmd = ["git", "repack", "-a", "-d", "--quiet"]
-        if os.name == "posix":
-            cmd = ["nice", "-n", "19", *cmd]
-        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
-                       cwd=repo_root, check=False)
+        _run_bounded_repack(repo_root)
         # Repacking can strand now-duplicated admin files; prune on the same pass.
-        _git(["worktree", "prune"], repo_root, timeout=60, check=False)
+        _git(["worktree", "prune"], repo_root, timeout=60, check=False,
+             stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     except Exception as e:
         logger.debug("pack maintenance skipped: %s", e)
 
@@ -135,6 +220,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     remote-tracking ref is used (the pre-push stale-base gate backstops genuine staleness).
     """
     from hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_cli.update_cmd_check import tracking_refspec
 
     def _run(args, timeout: float = 20):
         return _git(args, repo_root, timeout=timeout, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
@@ -163,7 +249,7 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
         if age is not None and age < freshness_window and _ref_exists(ref):
             return ref, f"{ref} (fetched {int(age)}s ago)"
         try:
-            fetched = _run(["fetch", remote, branch], timeout=fetch_timeout)
+            fetched = _run(["fetch", remote, tracking_refspec(remote, branch)], timeout=fetch_timeout)
             if fetched.returncode == 0:
                 return ref, f"{ref} (fetched)"
             reason = "fetch failed"
@@ -227,20 +313,32 @@ def _ensure_worktrees_gitignored(repo_root: str) -> None:
         logger.debug("Could not update .gitignore: %s", e)
 
 
+def _worktreeinclude_entries(repo_root) -> list:
+    """Non-blank, non-comment entries of *repo_root*/``.worktreeinclude`` (``[]`` when absent).
+
+    utf-8-sig, not the locale default: a cp1251/GBK locale would mojibake or raise on a UTF-8
+    list, and a Notepad BOM would glue to the first entry.
+    """
+    include_file = Path(repo_root) / ".worktreeinclude"
+    if not include_file.is_file():
+        return []
+    entries = []
+    for line in include_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        entry = line.strip()
+        if entry and not entry.startswith("#"):
+            entries.append(entry)
+    return entries
+
+
 def _copy_worktree_includes(repo_root: str, wt_path: Path) -> None:
     """Copy/symlink the entries listed in ``.worktreeinclude`` (gitignored files the agent needs)."""
-    include_file = Path(repo_root) / ".worktreeinclude"
-    if not include_file.exists():
-        return
     try:
+        entries = _worktreeinclude_entries(repo_root)
+        if not entries:
+            return
         repo_root_resolved = Path(repo_root).resolve()
         wt_path_resolved = wt_path.resolve()
-        # utf-8-sig, not the locale default: a cp1251/GBK locale would mojibake or raise
-        # (swallowed below) on a UTF-8 list; a Notepad BOM would glue to the first entry.
-        for line in include_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
+        for entry in entries:
             src, dst = Path(repo_root) / entry, wt_path / entry
             # Traversal/symlink-escape guard: both resolved endpoints must stay inside their roots.
             try:
@@ -282,12 +380,18 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
 
     Every failed attempt is swept with ``_cleanup_failed_worktree_add`` so the retry is not poisoned.
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+
+    # The checkout runs repo-named smudge filters too; refuse when they cannot be neutralized.
+    env = noninteractive_repo_git_env(repo_root)
+    if env is None:
+        _cprint("\033[31m✗ Failed to create worktree: could not read the repository's filter config\033[0m")
+        return None
 
     def _add(cfg):
         # 120s: on a multi-agent box the ~10k-file checkout contends for disk (113s measured under load).
         return _git([*cfg, "worktree", "add", str(wt_path), "-b", branch_name, base_ref], repo_root,
-                    timeout=120, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+                    timeout=120, stdin=subprocess.DEVNULL, env=env)
 
     # checkout.workers parallelizes materialization; older git ignores unknown -c keys.
     try:
@@ -311,8 +415,8 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
     return base_ref, base_label
 
 
-def _setup_worktree(repo_root: str = None, sync_base: bool = True,
-                    name: Optional[str] = None) -> Optional[Dict[str, str]]:
+def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
+                    name: Optional[str] = None) -> Optional[dict[str, str]]:
     """Create an isolated git worktree -> ``{path, branch, repo_root, base}``, or None on failure.
 
     *sync_base* branches from the fetched remote tip (``_resolve_worktree_base``), else local
@@ -366,29 +470,109 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     return {"path": str(wt_path), "branch": branch_name, "repo_root": repo_root, "base": base_ref}
 
 
+_REMOTE_TRUNK_CANDIDATES = ("origin/HEAD", "origin/main", "origin/master")
+_LOCAL_TRUNK_CANDIDATES = ("main", "master")
+
+
+def _worktree_local_trunk(path: str, timeout: float = 5) -> Optional[str]:
+    """Local trunk of a repo with NO remote-tracking refs: ``main``/``master``, else the branch
+    checked out in the main worktree. None = no baseline at all; callers must preserve.
+
+    Nothing in such a repo was ever pushed, so "merged into the local trunk" is the only fact
+    that can tell redundant scratch work from unique commits. May raise like ``_git``.
+    """
+    for name in _LOCAL_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], path, timeout=timeout):
+            return name
+    porcelain = _git_out(["worktree", "list", "--porcelain"], path, timeout=timeout) or ""
+    for line in porcelain.split("\n\n", 1)[0].splitlines():  # first block = the main worktree
+        if line.startswith("branch refs/heads/"):
+            return line[len("branch refs/heads/"):].strip() or None
+    return None
+
+
+def _worktree_merge_base_ref(path: str, timeout: float = 5) -> Optional[str]:
+    """Ref merged work is judged against: ``origin/HEAD``/``origin/main``/``origin/master``, or the
+    local trunk when the repo has no remote-tracking refs at all. None = nothing to compare
+    against -> every consumer must preserve. May raise like ``_git``.
+    """
+    for cand in _REMOTE_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", cand], path, timeout=timeout):
+            return cand
+    if _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], path, timeout=timeout) == "":
+        return _worktree_local_trunk(path, timeout=timeout)
+    return None
+
+
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
     """Whether a worktree has commits unreachable from any remote branch. Fails SAFE toward True.
 
-    No remote-tracking refs = no baseline -> False. A shallow boundary can disconnect an older
-    HEAD from origin/* so public commits look unpushed; ``_deepen_shallow_repo`` first if affordable.
+    No remote-tracking refs = nothing was ever pushed, so the tree is compared against the local
+    trunk instead (``_worktree_local_trunk``); no trunk either -> True. A shallow boundary can
+    disconnect an older HEAD from origin/* so public commits look unpushed;
+    ``_deepen_shallow_repo`` first if affordable.
     """
     try:
         remote_refs = _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], worktree_path,
                                timeout=timeout)
+        if remote_refs is None:
+            return True
+        baseline = ["--remotes"]
         if not remote_refs:
-            return remote_refs is None  # no remote-tracking refs: nothing to be unpushed against
-        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", "--remotes"], worktree_path,
+            trunk = _worktree_local_trunk(worktree_path, timeout=timeout)
+            if trunk is None:
+                return True
+            baseline = [trunk]
+        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", *baseline], worktree_path,
                             timeout=timeout)
         return unpushed is None or bool(unpushed)
     except Exception:
         return True
 
 
-def _worktree_is_dirty(worktree_path: str, timeout: int = 10) -> bool:
-    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True."""
+def _include_symlink_paths(worktree_path: str, repo_root) -> set:
+    """Relative paths in *worktree_path* that are ``.worktreeinclude`` directory symlinks.
+
+    ``_copy_worktree_includes`` symlinks included directories back to the main checkout
+    (*repo_root*). A trailing-slash gitignore pattern
+    (``node_modules/``) never matches a symlink, so git reports each one as untracked. Only a
+    symlink at a listed entry that resolves to that same entry in the main repo qualifies —
+    anything else is real user state.
+    """
+    root = Path(repo_root)
+    wt = Path(worktree_path)
+    paths = set()
+    for entry in _worktreeinclude_entries(root):
+        dst = wt / entry
+        if dst.is_symlink() and dst.resolve() == (root / entry).resolve():
+            paths.add(Path(entry).as_posix().rstrip("/"))  # git status paths use "/" on Windows too
+    return paths
+
+
+def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool:
+    """Whether a worktree has staged/unstaged/untracked changes. Fails SAFE toward True.
+
+    Untracked ``.worktreeinclude`` directory symlinks back to the main checkout *repo_root* are
+    ignored: they are our own scaffolding, and counting them would keep every worktree of such a
+    repo forever.
+    """
+    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     try:
-        status = _git_out(["status", "--porcelain"], worktree_path, timeout=timeout)
-        return status is None or bool(status)
+        # Reclaimers run this unattended; status reads the index (core.fsmonitor, clean filters).
+        env = noninteractive_repo_git_env(worktree_path)
+        if env is None:
+            return True
+        result = _git(["status", "--porcelain", "-z"], worktree_path, timeout=timeout,
+                      stdin=subprocess.DEVNULL, env=env)
+        if result.returncode != 0:
+            return True
+        entries = [e for e in result.stdout.split("\0") if e]
+        if not entries:
+            return False
+        if any(not e.startswith("?? ") for e in entries):
+            return True
+        include_links = _include_symlink_paths(worktree_path, repo_root)
+        return any(e[3:].rstrip("/") not in include_links for e in entries)
     except Exception:
         return True
 
@@ -418,15 +602,24 @@ def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
         names = [r.strip() for r in remotes.splitlines() if r.strip()]
         remote = "origin" if "origin" in names else names[0]
 
-        for extra in (["--filter=blob:none"], []):
-            try:
-                result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return False
-            if result.returncode == 0:
-                break
-            logger.debug("git fetch --unshallow%s failed: %s", " " + " ".join(extra) if extra else "",
-                         result.stderr.strip()[-500:])
+        try:
+            for extra in (["--filter=blob:none"], []):
+                try:
+                    # Unattended fetch: a repo-level core.sshCommand / credential.helper must not run.
+                    result = _git(["fetch", remote, "--unshallow", *extra], repo_root, timeout=timeout,
+                                  stdin=subprocess.DEVNULL, env=noninteractive_git_env())
+                except subprocess.TimeoutExpired:
+                    return False
+                if result.returncode == 0:
+                    break
+                logger.debug("git fetch --unshallow%s failed: %s", " " + " ".join(extra) if extra else "",
+                             result.stderr.strip()[-500:])
+        finally:
+            # The filtered attempt makes the clone partial (git writes the config before fetching,
+            # so even when it fails); its old packs need the marker or git 2.53+ crashes every
+            # later fetch (#124272). Markers are inert in a clone without a promisor remote.
+            from hermes_cli.gitlock import mark_unmarked_packs_promisor
+            mark_unmarked_packs_promisor(Path(repo_root))
     except Exception as e:
         logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
         return False
@@ -446,48 +639,37 @@ def _worktree_merge_cache_path() -> Path:
     return get_hermes_home() / "cache" / "worktree_merge_verdicts.json"
 
 
-def _load_worktree_merge_cache() -> Dict[str, bool]:
+def _load_worktree_merge_cache() -> dict[str, bool]:
     """Load the ``git cherry`` verdict cache. Missing/corrupt cache = empty."""
     try:
-        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8")).get("verdicts")
+        entries = json.loads(_worktree_merge_cache_path().read_text(encoding="utf-8-sig")).get("verdicts")
     except Exception:
         return {}
     # A hand-edited or partially written cache must never inject a non-bool verdict.
     return {k: v for k, v in entries.items() if isinstance(v, bool)} if isinstance(entries, dict) else {}
 
 
-def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
+def _save_worktree_merge_cache(verdicts: dict[str, bool]) -> None:
     """Atomically persist the newest ``_WORKTREE_MERGE_CACHE_MAX`` verdicts. Never raises."""
-    path = _worktree_merge_cache_path()
-    tmp = None
     try:
         items = list(verdicts.items())[-_WORKTREE_MERGE_CACHE_MAX:]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"version": 1, "verdicts": dict(items)}), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        atomic_json_write(_worktree_merge_cache_path(), {"version": 1, "verdicts": dict(items)}, indent=None)
     except Exception as e:
         logger.debug("Could not persist worktree merge cache: %s", e)
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
 
 
 def _worktree_commits_all_merged_upstream(
-    worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[Dict[str, bool]] = None,
+    worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[dict[str, bool]] = None,
 ) -> bool:
     """Whether every local-only commit is patch-equivalent (``git cherry``) to upstream. Fails SAFE -> False.
 
     Catches squash-merged/cherry-picked PRs whose remote branch was deleted (commits unreachable
-    from ``refs/remotes/*`` forever). More than *max_ahead* ahead = stale-base tree -> False.
+    from ``refs/remotes/*`` forever). Upstream is ``_worktree_merge_base_ref`` (the local trunk in
+    a repo without remotes). More than *max_ahead* ahead = stale-base tree -> False.
     *cache* memoizes on ``(base_sha, head_sha, max_ahead)``, exactly what ``git cherry`` consumes.
     """
     try:
-        base = next((c for c in ("origin/HEAD", "origin/main", "origin/master")
-                     if _git_out(["rev-parse", "--verify", "--quiet", c], worktree_path, timeout=timeout)),
-                    None)
+        base = _worktree_merge_base_ref(worktree_path, timeout=timeout)
         if base is None:
             return False
 
@@ -532,7 +714,7 @@ def _worktree_current_branch(worktree_path: str, timeout: int) -> Optional[str]:
 
 
 def _worktree_branch_pr_merged(
-    worktree_path: str, timeout: int = 15, cache: Optional[Dict[str, bool]] = None,
+    worktree_path: str, timeout: int = 15, cache: Optional[dict[str, bool]] = None,
 ) -> bool:
     """Whether the branch's PR is MERGED on GitHub (``gh pr list``). Fails SAFE toward False.
 
@@ -555,6 +737,7 @@ def _worktree_branch_pr_merged(
         result = subprocess.run(
             ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=worktree_path,
+            check=False,
         )
         if result.returncode != 0:
             return False
@@ -567,14 +750,16 @@ def _worktree_branch_pr_merged(
         return False
 
 
-def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Dict[str, str]]:
+def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[dict[str, str]]:
     """``{branch: sha}`` for every branch on origin (one ``ls-remote``), or None = cannot verify, preserve.
 
     Managed installs fetch a single-branch refspec, so pushed PR branches have no
     remote-tracking ref and would read as unpushed forever.
     """
     try:
-        result = _git(["ls-remote", "--heads", "origin"], repo_root, timeout=timeout)
+        # Runs from the reclaim sweep, unattended: same transport pins as the base fetch.
+        result = _git(["ls-remote", "--heads", "origin"], repo_root, timeout=timeout,
+                      stdin=subprocess.DEVNULL, env=noninteractive_git_env())
         if result.returncode != 0:
             return None
         pairs = (line.split("\t", 1) for line in result.stdout.splitlines())
@@ -585,7 +770,7 @@ def _fetch_remote_branch_heads(repo_root: str, timeout: int = 20) -> Optional[Di
 
 
 def _worktree_branch_pushed_exact(
-    worktree_path: str, remote_heads: Optional[Dict[str, str]], timeout: int = 10,
+    worktree_path: str, remote_heads: Optional[dict[str, str]], timeout: int = 10,
 ) -> bool:
     """Whether the branch head is EXACTLY what origin holds (tree redundant; reap it, keep the branch).
 
@@ -689,7 +874,7 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
     def _classify(item):
         entry, mtime, force = item
         # Never delete real work regardless of age: only clean, merged/pushed trees are reaped.
-        if _worktree_is_dirty(str(entry), timeout=5):
+        if _worktree_is_dirty(str(entry), repo_root, timeout=5):
             return (entry, mtime, force, "dirty", None)
         keep_branch = False
         if _worktree_has_unpushed_commits(str(entry), timeout=5):
@@ -768,7 +953,9 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
             if branch and verdict == "reap-keep-branch":
                 kept_branches.add(branch)
             elif branch:
-                _git(["branch", "-D", branch], repo_root)
+                # Unattended sweep: the repository's reference-transaction hook must not run.
+                _git(["branch", "-D", branch], repo_root,
+                     stdin=subprocess.DEVNULL, env=noninteractive_git_env())
             logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
@@ -785,6 +972,29 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     Phases: ``_prune_candidates`` -> ``_classify_prune_candidates`` -> ``_reap_prune_verdicts``
     -> ``_prune_orphaned_branches``.
     """
+    try:
+        _prune_stale_worktree_trees(repo_root, max_age_hours)
+    finally:
+        _reclaim_orphan_install_states()
+
+
+def _reclaim_orphan_install_states() -> None:
+    """Trees removed by any path (the prune pass, `git worktree remove` by hand, `rm -rf` of a
+    scratch clone) leave their ~200 MB dependency state under <home>/installs/; reclaim it on
+    every pass, including the early returns where no tree is old enough to prune. Startup
+    maintenance must never block a launch; the traceback goes to the debug log."""
+    try:
+        from pm.environments import installs_root
+        from pm.install_states import collect_orphan_install_states
+
+        reclaimed = collect_orphan_install_states(installs_root())
+        if reclaimed:
+            logger.info("Reclaimed %d dependency state dir(s) of deleted checkouts", len(reclaimed))
+    except Exception:
+        logger.debug("Orphan install-state reclaim failed", exc_info=True)
+
+
+def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
@@ -820,7 +1030,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             logger.warning(".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
                            "to audit and `hermes worktree prune` to reclaim safely.", count, size_txt)
     except Exception:
-        pass
+        logger.debug("worktree summary failed", exc_info=True)
 
 
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:
@@ -858,5 +1068,6 @@ def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> N
         return
     for i in range(0, len(orphaned), 50):
         _git_quiet(["branch", "-D"] + orphaned[i:i + 50], repo_root, timeout=30,
-                   log="Failed to prune orphaned branches")
+                   log="Failed to prune orphaned branches",
+                   stdin=subprocess.DEVNULL, env=noninteractive_git_env())
     logger.debug("Pruned %d orphaned branches", len(orphaned))

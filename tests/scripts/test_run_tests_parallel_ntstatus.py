@@ -1,9 +1,8 @@
 """Windows NTSTATUS exits are interpreter crashes, not "no tests ran" (#137198).
 
 The runner's crash classifier keyed on faulthandler banners and POSIX signals
-only, so a loader-failure exit — positive NTSTATUS rc, zero bytes of output,
-exactly the shape the runner synthesizes for a silent nonzero child — fell
-through to the collection-error bucket while the CRASHED section stayed empty.
+only, so a loader-failure exit (positive NTSTATUS rc, no output) fell through
+to the collection-error bucket while the CRASHED section stayed empty.
 
 The rc values are plain integers here, so the classification is pinned on every
 host; the real-exit end-to-end test lives in test_run_tests_parallel.py
@@ -30,7 +29,7 @@ def _load_runner():
 def test_ntstatus_no_output_exit_is_described_as_a_crash():
     mod = _load_runner()
     dll_init_failed = mod._describe_interpreter_crash(0xC0000142, "")
-    assert dll_init_failed is not None, "STATUS_DLL_INIT_FAILED must be classified as a crash"
+    assert dll_init_failed is not None
     assert "0xc0000142" in dll_init_failed
     assert "STATUS_DLL_INIT_FAILED" in dll_init_failed
 

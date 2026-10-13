@@ -762,6 +762,8 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
     return result
 
 
+# Label decoration only: classification keys on the severity bits below,
+# not on membership in this table.
 _WINDOWS_NTSTATUS_NAMES = {
     0xC0000005: "STATUS_ACCESS_VIOLATION",
     0xC000007B: "STATUS_INVALID_IMAGE_FORMAT",
@@ -783,10 +785,9 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     there is no summary line and every count parses to 0. Without this the
     file is reported as "no tests ran (collection/import error)" under a
     summary that says ``0 failed`` — the wrong diagnosis in both places.
-    The same honesty covers Windows fault exits (#137198): loader failures
-    and native faults surface as an NTSTATUS in the child's exit code —
-    unsigned or sign-wrapped, often with zero output — never a collection
-    error.
+    Windows loader failures and native faults (#137198) surface as an
+    NTSTATUS in the child's exit code, often with zero output, and are not
+    collection errors either.
     """
     fatal = next(
         (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
@@ -799,8 +800,8 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     status = rc & 0xFFFFFFFF
     # An NTSTATUS error carries severity bits 0b11 at the top of the DWORD;
     # no plain exit code does (pytest 0-5, shell 0-255, timeout 124). The
-    # status arrives unsigned or sign-wrapped, so normalize the sign and
-    # exclude the small negatives — real POSIX signals live in -1..-64.
+    # status may arrive sign-wrapped, so normalize first, and exclude the
+    # small negatives — real POSIX signals live in -1..-64.
     if status & 0xC0000000 == 0xC0000000 and (rc >= 0 or rc < -0xFFFF):
         name = _WINDOWS_NTSTATUS_NAMES.get(status)
         label = f"{name} (0x{status:08x})" if name else f"NTSTATUS 0x{status:08x}"

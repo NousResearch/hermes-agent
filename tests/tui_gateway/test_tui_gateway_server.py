@@ -14692,11 +14692,10 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
             self._joined = True
 
         def is_alive(self):
-            # The patch replaces the shared threading module, so win32
-            # subprocess pipe readers become fakes too: communicate() joins
-            # them then polls is_alive, and a fake still "alive" after join
-            # raises TimeoutExpired. The turn/build threads this test tracks
-            # are never joined, so they stay alive for its assertions.
+            # Win32 pipe readers become fakes too (shared module):
+            # communicate() joins them, then polls is_alive — "alive after
+            # join" would raise TimeoutExpired. Threads this test tracks
+            # are never joined, so they stay alive.
             return not self._joined
 
     ready = threading.Event()

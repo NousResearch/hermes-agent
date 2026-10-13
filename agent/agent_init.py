@@ -680,7 +680,7 @@ def _init_prompt_cache_config(agent):
     # subscription users where cache writes bill against "extra usage" or for third-party proxies that
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
-    with suppress(Exception):
+    try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
         from agent.agent_runtime_helpers import cache_ttl_means_disabled
         from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
@@ -698,6 +698,15 @@ def _init_prompt_cache_config(agent):
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
             agent._cache_disabled = True
+    except Exception as exc:
+        # Config values and traceback frames may contain credentials.
+        logger.warning(
+            "Agent configuration for prompt_caching.cache_ttl could not be loaded (%s); "
+            "using default prompt caching settings. Check the active Hermes Python "
+            "environment and dependencies; run 'hermes config check' after "
+            "configuration imports work again.",
+            type(exc).__name__,
+        )
 
 
 def _init_turn_state(agent, run_budget_seconds):
@@ -2444,6 +2453,9 @@ def init_agent(
 
     _set_defaults(agent, _CONTROL_STATE)
 
+    # Early config readers must reach the file handlers on first initialization.
+    _setup_logging(agent)
+
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
@@ -2458,7 +2470,6 @@ def init_agent(
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)
-    _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
@@ -2472,7 +2483,16 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
-    except Exception:
+    except Exception as exc:
+        # Config exceptions may contain secrets; omit their message and traceback
+        # even when a caller installs a non-redacting log handler.
+        logger.warning(
+            "Agent configuration could not be loaded (%s); using defaults for "
+            "memory, skills, compression and related settings. Check the active "
+            "Hermes Python environment and dependencies; run 'hermes config check' "
+            "after configuration imports work again.",
+            type(exc).__name__,
+        )
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)

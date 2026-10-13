@@ -7,7 +7,7 @@ import type * as ProjectsStore from '@/store/projects'
 
 import type * as Model from './model'
 import { ProjectOverviewRow } from './overview-row'
-import type { SidebarProjectTree } from './workspace-groups'
+import { isRemovedConversation, type SidebarProjectTree } from './workspace-groups'
 
 afterEach(cleanup)
 
@@ -163,6 +163,33 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show all 3 sessions' }))
 
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s3,s4'))
+  })
+
+  it('keeps removed compressed conversations hidden when Show all hydrates an older segment', async () => {
+    workspaceOpen.value = true
+    const live = Array.from({ length: 4 }, (_, index) => session(`live${index}`, 500 - index))
+    const removedSegment = { ...session('mid', 600), _lineage_root_id: 'root' }
+    const removed = new Set(['root', 'tip'])
+    const isHidden = (item: SessionInfo) => isRemovedConversation(item, removed)
+    const all = [removedSegment, ...live]
+    const busy = { ...project, sessionCount: all.length } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: all }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        hiddenSessionCount={all.filter(isHidden).length}
+        isSessionHidden={isHidden}
+        previewSessions={live.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 4 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('live0,live1,live2,live3'))
   })
 
   it('offers the "new session" add button on Home, which starts one with no folder', () => {

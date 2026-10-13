@@ -39,7 +39,7 @@ from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from utils import base_url_hostname
+from gateway.session_info import SessionRouteInfo
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -170,7 +170,7 @@ class GatewayTurnMixin:
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, route_info: Optional[SessionRouteInfo] = None,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
@@ -178,8 +178,9 @@ class GatewayTurnMixin:
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _resolve_runtime_agent_kwargs,
         )
+        route_info = route_info if route_info is not None else SessionRouteInfo()
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -193,6 +194,7 @@ class GatewayTurnMixin:
         override = _override_state.conversation.model_override if _override_state else None
         if override:
             override_model = override.get("model", model)
+            route_info.select("session override", override_model, override.get("provider"))
             override_runtime = {
                 k: override.get(k) for k in (
                     "provider", "requested_provider", "api_key", "base_url", "api_mode",
@@ -228,7 +230,7 @@ class GatewayTurnMixin:
         runtime_kwargs, unavailable_override = None, None
         if override and override.get("provider"):
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                runtime_kwargs = route_info.resolve_provider(
                     override["provider"], target_model=override.get("model") or None)
             except Exception as exc:
                 # Layering the override on the default runtime sent its model to the default provider's
@@ -258,10 +260,11 @@ class GatewayTurnMixin:
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
             )
             if ch:
+                route_info.channel(ch, model, runtime_kwargs)
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
+                    runtime_kwargs = route_info.resolve_provider(ch.provider, target_model=model or None)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -2341,37 +2344,12 @@ class GatewayTurnMixin:
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
-        """Model / provider / context-length / endpoint block so users can spot bad context detection."""
-        from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
-        context_length = resolved.context_length
-        ctx_source = {
-            "config": "config",
-            "default": "default — set model.context_length in config to override",
-        }.get(resolved.context_source, "detected")
-        ctx_display = (
-            f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000
-            else f"{context_length // 1_000}K" if context_length >= 1_000 else str(context_length)
-        )
-        lines = [
-            t("gateway.session.info_model", model=resolved.model),
-            t("gateway.session.info_provider", provider=resolved.provider or "openrouter"),
-            t("gateway.session.info_context", tokens=ctx_display, source=ctx_source),
-        ]
-        if (resolved.provider or "") == "moa":
-            # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
-            from hermes_cli.config import load_config
-            from hermes_cli.moa_config import normalize_moa_config
-            agg = normalize_moa_config(load_config().get("moa"))["presets"].get(resolved.model, {}).get("aggregator") or {}
-            if agg:
-                lines.append(t("gateway.session.info_acting_model", provider=agg.get("provider"), model=agg.get("model")))
-        base_url = resolved.base_url
-        if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
-            lines.append(t("gateway.session.info_endpoint", url=base_url))
-        return "\n".join(lines)
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
+        """Model / provider / context block for the route selected by a live turn."""
+        from gateway.session_info import format_session_info
+        return format_session_info(self, source)
 
     async def _run_background_task(
         self, prompt: str, source: SessionSource, task_id: str,

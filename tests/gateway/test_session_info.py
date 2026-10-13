@@ -118,7 +118,7 @@ class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,
     not the multiplexer's base config."""
 
-    _RUNTIME = {"provider": "", "base_url": "", "api_key": ""}
+    _RUNTIME = {"provider": "anthropic", "base_url": "", "api_key": ""}
 
     def _source(self):
         from gateway.config import Platform
@@ -150,4 +150,3 @@ class TestResetNoticeSessionInfo:
         assert "profile-model" in info
         assert "anthropic" in info
         assert "base-model" not in info
-

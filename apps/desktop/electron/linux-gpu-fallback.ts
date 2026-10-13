@@ -43,7 +43,10 @@ export const BOOT_ABORTS_BEFORE_LINUX_GPU_FALLBACK = 2
 export const LINUX_GPU_SILENT_RETRY_GRACE_S = 30
 
 /** `child-process-gone` reasons that witness a broken GPU child. */
-const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failure'])
+// LOCAL PATCH (issue #134888, PR #134903): Electron has no `launch-failure`
+// reason — it emits `launch-failed`. The old spelling never matched, so a GPU
+// child that failed to launch never triggered the software fallback.
+const GPU_FAILURE_REASONS: ReadonlySet<string> = new Set(['crashed', 'launch-failed'])
 
 export type LinuxGpuMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -331,6 +334,15 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /**
+   * The NVIDIA SwiftShader fallback is active this launch (`--use-angle=swiftshader`
+   * without `--disable-gpu`). SwiftShader still spawns a GPU child, so a death
+   * here is NOT "already software": the `--disable-gpu` rung is the only one
+   * left and the app dies to Chromium's FATAL abort without it (witnessed on
+   * a Kepler GTX 650 Ti + driver 470 host: error_code=1002 ×6 → "GPU process
+   * isn't usable"). LOCAL PATCH (issues #129174 / #131321).
+   */
+  nvidiaSwiftShaderActive?: boolean
 }): LinuxGpuDeathPath {
   if ((options.platform ?? process.platform) !== 'linux') {
     return null
@@ -352,7 +364,13 @@ export function linuxGpuChildDeathPath(options: {
     return 'no-sandbox'
   }
 
-  if (GPU_FAILURE_REASONS.has(reason) && !options.alreadySoftware && !options.softwareRelaunchAttempted) {
+  // A SwiftShader launch that still dies has exhausted the ANGLE rung: only
+  // `--disable-gpu` (no GPU child at all) can save it. `alreadySoftware` no
+  // longer blocks the ladder when the NVIDIA fallback is what's active.
+  const softwareSpent =
+    Boolean(options.alreadySoftware) && !options.nvidiaSwiftShaderActive
+
+  if (GPU_FAILURE_REASONS.has(reason) && !softwareSpent && !options.softwareRelaunchAttempted) {
     return 'disable-gpu'
   }
 

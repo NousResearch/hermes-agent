@@ -547,12 +547,55 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+def _agent_visible_dir(skill_dir) -> "str | None":
+    """Return the path for *the model*: container-side under a Docker sandbox.
+
+    Falls back to the host path whenever no bind mount matches or the terminal
+    backend is local, which is exactly when the host path is the one the agent
+    can open.
+    """
+    if not skill_dir:
+        return None
+    host = str(skill_dir)
+    try:
+        from tools.container_paths import to_container_path
+
+        return to_container_path(host) or host
+    except Exception:
+        logger.debug("skill dir container translation unavailable", exc_info=True)
+        return host
+
+
+def _skill_dir_note(skill_dir) -> "str | None":
+    """Guidance for paths the skill body names for the host, not the sandbox.
+
+    Returned only when translation actually applies, so a local backend gets no
+    note and the body's own paths stand.
+    """
+    if not skill_dir:
+        return None
+    if _agent_visible_dir(skill_dir) == str(skill_dir):
+        return None
+    return (
+        "This skill's text may name its own files by an absolute or "
+        "`~`-prefixed path (e.g. `~/.hermes/skills/<category>/<skill>/…` or "
+        "`<skills>/<category>/<skill>/…`). Those are host paths and DO NOT "
+        "EXIST where your terminal runs. Ignore them and resolve the same "
+        "file under `skill_dir` above. If a path from the text fails to open, "
+        "say so and retry under `skill_dir` rather than reimplementing the "
+        "file yourself."
+    )
+
+
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True,
+    *, host_paths: bool = False) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves. ``skill_dir`` is the path the agent's
+    terminal can open (container-side under a Docker sandbox); in-process callers that walk the
+    host filesystem pass ``host_paths=True`` to get the host path instead."""
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
@@ -635,7 +678,18 @@ def skill_view(
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
-            "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
+            # Under a Docker terminal the model's shell runs in the sandbox, so
+            # the directory it is told about must be the CONTAINER path; given
+            # the host path, it cannot open the helper scripts and tends to
+            # reimplement them instead of reporting the problem.
+            # In-process callers that walk the real filesystem ask for the host
+            # path with ``host_paths=True``; the tool handler never does.
+            # ``skill_dir_note`` covers host paths written into skill bodies,
+            # which stay correct on a local backend and so are not rewritten.
+            "path": rel_path,
+            "skill_dir": (str(skill_dir) if skill_dir else None) if host_paths
+            else _agent_visible_dir(skill_dir),
+            "skill_dir_note": _skill_dir_note(skill_dir),
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,

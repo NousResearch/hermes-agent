@@ -60,11 +60,12 @@ class TestStepfunRegistry:
         from hermes_cli.auth import resolve_provider
         from hermes_cli.providers import normalize_provider
 
+        # Only the aliases that carry back-compat weight: the two the single-id registry shipped
+        # (both pointed at the Step Plan endpoint, so both resolve to ``stepfun-plan``), plus one
+        # for the new China id.
         expected = {
             "step": "stepfun-plan", "stepfun-coding-plan": "stepfun-plan",
-            "stepfun-step-plan": "stepfun-plan", "stepfun-ai": "stepfun",
-            "stepfun-china": "stepfun-cn", "stepfun_cn": "stepfun-cn",
-            "stepfun-step-plan-cn": "stepfun-plan-cn", "stepfun-coding-plan-cn": "stepfun-plan-cn",
+            "stepfun-china": "stepfun-cn",
         }
         for alias, canonical in expected.items():
             assert normalize_provider(alias) == canonical, alias

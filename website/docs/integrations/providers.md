@@ -660,9 +660,9 @@ Within one region the same key serves both endpoint families. Note that the `-pl
 only to accounts with an active Step Plan subscription — a credit-only account gets a `400 you have
 no active step plan subscription` on the first completion. Key auth (and `GET /models`) succeeds on
 those ids regardless, so a 200 from `/models` is not proof a completion will work. Credit-only
-accounts should use `stepfun` / `stepfun-cn`. Aliases: `step`, `stepfun-coding-plan`
-and `stepfun-step-plan` resolve to `stepfun-plan`; `stepfun-ai` to `stepfun`; `stepfun-china` to
-`stepfun-cn`.
+accounts should use `stepfun` / `stepfun-cn`. Aliases: the single-id registry's `step` and
+`stepfun-coding-plan` both pointed at the Step Plan endpoint, so both resolve to `stepfun-plan`;
+`stepfun-china` resolves to `stepfun-cn`.
 
 The default model everywhere is `step-5-preview`, StepFun's flagship for coding and agentic work:
 1,024,000-token context, image and video input, tool calling, and reasoning effort

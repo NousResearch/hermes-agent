@@ -498,8 +498,8 @@ key，与 `minimax` / `minimax-cn` 的做法一致：
 | `stepfun-plan` | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_API_KEY` | `STEPFUN_STEP_PLAN_BASE_URL` |
 | `stepfun-plan-cn` | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_STEP_PLAN_BASE_URL` |
 
-同一地区内，两套接口共用同一个 key。别名：`step`、`stepfun-coding-plan`、`stepfun-step-plan`
-解析为 `stepfun-plan`；`stepfun-ai` 解析为 `stepfun`；`stepfun-china` 解析为 `stepfun-cn`。
+同一地区内，两套接口共用同一个 key。别名：旧的单 id 注册表里 `step`、`stepfun-coding-plan` 都指向 Step Plan
+接口，因此两者都解析为 `stepfun-plan`；`stepfun-china` 解析为 `stepfun-cn`。
 
 注意:`-plan` id(`stepfun-plan`、`stepfun-plan-cn`)走 StepFun 的 Step Plan 接口,**生成**能力仅对已订阅
 Step Plan 的账号开放——仅充值(credit-only)的账号首次请求会返回 `400 you have no active step plan

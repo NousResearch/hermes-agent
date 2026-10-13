@@ -23,6 +23,49 @@ def room_namespace(claims):
     return hashlib.sha256("\0".join(str(claims[key]) for key in fields).encode()).hexdigest()
 
 
+# A successor grant can name any integer epoch. Stamp only a bounded lookback so a
+# skipped epoch still finds the live row, without walking an unbounded caller-supplied value.
+_PREDECESSOR_EPOCH_LOOKBACK = 8
+
+
+def predecessor_scopes(claims, previous=None, previous_home=None):
+    """Scopes whose unstamped rows belong to this grant's lineage.
+
+    Returns ``(scope, epoch)`` pairs. The immediate previous epochs share every claim
+    except ``authority_epoch``. An explicit home move adds the named predecessor.
+    """
+    if not isinstance(claims, dict) or "authority_epoch" not in claims:
+        return []
+    try:
+        epoch = int(claims["authority_epoch"])
+    except (TypeError, ValueError):
+        return []
+    scopes = []
+    seen = set()
+
+    def add(prior, prior_epoch):
+        try:
+            scope = room_run_scope(prior)
+        except KeyError:
+            return
+        if scope in seen:
+            return
+        seen.add(scope)
+        scopes.append((scope, int(prior_epoch)))
+
+    oldest = max(1, epoch - _PREDECESSOR_EPOCH_LOOKBACK)
+    for older in range(epoch - 1, oldest - 1, -1):
+        add({**claims, "authority_epoch": older}, older)
+    if previous is not None and previous_home:
+        add({
+            **claims,
+            "home_install_id": previous_home,
+            "authority_gateway_id": previous[2],
+            "authority_epoch": int(previous[1]),
+        }, previous[1])
+    return scopes
+
+
 def initialize(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_authorities (
         authority_key TEXT PRIMARY KEY, authority_epoch INTEGER NOT NULL,
@@ -43,6 +86,7 @@ def initialize(conn):
         PRIMARY KEY(authority_key, idempotency_key))""")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempts ON run_idempotency(room_authority_key, room_authority_epoch)")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempt_identity ON run_idempotency(room_authority_key, idempotency_key)")
+    strip_stored_fence_bodies(conn)
 
 
 def canonical(conn, authority):
@@ -122,6 +166,13 @@ def observe(conn, scope, authority, previous=None, previous_home=None, namespace
             (authority[0], key, origin_home(conn, previous, previous_home)))
     conn.execute("""UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?
         WHERE scope=? AND room_authority_key IS NULL""", (key, epoch, scope))
+    # Rows written before room_authority_key existed stay NULL. Their scope hash includes
+    # the epoch, so the successor's own scope does not match them. Stamp the predecessor
+    # scopes this grant is allowed to carry, keeping the old epoch so compact can still
+    # tell those generations from the current one.
+    for prior_scope, prior_epoch in predecessor_scopes(claims, previous, previous_home):
+        conn.execute("""UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?
+            WHERE scope=? AND room_authority_key IS NULL""", (key, prior_epoch, prior_scope))
     if superseded(conn, authority):
         compact(conn, key)
         return False
@@ -153,7 +204,7 @@ def retire(conn, scope, authority):
     compact(conn, authority[0])
 
 
-_FENCE_DROPPED_FIELDS = ("output", "error", "usage")
+_FENCE_DROPPED_FIELDS = ("output", "error", "usage", "pending_steer")
 
 
 def _absent_barrier(status):
@@ -161,25 +212,37 @@ def _absent_barrier(status):
             and status.get("status") == "cancelled")
 
 
+def _fence_body(status_json):
+    """Return ``(encoded, status, discarded)`` with reply fields removed.
+
+    ``discarded`` is true when a stored reply field was removed. A completion that never
+    had those fields stays distinguishable from a reply this store has forgotten.
+    """
+    try:
+        status = json.loads(status_json)
+    except (ValueError, TypeError):
+        return status_json, None, False
+    if not isinstance(status, dict):
+        return status_json, None, False
+    discarded = any(field in status for field in _FENCE_DROPPED_FIELDS)
+    for field in _FENCE_DROPPED_FIELDS:
+        status.pop(field, None)
+    if discarded:
+        status["body_discarded"] = True
+    encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
+    return encoded, status, discarded
+
+
 def remember_fenced_attempt(conn, authority_key, idempotency_key, run_id, status_json):
     """Keep a generation key after its idempotency row is deleted, without the reply body.
 
     An absent cancellation barrier must not become the only fence when a real receipt
-    for the same generation is already stored, or arrives later.
+    for the same generation is already stored, or arrives later. A fence written before
+    reply fields were dropped is stripped in place.
     """
     if not authority_key or not idempotency_key:
         return
-    try:
-        status = json.loads(status_json)
-    except (ValueError, TypeError):
-        status = None
-    if isinstance(status, dict):
-        for field in _FENCE_DROPPED_FIELDS:
-            status.pop(field, None)
-        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
-    else:
-        encoded = status_json
-        status = None
+    encoded, status, _discarded = _fence_body(status_json)
     existing = conn.execute(
         "SELECT status_json FROM run_room_fenced_attempts WHERE authority_key=? AND idempotency_key=?",
         (authority_key, idempotency_key)).fetchone()
@@ -189,15 +252,27 @@ def remember_fenced_attempt(conn, authority_key, idempotency_key, run_id, status
                VALUES(?,?,?,?)""",
             (authority_key, idempotency_key, run_id, encoded))
         return
-    try:
-        previous = json.loads(existing[0])
-    except (ValueError, TypeError):
-        previous = None
+    stored_encoded, previous, stored_discarded = _fence_body(existing[0])
+    if stored_discarded:
+        conn.execute(
+            """UPDATE run_room_fenced_attempts SET status_json=?
+               WHERE authority_key=? AND idempotency_key=?""",
+            (stored_encoded, authority_key, idempotency_key))
+        previous = json.loads(stored_encoded)
     if _absent_barrier(previous) and not _absent_barrier(status):
         conn.execute(
             """UPDATE run_room_fenced_attempts SET run_id=?, status_json=?
                WHERE authority_key=? AND idempotency_key=?""",
             (run_id, encoded, authority_key, idempotency_key))
+
+
+def strip_stored_fence_bodies(conn):
+    """Drop reply fields from fences written before that strip existed."""
+    rows = conn.execute(
+        "SELECT authority_key, idempotency_key, run_id, status_json FROM run_room_fenced_attempts"
+    ).fetchall()
+    for authority_key, idempotency_key, run_id, status_json in rows:
+        remember_fenced_attempt(conn, authority_key, idempotency_key, run_id, status_json)
 
 
 def compact(conn, authority_key, *, now=None):

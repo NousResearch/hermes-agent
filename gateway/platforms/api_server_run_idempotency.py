@@ -56,6 +56,14 @@ def _outcome(row, fingerprint):
     return ("reused" if matches else "conflict"), record
 
 
+def _room_generation_key(key: str) -> bool:
+    """True for ``room:{task}:{generation}`` identities the room client sends."""
+    if not isinstance(key, str) or key.count(":") < 2 or not key.startswith("room:"):
+        return False
+    generation = key.rsplit(":", 1)[-1]
+    return generation.isdigit() and int(generation) >= 1
+
+
 def terminal_observation_expired(updated_at, retention_until, acknowledged_at, now):
     """A settled receipt outlives both its recovery window and verified Status grant."""
     if acknowledged_at is not None and acknowledged_at >= updated_at:
@@ -330,7 +338,8 @@ class RunIdempotencyStore:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, run_id, status_json, stop_requested, room_authority_key
+            """SELECT scope, idempotency_key, run_id, status_json, stop_requested, room_authority_key,
+                      updated_at, retention_until, acknowledged_at
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
@@ -338,15 +347,27 @@ class RunIdempotencyStore:
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
         retired_keys = set()
-        for stale_scope, stale_key, stale_run, stale_status, stop_requested, authority_key in stale:
+        for (stale_scope, stale_key, stale_run, stale_status, stop_requested, authority_key,
+             updated_at, row_retention, acknowledged_at) in stale:
+            # A room row written before room_authority_key existed cannot be fenced yet.
+            # Deleting it makes the same generation admissible. Leave it until a successor
+            # observe stamps the predecessor scope.
+            if not authority_key and _room_generation_key(stale_key):
+                continue
             if authority_key:
                 retired_keys.add(authority_key)
             try:
                 status = json.loads(stale_status)
                 # A renewed grant may still carry the same generation after normal replay TTL.
                 # Never turn proof of non-admission back into an admissible absent key.
+                # A stamped room receipt also outlives the grant's status horizon: compact
+                # already waits for terminal_observation_expired, and prune must not discard
+                # the only copy of the reply sooner than that.
                 terminal = (status.get("status") in TERMINAL_STATUSES
                             and not status.get("admission_cancelled") and not stop_requested)
+                if terminal and authority_key and not terminal_observation_expired(
+                        float(updated_at or 0), float(row_retention or 0), acknowledged_at, now):
+                    terminal = False
             except Exception:
                 terminal = False
             if terminal:
@@ -422,8 +443,10 @@ class RunIdempotencyStore:
                 "SELECT status_json, owner_pid, owner_started, updated_at "
                 "FROM run_idempotency WHERE scope=? AND run_id=?",
                 (stored, run_id)).fetchone()
-        if row is None:
-            return None
+            if row is None:
+                # The row can be pruned by another process after the scope lookup and
+                # before this read. The fence written first is the remaining receipt.
+                return self._fenced_run_status(run_id, room_authority)
         return {k: v for k, v in _record(None, *row).items() if k != "run_id"}
 
     def extend_retention(self, scope: str, run_id: str, until: float, *, room_authority=None) -> bool:
@@ -450,16 +473,24 @@ class RunIdempotencyStore:
         with self._lock:
             stored = self._scope_owning_run(scope, run_id, room_authority)
             if stored is not None:
-                authority_key = self._current_authority_key(room_authority)
-                if authority_key is None:
+                identity = self._conn.execute(
+                    "SELECT idempotency_key, room_authority_key FROM run_idempotency WHERE scope=? AND run_id=?",
+                    (stored, run_id)).fetchone()
+                if identity is None:
                     self._conn.execute(
                         "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?",
                         (stored, run_id))
-                else:
+                elif identity[1]:
+                    # A pre-fix pair shares the authority key and idempotency key under two
+                    # run ids. The receipt route must flag every one of them.
                     self._conn.execute(
                         """UPDATE run_idempotency SET stop_requested=1
-                           WHERE run_id=? AND (scope=? OR room_authority_key=?)""",
-                        (run_id, stored, authority_key))
+                           WHERE idempotency_key=? AND room_authority_key=?""",
+                        (identity[0], identity[1]))
+                else:
+                    self._conn.execute(
+                        "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?",
+                        (stored, run_id))
             self._conn.commit()
 
     def stop_requested(self, run_id: str) -> bool:

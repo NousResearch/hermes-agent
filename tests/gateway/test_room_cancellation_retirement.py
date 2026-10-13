@@ -30,10 +30,26 @@ def test_many_cancelled_attempts_compact_across_authority_epochs(tmp_path):
             store.observe_room_authority(scope, authority)
             assert store.lookup(scope, 'absent-0', 'changed', room_authority=authority)[0] == 'reused'
             assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 2000
-            # The authenticated successor retires the old execution namespace.
+            # The authenticated successor retires the old execution namespace and fences the keys.
             store.observe_room_authority(f'scope-{epoch + 1}', (authority[0], epoch + 1, 'home'))
             assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+            assert store._conn.execute('SELECT COUNT(*) FROM run_room_fenced_attempts').fetchone()[0] == 2000
             assert store._conn.execute('SELECT COUNT(*) FROM run_room_authorities').fetchone()[0] == 1
+            store._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            page_counts.append(store._conn.execute('PRAGMA page_count').fetchone()[0])
+            break
+        finally:
+            store.close()
+    # Later epochs reuse the fenced keys. They must not insert another generation.
+    for epoch in range(2, 7):
+        store = RunIdempotencyStore(str(path))
+        try:
+            scope, authority = f'scope-{epoch}', ('room-member-target', epoch, 'home')
+            assert store.observe_room_authority(scope, authority)
+            outcome, record = store.reserve(
+                scope, 'absent-0', 'changed', 'never-start', {'status': 'queued'}, room_authority=authority)
+            assert outcome == 'reused' and record['run_id'] == 'absent-1-0'
+            assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
             store._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
             page_counts.append(store._conn.execute('PRAGMA page_count').fetchone()[0])
         finally:

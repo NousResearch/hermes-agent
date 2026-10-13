@@ -419,14 +419,25 @@ def _reserve_room_run(self, request, *args, **kwargs):
 
 
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
-    """True when the recorded owner pid still exists and is the same process incarnation."""
+    """True when the recorded owner pid still exists and is the same process incarnation.
+
+    An unreadable start time, or any failure while reading it, is not proof the owner
+    died. A status poll from another process must not rewrite a live run to interrupted
+    on that uncertainty. A confirmed-absent pid, or a start time that was read and does
+    not match, still counts as dead.
+    """
     try:
         from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
-        return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
-            not owner_started
-            or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))
+        if not (owner_pid > 0 and bool(_pid_exists(owner_pid))):
+            return False
+        if not owner_started:
+            return True
+        started = get_process_start_time(owner_pid)
+        if not started:
+            return True
+        return start_time_fingerprints_match(owner_started, started)
     except Exception:
-        return False
+        return True
 
 
 def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:

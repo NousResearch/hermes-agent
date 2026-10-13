@@ -148,6 +148,7 @@ def test_expired_completed_generation_stays_fenced(tmp_path):
             scope, "room:task-2:1", "fp", "run-stopped", {"status": "completed", "output": "kept"},
             retention_until=1, room_authority=authority)[0] == "created"
         store._conn.execute("UPDATE run_idempotency SET stop_requested=1 WHERE run_id='run-stopped'")
+        store._conn.execute("UPDATE run_idempotency SET updated_at=0")
         store._conn.commit()
         successor = _member_claims(authority_epoch=2)
         assert store.observe_room_authority(
@@ -160,7 +161,9 @@ def test_expired_completed_generation_stays_fenced(tmp_path):
             "SELECT status_json FROM run_room_fenced_attempts WHERE idempotency_key='room:task-1:1'"
         ).fetchone()
         assert fenced is not None
-        assert "output" not in json.loads(fenced[0])
+        fenced_status = json.loads(fenced[0])
+        assert "output" not in fenced_status
+        assert fenced_status["body_discarded"] is True
         kept = store.reserve(
             room_run_scope(successor), "room:task-2:1", "fp", "run-new", {"status": "queued"},
             room_authority=room_authority(successor))
@@ -197,5 +200,35 @@ def test_duplicate_lineage_rows_are_both_stopped(tmp_path):
         flags = store._conn.execute(
             "SELECT run_id, stop_requested FROM run_idempotency ORDER BY run_id").fetchall()
         assert flags == [("run-live", 1), ("run-other", 1)]
+    finally:
+        store.close()
+
+
+def test_run_id_stop_flags_the_sibling_lineage_row(tmp_path):
+    """The receipt route flags every pre-fix row of the generation, not only its run id."""
+    store = RunIdempotencyStore(str(tmp_path / "runs.db"))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        assert store.reserve(
+            scope, "room:task-1:1", "fp-live", "run-live", {"status": "running"},
+            room_authority=authority)[0] == "created"
+        key = authority[0]
+        store._conn.execute(
+            """INSERT INTO run_idempotency(
+               scope, idempotency_key, fingerprint, run_id, status_json, owner_pid, owner_started,
+               retention_until, created_at, updated_at, room_authority_key, room_authority_epoch)
+               VALUES('other-scope','room:task-1:1','fp-other','run-other',?,0,0,0,1,1,?,1)""",
+            ('{"status":"running"}', key))
+        store._conn.commit()
+        successor = _member_claims(authority_epoch=2)
+        successor_scope, successor_authority = room_run_scope(successor), room_authority(successor)
+        assert store.observe_room_authority(successor_scope, successor_authority, claims=successor)
+        store.request_stop(successor_scope, "run-live", room_authority=successor_authority)
+        flags = store._conn.execute(
+            "SELECT run_id, stop_requested FROM run_idempotency ORDER BY run_id").fetchall()
+        assert flags == [("run-live", 1), ("run-other", 1)]
+        assert store.stop_requested("run-other") is True
     finally:
         store.close()

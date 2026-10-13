@@ -231,13 +231,11 @@ class HostedRoomRuntime:
                             and self._interrupt_stopping_task(binding, result)):
                             self._complete_cancel(result, cancel_id=cancel_id)
                 except Exception as exc:
-                    if lease is not None and _stop_route_missing(exc):
-                        released = self._fenced(
-                            state.release_unacknowledged_stop, None, result, lease)
-                        self.wakeup()
-                        return released
-                    if lease is not None and _stop_elsewhere(exc):
-                        return self._settle_inactive_stop(binding, result, lease, exc)
+                    if lease is not None:
+                        settled = self._settle_stop_error(binding, result, lease, exc)
+                        if settled is not None:
+                            self.wakeup()
+                            return settled
                     self._record_error(f"stop remains pending: {exc}")
             self.wakeup()
             return result if direct else state.get_task(self.db_path, identity)
@@ -294,12 +292,20 @@ class HostedRoomRuntime:
             inspection = self._inspect_recovery_session(binding, reopened)
         except Exception as exc:
             if not accepted:
-                # Recovery itself failed. A refusal is terminal; a miss or a backoff stays deferred.
+                # Recovery itself failed. A refusal is terminal. A proven miss stays deferred.
+                # An ambiguous failure may already have been admitted, so the sweeper holds it.
+                # A local error such as a busy profile lock is not that admission.
+                if _admission_maybe_accepted(exc) and not _refusal_code(exc):
+                    self.wakeup()
+                else:
+                    self._restore_deferred_after_retry(binding, reopened, lease, exc)
+            elif _is_peer_transport_error(exc):
+                if not self._refuse_retired_probe(binding, reopened, lease, exc):
+                    # recover_dispatch already returned. Deferring would free the room while that
+                    # generation is still admitted. The sweeper holds it.
+                    self.wakeup()
+            else:
                 self._restore_deferred_after_retry(binding, reopened, lease, exc)
-            elif not self._refuse_retired_probe(binding, reopened, lease, exc):
-                # recover_dispatch already returned. Deferring would free the room while that
-                # generation is still admitted. The sweeper holds it.
-                self.wakeup()
             raise
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
@@ -458,11 +464,8 @@ class HostedRoomRuntime:
                 if not self._finish_stop(binding, task, lease):
                     return True
             except Exception as exc:
-                if _stop_route_missing(exc):
-                    self._fenced(state.release_unacknowledged_stop, None, task, lease)
-                    continue
-                if _stop_elsewhere(exc):
-                    self._settle_inactive_stop(binding, task, lease, exc)
+                if self._settle_stop_error(
+                        binding, task, lease, exc, allow_missing_deadline=True) is not None:
                     continue
                 self._record_error(_STOP_PENDING.format(exc=exc))
                 return True
@@ -736,6 +739,9 @@ class HostedRoomRuntime:
                     if self._finish_stop(binding, task, lease):
                         return None
                 except Exception as exc:
+                    if self._settle_stop_error(
+                            binding, task, lease, exc, allow_missing_deadline=True) is not None:
+                        return None
                     self._record_error(_STOP_PENDING.format(exc=exc))
                 self._wake.wait(self.active_poll_interval_seconds)
                 self._wake.clear()
@@ -869,10 +875,14 @@ class HostedRoomRuntime:
                 # A missing route or a failed admission replay (PeerRunsHTTPError) must not keep
                 # the turn from reaching its deadline. Retry of the deferred turn recovers this
                 # same generation first (_retry_deferred), so deferring never mints a new key.
+                # An ambiguous failure is not a proven miss: the peer may already be running
+                # this generation, so it takes the same hold as a recovery that returned.
                 self._record_error(
                     f"task {task['identity'].task_id} recovery probe failed: {exc}")
                 is_local = False
                 probe_error = exc
+                if _admission_maybe_accepted(exc):
+                    recovered = True
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
                 inspected.add(attempt_key)
@@ -922,12 +932,77 @@ class HostedRoomRuntime:
                 # keeps the room waiting. Deferring it would drop its reply and free the session.
                 self._set_blocked(binding.room_id, True)
                 return True
+            if recovered and probe_error is not None:
+                # The hold expired. The peer may still be inside this generation. Stop it
+                # instead of deferring and letting the next turn start beside it.
+                self._stop_admitted_generation(binding, task, lease)
+                current = state.get_task(self.db_path, task["identity"])
+                if current["status"] not in state.TERMINAL_STATUSES:
+                    self._set_blocked(binding.room_id, True)
+                    return True
+                inspected.discard(attempt_key)
+                continue
             deferred = self._fenced(
                 state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
             inspected.discard(attempt_key)
             self._publish(binding, deferred)
         self._set_blocked(binding.room_id, False)
         return False
+
+    def _stopping_expired(self, task: Mapping[str, Any]) -> bool:
+        """True once a stopping row has waited out the turn budget."""
+        started = float(task.get("updated_at") or task.get("created_at") or self.clock())
+        return self.clock() >= self.turn_timeout_seconds + started
+
+    def _settle_stop_refusal(
+        self, binding: HostedRoomBinding | None, task: Mapping[str, Any], lease: state.DriverLease,
+        exc: BaseException,
+    ) -> dict[str, Any]:
+        """A stop the peer has refused is finished. It is not an outage."""
+        code = _refusal_code(exc) or "stop_refused"
+        return self._fenced(
+            state.settle_stopping_task, binding, task, lease,
+            settlement_id=f"refused:{task['identity'].task_id}:{int(task['execution_generation'])}",
+            status="failed",
+            result={"reason": code, "retryable": False, "error": str(exc)})
+
+    def _settle_stop_error(
+        self, binding: HostedRoomBinding | None, task: Mapping[str, Any], lease: state.DriverLease,
+        exc: BaseException, *, allow_missing_deadline: bool = False,
+    ) -> dict[str, Any] | None:
+        """Release, settle, or leave a stop error pending.
+
+        ``run_not_found`` stays ``stopping`` until the turn budget passes. A live run the
+        grant cannot see must not be abandoned on the first 404, and a run that is really
+        gone must not block disband forever.
+        """
+        if _stop_route_missing(exc):
+            return self._fenced(state.release_unacknowledged_stop, None, task, lease)
+        if _stop_elsewhere(exc):
+            return self._settle_inactive_stop(binding, task, lease, exc)
+        code = _refusal_code(exc)
+        if code in {"run_history_retired", "idempotency_key_conflict"}:
+            return self._settle_stop_refusal(binding, task, lease, exc)
+        if code == "run_not_found" and allow_missing_deadline and self._stopping_expired(task):
+            return self._settle_stop_refusal(binding, task, lease, exc)
+        return None
+
+    def _stop_admitted_generation(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+    ) -> None:
+        """Stop a generation whose recovery was accepted once its turn budget expires."""
+        if task["status"] == "indeterminate":
+            task = state.begin_task_cancel(
+                self.db_path, task["identity"],
+                cancel_id=f"deadline:{int(task['execution_generation'])}",
+                expected_cancel_generation=int(task["cancel_generation"]), clock=self.clock)
+        if task["status"] != "stopping":
+            return
+        try:
+            self._finish_stop(binding, task, lease)
+        except Exception as exc:
+            if self._settle_stop_error(binding, task, lease, exc) is None:
+                self._record_error(_STOP_PENDING.format(exc=exc))
 
     def _restore_deferred_after_retry(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
@@ -1100,13 +1175,31 @@ def _find_terminal_receipt(
     return None
 
 
+def _is_peer_transport_error(exc: BaseException) -> bool:
+    """True for a peer HTTP failure, and false for a local error such as a busy profile lock."""
+    return any(hasattr(exc, name) for name in ("ambiguous", "not_admitted", "error_code", "status_code"))
+
+
+def _admission_maybe_accepted(exc: BaseException) -> bool:
+    """True when a failed admission POST may already have reserved the generation.
+
+    A proven pre-admission miss (``not_admitted``) is not this case. A timeout or a 5xx
+    after the request was sent is.
+    """
+    return bool(getattr(exc, "ambiguous", False)) and not bool(getattr(exc, "not_admitted", False))
+
+
 def _stop_route_missing(exc: BaseException) -> bool:
     """True when the peer has no admission-stop route (live main only stops a known run id).
 
     ``run_not_found`` is a 404 from ``GET /v1/runs/{id}`` or ``POST /v1/runs/{id}/stop``.
     The run may still be executing under another grant scope. That is not a missing route.
+    A 404 or 405 on the run-id route is the same fact even when a proxy strips ``error.code``.
+    Only ``POST /v1/runs/stop`` — the route an old peer does not have — releases the generation.
     """
     if getattr(exc, "error_code", None) == "run_not_found":
+        return False
+    if getattr(exc, "run_id_route", False):
         return False
     return getattr(exc, "status_code", None) in {404, 405}
 

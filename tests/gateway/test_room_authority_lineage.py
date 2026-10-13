@@ -1,5 +1,6 @@
 """Target-authorized succession links homes without merging unrelated room origins."""
 import asyncio
+import json
 import time
 from unittest.mock import MagicMock
 
@@ -368,6 +369,140 @@ async def test_current_reservation_cannot_run_a_rejected_home(tmp_path, monkeypa
             assert not create.called
     finally:
         adapter._run_idempotency_store.close()
+
+
+def test_successor_stamps_and_replays_an_unstamped_predecessor_row(tmp_path):
+    """A room row written before room_authority_key existed is the same generation."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope = room_run_scope(claims)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp', 'run-live', {'status': 'running'})[0] == 'created'
+        assert store._conn.execute(
+            'SELECT room_authority_key FROM run_idempotency WHERE run_id=?', ('run-live',)).fetchone()[0] is None
+        successor = _member_claims(authority_epoch=2)
+        successor_scope, successor_authority = room_run_scope(successor), room_authority(successor)
+        assert store.observe_room_authority(successor_scope, successor_authority, claims=successor)
+        outcome, record = store.reserve(
+            successor_scope, 'room:task-1:1', 'fp-2', 'run-again', {'status': 'queued'},
+            room_authority=successor_authority)
+        assert outcome == 'reused' and record['run_id'] == 'run-live'
+        assert store.owns_run(successor_scope, 'run-live', room_authority=successor_authority)
+        store.request_stop(successor_scope, 'run-live', room_authority=successor_authority)
+        assert store.stop_requested('run-live') is True
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_unstamped_room_generation_is_not_pruned(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        assert store.reserve(
+            'old-scope', 'room:task-1:1', 'fp', 'run-done',
+            {'status': 'completed', 'output': 'once'}, retention_until=1)[0] == 'created'
+        assert store.reserve(
+            'api-key-scope', 'client-key', 'fp', 'other', {'status': 'queued'})[0] == 'created'
+        row = store._conn.execute(
+            "SELECT run_id, status_json FROM run_idempotency WHERE idempotency_key='room:task-1:1'"
+        ).fetchone()
+        assert row[0] == 'run-done'
+        assert 'once' in row[1]
+        assert store._conn.execute('SELECT COUNT(*) FROM run_room_fenced_attempts').fetchone()[0] == 0
+    finally:
+        store.close()
+
+
+def test_fresh_room_receipt_survives_the_grant_horizon(tmp_path):
+    """A short status TTL must not discard the only copy of a reply that just settled."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp', 'run-done', {'status': 'completed', 'output': 'the real answer'},
+            retention_until=1, room_authority=authority)[0] == 'created'
+        assert store.reserve(
+            scope, 'room:task-2:1', 'fp', 'run-other', {'status': 'queued'},
+            room_authority=authority)[0] == 'created'
+        row = store._conn.execute(
+            "SELECT status_json FROM run_idempotency WHERE run_id='run-done'").fetchone()
+        assert row is not None and 'the real answer' in row[0]
+        assert store._conn.execute(
+            "SELECT COUNT(*) FROM run_room_fenced_attempts WHERE idempotency_key='room:task-1:1'"
+        ).fetchone()[0] == 0
+    finally:
+        store.close()
+
+
+def test_status_for_run_reads_the_fence_when_the_row_disappears(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp', 'run-done', {'status': 'completed', 'output': 'once'},
+            room_authority=authority)[0] == 'created'
+        from gateway.platforms.api_server_run_authority import remember_fenced_attempt
+        remember_fenced_attempt(
+            store._conn, authority[0], 'room:task-1:1', 'run-done',
+            '{"status":"completed","output":"once"}')
+        store._conn.commit()
+        raw = store._conn
+
+        class _DeleteAfterScopeLookup:
+            def execute(self, sql, params=()):
+                result = raw.execute(sql, params)
+                if 'room_authority_key=? AND run_id=?' in sql:
+                    raw.execute('DELETE FROM run_idempotency WHERE run_id=?', ('run-done',))
+                return result
+
+            def __getattr__(self, name):
+                return getattr(raw, name)
+
+        store._conn = _DeleteAfterScopeLookup()
+        status = store.status_for_run(room_run_scope(_member_claims(authority_epoch=2)), 'run-done',
+                                      room_authority=room_authority(_member_claims(authority_epoch=2)))
+        assert status is not None
+        assert status['status']['status'] == 'completed'
+        assert status['status'].get('body_discarded') is True
+        assert 'output' not in status['status']
+    finally:
+        store.close()
+
+
+def test_existing_fence_drops_reply_fields(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        from gateway.platforms.api_server_run_authority import remember_fenced_attempt
+        body = '{"error":"boom","output":"secret reply","pending_steer":"keep this private steer","status":"completed","usage":{"total_tokens":9}}'
+        store._conn.execute(
+            """INSERT INTO run_room_fenced_attempts(authority_key, idempotency_key, run_id, status_json)
+               VALUES('auth','room:task-1:1','run-done',?)""", (body,))
+        store._conn.commit()
+        remember_fenced_attempt(store._conn, 'auth', 'room:task-1:1', 'run-done', body)
+        store._conn.commit()
+        stored = json.loads(store._conn.execute(
+            'SELECT status_json FROM run_room_fenced_attempts').fetchone()[0])
+        assert stored['status'] == 'completed'
+        assert stored['body_discarded'] is True
+        assert 'output' not in stored and 'error' not in stored and 'usage' not in stored
+        assert 'pending_steer' not in stored
+    finally:
+        store.close()
+
+
+def test_unreadable_owner_start_does_not_count_as_dead(monkeypatch):
+    import os
+    from gateway.platforms.api_server_runs import _owner_alive
+    monkeypatch.setattr('gateway.status._pid_exists', lambda pid: True)
+    monkeypatch.setattr('gateway.status.get_process_start_time', lambda pid: None)
+    assert _owner_alive(os.getpid(), 99) is True
+    monkeypatch.setattr('gateway.status._pid_exists', lambda pid: False)
+    assert _owner_alive(os.getpid(), 99) is False
 
 
 def test_unbound_invitation_does_not_reserve_peer_room(monkeypatch):

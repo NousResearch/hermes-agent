@@ -44,7 +44,7 @@ _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
 # A Stop body is a receipt only once the peer has left the runnable states. queued/running
 # means the generation is still going; storing it would suppress the next Stop.
 _STOP_RECEIPT_STATES = _TERMINAL_RUN_STATES | frozenset({"stopping"})
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
+_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "body_discarded")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -180,6 +180,9 @@ class PeerRunsHTTPError(RuntimeError):
         super().__init__(message)
         self.retryable, self.ambiguous, self.not_admitted = retryable, ambiguous, not_admitted
         self.status_code, self.error_code = status_code, error_code
+        # Set by the run-id GET and POST /v1/runs/{id}/stop paths. A 404 there is not
+        # "this peer has no POST /v1/runs/stop route".
+        self.run_id_route = False
         self.needs_reauthorization = (
             status_code in {401, 403} and error_code in _REAUTHORIZATION_CODES)
 
@@ -430,7 +433,7 @@ class PeerRunsHTTPClient:
             if exc.status_code in {404, 405}:
                 raise PeerRunsHTTPError(
                     "peer cannot cancel an uncertain admission; update the target gateway",
-                    ambiguous=True, status_code=exc.status_code) from exc
+                    ambiguous=True, status_code=exc.status_code, error_code=exc.error_code) from exc
             raise
         self._recovery_backoff.pop(key, None)
         self._remember_run(checked, result, session_id=self._session_id(checked, grant=grant))
@@ -553,6 +556,7 @@ class PeerRunsHTTPClient:
                 or status.get("status") not in _KNOWN_RUN_STATES):
                 raise PeerRunsHTTPError("peer returned a mismatched run status")
         except PeerRunsHTTPError as exc:
+            exc.run_id_route = True
             previous = cached["status"] if cached is not None else {}
             self._status_cache = {run_id: {"status": previous, "error": exc, **entry}}
             raise
@@ -573,6 +577,16 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
+        if status.get("body_discarded"):
+            # The generation key survived after the reply body was discarded. An empty
+            # completed body would settle as a successful transcript. Say the receipt is gone.
+            return [{
+                "role": "assistant", "task_id": receipt["task_id"],
+                "execution_generation": receipt["execution_generation"],
+                "status": "failed",
+                "message_id": f"peer-run:{status.get('run_id')}",
+                "content": "", "error": "receipt_body_discarded",
+            }]
         if state not in {"completed", "failed", "interrupted"}:
             return []
         return [{
@@ -632,8 +646,12 @@ class PeerRunsHTTPClient:
         record = self._receipt(task_id, execution_generation)
         if record is None:
             return None
-        result = self._post_run_action(
-            record, "stop", body={}, grant=self._require_room_grant(grant))
+        try:
+            result = self._post_run_action(
+                record, "stop", body={}, grant=self._require_room_grant(grant))
+        except PeerRunsHTTPError as exc:
+            exc.run_id_route = True
+            raise
         if result.get("status") in _TERMINAL_RUN_STATES:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result

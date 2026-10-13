@@ -1210,3 +1210,39 @@ def test_cancel_dispatch_remembers_a_terminal_stop_receipt(status):
     stopped = client.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
     assert stopped["run_id"] == "run-stopped"
     assert client._runs[("task-1", 1)]["run_id"] == "run-stopped"
+
+
+def test_admission_stop_keeps_run_not_found():
+    from tui_gateway.hosted_room_driver import _stop_route_missing
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client.prepare = lambda **_kwargs: {"session_id": "sess-1"}
+
+    def request(path, **_kwargs):
+        raise PeerRunsHTTPError("Run not found", status_code=404, error_code="run_not_found")
+
+    client._request = request
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert caught.value.error_code == "run_not_found"
+    assert _stop_route_missing(caught.value) is False
+
+
+def test_discarded_fence_is_not_a_successful_transcript():
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client.bind_room_scope(
+        room_id="room-1", home_install_id="home", authority_gateway_id="home",
+        authority_epoch=1, member_id="member-1", target_install_id="install-1",
+        target_profile="default")
+    client.bind_observation(task_id="task-1", execution_generation=1)
+    client._runs[("task-1", 1)] = {
+        "run_id": "run-done", "session_id": "sess-1", "room_id": "room-1",
+        "target_profile": "default", "task_id": "task-1", "execution_generation": 1,
+    }
+    client._poll_receipt = lambda record, grant: {
+        "status": "completed", "run_id": "run-done", "body_discarded": True}
+    history = client.history(
+        room_id="room-1", profile="default", session_id="sess-1", grant="signed.room.grant",
+        task_id="task-1", execution_generation=1)
+    assert history[0]["status"] == "failed"
+    assert history[0]["error"] == "receipt_body_discarded"
+    assert history[0]["content"] == ""

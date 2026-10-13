@@ -495,7 +495,9 @@ class HostedRoomService:
                 # A release to deferred (peer has no stop route) is not a cancelled turn.
                 if result["status"] == "stopping":
                     pending += 1
-                elif result["status"] == "cancelled":
+                elif result["status"] in {"cancelled", "failed"}:
+                    # A stop that finished as failed (the peer has no executor, or the
+                    # generation was refused) is not still in progress. deferred is neither.
                     cancelled += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")

@@ -379,6 +379,12 @@ class MCPOAuthManager:
         with self._entries_lock:
             return self._entries.pop(self._key(server_name, hermes_home), None)
 
+    def refresh_was_inconclusive(self, server_name: str) -> bool:
+        """True when this server's last token refresh failed without a definitive refusal (5xx,
+        throttle, unreadable 2xx): the authorization server never said the grant is dead."""
+        entry = self._entries.get(self._key(server_name))
+        return bool(getattr(getattr(entry, "provider", None), "_hermes_refresh_inconclusive", False))
+
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
         from tools.mcp_oauth import _get_token_dir, _safe_filename

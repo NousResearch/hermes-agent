@@ -86,6 +86,8 @@ class HermesProviderMixin:
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
+    # Outcome of the last refresh attempt (see ``_handle_refresh_response``).
+    _hermes_refresh_inconclusive: bool = False
 
     def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -442,9 +444,15 @@ class HermesProviderMixin:
         fenced section, whatever the outcome.
         """
         try:
-            return await self._hermes_handle_refresh_response(response)
+            ok = await self._hermes_handle_refresh_response(response)
         finally:
             await self._hermes_release_refresh_fence()
+        # Only a 4xx refusal says the grant is dead. A 5xx, a throttle (408/425/429) or an
+        # unreadable 2xx says nothing about it: the refresh token on disk may still be good.
+        status = response.status_code
+        self._hermes_refresh_inconclusive = not ok and not (
+            400 <= status < 500 and status not in (408, 425, 429))
+        return ok
 
     async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):

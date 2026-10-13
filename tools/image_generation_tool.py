@@ -909,6 +909,10 @@ _CREATIVE_CONTROL_PARAMS = {
         "type": "integer", "minimum": -100, "maximum": 100,
         "description": "Motion in the scene, -100 static to 100 dynamic. 0 neutral.",
     },
+    "style": {
+        "type": "string",
+        "description": "A style from Krea's public library, by name or id. Find one with image_style_search.",
+    },
 }
 
 _STYLE_PROMPT_PARAM = {

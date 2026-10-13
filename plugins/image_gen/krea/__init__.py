@@ -60,6 +60,9 @@ DEFAULT_RESOLUTION = "1K"  # only resolution Krea currently supports
 # Style refs are objects ({"url", "strength"}); bare URLs get Krea's recommended start (range -2..2).
 _DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 _MAX_STYLE_REFERENCES = 10
+_DEFAULT_STYLE_STRENGTH = 1.0
+_STYLE_PAGE_SIZE = 1000
+_MAX_STYLE_PAGES = 5
 _REMOTE_REFERENCE_PREFIXES = ("http://", "https://", "data:")
 # Base64 grows a file by a third and the managed gateway rejects bodies over about 4.5 MB,
 # so all local references together stay under this.
@@ -91,8 +94,8 @@ _POLL_FAILURES: dict[str, tuple[str, Callable[[str, Any], str]]] = {
         f"Krea job {job_id} did not complete within "
         f"{int(_POLL_TIMEOUT_SECONDS)}s (last status: {detail or 'unknown'})")),
 }
-# Managed gateway prices base text-to-image and URL style references only.
-_MANAGED_UNSUPPORTED = (("trained styles (LoRAs)", "styles"), ("moodboards", "moodboards"))
+# Managed gateway prices base text-to-image, URL style references and library styles only.
+_MANAGED_UNSUPPORTED = (("moodboards", "moodboards"),)
 
 
 def _load_krea_config() -> dict[str, Any]:
@@ -156,6 +159,15 @@ def _managed_krea_gateway_ready() -> bool:
         return bool(is_managed_tool_gateway_ready("krea"))
     except Exception:
         return False
+
+
+def _resolve_endpoint(managed: Any) -> Optional[tuple[str, str]]:
+    """``(base_url, auth_token)``: the managed gateway with the Nous token, else Krea with
+    ``KREA_API_KEY``; ``None`` with neither."""
+    if managed is not None:
+        return managed.gateway_origin.rstrip("/"), managed.nous_user_token
+    api_key = get_secret("KREA_API_KEY")
+    return (BASE_URL, api_key) if api_key else None
 
 
 def _resolve_creativity(value: Optional[str]) -> str:
@@ -364,8 +376,80 @@ def _inline_local_style_refs(
     return inlined, None
 
 
+_STYLE_CATALOG: dict[str, list[dict[str, str]]] = {}
+
+
+def _load_styles(base_url: str, auth_token: str) -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
+    """Krea's public style library as ``[{id, name}]``, fetched once per process and endpoint;
+    ``(None, reason)`` when a page could not be read (nothing is cached then)."""
+    cached = _STYLE_CATALOG.get(base_url)
+    if cached is not None:
+        return cached, None
+    headers = _headers(auth_token, managed=False, json_body=False)
+    styles: list[dict[str, str]] = []
+    cursor: Optional[str] = None
+    for _ in range(_MAX_STYLE_PAGES):
+        params: dict[str, Any] = {"filter": "public", "limit": _STYLE_PAGE_SIZE}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            resp = requests.get(f"{base_url}/styles", headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            page = resp.json()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            return None, f"HTTP {status}: {_submit_error_message(exc.response, exc)}"
+        except (requests.RequestException, ValueError) as exc:
+            return None, str(exc)
+        items = page.get("items") if isinstance(page, dict) else None
+        if not isinstance(items, list):
+            return None, "style list missing from the response"
+        styles.extend(
+            {"id": item["id"], "name": item.get("title") or ""}
+            for item in items if isinstance(item, dict) and isinstance(item.get("id"), str))
+        cursor = page.get("next_cursor")
+        if not isinstance(cursor, str) or not cursor:
+            break
+    _STYLE_CATALOG[base_url] = styles
+    return styles, None
+
+
+def list_styles() -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
+    """Krea's public style library for the active backend; ``(None, reason)`` without one."""
+    endpoint = _resolve_endpoint(_resolve_managed_krea_gateway())
+    if endpoint is None:
+        return None, "no Krea backend configured"
+    return _load_styles(*endpoint)
+
+
+def _resolve_style(
+    value: Any, base_url: str, auth_token: str, fail: ErrorFn
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    """Library style id for a ``style`` name or id: an id as is, else the name case-insensitively,
+    exact match first, then a unique prefix. ``(None, None)`` when no style was asked for."""
+    if not isinstance(value, str) or not value.strip():
+        return None, None
+    wanted = value.strip()
+    styles, error = _load_styles(base_url, auth_token)
+    if error is not None:
+        return None, fail(f"Krea style library unavailable: {error}", "api_error")
+    if any(style["id"] == wanted for style in styles):
+        return wanted, None
+    folded = wanted.lower()
+    exact = [style for style in styles if style["name"].lower() == folded]
+    candidates = exact or [style for style in styles if style["name"] and style["name"].lower().startswith(folded)]
+    if len(candidates) == 1:
+        return candidates[0]["id"], None
+    if not candidates:
+        return None, fail(
+            f"No Krea library style named '{wanted}'. Use image_style_search to find one.", "invalid_argument")
+    listed = ", ".join(f"{style['name']} ({style['id']})" for style in candidates[:10])
+    return None, fail(f"'{wanted}' matches several Krea styles: {listed}. Pick one by full name or id.", "invalid_argument")
+
+
 def _build_payload(
-    prompt: str, krea_ar: str, creativity: str, style_refs: list[Any], kwargs: dict[str, Any]
+    prompt: str, krea_ar: str, creativity: str, style_refs: list[Any], kwargs: dict[str, Any],
+    style_id: Optional[str] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "prompt": prompt, "aspect_ratio": krea_ar, "resolution": DEFAULT_RESOLUTION, "creativity": creativity,
@@ -377,7 +461,9 @@ def _build_payload(
         if isinstance(value, int) and not isinstance(value, bool) and -100 <= value <= 100:
             payload[slider] = value
     styles, moodboards = kwargs.get("styles"), kwargs.get("moodboards")
-    if isinstance(styles, list) and styles:
+    if style_id:
+        payload["styles"] = [{"id": style_id, "strength": _DEFAULT_STYLE_STRENGTH}]
+    elif isinstance(styles, list) and styles:
         payload["styles"] = styles
     if style_refs:
         # Krea requires objects — a bare string yields 422 "Expected object, received string".
@@ -474,7 +560,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
     def capabilities(self) -> dict[str, Any]:
         return {
             "modalities": ["text", "image"], "max_reference_images": _MAX_STYLE_REFERENCES,
-            "supports_upscale": True, "creative_controls": ["creativity", *_K2_SLIDERS],
+            "supports_upscale": True, "creative_controls": ["creativity", *_K2_SLIDERS, "style"],
             "source_image_role": "style",
         }
 
@@ -494,27 +580,26 @@ class KreaImageGenProvider(StaticImageGenProvider):
         # Managed gateway owns the shared Krea credential and meters per generation (token =
         # Nous access token); otherwise direct Krea with a BYO ``KREA_API_KEY``.
         managed = _resolve_managed_krea_gateway()
-        if managed is not None:
-            base_url = managed.gateway_origin.rstrip("/")
-            auth_token = managed.nous_user_token
-        else:
-            base_url = BASE_URL
-            auth_token = get_secret("KREA_API_KEY")
-            if not auth_token:
-                return error_factory("krea", aspect)(
-                    "KREA_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → Krea to configure, get a key at "
-                    "https://www.krea.ai/settings/api-tokens, or sign in to "
-                    "a Nous account with the managed Krea gateway enabled "
-                    "(`hermes setup`).",
-                    "auth_required")
+        endpoint = _resolve_endpoint(managed)
+        if endpoint is None:
+            return error_factory("krea", aspect)(
+                "KREA_API_KEY not set. Run `hermes tools` → Image "
+                "Generation → Krea to configure, get a key at "
+                "https://www.krea.ai/settings/api-tokens, or sign in to "
+                "a Nous account with the managed Krea gateway enabled "
+                "(`hermes setup`).",
+                "auth_required")
+        base_url, auth_token = endpoint
 
         model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
         fail = error_factory("krea", aspect, model=model_id, prompt=prompt)
-        payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs)
+        style_id, err = _resolve_style(kwargs.get("style"), base_url, auth_token, fail)
+        if err is not None:
+            return err
+        payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs, style_id=style_id)
 
-        # LoRAs/moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
+        # Moodboards are rejected by the managed gateway: fail fast with guidance, not a raw 400.
         if managed is not None:
             for what, arg in _MANAGED_UNSUPPORTED:
                 if arg in payload:

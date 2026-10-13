@@ -898,8 +898,8 @@ def _resolve_media_to_data_urls(text: str) -> str:
 
 
 # Control characters are illegal in HTTP header values (aiohttp raises
-# "Forbidden control character detected in headers") and would also split SSE
-# data frames — fold every run to a single space. #133848
+# "Forbidden control character detected in headers"); also fold error text
+# to one line for readability in SSE messages. #133848
 _HEADER_UNSAFE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
@@ -908,7 +908,8 @@ def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
 
     Besides masking secrets, control characters are folded to spaces so the
     result is always safe to embed in response headers (e.g. X-Hermes-Error)
-    and SSE event payloads. The ``limit`` applies to the folded text.
+    and stays on one line for readability in SSE event payloads. The ``limit``
+    applies to the folded text.
     """
     redacted = redact_sensitive_text(str(value), force=True)
     safe = _HEADER_UNSAFE_CTRL_RE.sub(" ", redacted)

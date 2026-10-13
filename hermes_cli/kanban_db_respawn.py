@@ -13,9 +13,14 @@ from typing import Optional
 DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS = 3600
 DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE = 12
 
-# Guard reasons that no tick can clear on its own: the dispatcher parks the
-# card ``blocked`` (sticky) once rather than skipping it on every tick.
-_PARKING_GUARD_REASONS = frozenset({"blocker_auth", "rate_limit_exhausted"})
+# Guard reasons that no tick can clear on its own, per lane: the dispatcher
+# parks the card ``blocked`` (sticky) once rather than skipping it on every
+# tick. In review, ``blocker_auth`` usually reads the implementer's stale quota
+# stamp (#119070), a false positive that must not escalate to an operator.
+_PARKING_GUARD_REASONS = {
+    "ready": frozenset({"blocker_auth", "rate_limit_exhausted"}),
+    "review": frozenset({"rate_limit_exhausted"}),
+}
 
 
 def _attribution(actor: Optional[str], source: str) -> dict:
@@ -78,7 +83,7 @@ def record_guard(conn: sqlite3.Connection, task_id: str, reason: str, *, lane: s
         ).fetchone()
         if last is None or last["kind"] != "respawn_guarded" or last["payload"] != _json_or_null(payload):
             _append_event(conn, task_id, "respawn_guarded", payload)
-    if reason in _PARKING_GUARD_REASONS:
+    if reason in _PARKING_GUARD_REASONS.get(lane, ()):
         block_task(conn, task_id, kind="needs_input", from_review=lane == "review",
                    reason=f"dispatcher parked: {reason}", actor="dispatcher", source="dispatcher")
 

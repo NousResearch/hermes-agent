@@ -284,6 +284,24 @@ def test_review_lane_exhaustion_parks_and_unblock_returns_to_review(kanban_home,
         assert kb.get_task(conn, tid).status == "review"
 
 
+def test_review_lane_stale_quota_stamp_is_not_parked(kanban_home, all_assignees_spawnable, spawns):
+    """A review card whose ``blocker_auth`` comes from the implementer's stale
+    quota stamp (#119070) is not escalated to an operator; it is recorded once
+    and stays in ``review``."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review me", assignee="reviewer")
+        impl = kb.claim_task(conn, tid)
+        assert kb.request_review(conn, tid, summary="ready", expected_run_id=impl.current_run_id)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (QUOTA_STAMP, tid))
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "blocker_auth"
+        for _ in range(3):
+            kbd.dispatch_once(conn, spawn_fn=spawns)
+        assert kb.get_task(conn, tid).status == "review"
+        assert _events(conn, tid, "blocked") == []
+        assert _events(conn, tid, "respawn_guarded") == [{"reason": "blocker_auth", "actor": "dispatcher"}]
+
+
 def test_repeated_guard_ticks_record_one_event_per_reason(kanban_home, all_assignees_spawnable, spawns, monkeypatch):
     """History stays auditable without one row per tick: an unchanged guard
     reason is written once; a different reason is written again."""

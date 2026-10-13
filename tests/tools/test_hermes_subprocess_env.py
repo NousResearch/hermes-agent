@@ -36,8 +36,8 @@ _SAFE_SAMPLE = {
     "PATH": "/usr/bin:/bin",
     "HOME": "/home/user",
     # ntpath.expanduser ignores HOME: with no USERPROFILE (or HOMEDRIVE+HOMEPATH) it
-    # returns a literal "~" and Path.home() raises RuntimeError — every builder here
-    # resolves the default home at least once. POSIX falls back to the pwd database,
+    # returns a literal "~" and Path.home() raises RuntimeError — the scrub resolves
+    # the default home on every invocation. POSIX falls back to the pwd database,
     # so the same scrub never failed on Linux (#137196).
     "USERPROFILE": r"C:\Users\testuser",
     "USER": "testuser",

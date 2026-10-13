@@ -467,9 +467,13 @@ def test_schedule_rejects_invalid_reason_and_unowned_contexts(monkeypatch, worke
 
     invalid = json.loads(kt._handle_schedule({"reason": {"until": "tomorrow"}}))
     foreign = json.loads(kt._handle_schedule({"task_id": other, "reason": "wait"}))
+    # The write fence reads the tri-state accessor DIRECTLY -- it must tell "not a
+    # child" (False) from "cannot tell" (None), which ``_delegation_ctx`` collapses
+    # into its default. Patch the seam the fence actually reads; ``_delegation_ctx``
+    # delegates to it, so the hint gates follow the same simulation.
     monkeypatch.setattr(
-        kt, "_delegation_ctx",
-        lambda predicate, default: predicate == "is_delegated_child_process_context",
+        kt, "_delegation_ctx_or_none",
+        lambda predicate: predicate == "is_delegated_child_process_context",
     )
     delegated = json.loads(kt._handle_schedule({"task_id": worker_env, "reason": "wait"}))
 

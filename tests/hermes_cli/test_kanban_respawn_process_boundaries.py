@@ -20,7 +20,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGKILL")
+pytestmark = pytest.mark.platforms("posix")
 
 # One dispatcher tick in a new process. FAKE_NOW pins the clock so backoff
 # windows are checked exactly; WORKER picks what the spawned worker does.

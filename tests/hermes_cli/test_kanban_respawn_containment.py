@@ -67,8 +67,8 @@ def _events(conn, tid, kind):
 
 
 def test_dependency_promotion_clears_stale_quota_stamp(kanban_home, all_assignees_spawnable, spawns, monkeypatch):
-    """Production shape of t_588a5339 (rate-limited run, then a worker block on
-    an open parent, then the parent finishes). Promotion must not leave the
+    """The production sequence: a rate-limited run, then a worker block on
+    an open parent, then the parent finishes. Promotion must not leave the
     quota stamp behind for ``blocker_auth`` to match, and the card must spawn.
     The failure counter is preserved, so the breaker still bounds retries."""
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
@@ -116,6 +116,7 @@ def test_unresolved_blocker_auth_parks_blocked_once_and_never_spawns(kanban_home
     assert (task.status, task.block_kind) == ("blocked", "needs_input")
     assert task.consecutive_failures == 1, "history and retry counters are preserved"
     assert len(blocked) == 1 and "blocker_auth" in blocked[0]["reason"]
+    assert (blocked[0]["actor"], blocked[0]["source"]) == ("dispatcher", "dispatcher")
     assert guarded == [{"reason": "blocker_auth", "actor": "dispatcher"}]
 
 

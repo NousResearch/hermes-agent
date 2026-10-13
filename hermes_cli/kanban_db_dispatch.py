@@ -2145,7 +2145,7 @@ def _dispatch_lane_task(
             # and ``last_failure_error`` are kept; ``unblock_task`` resets them and
             # resumes the lane it left (``source_status``).
             _kb.block_task(conn, task_id, kind="needs_input", from_review=lane == "review",
-                           reason=f"dispatcher parked: {guard_reason}")
+                           reason=f"dispatcher parked: {guard_reason}", actor="dispatcher", source="dispatcher")
         return False
 
     def _count_spawn(name: str) -> None:

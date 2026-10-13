@@ -11,17 +11,18 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $pinnedSortKey, PINNED_SORT_KEYS, setPinnedSortKey, type SidebarOrdering } from '@/store/layout'
+import { $pinnedSortKey, PINNED_SORT_KEYS, type PinnedSortKey, setPinnedSortKey } from '@/store/layout'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
 // Pinned's own ordering control, sitting in that section's header. The section
 // is the one place a conversation's order is hand-built (drag a pin to the top)
 // and the one place the flat list's Ordering does not reach, so it needs its own
 // switch instead of inheriting the sidebar-wide sort.
-const OPTIONS: Record<SidebarOrdering, string> = {
+const OPTIONS: Record<PinnedSortKey, string> = {
   cost: 'credit-card',
   created: 'add',
   manual: 'list-ordered',
+  name: 'case-sensitive',
   status: 'pulse',
   tokens: 'symbol-numeric',
   updated: 'clock'
@@ -33,10 +34,11 @@ export function PinnedSortMenu() {
   const ordering = useStore($pinnedSortKey)
   const hasCost = useStore($sessionsHaveCost)
 
-  const labels: Record<SidebarOrdering, string> = {
+  const labels: Record<PinnedSortKey, string> = {
     cost: f.cost,
     created: f.created,
     manual: f.manual,
+    name: f.name,
     status: f.status,
     tokens: f.tokens,
     updated: f.updated
@@ -66,7 +68,7 @@ export function PinnedSortMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuRadioGroup
-          onValueChange={value => setPinnedSortKey(value as SidebarOrdering)}
+          onValueChange={value => setPinnedSortKey(value as PinnedSortKey)}
           value={ordering}
         >
           {options.map(id => (

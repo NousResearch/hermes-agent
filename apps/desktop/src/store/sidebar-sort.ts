@@ -2,7 +2,7 @@ import { computed, type ReadableAtom } from 'nanostores'
 
 import type { SessionInfo } from '@/hermes'
 
-import { $sidebarOrdering, type SidebarOrdering } from './layout'
+import { $sidebarOrdering, type PinnedSortKey, type SidebarOrdering } from './layout'
 import { $sessions } from './session'
 import { $sessionDotStateById, type SessionDotState, sessionStatusRank } from './session-dot-state'
 import { sessionCostUsd } from './sidebar-archive'
@@ -66,6 +66,36 @@ export const $sidebarSessionRankIds: ReadableAtom<string[]> = computed(
  *  pulls the whole sidebar in behind it. */
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
 
+/** A row's displayed title, mirrored from lib/chat-runtime's `sessionTitle` —
+ *  importing that module here would drag the chat runtime into the store. */
+const displayedTitle = (session: SessionInfo): string =>
+  session.title?.trim() || session.preview?.trim() || 'Untitled session'
+
+/** Titles read the way a person scans a list: case and accents fold together,
+ *  and embedded numbers sort naturally (10 after 2). Leaving the locale
+ *  unspecified follows the app's own locale, so an accented alphabet orders the
+ *  way its language does instead of by code point. */
+const titleCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+export function compareSessionTitles(a: SessionInfo, b: SessionInfo): number {
+  const left = displayedTitle(a)
+  const right = displayedTitle(b)
+  const folded = titleCollator.compare(left, right)
+
+  if (folded !== 0) {
+    return folded
+  }
+
+  // Titles that fold together (differing only in case or accent) must still
+  // land in ONE order — a stable sort alone would keep whatever order the pin
+  // list happened to be in, so two sessions could swap on every recompute.
+  if (left !== right) {
+    return left < right ? -1 : 1
+  }
+
+  return a.id === b.id ? 0 : a.id < b.id ? -1 : 1
+}
+
 /**
  * Order the Pinned section's rows. `manual` is Pinned's own pin order — the
  * sequence the user builds by dragging a pin, and what the section shipped
@@ -79,11 +109,17 @@ const recency = (session: SessionInfo): number => session.last_active || session
  */
 export function sortPinnedSessions(
   sessions: readonly SessionInfo[],
-  ordering: SidebarOrdering,
+  ordering: PinnedSortKey,
   dotStates: Record<string, SessionDotState>
 ): SessionInfo[] {
+  if (ordering === 'name') {
+    return [...sessions].sort(compareSessionTitles)
+  }
+
   const rank: null | ((session: SessionInfo) => number) =
-    ordering === 'updated' ? session => -recency(session) : rankBy(ordering, dotStates)
+    ordering === 'updated'
+      ? session => -recency(session)
+      : rankBy(ordering as Exclude<PinnedSortKey, 'name'>, dotStates)
 
   return rank ? [...sessions].sort((a, b) => rank(a) - rank(b)) : [...sessions]
 }

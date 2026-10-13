@@ -1913,6 +1913,7 @@
   "sidebar.dateDivider.thisWeek": ["ar"],
   "sidebar.dateDivider.today": ["ar"],
   "sidebar.dateDivider.yesterday": ["ar"],
+  "sidebar.filter.name": ["ar","de","es","fr","ja","zh","zh-hant"],
   "sidebar.messageCount": ["ar"],
   "sidebar.projects.autoDiscovered": ["ru"],
   "sidebar.projects.back": ["ja","zh-hant"],

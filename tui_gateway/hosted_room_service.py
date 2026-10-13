@@ -37,6 +37,14 @@ _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stoppi
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 
 
+def _result_allows_retry(task: Mapping[str, Any]) -> bool:
+    """A deferred release with ``retryable: false`` must not be offered or reopened."""
+    result = task.get("result")
+    if not isinstance(result, Mapping):
+        return True
+    return result.get("retryable") is not False
+
+
 def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
@@ -479,23 +487,26 @@ class HostedRoomService:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
                 for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+            cancelled = 0
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
                 result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
+                # A release to deferred (peer has no stop route) is not a cancelled turn.
                 if result["status"] == "stopping":
                     pending += 1
+                elif result["status"] == "cancelled":
+                    cancelled += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
-        # Rows still `stopping` have not been acknowledged. Callers must not report them as cancelled.
-        return len(tasks) - pending, pending
+        return cancelled, pending
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
-        if task is None:
+        if task is None or not _result_allows_retry(task):
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
         return self.runtime.retry_indeterminate(task["identity"])
 
@@ -547,7 +558,7 @@ class HostedRoomService:
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
             {"kind": "retry", "task_id": task["identity"].task_id}
-            for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+            for task in tasks if task["status"] in _RETRYABLE_STATUSES and _result_allows_retry(task)]
         with self._policy_lock:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action

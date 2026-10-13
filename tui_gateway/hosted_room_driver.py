@@ -236,6 +236,8 @@ class HostedRoomRuntime:
                             state.release_unacknowledged_stop, None, result, lease)
                         self.wakeup()
                         return released
+                    if lease is not None and _stop_elsewhere(exc):
+                        return self._settle_inactive_stop(binding, result, lease, exc)
                     self._record_error(f"stop remains pending: {exc}")
             self.wakeup()
             return result if direct else state.get_task(self.db_path, identity)
@@ -281,18 +283,23 @@ class HostedRoomRuntime:
         # Fence before any peer I/O. start_task blocks on indeterminate, not on deferred, so a
         # recovery POST while the row is still deferred lets every queued successor start.
         reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
+        accepted = False
         try:
             transport = self._transport_for(binding, reopened)
+            accepted = transport is not self.rpc
             if transport is self.rpc:
                 return self._requeue(state.requeue_indeterminate_task, reopened, lease, room_id)
             # The replay may already have started the run. Settle it from the peer's receipt, or
             # leave the reopened row so the worker watches this generation until the run ends.
             inspection = self._inspect_recovery_session(binding, reopened)
-        except Exception:
-            # The row was indeterminate only while this call was in peer I/O. A backoff, a busy
-            # profile, or a proven miss must leave the deferred fence in place for the next retry.
-            self._fenced(
-                state.defer_indeterminate_task, None, reopened, lease, reason="member_unavailable")
+        except Exception as exc:
+            if not accepted:
+                # Recovery itself failed. A refusal is terminal; a miss or a backoff stays deferred.
+                self._restore_deferred_after_retry(binding, reopened, lease, exc)
+            elif not self._refuse_retired_probe(binding, reopened, lease, exc):
+                # recover_dispatch already returned. Deferring would free the room while that
+                # generation is still admitted. The sweeper holds it.
+                self.wakeup()
             raise
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
@@ -453,6 +460,9 @@ class HostedRoomRuntime:
             except Exception as exc:
                 if _stop_route_missing(exc):
                     self._fenced(state.release_unacknowledged_stop, None, task, lease)
+                    continue
+                if _stop_elsewhere(exc):
+                    self._settle_inactive_stop(binding, task, lease, exc)
                     continue
                 self._record_error(_STOP_PENDING.format(exc=exc))
                 return True
@@ -919,6 +929,27 @@ class HostedRoomRuntime:
         self._set_blocked(binding.room_id, False)
         return False
 
+    def _restore_deferred_after_retry(
+        self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
+        exc: BaseException,
+    ) -> None:
+        """Put a retry back to deferred, unless the peer has already refused the generation."""
+        if self._refuse_retired_probe(binding, task, lease, exc):
+            return
+        self._fenced(
+            state.defer_indeterminate_task, None, task, lease, reason="member_unavailable")
+
+    def _settle_inactive_stop(
+        self, binding: HostedRoomBinding | None, task: Mapping[str, Any], lease: state.DriverLease,
+        exc: BaseException,
+    ) -> dict[str, Any]:
+        """A restarted peer answered 409 run_not_active. The generation is not still stopping."""
+        return self._fenced(
+            state.settle_stopping_task, binding, task, lease,
+            settlement_id=f"inactive:{task['identity'].task_id}:{int(task['execution_generation'])}",
+            status="failed",
+            result={"reason": "run_not_active", "retryable": False, "error": str(exc)})
+
     def _refuse_retired_probe(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease,
         exc: BaseException | None,
@@ -1070,8 +1101,19 @@ def _find_terminal_receipt(
 
 
 def _stop_route_missing(exc: BaseException) -> bool:
-    """True when the peer has no admission-stop route (live main only stops a known run id)."""
+    """True when the peer has no admission-stop route (live main only stops a known run id).
+
+    ``run_not_found`` is a 404 from ``GET /v1/runs/{id}`` or ``POST /v1/runs/{id}/stop``.
+    The run may still be executing under another grant scope. That is not a missing route.
+    """
+    if getattr(exc, "error_code", None) == "run_not_found":
+        return False
     return getattr(exc, "status_code", None) in {404, 405}
+
+
+def _stop_elsewhere(exc: BaseException) -> bool:
+    """True when the peer already has no local executor for this run (restart)."""
+    return getattr(exc, "error_code", None) == "run_not_active"
 
 
 def _peer_generation_cancelled(info: Mapping[str, Any], task: Mapping[str, Any]) -> bool:
@@ -1087,7 +1129,8 @@ def _peer_generation_cancelled(info: Mapping[str, Any], task: Mapping[str, Any])
         and generation == int(task["execution_generation"]))
 
 
-_REFUSAL_CODES = frozenset({"run_history_retired", "idempotency_key_conflict"})
+_REFUSAL_CODES = frozenset({
+    "run_history_retired", "idempotency_key_conflict", "run_not_found"})
 
 
 def _refusal_code(exc: BaseException | None) -> str | None:

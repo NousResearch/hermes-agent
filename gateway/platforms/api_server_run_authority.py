@@ -153,6 +153,53 @@ def retire(conn, scope, authority):
     compact(conn, authority[0])
 
 
+_FENCE_DROPPED_FIELDS = ("output", "error", "usage")
+
+
+def _absent_barrier(status):
+    return (isinstance(status, dict) and status.get("admission_cancelled") is True
+            and status.get("status") == "cancelled")
+
+
+def remember_fenced_attempt(conn, authority_key, idempotency_key, run_id, status_json):
+    """Keep a generation key after its idempotency row is deleted, without the reply body.
+
+    An absent cancellation barrier must not become the only fence when a real receipt
+    for the same generation is already stored, or arrives later.
+    """
+    if not authority_key or not idempotency_key:
+        return
+    try:
+        status = json.loads(status_json)
+    except (ValueError, TypeError):
+        status = None
+    if isinstance(status, dict):
+        for field in _FENCE_DROPPED_FIELDS:
+            status.pop(field, None)
+        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
+    else:
+        encoded = status_json
+        status = None
+    existing = conn.execute(
+        "SELECT status_json FROM run_room_fenced_attempts WHERE authority_key=? AND idempotency_key=?",
+        (authority_key, idempotency_key)).fetchone()
+    if existing is None:
+        conn.execute(
+            """INSERT INTO run_room_fenced_attempts(authority_key, idempotency_key, run_id, status_json)
+               VALUES(?,?,?,?)""",
+            (authority_key, idempotency_key, run_id, encoded))
+        return
+    try:
+        previous = json.loads(existing[0])
+    except (ValueError, TypeError):
+        previous = None
+    if _absent_barrier(previous) and not _absent_barrier(status):
+        conn.execute(
+            """UPDATE run_room_fenced_attempts SET run_id=?, status_json=?
+               WHERE authority_key=? AND idempotency_key=?""",
+            (run_id, encoded, authority_key, idempotency_key))
+
+
 def compact(conn, authority_key, *, now=None):
     """Retire absent barriers immediately, settled executions after their observation horizon."""
     from gateway.platforms.api_server_room_origins import effective
@@ -181,9 +228,8 @@ def compact(conn, authority_key, *, now=None):
                 continue
             # The row's scope includes the retired epoch. Keep the generation key so a
             # successor grant cannot reserve the same Idempotency-Key as a new run.
-            conn.execute("""INSERT OR IGNORE INTO run_room_fenced_attempts(
-                authority_key, idempotency_key, run_id, status_json) VALUES(?,?,?,?)""",
-                (authority_key, key, run_id, encoded))
+            # An absent barrier must not replace a real receipt already fenced for this key.
+            remember_fenced_attempt(conn, authority_key, key, run_id, encoded)
             conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
             pruned = True
     return pruned

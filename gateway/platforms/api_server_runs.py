@@ -431,15 +431,16 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
 
 def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
+    scope = self._run_idempotency_scope(request)
+    authority = request.get(_ROOM_AUTHORITY_REQUEST_KEY)
     status = self._run_statuses.get(run_id)
     if status is not None:
         if run_id in self._run_idempotency_ids:
-            scope = self._run_idempotency_scope(request)
-            self._run_idempotency_store.extend_retention(scope, run_id, _room_retention_until(request))
+            self._run_idempotency_store.extend_retention(
+                scope, run_id, _room_retention_until(request), room_authority=authority)
         return status
-    scope = self._run_idempotency_scope(request)
     record = self._run_idempotency_store.status_for_run(
-        scope, run_id, retention_until=_room_retention_until(request))
+        scope, run_id, retention_until=_room_retention_until(request), room_authority=authority)
     if record is None:
         return None
     status = dict(record["status"])
@@ -454,7 +455,9 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
     if status.get("status") in TERMINAL_STATUSES:
         self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
-    self._run_owners[run_id] = scope
+    # Keep the admitting scope when a successor is only reading the same run.
+    if self._run_owners.get(run_id) in (None, scope):
+        self._run_owners[run_id] = scope
     return status
 
 
@@ -1084,15 +1087,14 @@ def _release_run_owner_if_forgotten(self, run_id: str) -> None:
 
 def _request_owns_run(self, request: web.Request, run_id: str) -> bool:
     scope = self._run_idempotency_scope(request)
+    authority = request.get(_ROOM_AUTHORITY_REQUEST_KEY)
     owner = self._run_owners.get(run_id)
-    if owner is not None:
-        return owner == scope
-    # No in-memory owner: only a durable record under the caller's scope admits it.
-    # Under multiplex_profiles every profile holds a valid key, so ownerless = allow-all.
-    # Run state that exists without an owner stamp is an unanswered authorization question, not a run anyone
-    # may control — under gateway.multiplex_profiles every served profile holds a valid key, so admitting it
-    # would make the boundary allow-all (#93689).
-    return self._run_idempotency_store.owns_run(scope, run_id)
+    if owner == scope:
+        return True
+    # The admitting scope and a successor grant are different hashes. A mismatch is not
+    # a missing run: the canonical authority key still owns the row. An empty owner map
+    # (restart) takes the same lookup. A non-room run has no authority and still misses.
+    return self._run_idempotency_store.owns_run(scope, run_id, room_authority=authority)
 
 
 def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
@@ -1313,8 +1315,8 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
 
 
 def _run_stop_requested(self, run_id: str) -> bool:
-    return run_id in self._stopping_run_ids or (
-        run_id in self._run_idempotency_ids and self._run_idempotency_store.stop_requested(run_id))
+    # The idempotency-id set is process-local. After a restart the column is the flag.
+    return run_id in self._stopping_run_ids or self._run_idempotency_store.stop_requested(run_id)
 
 
 async def _handle_stop_run_admission(self, request: web.Request, *, _api_server) -> web.Response:
@@ -1357,8 +1359,10 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
-    if run_id in self._run_idempotency_ids:
-        self._run_idempotency_store.request_stop(self._run_idempotency_scope(request), run_id)
+    if run_id in self._run_idempotency_ids or request.get(_ROOM_AUTHORITY_REQUEST_KEY) is not None:
+        self._run_idempotency_store.request_stop(
+            self._run_idempotency_scope(request), run_id,
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
     return _stop_loaded_run(self, run_id, status, agent, task, _api_server=_api_server)
 
 

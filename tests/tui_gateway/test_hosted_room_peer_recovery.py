@@ -8,6 +8,7 @@ import pytest
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+from tui_gateway.hosted_room_driver import _stop_route_missing
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -466,3 +467,174 @@ def test_running_waiter_completes_a_cancelled_peer_generation(tmp_path: Path):
     assert task["status"] == "cancelled"
     assert task["execution_generation"] == 1
     assert time.monotonic() - started < 2
+
+
+def _next_turn(db, clock):
+    successor = driver.TaskIdentity("room-1", "task-next", "thread-2", "turn-next")
+    driver.admit_task(
+        db, successor, payload={
+            "target_profile": "reviewer", "target_member_id": "member-peer",
+            "prompt": "Next turn.", "source_event_seq": 50}, clock=clock)
+    return successor
+
+
+def test_explicit_retry_holds_a_generation_whose_recovery_returned(tmp_path, monkeypatch):
+    """A status error after recover_dispatch returned must not free the room."""
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.runtime.indeterminate_defer_seconds = 5
+    service.runtime.turn_timeout_seconds = 30
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 108.0
+    service.runtime._run_room_once(service.bindings()[0])
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    before = len(peer.recoveries)
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+    monkeypatch.setattr(peer, "history", lambda **_: [])
+
+    def status(**_kwargs):
+        raise PeerRunsHTTPError("status timed out", retryable=True, ambiguous=True)
+
+    monkeypatch.setattr(peer, "status", status)
+    with pytest.raises(PeerRunsHTTPError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    assert len(peer.recoveries) > before
+    held = driver.get_task(db, queued["identity"])
+    assert held["status"] == "indeterminate"
+    assert held["execution_generation"] == 1
+    successor = _next_turn(db, clock)
+    with pytest.raises(driver.InvalidTaskTransitionError, match="prior task"):
+        driver.start_task(
+            db, successor, service.runtime._leases["room-1"],
+            expected_cancel_generation=0, clock=clock)
+
+
+@pytest.mark.parametrize("error_code", ["run_history_retired", "idempotency_key_conflict"])
+def test_explicit_retry_settles_a_refused_generation(tmp_path: Path, error_code: str):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.runtime.indeterminate_defer_seconds = 5
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 108.0
+    service.runtime._run_room_once(service.bindings()[0])
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+
+    def recover_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer refused this generation", retryable=True, ambiguous=True, status_code=409,
+            error_code=error_code)
+
+    peer.recover_dispatch = recover_dispatch
+    with pytest.raises(PeerRunsHTTPError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    failed = driver.get_task(db, queued["identity"])
+    assert failed["status"] == "failed"
+    assert failed["execution_generation"] == 1
+    assert failed["result"]["reason"] == error_code
+    assert failed["result"]["retryable"] is False
+
+
+def test_run_not_found_does_not_release_a_stop(tmp_path: Path):
+    """A 404 from the run-id route is not 'this peer has no stop route'."""
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def cancel_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "Run not found", status_code=404, error_code="run_not_found")
+
+    peer.cancel_dispatch = cancel_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    assert _stop_route_missing(PeerRunsHTTPError(
+        "missing", status_code=404, error_code="run_not_found")) is False
+    stuck = service.runtime.cancel(queued["identity"], cancel_id="stop-1")
+    assert stuck["status"] == "stopping"
+    assert stuck["execution_generation"] == 1
+    successor = _next_turn(db, clock)
+    with pytest.raises(driver.InvalidTaskTransitionError, match="prior task"):
+        driver.start_task(
+            db, successor, service.runtime._leases["room-1"],
+            expected_cancel_generation=0, clock=clock)
+
+
+def test_run_not_active_after_restart_settles_the_stop(tmp_path: Path):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def cancel_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "Run is not active in this gateway process", status_code=409, error_code="run_not_active")
+
+    peer.cancel_dispatch = cancel_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    settled = service.runtime.cancel(queued["identity"], cancel_id="stop-1")
+    assert settled["status"] == "failed"
+    assert settled["execution_generation"] == 1
+    assert settled["result"]["reason"] == "run_not_active"
+    assert settled["result"]["retryable"] is False
+    successor = _next_turn(db, clock)
+    driver.start_task(
+        db, successor, service.runtime._leases["room-1"],
+        expected_cancel_generation=0, clock=clock)
+    assert driver.get_task(db, successor)["status"] == "running"
+
+
+def test_missing_stop_route_is_not_counted_as_cancelled(tmp_path: Path):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def cancel_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer cannot cancel an uncertain admission", ambiguous=True, status_code=404)
+
+    peer.cancel_dispatch = cancel_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    cancelled, stopping = service.stop_room("room-1", cancel_id="stop-1", require_acknowledged=True)
+    task = driver.get_task(db, queued["identity"])
+    assert task["status"] == "deferred"
+    assert task["result"] == {"reason": "peer_stop_unsupported", "retryable": False}
+    assert (cancelled, stopping) == (0, 0)
+    with pytest.raises(driver.InvalidTaskTransitionError, match="no retryable"):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    actions = service.status("room-1")["pending_actions"]
+    assert all(action.get("task_id") != queued["identity"].task_id for action in actions)

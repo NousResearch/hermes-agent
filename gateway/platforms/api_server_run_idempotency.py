@@ -156,9 +156,11 @@ class RunIdempotencyStore:
             return None, None, None
         from gateway.platforms.api_server_run_authority import canonical
         authority_key = canonical(self._conn, room_authority)[0]
+        # Prefer a real receipt over an absent barrier when a pre-fix duplicate pair exists.
         found = self._conn.execute(
             """SELECT scope, fingerprint, run_id, status_json, owner_pid, owner_started, updated_at
-               FROM run_idempotency WHERE room_authority_key=? AND idempotency_key=?""",
+               FROM run_idempotency WHERE room_authority_key=? AND idempotency_key=?
+               ORDER BY (fingerprint = '') ASC, updated_at DESC""",
             (authority_key, key)).fetchone()
         if found is not None:
             return "row", found[0], found[1:]
@@ -175,9 +177,7 @@ class RunIdempotencyStore:
         if kind == "fence":
             return "reused", _record(payload[0], payload[1], 0, 0, time.time())
         if cancel_if_missing:
-            self._conn.execute(
-                "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
-                (lineage_scope, key))
+            self._stop_generation(lineage_scope, key)
         # The successor grant's body hash differs because its authority fields changed.
         # The idempotency key is still this generation: return the stored run.
         return "reused", _record(*payload[1:])
@@ -200,9 +200,7 @@ class RunIdempotencyStore:
                 if retention_until:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 if cancel_if_missing:
-                    self._conn.execute(
-                        "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
-                        (scope, key))
+                    self._stop_generation(scope, key)
                 self._conn.commit()
                 return ("reused", _record(*row[1:])) if cancel_if_missing else _outcome(row, fingerprint)
             from gateway.platforms.api_server_run_authority import superseded
@@ -332,7 +330,7 @@ class RunIdempotencyStore:
         """Prune aged replay records only once their stored run is terminal (caller holds the
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
-            """SELECT scope, idempotency_key, status_json, stop_requested, room_authority_key
+            """SELECT scope, idempotency_key, run_id, status_json, stop_requested, room_authority_key
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
@@ -340,7 +338,7 @@ class RunIdempotencyStore:
             (now - self.ACKNOWLEDGED_RETENTION_SECONDS, now, now - self.RETENTION_SECONDS),
         ).fetchall()
         retired_keys = set()
-        for stale_scope, stale_key, stale_status, stop_requested, authority_key in stale:
+        for stale_scope, stale_key, stale_run, stale_status, stop_requested, authority_key in stale:
             if authority_key:
                 retired_keys.add(authority_key)
             try:
@@ -352,6 +350,9 @@ class RunIdempotencyStore:
             except Exception:
                 terminal = False
             if terminal:
+                if authority_key:
+                    from gateway.platforms.api_server_run_authority import remember_fenced_attempt
+                    remember_fenced_attempt(self._conn, authority_key, stale_key, stale_run, stale_status)
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
         from gateway.platforms.api_server_run_authority import compact
@@ -359,41 +360,106 @@ class RunIdempotencyStore:
             compact(self._conn, authority_key, now=now)
 
 
-    def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
-        """Load one durable run status inside its authenticated scope."""
+    def _stop_generation(self, scope, key):
+        """Set stop_requested on every row of this generation, including a pre-fix duplicate."""
+        self._conn.execute(
+            "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
+            (scope, key))
+        self._conn.execute(
+            """UPDATE run_idempotency SET stop_requested=1
+               WHERE idempotency_key=? AND room_authority_key IS NOT NULL
+                 AND room_authority_key=(
+                   SELECT room_authority_key FROM run_idempotency
+                   WHERE scope=? AND idempotency_key=?)""",
+            (key, scope, key))
+
+    def _current_authority_key(self, room_authority):
+        """Canonical key for a grant that is still allowed to see this room, else None."""
+        if room_authority is None:
+            return None
+        from gateway.platforms.api_server_run_authority import canonical, superseded
+        if superseded(self._conn, room_authority):
+            return None
+        return canonical(self._conn, room_authority)[0]
+
+    def _scope_owning_run(self, scope, run_id, room_authority):
+        """Scope that stores ``run_id``, following the canonical authority when the grant moved."""
+        if self._conn.execute(
+                "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone():
+            return scope
+        authority_key = self._current_authority_key(room_authority)
+        if authority_key is None:
+            return None
+        found = self._conn.execute(
+            "SELECT scope FROM run_idempotency WHERE room_authority_key=? AND run_id=?",
+            (authority_key, run_id)).fetchone()
+        return None if found is None else found[0]
+
+    def _fenced_run_status(self, run_id, room_authority):
+        authority_key = self._current_authority_key(room_authority)
+        if authority_key is None:
+            return None
+        row = self._conn.execute(
+            """SELECT status_json FROM run_room_fenced_attempts
+               WHERE authority_key=? AND run_id=?""",
+            (authority_key, run_id)).fetchone()
+        if row is None:
+            return None
+        return {k: v for k, v in _record(None, row[0], 0, 0, time.time()).items() if k != "run_id"}
+
+    def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0,
+                       room_authority=None) -> dict[str, Any] | None:
+        """Load one durable run status for this grant, including a successor of the admitting scope."""
         retention_until = max(0.0, float(retention_until or 0))
         with self._lock:
+            stored = self._scope_owning_run(scope, run_id, room_authority)
+            if stored is None:
+                return self._fenced_run_status(run_id, room_authority)
             if retention_until:
-                self._conn.execute(_EXTEND_RETENTION_BY_RUN, (retention_until, scope, run_id))
+                self._conn.execute(_EXTEND_RETENTION_BY_RUN, (retention_until, stored, run_id))
                 self._conn.commit()
             row = self._conn.execute(
                 "SELECT status_json, owner_pid, owner_started, updated_at "
                 "FROM run_idempotency WHERE scope=? AND run_id=?",
-                (scope, run_id)).fetchone()
+                (stored, run_id)).fetchone()
         if row is None:
             return None
         return {k: v for k, v in _record(None, *row).items() if k != "run_id"}
 
-    def extend_retention(self, scope: str, run_id: str, until: float) -> bool:
+    def extend_retention(self, scope: str, run_id: str, until: float, *, room_authority=None) -> bool:
         """Persist the latest verified recovery horizon for an active grant."""
         checked_until = max(0.0, float(until or 0))
         if not checked_until:
             return False
         with self._lock:
-            changed = self._conn.execute(_EXTEND_RETENTION_BY_RUN, (checked_until, scope, run_id)).rowcount
+            stored = self._scope_owning_run(scope, run_id, room_authority)
+            if stored is None:
+                return False
+            changed = self._conn.execute(
+                _EXTEND_RETENTION_BY_RUN, (checked_until, stored, run_id)).rowcount
             self._conn.commit()
         return changed == 1
 
-    def owns_run(self, scope: str, run_id: str) -> bool:
+    def owns_run(self, scope: str, run_id: str, *, room_authority=None) -> bool:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?", (scope, run_id)).fetchone()
-        return row is not None
+            if self._scope_owning_run(scope, run_id, room_authority) is not None:
+                return True
+            return self._fenced_run_status(run_id, room_authority) is not None
 
-    def request_stop(self, scope: str, run_id: str) -> None:
+    def request_stop(self, scope: str, run_id: str, *, room_authority=None) -> None:
         with self._lock:
-            self._conn.execute(
-                "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?", (scope, run_id))
+            stored = self._scope_owning_run(scope, run_id, room_authority)
+            if stored is not None:
+                authority_key = self._current_authority_key(room_authority)
+                if authority_key is None:
+                    self._conn.execute(
+                        "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND run_id=?",
+                        (stored, run_id))
+                else:
+                    self._conn.execute(
+                        """UPDATE run_idempotency SET stop_requested=1
+                           WHERE run_id=? AND (scope=? OR room_authority_key=?)""",
+                        (run_id, stored, authority_key))
             self._conn.commit()
 
     def stop_requested(self, run_id: str) -> bool:

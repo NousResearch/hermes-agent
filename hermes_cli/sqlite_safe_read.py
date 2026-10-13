@@ -14,7 +14,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +42,30 @@ def _key(path: Path | str) -> str:
         return str(path)
 
 
-def _canonical_db_path(conn: sqlite3.Connection) -> Optional[str]:
+def _canonical_db_path(conn: sqlite3.Connection, *, strict: bool = False) -> Optional[str]:
     """The on-disk path of ``main`` as SQLite reports it (immune to ``file:`` URIs, relative paths,
     symlinks). ``None`` for in-memory/unnamed databases, which cannot be byte-probed."""
     try:
-        row = conn.execute("PRAGMA database_list").fetchone()
-    except sqlite3.Error:
+        if strict:
+            # Metadata must not depend on a caller's execute/row factories.
+            with contextlib.closing(sqlite3.Connection.cursor(conn, factory=sqlite3.Cursor)) as cursor:
+                cursor.row_factory = None
+                rows = cursor.execute("PRAGMA database_list").fetchall()
+            row = next((row for row in rows if row[0] == 0), None)
+        else:
+            row = conn.execute("PRAGMA database_list").fetchone()
+        if not row or len(row) < 3:
+            if strict:
+                raise UntrackableConnectionError("SQLite main database identity unavailable")
+            return None
+        path_str = row[2]
+        if not path_str:
+            return None
+        return _key(os.fsdecode(path_str))
+    except sqlite3.Error as exc:
+        if strict:
+            raise UntrackableConnectionError("SQLite database identity lookup failed") from exc
         return None
-    if not row or len(row) < 3 or not row[2]:
-        return None
-    return _key(row[2])
 
 
 def track_connection(path: Path | str) -> None:
@@ -86,6 +100,15 @@ def _live_main_key(key: str) -> Optional[str]:
     for suffix in ("-wal", "-shm"):
         if key.endswith(suffix) and key[:-len(suffix)] in _live_connections:
             return key[:-len(suffix)]
+    # Canonical spelling cannot identify hardlinks. stat-based identity checks
+    # open no descriptor and extend the same guard to aliases of main and WAL files.
+    for main in _live_connections:
+        for live_path in (main, main + "-wal", main + "-shm"):
+            try:
+                if os.path.samefile(key, live_path):
+                    return main
+            except OSError:
+                continue
     return None
 
 
@@ -108,6 +131,19 @@ class _TrackingMixin:
     """
 
     _hermes_tracked_path: str | None = None
+
+    def __init__(self, *args, **kwargs):
+        try:
+            super().__init__(*args, **kwargs)
+        except BaseException:
+            # A custom factory can fail after sqlite3 opened its descriptor.
+            # connect() then never returns the object to connect_tracked.
+            try:
+                sqlite3.Connection.close(cast(sqlite3.Connection, self))
+            except sqlite3.Error:
+                logger.debug("Failed to close partially initialized SQLite factory", exc_info=True)
+            raise
+
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
@@ -157,7 +193,7 @@ def connect_tracked(
     with _live_lock:
         conn = opener(str(path), **kwargs)
         try:
-            resolved = _key(tracking_path) if tracking_path is not None else _canonical_db_path(conn)
+            resolved = _key(tracking_path) if tracking_path is not None else _canonical_db_path(conn, strict=True)
             if resolved is None:
                 return conn  # in-memory / unnamed: nothing on disk to byte-probe
             if not isinstance(conn, _TrackingMixin):
@@ -176,6 +212,44 @@ def connect_tracked(
             except Exception:
                 pass
             raise
+
+
+def read_only_db_uri(path: Path | str) -> str:
+    """Encode a literal filesystem path for a SQLite ``mode=ro`` open.
+
+    ``#``, ``?``, and ``%`` must not become URI fragments or query options.
+    This accepts filesystem paths, not pre-built SQLite URIs.
+    """
+    uri = Path(path).resolve().as_uri()
+    # SQLite rejects non-local URI authorities unless specially compiled.
+    # Put a Windows UNC host in the path instead, preserving //host/share.
+    if uri.startswith("file://") and not uri.startswith("file:///"):
+        uri = "file:////" + uri[len("file://"):]
+    return uri + "?mode=ro"
+
+
+def open_sqlite_readonly(
+    path: Path | str, *, connect_fn=None, **kwargs,
+) -> sqlite3.Connection:
+    """Open a literal path read-only with atomic connection tracking.
+
+    Connection options (timeout, isolation_level, factory, thread checks) keep
+    their caller-supplied values. ``connect_fn`` is a raw SQLite opener, as in
+    :func:`connect_tracked`; it must honor the supplied URI and factory.
+    ``uri`` and ``tracking_path`` are owned here, not caller overrides.
+
+    There is no untracked retry on connection or registration failure. Close
+    the returned connection explicitly (or use ``contextlib.closing``); a
+    SQLite transaction context does not close it. Read-only WAL connections
+    can still use or create WAL/SHM sidecars; no ``immutable`` flag is set.
+    A hot rollback journal needs a writable SQLite open to recover; this
+    helper never escalates its access mode to perform that recovery.
+    """
+    resolved = Path(path).resolve()
+    return connect_tracked(
+        read_only_db_uri(resolved), uri=True, tracking_path=resolved,
+        connect_fn=connect_fn, **kwargs,
+    )
 
 
 def _retrofit_tracking(conn: sqlite3.Connection, resolved: str) -> sqlite3.Connection:

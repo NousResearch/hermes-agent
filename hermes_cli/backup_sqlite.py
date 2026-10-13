@@ -52,7 +52,15 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
+        if __package__:
+            from hermes_cli.sqlite_safe_read import open_sqlite_readonly
+
+            conn = open_sqlite_readonly(src, connect_fn=sqlite3.connect, timeout=0.0)
+        else:
+            # Emergency preflight runs under -I -S with application imports
+            # unavailable. This standalone process has no application registry
+            # or byte probes; preserve its stdlib-only, literal-path open.
+            conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
 

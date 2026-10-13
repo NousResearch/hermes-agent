@@ -725,7 +725,9 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        from hermes_cli.sqlite_safe_read import open_sqlite_readonly
+
+        conn = open_sqlite_readonly(path, connect_fn=_kb.sqlite3.connect)
         conn.row_factory = sqlite3.Row
         conn.text_factory = _kb._lossy_text
         if not _schema_is_present(conn):

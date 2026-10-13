@@ -92,7 +92,9 @@ def default_db_path() -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    from hermes_cli.sqlite_safe_read import open_sqlite_readonly
+
+    return open_sqlite_readonly(db_path, connect_fn=sqlite3.connect)
 
 
 def _fetch_rows(cur) -> Iterator[tuple]:
@@ -158,6 +160,8 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     records: list[tuple[str, str]] = []
     con = _connect_readonly(path)
     try:
+        # Both queries must see the same history, including concurrent denials.
+        con.execute("BEGIN")
         blocked = _blocked_tool_call_ids(con, since_ts)
         for tool_call_id, command in _iter_terminal_calls(con, since_ts):
             if tool_call_id in blocked:

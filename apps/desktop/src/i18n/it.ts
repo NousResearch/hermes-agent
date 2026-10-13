@@ -71,7 +71,18 @@ export const itOverrides = {
     openInBrowser: 'Apri nel browser',
     setupCancel: 'Annulla',
     authorizedToolsUnavailable: 'Autorizzato. Strumenti non disponibili.',
-    required: 'Obbligatorio'
+    required: 'Obbligatorio',
+    namedAccount: (app: string, alias: string) => `Hermes ha dato a questo account ${app} il nome ${alias}.`,
+    renameAccount: 'Rinomina',
+    directory: {
+      allApps: 'Tutte le app',
+      suggested: 'Suggerite',
+      finishInBrowser: 'Completa nel browser',
+      receiptConnected: apps => `Connesso: ${apps}`,
+      receiptNone: 'Nessuna nuova app connessa',
+      receiptTimedOut: 'Chiuso dopo 5 minuti',
+      signInFailed: 'Connessione non riuscita. Clicca per riprovare'
+    }
   },
   connectorsPage: {
     title: 'Connettori',
@@ -79,6 +90,31 @@ export const itOverrides = {
     filterCategory: 'Categoria',
     categoryAll: 'Tutte le categorie',
     uncategorised: 'Senza categoria',
+    accounts: {
+      heading: 'Account',
+      add: 'Connetti',
+      addAnother: 'Aggiungi un altro account',
+      count: count => `${count} account`,
+      aliasLabel: 'Nome dell’account',
+      aliasHint: 'Lettere minuscole, cifre e trattini, fino a 32. Per esempio lavoro o casa.',
+      aliasInvalid: 'Usa lettere minuscole, cifre e trattini, iniziando con una lettera o una cifra.',
+      aliasTaken: 'Questo nome è già in uso.',
+      rename: 'Rinomina',
+      renameLabel: name => `Nuovo nome per ${name}`,
+      renameGone: 'Questo account non esiste più. È stato rimosso o sostituito da una riconnessione.',
+      remove: 'Rimuovi',
+      removeTitle: (app, name) => `Rimuovere l’account ${name} di ${app}?`,
+      removeBody: 'Hermes smette di usare questo account. Gli altri account restano connessi.',
+      retiredCount: count => `${count} ritirat${count === 1 ? 'o' : 'i'}`,
+      status: {
+        pending: 'In attesa dell’accesso',
+        inactive: 'Inattivo',
+        expired: 'Accesso scaduto',
+        failed: 'Impossibile connettersi',
+        revoked: 'Accesso revocato',
+        retired: 'Sostituito da una riconnessione'
+      }
+    },
     residencyLocal: 'Su questo dispositivo',
     segment: {
       all: 'Tutti',
@@ -1717,7 +1753,27 @@ export const itOverrides = {
       driverHealth: 'Stato del driver'
     },
     about: {
-      updates: 'Aggiornamenti'
+      updates: 'Aggiornamenti',
+      channel: {
+        title: 'Canale di aggiornamento',
+        description:
+          'Le installazioni stabili ricevono solo release pubblicate. Con l’opzione «ogni commit» segui il branch main man mano che le modifiche arrivano.',
+        detailsLabel: 'Canale',
+        stable: 'Release stabili',
+        main: 'Ogni commit',
+        change: 'Cambia',
+        failed: 'Impossibile cambiare il canale di aggiornamento',
+        latestRelease: v => `Sei sull’ultima release stabile (${v}).`,
+        branch: b => `Branch: ${b}`,
+        rollbackTitle: v => `Torna alla release stabile ${v}`,
+        rollbackBody: v =>
+          `Questa build è più recente della release stabile ${v}. Installarla riporta Hermes a quella release.`,
+        rollbackAction: v => `Torna a ${v}`,
+        stableConfirmTitle: 'Passare alle release stabili?',
+        stableConfirmBody:
+          'Hermes passerà all’ultima release pubblicata, che può essere più vecchia del codice che usi ora. I dati scritti da codice più recente potrebbero non essere leggibili correttamente: fai prima un backup.',
+        stableConfirm: 'Passa alla stabile'
+      }
     },
     config: {
       minimizeToTrayTitle: 'Minimizza nell’area di notifica',
@@ -4250,11 +4306,6 @@ export const itOverrides = {
   },
   composer: {
     message: 'Messaggio',
-    localSetup: {
-      title: 'Potrebbe girare sul tuo computer',
-      text: model => `${model} è adatto a questa macchina. Gratuito, e le chat restano sul tuo computer.`,
-      action: 'Mostramelo'
-    },
     terminalSelectionMissingTitle: 'Selezione del terminale non disponibile',
     terminalSelectionMissingBody:
       'Riseleziona le righe del terminale (Ctrl/Cmd+L) prima di inviare: questa chip non ha testo originale.',

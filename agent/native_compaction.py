@@ -3,9 +3,9 @@
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
 Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus gpt-6-astra
-(and its ``-900k`` picker alias) on official Codex OAuth. The local compressor
-stays armed as fallback (native threshold clamped below the local trigger); compaction items
-ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
+(and its ``-900k`` picker alias), gpt-6.1-sol and gpt-6-luna on official Codex OAuth. The local
+compressor stays armed as fallback (native threshold clamped below the local trigger); compaction
+items ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
 
 from __future__ import annotations
@@ -27,15 +27,20 @@ LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 DEFAULT_COMPACT_THRESHOLD = 200_000
 # Substring match so dated snapshots and variants (gpt-5.6-mini) stay eligible.
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
+# Server-verified 2026-10-13 on official Codex OAuth only (#137704): relays and the direct
+# API are unverified, so these ride the OAuth-gated clause instead of the marker above.
+# Substring match keeps picker aliases (gpt-6.1-sol-900k) and snapshots eligible.
+_CODEX_OAUTH_ONLY_MARKERS = ("gpt-6.1-sol", "gpt-6-luna")
 
 
 def is_native_compaction_model(
     model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
 ) -> bool:
-    """Preserve gpt-5.6 eligibility; Astra (``-900k`` is a picker alias of the same wire slug)
-    additionally requires official Codex OAuth."""
-    return _ELIGIBLE_MODEL_MARKER in (model or "").lower() or (
-        is_astra_model(model)
+    """Preserve gpt-5.6 eligibility; Astra (``-900k`` is a picker alias of the same wire slug),
+    Sol 6.1 and Luna additionally require official Codex OAuth."""
+    name = (model or "").lower()
+    return _ELIGIBLE_MODEL_MARKER in name or (
+        (is_astra_model(model) or any(marker in name for marker in _CODEX_OAUTH_ONLY_MARKERS))
         and (provider or "").strip().lower() == "openai-codex"
         and is_official_codex_base_url(base_url or "")
     )

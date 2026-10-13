@@ -76,6 +76,8 @@ def _plugin_provider_rows(
             row.update({key: name for key in marker_keys})
             if flatten_variants and entry.get("web_tier"):
                 row["web_tier"] = entry["web_tier"]
+            if entry.get("config_fields"):
+                row["config_fields"] = entry["config_fields"]
             if entry.get("post_setup"):
                 row["post_setup"] = entry["post_setup"]
             rows.append(row)
@@ -171,6 +173,22 @@ def _visible_providers(
     return visible
 
 
+def _provider_config_value(field: dict, config: dict) -> str:
+    """Resolve a setup field's first non-blank string, primary key before fallbacks."""
+    from hermes_cli.config import _get_nested
+
+    for key in (field["key"], *field.get("fallback_keys", [])):
+        value = _get_nested(config, key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _provider_config_ready(provider: dict, config: dict) -> bool:
+    """Required non-secret setup fields are independent of credential readiness."""
+    return all(_provider_config_value(field, config) for field in provider.get("config_fields", []))
+
+
 def provider_readiness_status(provider: dict, config: dict, *, features=None, is_active: Optional[bool] = None) -> str:
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
@@ -178,6 +196,8 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
     from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
 
+    if not _provider_config_ready(provider, config):
+        return "needs_setup"
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
 
@@ -314,7 +334,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
         badge = f" [{p['badge']}]" if p.get("badge") else ""
         tag = f" — {p['tag']}" if p.get("tag") else ""
         configured = ""
-        if _provider_env_ready(p):
+        if _provider_env_ready(p) and _provider_config_ready(p, config):
             if _is_provider_active(p, config, force_fresh=force_fresh):
                 configured = " [active]"
             elif p.get("env_vars", []):
@@ -962,6 +982,27 @@ def _prompt_env_vars(env_vars: list, *, reconfigure: bool) -> bool:
     return all_configured
 
 
+def _prompt_provider_config(provider: dict, config: dict, *, reconfigure: bool) -> bool:
+    """Collect required non-secret strings declared by a provider's setup schema.
+
+    The caller persists config through the normal tools/setup writer. Blank input
+    keeps an existing value; skipping a missing field never reports success.
+    """
+    from hermes_cli.config import _set_nested
+
+    for field in provider.get("config_fields", []):
+        key = field["key"]
+        current = _provider_config_value(field, config)
+        if current and not reconfigure:
+            continue
+        value = (_prompt(field.get("prompt", key), current) or current).strip()
+        if not value:
+            _print_warning(f"  Setup incomplete — {key} is required. Run hermes tools to finish setup.")
+            return False
+        _set_nested(config, key, value)
+    return True
+
+
 def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = True, reconfigure: bool = False):
     """Configure a single provider - prompt for API keys and set config.
     ``reconfigure=False`` (new-enable): already-set keys are kept without asking and the post-setup hook
@@ -980,9 +1021,12 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
     _write_provider_config(provider, config, managed_feature=managed_feature)
 
     if not env_vars:
+        if not _prompt_provider_config(provider, config, reconfigure=reconfigure):
+            return
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
-        _print_success(f"  {provider['name']} - no configuration needed!")
+        message = "configuration complete!" if provider.get("config_fields") else "no configuration needed!"
+        _print_success(f"  {provider['name']} - {message}")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
         _finish_provider_selection(provider, config, managed_feature)
@@ -992,6 +1036,8 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
         _print_info("  Available through Nous Portal subscription.")
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
+    if all_configured:
+        all_configured = _prompt_provider_config(provider, config, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:
         _run_post_setup(provider["post_setup"])
     if all_configured:

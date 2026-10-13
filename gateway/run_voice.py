@@ -22,6 +22,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_inbound_transcription import stt_config_for_turn
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
@@ -476,7 +477,7 @@ class GatewayVoiceMixin:
         return not (is_voice_input and not already_sent)
 
     def _should_echo_stt_transcripts(self) -> bool:
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+        return bool(getattr(stt_config_for_turn(self), "stt_echo_transcripts", True))
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool

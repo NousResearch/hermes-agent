@@ -8,9 +8,15 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from typing import Optional
 
+from agent.secret_scope import _is_process_home
+from gateway.config import GatewayConfig
+from gateway.config_loader import bridge_toplevel_keys, load_legacy_gateway_json
 from gateway.run_common import _UNSET
+from hermes_cli.config_effective import load_user_config_effective
+from hermes_constants import get_hermes_home_override
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -44,10 +50,28 @@ def _dedupe_audio_paths(audio_paths: list[str]) -> list[str]:
     return [path for path in paths if path not in duplicates]
 
 
+def stt_config_for_turn(runner) -> GatewayConfig | None:
+    """Use the bound turn profile's STT settings, not the launch profile's.
+
+    Keep the launch runner's already-loaded config. For a routed turn, apply the same
+    YAML and legacy layers without reloading adapter settings or bridging env vars.
+    """
+    override = get_hermes_home_override()
+    if runner is None or override is None:
+        return getattr(runner, "config", None)
+    home = Path(override)
+    if _is_process_home(home):
+        return getattr(runner, "config", None)
+    legacy = load_legacy_gateway_json(home)
+    data = legacy if isinstance(legacy, dict) else {}
+    raw = load_user_config_effective(home / "config.yaml")
+    bridge_toplevel_keys(raw, raw.get("gateway"), data)
+    return GatewayConfig.from_dict(data)
+
+
 def stt_enabled_for_turn(runner) -> bool:
-    """Whether the turn transcribes inbound voice: ``GatewayConfig.stt_enabled``, which also honours
-    the legacy ``gateway.json`` ``stt_enabled`` key. The spoken-wake-word gate reads the same value."""
-    return getattr(getattr(runner, "config", None), "stt_enabled", True)
+    """Keep inbound transcription and the spoken-wake-word gate on the same setting."""
+    return getattr(stt_config_for_turn(runner), "stt_enabled", True)
 
 
 # Transcript TEXT the adapters' spoken-wake-word gate already paid for, by profile and clip content:

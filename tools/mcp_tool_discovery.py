@@ -353,6 +353,11 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     server._registered_tool_names = list(registered_names)
     logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
                 "HTTP" if "url" in config else "stdio", len(registered_names), ", ".join(registered_names))
+    # Skills catalog (SEP-2640) for servers that opted in: built here, where the
+    # connection is known-good and before any prompt can be assembled. Its own
+    # failures are contained — an unreachable skills channel never fails the connect.
+    from tools.mcp_skills_manager import publish_catalog_after_connect
+    await publish_catalog_after_connect(name, config, server)
     return registered_names
 
 

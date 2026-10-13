@@ -86,5 +86,39 @@ def reset_skill_view_dedup(task_id: str | None = None) -> None:
     with _skill_view_tracker_lock:
         if task_id is None:
             _skill_view_tracker.clear()
+            _remote_view_tracker.clear()
         else:
             _skill_view_tracker.pop(str(task_id), None)
+            _remote_view_tracker.pop(str(task_id), None)
+
+
+# ── remote (MCP) views ──────────────────────────────────────────────────────
+# Keyed by the manifest revision the host holds, not by a local file signature: there
+# is no file to stat, and a server may republish identical-looking bytes under a new
+# approval. The revision is the only honest "unchanged" claim available here.
+
+_remote_view_tracker: dict[str, set[tuple]] = {}
+
+
+def check_remote_view(task_id, server: str, uri: str, revision: str, file_path: str | None) -> str | None:
+    """Dedup stub when this exact remote revision was already served to this task."""
+    if not task_id or not revision:
+        return None
+    key = (server, uri, revision, file_path or "")
+    with _skill_view_tracker_lock:
+        if key not in _remote_view_tracker.get(str(task_id), ()):
+            return None
+    return json.dumps({
+        "success": True, "status": "unchanged", "name": f"{server}:{uri}",
+        "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,
+        "message": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
+
+
+def record_remote_view(task_id, server: str, uri: str, revision: str, file_path: str | None) -> None:
+    if not task_id or not revision:
+        return
+    with _skill_view_tracker_lock:
+        seen = _remote_view_tracker.setdefault(str(task_id), set())
+        seen.add((server, uri, revision, file_path or ""))
+        while len(seen) > _SKILL_VIEW_DEDUP_CAP:  # sets keep insertion order, so this is FIFO
+            seen.discard(next(iter(seen)))

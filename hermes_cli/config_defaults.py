@@ -192,6 +192,10 @@ DEFAULT_CONFIG = {
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
+        # Session titles of THIS profile (beyond the canonical "Bot Chat") that carry the
+        # teammate-messaging surface: they can call ``message_agent`` and receive a local
+        # delivery. Profile-scoped and opt-in; empty means canonical-only, as before.
+        "bot_mode_handoff_titles": [],
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
         # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
         # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.

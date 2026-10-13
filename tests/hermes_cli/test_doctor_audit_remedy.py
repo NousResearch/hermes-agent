@@ -31,7 +31,7 @@ def _run_audit_one(capsys, audit_extra, audit_stdout):
     issues: list[str] = []
     completed = subprocess.CompletedProcess([], 0, stdout=audit_stdout, stderr="")
     with patch.object(doctor_tools.subprocess, "run", return_value=completed):
-        doctor_tools._audit_one("npm", "C:/fake/root", "Browser tools (agent-browser)",
+        doctor_tools._audit_one("npm", "C:/fake/root", "Root package",
                                 audit_extra, issues)
     return capsys.readouterr().out, issues
 
@@ -44,7 +44,7 @@ def test_root_remedy_never_prescribes_local_audit_fix(capsys):
     assert "run: cd" not in out
     assert "npm audit fix" not in out
     assert "lockfile bump" in out
-    assert issues == ["Browser tools (agent-browser) has 2 npm vulnerabilities"]
+    assert issues == ["Root package has 2 npm vulnerabilities"]
 
 
 

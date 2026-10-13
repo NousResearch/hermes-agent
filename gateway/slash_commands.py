@@ -1156,26 +1156,6 @@ class GatewaySlashCommandsMixin(
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
-    async def _hm_cmd_initiate_setup(self, event, source, _quick_key):
-        from agent.initiate_setup_prompt import build_initiate_setup_prompt
-        from gateway.run import _load_gateway_config, _platform_config_key
-        from hermes_cli.setup_profile import primary_profile
-        from hermes_constants import get_hermes_home
-        from model_tools import get_tool_definitions
-
-        def build() -> str:
-            with self._profile_scope_for_source(source):
-                enabled, disabled = self._resolve_turn_toolsets(
-                    _load_gateway_config(), source, _platform_config_key(source.platform))
-                tools = get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
-                                             skip_tool_search_assembly=True)
-                return build_initiate_setup_prompt(
-                    source.platform.value, [tool["function"]["name"] for tool in tools],
-                    primary_profile(get_hermes_home()))
-
-        return await self._hm_rewrite_turn_to_prompt(
-            event, source, "initiate-setup", t("gateway.initiate_setup.ack"), build)
-
     def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
         """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""

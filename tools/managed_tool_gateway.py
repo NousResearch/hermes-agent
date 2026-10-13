@@ -125,8 +125,7 @@ def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dea
     if code == ANON_ACCOUNT_LOCKED:
         return None
     try:
-        # The identity this replaces served connectors and managed tools: the connectors gate applies.
-        if ensure_portal_identity(explicit=True, for_connectors=True) is None:
+        if ensure_portal_identity(explicit=True) is None:
             return None
         return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
     except Exception as exc:

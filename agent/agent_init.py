@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -2326,37 +2327,6 @@ _USAGE_STATE: dict[str, Any] = {
     "_api_output_history": lambda: deque(maxlen=10),
 }
 
-# Constructor params stored verbatim under the same name.
-_PASSTHROUGH_PARAMS = (
-    "model", "max_iterations", "save_trajectories", "verbose_logging", "quiet_mode",
-    "tool_progress_mode", "ephemeral_system_prompt", "platform", "skip_context_files",
-    "load_soul_identity", "pass_session_id", "log_prefix_chars",
-    # OpenRouter provider preferences
-    "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
-    "provider_require_parameters", "provider_data_collection", "openrouter_min_coding_score",
-    # Toolset filtering
-    "enabled_toolsets", "disabled_toolsets",
-    # Model response configuration (None = provider/model default)
-    "max_tokens", "reasoning_config", "service_tier",
-    "side_agent",
-)
-# Gateway identity params stored as ``agent._<name>``. gateway_session_key is the stable
-# per-chat key (e.g. agent:main:telegram:dm:123).
-_GATEWAY_IDENTITY_PARAMS = (
-    "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
-    "gateway_session_key",
-)
-_CALLBACK_PARAMS = (
-    "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
-    "tool_result_metadata_callback",
-    "thinking_callback", "reasoning_callback", "clarify_callback",
-    "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "connection_callback", "tour_callback",
-    "setup_choose_callback", "step_callback", "stream_delta_callback", "interim_assistant_callback",
-    "status_callback", "notice_callback", "notice_clear_callback",
-    "event_callback", "reaction_callback", "tool_gen_callback",
-)
-
 
 def init_agent(
     agent, base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
@@ -2375,7 +2345,9 @@ def init_agent(
     clarify_callback: Callable[..., Any] | None = None, read_terminal_callback: Callable[..., Any] | None = None,
     read_preview_callback: Callable[..., Any] | None = None, drive_preview_callback: Callable[..., Any] | None = None,
     read_window_below_callback: Callable[..., Any] | None = None, connection_callback: Callable[..., Any] | None = None,
-    tour_callback: Callable[..., Any] | None = None, setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
+    tour_callback: Callable[..., Any] | None = None, theme_callback: Callable[..., Any] | None = None,
+    setup_beat_callback: Callable[..., Any] | None = None,
+    step_callback: Callable[..., Any] | None = None,
     stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
     tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
     notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,

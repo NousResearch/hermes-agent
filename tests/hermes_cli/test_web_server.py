@@ -2383,11 +2383,12 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
 
-    def test_get_session_messages_default_hides_compacted_rows(self):
-        """The endpoint default matches get_messages: active rows only.
+    def test_get_session_messages_default_includes_compacted_rows(self):
+        """Display default keeps compaction-archived turns (active=0, compacted=1).
 
-        Guards the #80680 contract — display reads opt into compacted history
-        explicitly; the dashboard default view stays as it was.
+        Hiding them made the dashboard look like the middle of a chat was
+        deleted after in-place compaction — still on disk, just not returned.
+        Model working-set callers opt out with include_compacted=false.
         """
         from hermes_state import SessionDB
 
@@ -2415,7 +2416,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         resp = self.client.get("/api/sessions/compacted-default/messages")
         assert resp.status_code == 200
         contents = [m["content"] for m in resp.json()["messages"]]
-        assert contents == ["summary", "live q", "live a"]
+        assert contents == ["old q", "old a", "summary", "live q", "live a"]
+
+        active_only = self.client.get(
+            "/api/sessions/compacted-default/messages?include_compacted=false"
+        )
+        assert active_only.status_code == 200
+        assert [m["content"] for m in active_only.json()["messages"]] == [
+            "summary",
+            "live q",
+            "live a",
+        ]
 
     def test_get_session_messages_include_compacted_surfaces_archived_rows(self):
         """include_compacted=true returns the full display history: archived

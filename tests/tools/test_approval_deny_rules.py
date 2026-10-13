@@ -165,6 +165,10 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     "eval 'true; /usr/bin/sudo -n id -u'", "bash -c \"eval 'sudo -n id -u'\"",
     "env -S '${SYNTHETIC} sudo -n id -u'", "env -S 'sudo -n id -u ${SYNTHETIC}'",
     "env -S '${SYNTHETIC}' sudo -n id -u", "$SYNTHETIC sudo -n id -u",
+    "env -S '${SYNTHETIC}sudo -n id -u'",
+    "env -S '${SYNTHETIC}${OTHER}sudo -n id -u'",
+    "env -S 'su${SYNTHETIC}do -n id -u'",
+    'env -S \'"${SYNTHETIC}sudo" -n id -u\'',
     # eval takes no options: zsh reports `-x` as a missing command and runs the rest.
     "eval '-x; sudo -n id -u'", "eval -- '-x; sudo -n id -u'", "${SYNTHETIC} sudo -n id -u",
     # A substitution with no output vanishes like an unset variable (bash, sh, zsh).

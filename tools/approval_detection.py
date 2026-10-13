@@ -1423,10 +1423,10 @@ def _command_word_may_vanish(word: str) -> bool:
 def _split_env_string_unresolved(payload: str) -> list[str] | None:
     """Split an env -S string that holds ${NAME} expansions, as an argv.
 
-    Each expansion stays in its field as literal text (data). Leading fields that
-    are nothing but an unquoted expansion are dropped: they may expand to no
-    argument, which makes the next field the command. Anything env itself
-    rejects (a bare ``$``, an unclosed quote) yields None.
+    Keep expansions in argument fields as data. In the executable field, also
+    consider empty expansions: a literal suffix or surrounding letters can
+    name the command. An all-expansion field disappears only when unquoted.
+    Anything env rejects (a bare ``$``, an unclosed quote) yields None.
     """
     out, names, removable = [], [], set()
     quote, index = None, 0
@@ -1454,7 +1454,16 @@ def _split_env_string_unresolved(payload: str) -> list[str] | None:
     if args is None:
         return None
     marker = re.compile("\0(\\d+)\0")
-    while args and (whole := marker.fullmatch(args[0])) and int(whole.group(1)) in removable:
+    while args:
+        matches = list(marker.finditer(args[0]))
+        if not matches:
+            break
+        literal = marker.sub("", args[0])
+        if literal:
+            args[0] = literal
+            break
+        if not all(int(found.group(1)) in removable for found in matches):
+            break
         args.pop(0)
     return [marker.sub(lambda found: names[int(found.group(1))], arg) for arg in args]
 
@@ -1475,8 +1484,8 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             args = _split_env_string(payload)
             if args is None:
                 # A ${NAME} expansion cannot be resolved here. env still splits an
-                # argv (separators stay data), so keep argv semantics: a leading
-                # field that is only an unquoted expansion may expand to nothing.
+                # argv (separators stay data), including the executable that
+                # remains when its unresolved expansions are empty.
                 args = _split_env_string_unresolved(payload)
                 if args is None:
                     return None

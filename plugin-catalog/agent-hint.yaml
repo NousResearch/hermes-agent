@@ -1,6 +1,6 @@
 name: agent-hint
 repo: https://github.com/dachaimahogany/hermes-agent-hint
-sha: b4735463f66c58adcce72cb6810d553e92c129e1
+sha: f64eca53a53846b99949ad482d1fd5201e90eb23
 description: >-
   Give the inference engine behind each request a standard, machine-readable view of the agent
   session that produced it. Injects an X-Agent-Hint header (base64url JSON: session identity and

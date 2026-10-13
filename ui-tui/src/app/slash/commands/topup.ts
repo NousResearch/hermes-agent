@@ -7,15 +7,17 @@ import type {
   BillingMutationResponse,
   BillingStateResponse
 } from '../../../gatewayTypes.js'
+import { t } from '../../../i18n/runtime.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
-const UNCONFIRMED_CHARGE_MESSAGE =
-  '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
-
 type Sys = (text: string) => void
+
+/** " (try again in ~N min)" for throttled/unavailable errors, or '' when no retry_after. */
+const retrySuffix = (retryAfter?: number | null): string =>
+  retryAfter ? t('slashCmd.topup.error.retryIn', String(Math.max(1, Math.round(retryAfter / 60)))) : ''
 
 /** Map a typed billing error envelope to user-facing copy + portal funnel. */
 const renderBillingError = (
@@ -39,7 +41,7 @@ const renderBillingError = (
       // Reached by non-charge mutations (e.g. auto-reload config) that need
       // Remote Spending allowed. The resumable step-up lives on the buy/charge
       // path; point the user there rather than leaking the raw scope name.
-      sys('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')
+      sys(t('slashCmd.topup.error.insufficientScope'))
 
       break
     case 'remote_spending_revoked': {
@@ -48,11 +50,9 @@ const renderBillingError = (
       patchOverlayState({ billing: null })
 
       const who =
-        env.actor === 'admin'
-          ? 'An admin stopped remote spending for this terminal.'
-          : 'You stopped remote spending for this terminal.'
+        env.actor === 'admin' ? t('slashCmd.topup.error.revokedByAdmin') : t('slashCmd.topup.error.revokedByYou')
 
-      sys(`${who} Reconnect to restore — run /portal to re-authorize this terminal.`)
+      sys(t('slashCmd.topup.error.revokedReconnect', who))
 
       return
     }
@@ -60,7 +60,7 @@ const renderBillingError = (
     case 'session_revoked':
       // Stronger than a spend-revoke: the whole session is gone → full re-login.
       patchOverlayState({ billing: null })
-      sys('Your session was logged out. Run /portal to log in again.')
+      sys(t('slashCmd.topup.error.sessionRevoked'))
 
       return
 
@@ -69,51 +69,42 @@ const renderBillingError = (
     case 'remote_spending_disabled':
       // Account-wide switch is OFF (dual-emitted error/code). A billing admin can
       // turn it on from the portal's Hermes Agent page; this is NOT a per-terminal stop.
-      sys(
-        "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
-      )
+      sys(t('slashCmd.topup.error.remoteSpendingDisabled'))
 
       break
 
     case 'role_required':
-      sys(
-        'Adding funds needs someone with billing permissions (owner, admin, or finance admin), or manage this on the portal.'
-      )
+      sys(t('slashCmd.topup.error.roleRequired'))
 
       break
 
     case 'consent_required':
-      sys('This action needs a one-time card confirmation and consent step on the portal before it can proceed.')
+      sys(t('slashCmd.topup.error.consentRequired'))
 
       break
 
     case 'org_access_denied':
-      sys("This token isn't bound to an org you can manage. Sign in with the right org, or manage this on the portal.")
+      sys(t('slashCmd.topup.error.orgAccessDenied'))
 
       break
 
     case 'upgrade_cap_exceeded':
-      sys('🔴 Daily plan-change limit reached (5 per org) — try again tomorrow, or manage this on the portal.')
+      sys(t('slashCmd.topup.error.upgradeCapExceeded'))
 
       break
 
     case 'auto_top_up_disabled_failures':
-      sys(
-        'Auto-reload was turned off after repeated charge failures. Fix the card issue, then re-enable it from /topup → Auto-reload.'
-      )
+      sys(t('slashCmd.topup.error.autoTopUpDisabledFailures'))
 
       break
 
     case 'idempotency_conflict':
-      sys('🔴 That charge key was already used for a different amount. Start a fresh top-up.')
+      sys(t('slashCmd.topup.error.idempotencyConflict'))
 
       break
 
     case 'no_payment_method':
-      sys(
-        '💳 No saved card for terminal charges yet. Set one up on the portal ' +
-          "(one-time credit buys don't save a reusable card)."
-      )
+      sys(t('slashCmd.topup.error.noPaymentMethod'))
 
       break
     case 'monthly_cap_exceeded': {
@@ -121,8 +112,8 @@ const renderBillingError = (
       const remaining = env.payload?.remainingUsd
       sys(
         remaining != null
-          ? `🔴 Monthly spend cap reached — $${remaining} headroom left.`
-          : '🔴 Monthly spend cap reached.'
+          ? t('slashCmd.topup.error.monthlyCapExceededRemaining', String(remaining))
+          : t('slashCmd.topup.error.monthlyCapExceeded')
       )
 
       break
@@ -132,25 +123,23 @@ const renderBillingError = (
     case 'temporarily_unavailable': {
       // 429 throttle OR 503 gate-fail-closed: NOT a payment failure, NOT a
       // revoke. Back off and tell the user to retry.
-      const mins = env.retry_after ? ` (try again in ~${Math.max(1, Math.round(env.retry_after / 60))} min)` : ''
-      sys(`🟡 Too many charges right now${mins}. This isn't a payment failure.`)
+      sys(t('slashCmd.topup.error.rateLimited', retrySuffix(env.retry_after)))
 
       break
     }
 
     case 'stripe_unavailable': {
-      const mins = env.retry_after ? ` (try again in ~${Math.max(1, Math.round(env.retry_after / 60))} min)` : ''
-      sys(`🟡 Stripe is having trouble right now — try again shortly${mins}.`)
+      sys(t('slashCmd.topup.error.stripeUnavailable', retrySuffix(env.retry_after)))
 
       break
     }
 
     default:
-      sys(`🔴 ${env.message || env.error || 'Billing request failed.'}`)
+      sys(t('slashCmd.topup.error.generic', env.message || env.error || t('slashCmd.topup.error.genericFallback')))
   }
 
   if (portal) {
-    sys(`Portal: ${portal}`)
+    sys(t('slashCmd.topup.error.portal', portal))
   }
 }
 
@@ -177,7 +166,12 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
   const renderOutcome = (outcome: SettlementOutcome): void => {
     switch (outcome.kind) {
       case 'settled':
-        sys(`✅ ${outcome.status.amount_usd ? `$${outcome.status.amount_usd}` : 'Credits'} added.`)
+        sys(
+          t(
+            'slashCmd.topup.charge.settled',
+            outcome.status.amount_usd ? `$${outcome.status.amount_usd}` : t('slashCmd.topup.charge.creditsFallback')
+          )
+        )
 
         return
 
@@ -187,14 +181,19 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         return
 
       case 'refused':
-        sys(`🔴 Could not check the charge: ${outcome.status.message || outcome.status.error || 'error'}`)
+        sys(
+          t(
+            'slashCmd.topup.charge.couldNotCheck',
+            outcome.status.message || outcome.status.error || t('slashCmd.topup.charge.couldNotCheckFallback')
+          )
+        )
 
         return
 
       case 'ambiguous':
         if (outcome.status) {
           renderBillingError(sys, ctx, outcome.status)
-          sys(UNCONFIRMED_CHARGE_MESSAGE)
+          sys(t('slashCmd.topup.charge.unconfirmed'))
 
           return
         }
@@ -204,19 +203,16 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         }
 
         if (!ctx.stale()) {
-          sys(UNCONFIRMED_CHARGE_MESSAGE)
+          sys(t('slashCmd.topup.charge.unconfirmed'))
         }
 
         return
 
       case 'timed_out':
-        sys(
-          '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' +
-            'Check /topup or the portal shortly.'
-        )
+        sys(t('slashCmd.topup.charge.timedOut'))
 
         if (portalUrl) {
-          sys(`Portal: ${portalUrl}`)
+          sys(t('slashCmd.topup.error.portal', portalUrl))
         }
 
         return
@@ -255,32 +251,32 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
 const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string | null): void => {
   switch ((reason || '').trim()) {
     case 'authentication_required':
-      sys('🔴 Your bank requires verification (3DS). Complete it on the portal to finish this purchase.')
+      sys(t('slashCmd.topup.charge.authenticationRequired'))
 
       break
 
     case 'payment_method_expired':
-      sys('🔴 Your card has expired. Update it on the portal.')
+      sys(t('slashCmd.topup.charge.paymentMethodExpired'))
 
       break
 
     case 'card_declined':
-      sys('🔴 Your card was declined. Try another card on the portal.')
+      sys(t('slashCmd.topup.charge.cardDeclined'))
 
       break
 
     case 'processing_error':
-      sys("🔴 The charge didn't go through (processing_error).")
+      sys(t('slashCmd.topup.charge.failedReason', 'processing_error'))
 
       break
 
     default:
-      sys(`🔴 The charge didn't go through (${reason || 'processing_error'}).`)
+      sys(t('slashCmd.topup.charge.failedReason', reason || 'processing_error'))
   }
 
   // Funnel to the portal after any failure (parity with cli.py _billing_portal_hint).
   if (portalUrl) {
-    sys(`Portal: ${portalUrl}`)
+    sys(t('slashCmd.topup.error.portal', portalUrl))
   }
 }
 
@@ -289,21 +285,21 @@ const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
   if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return { error: 'Enter a dollar amount, e.g. 100 (max 2 decimal places).' }
+    return { error: t('slashCmd.topup.validate.invalid') }
   }
 
   const value = Number(cleaned)
 
   if (!(value > 0)) {
-    return { error: 'Amount must be greater than $0.' }
+    return { error: t('slashCmd.topup.validate.notPositive') }
   }
 
   if (s.min_usd != null && value < Number(s.min_usd)) {
-    return { error: `Minimum is $${s.min_usd}.` }
+    return { error: t('slashCmd.topup.validate.minimum', String(s.min_usd)) }
   }
 
   if (s.max_usd != null && value > Number(s.max_usd)) {
-    return { error: `Maximum is $${s.max_usd}.` }
+    return { error: t('slashCmd.topup.validate.maximum', String(s.max_usd)) }
   }
 
   return { amount: cleaned }
@@ -339,7 +335,7 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
         return false
       }),
   charge: (amount: string, idempotencyKey?: string): Promise<BillingChargeOutcome> => {
-    sys('💳 Charge submitted — confirming settlement…')
+    sys(t('slashCmd.topup.charge.submitted'))
 
     return ctx.gateway
       .rpc<BillingChargeResponse>('billing.charge', {
@@ -376,7 +372,7 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
   requestRemoteSpending: () => requestRemoteSpending(ctx),
   openPortal: (url: string) => {
     openExternalUrl(url)
-    sys(`Opening portal: ${url}`)
+    sys(t('slashCmd.topup.openingPortal', url))
   },
   refreshState: () =>
     ctx.gateway
@@ -401,7 +397,7 @@ export const topupCommands: SlashCommand[] = [
         .then(
           ctx.guarded<BillingStateResponse>(s => {
             if (!s.logged_in) {
-              sys('💳 Not logged into Nous Portal — run /portal to log in, then /topup.')
+              sys(t('slashCmd.topup.notLoggedIn'))
 
               return
             }

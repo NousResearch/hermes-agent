@@ -1,6 +1,6 @@
 name: openrouter
-version: 1.0.0
-description: "OpenRouter + Nous Portal image generation (chat-completions image output; reference-grounded). Text-to-image and image-to-image."
+version: 1.1.0
+description: "OpenRouter + Nous Portal image generation. Chat-completions image output (reference-grounded) plus OpenRouter's Dedicated Image API (/images/generations) for gpt-image-2, Krea 2, Qwen Image 3 Pro, MAI-Image-2.5 and Grok Imagine — exact per-model aspect ratios, resolution/quality/background/seed/n, up to 16 reference images. Text-to-image and image-to-image."
 author: Hermes Agent
 kind: backend
 requires_env:

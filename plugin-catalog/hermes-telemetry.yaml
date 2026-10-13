@@ -1,0 +1,26 @@
+name: hermes-telemetry
+repo: https://github.com/nujovich/hermes-telemetry
+sha: 11166c45cd3f636578ecf6c8caeb8780dae4c304
+description: "Observability + budget guardrails for Hermes Agent — tokens, cost, latency, tool calls per session and cron job. Persists to local SQLite. Exposes /stats and /budget slash commands. Disclosure — records per-session tokens, cost, latency, tool names and sender/profile ids (no message text) in ~/.hermes/telemetry/telemetry.db; fetches public model pricing from openrouter.ai/api/v1/models on first load and at most once a day; in the default enforce mode first load writes a $5/day, $100/month global budget to telemetry/budget.yaml, and a hard breach blocks every tool call and pauses the over-budget cron job until the window resets (set plugins.entries.hermes-telemetry.settings.mode: observe to record without enforcing); the optional standalone dashboard server binds 127.0.0.1 with no auth."
+maintainer: nujovich
+tier: community
+category: general
+docs_url: https://github.com/nujovich/hermes-telemetry#readme
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - api_request_error
+  - on_session_end
+  - on_session_finalize
+  - on_session_start
+  - post_api_request
+  - post_llm_call
+  - post_tool_call
+  - pre_api_request
+  - pre_llm_call
+  - pre_tool_call
+  - subagent_start
+  - subagent_stop
+  provides_middleware: []
+  requires_env: []
+version: "0.9.0"

@@ -1,9 +1,12 @@
 import base64
+import urllib.parse
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_cli import ssh_workspace_fs, web_server
+from hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -45,6 +48,192 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
 
 
+def test_fs_routes_workspace_reads_to_ssh_backend(client, monkeypatch):
+    calls = []
+
+    class FakeSshFs:
+        cwd = "/srv/repos"
+
+        def list_dir(self, path, _hidden_names):
+            calls.append(("list", path))
+            return {
+                "entries": [
+                    {
+                        "name": "project",
+                        "path": "/srv/repos/project",
+                        "isDirectory": True,
+                    }
+                ]
+            }
+
+        def git_branch(self, path):
+            calls.append(("branch", path))
+            return "main"
+
+        def git_root(self, path):
+            calls.append(("git-root", path))
+            return "/srv/repos/project"
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            calls.append(("read", path, max_bytes, read_limit))
+            return b"hello", 5, path
+
+        def write_text(self, path, content, *, max_bytes):
+            calls.append(("write", path, content, max_bytes))
+            return path, len(content.encode("utf-8"))
+
+        def inspect_file(self, path):
+            calls.append(("inspect", path))
+            return path, 5
+
+        def stream_file(self, path):
+            calls.append(("stream", path))
+            yield b"hello"
+
+    backend = FakeSshFs()
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: backend)
+
+    listing = client.get(
+        "/api/fs/list",
+        params={"path": "/srv/repos", "profile": "remote-dev"},
+    )
+    default_cwd = client.get(
+        "/api/fs/default-cwd",
+        params={"profile": "remote-dev"},
+    )
+    read_text = client.get(
+        "/api/fs/read-text",
+        params={"path": "/srv/repos/project/README.md", "profile": "remote-dev"},
+    )
+    read_data = client.get(
+        "/api/fs/read-data-url",
+        params={"path": "/srv/repos/project/logo.png", "profile": "remote-dev"},
+    )
+    write_text = client.post(
+        "/api/fs/write-text",
+        params={"profile": "remote-dev"},
+        json={"path": "/srv/repos/project/README.md", "content": "updated"},
+    )
+    git_root = client.get(
+        "/api/fs/git-root",
+        params={"path": "/srv/repos/project/src", "profile": "remote-dev"},
+    )
+    download = client.get(
+        "/api/fs/download",
+        params={"path": "/srv/repos/project/report.txt", "profile": "remote-dev"},
+    )
+
+    assert listing.status_code == 200
+    assert listing.json() == {
+        "entries": [
+            {
+                "name": "project",
+                "path": "/srv/repos/project",
+                "isDirectory": True,
+            }
+        ]
+    }
+    assert default_cwd.status_code == 200
+    assert default_cwd.json() == {"cwd": "/srv/repos", "branch": "main"}
+    assert read_text.json()["text"] == "hello"
+    assert read_data.json()["dataUrl"] == "data:image/png;base64,aGVsbG8="
+    assert write_text.json() == {"ok": True, "path": "/srv/repos/project/README.md", "byteSize": 7}
+    assert git_root.json() == {"root": "/srv/repos/project"}
+    assert download.content == b"hello"
+    assert calls == [
+        ("list", "/srv/repos"),
+        ("branch", "/srv/repos"),
+        (
+            "read",
+            "/srv/repos/project/README.md",
+            file_routes._FS_TEXT_SOURCE_MAX_BYTES,
+            file_routes._FS_TEXT_PREVIEW_MAX_BYTES,
+        ),
+        ("read", "/srv/repos/project/logo.png", web_server._FS_DATA_URL_MAX_BYTES, None),
+        ("write", "/srv/repos/project/README.md", "updated", file_routes._FS_TEXT_WRITE_MAX_BYTES),
+        ("git-root", "/srv/repos/project/src"),
+        ("inspect", "/srv/repos/project/report.txt"),
+        ("stream", "/srv/repos/project/report.txt"),
+    ]
+
+
+def test_fs_backend_resolves_ssh_connection_from_profile_env(monkeypatch):
+    captured = {}
+    expected = object()
+    monkeypatch.setattr(file_routes, "_profile_scope", lambda _profile: nullcontext())
+    monkeypatch.setattr(
+        file_routes,
+        "load_config",
+        lambda: {"terminal": {"backend": "ssh", "cwd": "/srv/repos"}},
+    )
+    monkeypatch.setattr(
+        file_routes,
+        "load_env",
+        lambda: {
+            "TERMINAL_SSH_HOST": "ssh.example",
+            "TERMINAL_SSH_USER": "dev",
+            "TERMINAL_SSH_PORT": "2222",
+        },
+    )
+
+    def fake_factory(profile_key, terminal):
+        captured.update(profile_key=profile_key, terminal=terminal)
+        return expected
+
+    monkeypatch.setattr(ssh_workspace_fs, "get_ssh_workspace_fs", fake_factory)
+
+    assert file_routes._fs_backend("Remote-Dev") is expected
+    assert captured == {
+        "profile_key": "remote-dev",
+        "terminal": {
+            "backend": "ssh",
+            "cwd": "/srv/repos",
+            "ssh_host": "ssh.example",
+            "ssh_user": "dev",
+            "ssh_port": "2222",
+        },
+    }
+
+
+def test_fs_download_rejects_sensitive_resolved_ssh_path_before_streaming(client, monkeypatch):
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return "/srv/repos/.env", 8
+
+        def stream_file(self, _path):
+            pytest.fail("sensitive SSH files must not be streamed")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(
+        "/api/fs/download",
+        params={"path": "/srv/repos/safe-link", "profile": "remote-dev"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
+    class FakeSshFs:
+        def inspect_file(self, _path):
+            return "/srv/repos/report.txt", 6
+
+        def stream_file(self, _path):
+            yield b"123"
+            yield b"456"
+
+    monkeypatch.setattr(file_routes, "_FS_TEXT_SOURCE_MAX_BYTES", 3)
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+
+    response = client.get(
+        "/api/fs/download",
+        params={"path": "/srv/repos/report.txt", "profile": "remote-dev"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"123456"
+
+
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
     target = tmp_path / "image.png"
@@ -53,6 +242,97 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     response = client.get("/api/fs/read-data-url", params={"path": str(target)})
 
     assert response.status_code == 413
+
+
+def test_fs_download_streams_file_without_data_url_cap(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
+    target = tmp_path / "report with spaces.pdf"
+    target.write_bytes(b"123456")
+
+    response = client.get("/api/fs/download", params={"path": str(target)})
+
+    assert response.status_code == 200
+    assert response.content == b"123456"
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert "report%20with%20spaces.pdf" in response.headers["content-disposition"]
+
+
+def test_fs_download_rejects_sensitive_files(client, tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("SECRET=1")
+
+    response = client.get("/api/fs/download", params={"path": str(target)})
+
+    assert response.status_code == 403
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("endpoint", ["/api/fs/download", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("prefix", ["/", "/cygdrive/", "/mnt/"])
+def test_fs_media_shell_paths_deliver_files_and_preserve_access_checks(client, tmp_path, endpoint, prefix):
+    """MEDIA may reuse the path a successful Git Bash command used."""
+    target = tmp_path / "checklist with spaces #1.txt"
+    target.write_bytes(b"Weekend checklist\n[ ] Take a walk\n")
+    sensitive = tmp_path / ".env"
+    sensitive.write_bytes(b"SECRET=must-not-be-delivered")
+
+    def shell_path(path):
+        native = path.as_posix()
+        return f"{prefix}{native[0].lower()}{native[2:]}"
+
+    for path in (shell_path(target), str(target), target.as_uri()):
+        response = client.get(endpoint, params={"path": path})
+        assert response.status_code == 200, response.text
+        data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                if endpoint.endswith("read-data-url") else response.content)
+        assert data == target.read_bytes()
+
+    for path, expected in ((sensitive, 403), (tmp_path / "missing.txt", 404)):
+        response = client.get(endpoint, params={"path": shell_path(path)})
+        assert response.status_code == expected, response.text
+        assert "must-not-be-delivered" not in response.text
+
+    invalid_session = client.get(endpoint, params={
+        "path": shell_path(target), "profile": "default", "session_id": "missing-session",
+    })
+    assert invalid_session.status_code == 404, invalid_session.text
+    client.headers.pop(web_server._SESSION_HEADER_NAME)
+    assert client.get(endpoint, params={"path": shell_path(target)}).status_code == 401
+
+
+@pytest.mark.platforms("posix")
+def test_fs_media_posix_paths_are_not_interpreted_as_windows_drives():
+    from hermes_cli.web_server_files import _fs_path
+
+    for path in ("/c/Users/example/checklist.txt", "/cygdrive/c/checklist.txt", "/mnt/c/checklist.txt"):
+        assert _fs_path(path) == Path(path).resolve()
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+@pytest.mark.parametrize("relative", [".env", "auth.json", "mcp-tokens/github.json"])
+def test_fs_readers_reject_sensitive_paths(client, tmp_path, endpoint, relative):
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("SECRET=1")
+
+    response = client.get(endpoint, params={"path": str(target)})
+
+    assert response.status_code == 403
+    assert "SECRET" not in response.text
+
+
+def test_fs_list_hides_sensitive_entries(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("SECRET=1")
+    (root / "auth.json").write_text("{}")
+    (root / "mcp-tokens").mkdir()
+    (root / "notes.txt").write_text("ok")
+
+    response = client.get("/api/fs/list", params={"path": str(root)})
+
+    assert response.status_code == 200
+    assert [entry["name"] for entry in response.json()["entries"]] == ["notes.txt"]
 
 
 def test_fs_endpoints_require_auth(tmp_path):
@@ -67,3 +347,43 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
+    target = tmp_path / "半导体行业运营分享会纪要.md"
+    target.write_text("hello")
+
+    # One percent-encoding on top of HTTP's own query decoding: the server
+    # receives the literal "%E5%8D%8A..." string (issue #103425).
+    double_encoded = urllib.parse.quote(str(target))
+
+    response = client.get("/api/fs/read-text", params={"path": double_encoded})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(target)
+    assert body["text"] == "hello"
+
+
+def test_fs_read_text_keeps_literal_percent_filename_verbatim(client, tmp_path):
+    target = tmp_path / "50%25off.md"
+    target.write_text("literal percent name")
+
+    response = client.get("/api/fs/read-text", params={"path": str(target)})
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "literal percent name"
+
+
+def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
+    sibling = tmp_path / "report v2.md"
+    sibling.write_text("existing")
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(tmp_path / "report%20v2.md"), "content": "new"},
+    )
+
+    assert response.status_code == 200
+    assert sibling.read_text() == "existing"
+    assert (tmp_path / "report%20v2.md").read_text() == "new"

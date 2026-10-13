@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { DesktopBootProgress } from '@/global'
+import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
 
 export interface DesktopBootState extends DesktopBootProgress {
@@ -46,6 +46,11 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
   })
 }
 
+/** The blocked-update screen's hold alone, outside the boot steps (R8 M6). */
+export function applyDesktopUpdateHold(hold: UpdateHoldWire | null) {
+  $desktopBoot.set({ ...$desktopBoot.get(), updateHold: hold })
+}
+
 export function setDesktopBootStep(step: {
   phase: string
   message: string
@@ -63,6 +68,27 @@ export function setDesktopBootStep(step: {
     progress: step.progress,
     running: step.running ?? true,
     timestamp: Date.now()
+  })
+}
+
+/**
+ * Re-arm the boot overlay for an automatic bounded retry of a failed REMOTE
+ * boot (#82679). Unlike setDesktopBootStep — whose null `error` intentionally
+ * cannot clear a latched failure — this explicitly lifts the error so the
+ * overlay shows the retry status instead of the terminal failure surface
+ * while the retry is in flight. failDesktopBoot() re-latches when the
+ * bounded retries are exhausted.
+ */
+export function resumeDesktopBootForRetry(message: string) {
+  const current = $desktopBoot.get()
+  $desktopBoot.set({
+    ...current,
+    error: null,
+    message,
+    phase: 'renderer.boot.retry',
+    running: true,
+    timestamp: Date.now(),
+    visible: true
   })
 }
 

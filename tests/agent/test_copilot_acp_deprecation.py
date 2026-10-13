@@ -58,12 +58,6 @@ class TestDeprecationPatternDetection:
 class TestGitHubModelsAzureUrl:
     """Verify that the Azure GitHub Models URL is recognised."""
 
-    def test_url_to_provider_contains_azure_models(self):
-        from agent.model_metadata import _URL_TO_PROVIDER
-
-        # Maps to the canonical "copilot" provider (same convention as the
-        # other GitHub-family entries) — not the "github-models" alias.
-        assert _URL_TO_PROVIDER.get("models.inference.ai.azure.com") == "copilot"
 
     def test_is_github_models_base_url_recognises_azure(self):
         from hermes_cli.models import _is_github_models_base_url

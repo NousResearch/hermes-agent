@@ -15,7 +15,7 @@ metadata:
 
 # AudioCraft: Audio Generation
 
-Comprehensive guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
+Guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
 
 ## When to use AudioCraft
 

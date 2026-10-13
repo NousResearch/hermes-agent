@@ -20,6 +20,7 @@ import {
   nativeRefreshUrl,
   nativeTokenUrl,
   parseLoopbackCallback,
+  parseStoredTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
   statusSupportsNativeFlow,
@@ -82,6 +83,58 @@ test('resolveLoginStrategy picks native only when advertised and not forced', ()
   assert.equal(resolveLoginStrategy(legacy), 'embedded')
   // A user/env override can pin the legacy flow even on a capable gateway.
   assert.equal(resolveLoginStrategy(gated, { forceEmbedded: true }), 'embedded')
+})
+
+// --- provider-aware strategy ---
+
+test('resolveLoginStrategy returns embedded when every provider supports password', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ name: 'basic', supportsPassword: true }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
+})
+
+test('resolveLoginStrategy returns embedded for all-password even without native_pkce in auth_flows', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie'] }
+  const providers = [{ name: 'basic', supportsPassword: true }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
+})
+
+test('resolveLoginStrategy returns native for native_pkce gateway with non-password provider', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+test('resolveLoginStrategy returns native for a mixed provider deployment', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  const providers = [
+    { name: 'basic', supportsPassword: true },
+    { name: 'nous', supportsPassword: false }
+  ]
+
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+test('resolveLoginStrategy preserves existing behavior when providers are empty or missing', () => {
+  const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const legacy = { auth_required: true, auth_flows: ['cookie'] }
+
+  assert.equal(resolveLoginStrategy(gated, {}), 'native')
+  assert.equal(resolveLoginStrategy(gated, { providers: [] }), 'native')
+  assert.equal(resolveLoginStrategy(legacy, {}), 'embedded')
+  assert.equal(resolveLoginStrategy(legacy, { providers: [] }), 'embedded')
+})
+
+test('resolveLoginStrategy ignores providers with no name', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+  const providers = [{ supportsPassword: true }]
+
+  // The unnamed provider is filtered out — still falls through to auth_flows.
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
 })
 
 // --- URL building ---
@@ -174,6 +227,39 @@ test('parseTokenResponse tolerates an absent refresh token / expiry', () => {
 
   assert.equal(t.refreshToken, '')
   assert.equal(t.expiresAt, 0)
+})
+
+test('parseStoredTokenSet maps the encrypted on-disk camelCase shape', () => {
+  const t = parseStoredTokenSet({
+    accessToken: 'AT-stored',
+    refreshToken: 'RT-stored',
+    expiresAt: 1893456000,
+    provider: 'self-hosted',
+    userId: 'u-stored'
+  })
+
+  assert.equal(t.accessToken, 'AT-stored')
+  assert.equal(t.refreshToken, 'RT-stored')
+  assert.equal(t.expiresAt, 1893456000)
+  assert.equal(t.provider, 'self-hosted')
+  assert.equal(t.userId, 'u-stored')
+})
+
+test('parseTokenResponse cannot read a persisted set (the reload bug #73271)', () => {
+  // Guards against regressing to the wrong parser on the reload path: a
+  // persisted camelCase set has no snake_case access_token, so the raw-response
+  // parser throws — which is exactly why the stored path must use
+  // parseStoredTokenSet instead.
+  const persisted = JSON.parse(
+    JSON.stringify({ accessToken: 'AT', refreshToken: 'RT', expiresAt: 1, provider: 'nous', userId: 'u' })
+  )
+
+  assert.throws(() => parseTokenResponse(persisted), /missing access_token/i)
+  assert.equal(parseStoredTokenSet(persisted).accessToken, 'AT')
+})
+
+test('parseStoredTokenSet rejects a non-normalized server response', () => {
+  assert.throws(() => parseStoredTokenSet({ access_token: 'AT-server' }), /missing accessToken/i)
 })
 
 // --- refresh timing ---

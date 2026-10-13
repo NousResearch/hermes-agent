@@ -139,6 +139,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/local-models",
   "/api/dashboard/theme",
   "/api/dashboard/font",
+  "/api/dashboard/language",
   "/api/dashboard/plugins",
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
@@ -1149,6 +1150,8 @@ export const api = {
     }),
   getFontPref: () =>
     fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  getLocaleDefault: () =>
+    fetchJSON<DashboardLocaleResponse>("/api/dashboard/language"),
   setFontPref: (font: string) =>
     fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
       method: "PUT",
@@ -2690,6 +2693,11 @@ export interface DashboardThemesResponse {
 export interface DashboardFontResponse {
   /** Active font-override id, or "theme" when no override is set. */
   font: string;
+}
+
+export interface DashboardLocaleResponse {
+  /** Configured UI language (display.language), the dashboard's server-side locale default. */
+  language: string;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

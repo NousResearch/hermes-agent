@@ -13,7 +13,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.config import cfg_get
+from agent.i18n import get_language
+from hermes_cli.config import cfg_get, load_config
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
@@ -104,6 +105,15 @@ async def set_dashboard_font(body: FontSetBody, profile: Optional[str] = None):
     font = body.font if body.font in _FONT_CHOICES else _FONT_DEFAULT_ID
     await asyncio.to_thread(_set_dashboard_key, "font", font, profile)
     return {"ok": True, "font": font}
+
+
+@router.get("/api/dashboard/language")
+async def get_dashboard_language(profile: Optional[str] = None):
+    """Configured UI language as the dashboard's server-side locale default."""
+    def _run():
+        return {"language": get_language()}
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 def _plugin_enable_sets() -> tuple[set, set]:

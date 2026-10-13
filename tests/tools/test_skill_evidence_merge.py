@@ -177,7 +177,7 @@ def _evidence_schema_branch():
     """The evidence_merge op branch in the tool schema.
 
     The schema is a per-action ``anyOf`` (not one flat union) so a model that just used
-    write_file cannot emit file_content on a patch. Locate our branch by shape, not position.
+    write_file cannot emit file_content on a patch. Locate the evidence_merge branch by shape, not position.
     """
     items = smt.SKILL_MANAGE_SCHEMA["parameters"]["properties"]["operations"]["items"]
     for branch in items["anyOf"]:

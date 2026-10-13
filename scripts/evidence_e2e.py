@@ -9,8 +9,7 @@ This exercises the real path — registry dispatch -> write gate -> guarded writ
 -> disk — against a temp HERMES_HOME, then applies an unrelated body edit and
 checks the evidence block is still there and still correct.
 
-Run:
-    cd /tmp/rebase-test
+Run (from the repo root):
     HERMES_HOME=$(mktemp -d) python scripts/evidence_e2e.py
 
 It refuses to run against a real ~/.hermes unless SEL_E2E_ALLOW=1.
@@ -24,9 +23,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Refuse to touch real skills. TMPDIR is redirected under ~/.hermes/cache/scratch
-# on this host, so a naive "is HERMES_HOME inside ~/.hermes" test would fire even
-# for a throwaway dir. Check the paths that actually hold skills instead.
+# Refuse to touch real skills. Some deployments redirect TMPDIR under
+# ~/.hermes (e.g. to a scratch cache dir), so a naive "is HERMES_HOME inside
+# ~/.hermes" test would fire even for a throwaway dir. Check the paths that
+# actually hold skills instead.
 _home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).resolve()
 _real_skills = (Path.home() / ".hermes" / "skills").resolve()
 _writes_skills = (_home / "skills").resolve()

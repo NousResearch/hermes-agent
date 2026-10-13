@@ -64,7 +64,10 @@ async def test_signal_adapter_reaction_is_silent_and_completed_note_reaches_late
     adapter.dm_allow_from = {owner}
     adapter.gateway_runner = object()
     adapter.set_authorization_check(lambda user_id, *_args: user_id == owner)
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"default": "test/model"}})
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {
+        "model": {"default": "test/model"},
+        "signal": {"reaction_awareness": True},
+    })
     provider = FakeProvider()
     monkeypatch.setattr(runtime.ConfiguredAIAgentModelClient, "from_gateway_runner",
                         classmethod(lambda *_args: provider))
@@ -101,3 +104,76 @@ async def test_signal_adapter_reaction_is_silent_and_completed_note_reaches_late
     assert len(events) == 2
     assert events[1].metadata["signal_reaction_awareness"][0]["note"] == "The reaction acknowledges the message."
     await runtime.stop_awareness(adapter)
+
+
+@pytest.mark.asyncio
+async def test_reaction_awareness_is_disabled_without_explicit_config(monkeypatch, tmp_path):
+    from gateway.config import PlatformConfig
+    from gateway.platforms.signal import SignalAdapter
+    import gateway.platforms.signal_reaction_awareness_runtime as runtime
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    owner = "00000000-0000-0000-0000-000000000002"
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"account": "00000000-0000-0000-0000-000000000001"}))
+    adapter.dm_allow_from = {owner}
+    adapter.gateway_runner = object()
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"default": "test/model"}})
+
+    def unexpected_model_call(*_args, **_kwargs):
+        pytest.fail("disabled reaction awareness must not resolve or construct a model")
+
+    monkeypatch.setattr(runtime.ConfiguredAIAgentModelClient, "from_gateway_runner", unexpected_model_call)
+    await runtime.start_awareness(adapter)
+    assert adapter._reaction_awareness_callback is None
+    assert adapter._reaction_awareness_note_getter is None
+    assert not (tmp_path / "signal-reaction-awareness.sqlite3").exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_prunes_expired_rows_on_startup_and_during_idle_maintenance(monkeypatch, tmp_path):
+    import time
+    from gateway.config import PlatformConfig
+    from gateway.platforms.signal import SignalAdapter
+    from gateway.platforms.signal_reaction_awareness import ReactionAwarenessLane
+    import gateway.platforms.signal_reaction_awareness_runtime as runtime
+
+    owner = "00000000-0000-0000-0000-000000000002"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(runtime, "_MAINTENANCE_INTERVAL_SECONDS", 0.01)
+    db_path = tmp_path / runtime._DB_NAME
+    db = sqlite3.connect(db_path)
+    lane = ReactionAwarenessLane(db, model_name="m", model_client=FakeProvider())
+    old = time.time() - 31 * 86400
+    lane.db.execute("INSERT INTO awareness_targets VALUES(?,?,?,?,?,?)", (str(tmp_path), "scope", 1, owner, "old", old))
+    lane.db.execute("INSERT INTO awareness_outbox(profile,scope,event_id,target_timestamp,sender,target_author,action,emoji,event_timestamp,revision,status,lease_until,attempts,created,updated) VALUES(?,?,?,?,?,?,?,?,?,1,'completed',0,0,?,?)", (str(tmp_path), "scope", "old", 1, owner, owner, "added", "👍", 2, old, old))
+    lane.db.execute("INSERT INTO awareness_latest VALUES(?,?,?,?,?,?,?,?)", (str(tmp_path), "scope", 1, owner, 2, "old", 1, old))
+    lane.db.execute("INSERT INTO awareness_notes VALUES(?,?,?,?,?,?,?)", (str(tmp_path), "scope", "old", 1, 2, "old note", old))
+    db.commit()
+    db.close()
+
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"account": "00000000-0000-0000-0000-000000000001"}))
+    adapter.dm_allow_from = {owner}
+    adapter.gateway_runner = object()
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {
+        "model": {"default": "test/model"}, "signal": {"reaction_awareness": True},
+    })
+    provider = FakeProvider()
+    monkeypatch.setattr(runtime.ConfiguredAIAgentModelClient, "from_gateway_runner",
+                        classmethod(lambda *_args: provider))
+    await runtime.start_awareness(adapter)
+    service = runtime._services[id(adapter)]
+    assert all(service.lane.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+               for table in ("awareness_targets", "awareness_outbox", "awareness_latest", "awareness_notes"))
+
+    assert service.lane.register_target(profile=str(tmp_path), scope="idle", timestamp=3,
+                                        author=owner, body="will expire without traffic")
+    service.lane.db.execute("UPDATE awareness_targets SET created=? WHERE scope='idle'", (old,))
+    service.lane.db.commit()
+    async with asyncio.timeout(1):
+        while service.lane.db.execute("SELECT COUNT(*) FROM awareness_targets WHERE scope='idle'").fetchone()[0]:
+            await asyncio.sleep(0.01)
+    assert provider.calls == []
+    maintenance_task = service.maintenance_task
+    assert maintenance_task is not None
+    await runtime.stop_awareness(adapter)
+    assert maintenance_task.cancelled()

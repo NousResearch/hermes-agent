@@ -27,6 +27,7 @@ _MAX_ACTIVE_SCOPES = 4
 _MAX_ATTEMPTS = 5
 _RETRY_BASE_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 30.0
+_MAINTENANCE_INTERVAL_SECONDS = 3600.0
 
 # Adapter keys are weakly coupled to lifecycle; shutdown owns callback removal and workers.
 _services: dict[int, "_Runtime"] = {}
@@ -45,6 +46,31 @@ def _trusted_owner_ids(adapter: Any) -> frozenset[str]:
     return frozenset(values)
 
 
+def _reaction_awareness_enabled(user_config: Any) -> bool:
+    """Require an explicit, profile-local Signal opt-in; environment allowlists do not enable it."""
+    if not isinstance(user_config, dict):
+        return False
+    sections = [user_config.get("signal")]
+    platforms = user_config.get("platforms")
+    if isinstance(platforms, dict):
+        sections.append(platforms.get("signal"))
+    gateway = user_config.get("gateway")
+    if isinstance(gateway, dict):
+        gateway_platforms = gateway.get("platforms")
+        if isinstance(gateway_platforms, dict):
+            sections.append(gateway_platforms.get("signal"))
+        sections.append(gateway.get("signal"))
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        extra = section.get("extra")
+        if section.get("reaction_awareness") is True:
+            return True
+        if isinstance(extra, dict) and extra.get("reaction_awareness") is True:
+            return True
+    return False
+
+
 def _model_context(adapter: Any) -> tuple[Any, Any, dict] | None:
     # GatewayAdapterLifecycleMixin._create_adapter installs this public reference before connect.
     # Do not accept private test/integration side channels or the process-global runner fallback:
@@ -60,6 +86,8 @@ def _model_context(adapter: Any) -> tuple[Any, Any, dict] | None:
         # Thus config loading and source construction inherit the actual profile's route.
         from gateway.run import _load_gateway_config
         user_config = _load_gateway_config()
+        if not _reaction_awareness_enabled(user_config):
+            return None
         source = build_source(chat_id=owner, chat_name=owner, chat_type="dm",
                               user_id=owner, user_name=owner)
     except Exception:
@@ -98,6 +126,7 @@ class _Runtime:
         self.closed = False
         self.profile = str(get_hermes_home().resolve())
         self.wakeups: dict[tuple[str, str], asyncio.TimerHandle] = {}
+        self.maintenance_task: asyncio.Task | None = None
 
     def authorized_owner(self, scope: tuple[str, str]) -> str | None:
         if (self.closed or scope[0] != self.profile
@@ -193,6 +222,13 @@ class _Runtime:
                 return
             return
 
+    async def maintain(self) -> None:
+        """Purge expired records periodically without waiting for Signal traffic."""
+        while not self.closed:
+            await asyncio.sleep(_MAINTENANCE_INTERVAL_SECONDS)
+            if not self.closed:
+                self.lane.prune_expired()
+
     def finished(self, task: asyncio.Task, scope: tuple[str, str]) -> None:
         if self.tasks.get(scope) is task:
             self.tasks.pop(scope, None)
@@ -231,8 +267,13 @@ class _Runtime:
         self.wakeups.clear()
         for task in tuple(self.tasks.values()):
             task.cancel()
+        if self.maintenance_task is not None:
+            self.maintenance_task.cancel()
         if self.tasks:
             await asyncio.gather(*tuple(self.tasks.values()), return_exceptions=True)
+        if self.maintenance_task is not None:
+            await asyncio.gather(self.maintenance_task, return_exceptions=True)
+            self.maintenance_task = None
         self.tasks.clear()
         self.lane.db.close()
 
@@ -256,8 +297,11 @@ async def start_awareness(adapter: Any) -> None:
         path = Path(get_hermes_home()) / _DB_NAME
         db = _open_database(path)
         lane = ReactionAwarenessLane(db, model_name=model_name, model_client=model_client)
+        lane.prune_expired()
         owner_scopes = {next(iter(owner_ids)): adapter._source_session_key(source)}
         runtime = _Runtime(adapter, lane, owner_ids, owner_scopes)
+        runtime.maintenance_task = asyncio.create_task(
+            runtime.maintain(), name="signal-reaction-awareness-maintenance")
         adapter.set_reaction_awareness_callback(runtime.ingress)
         adapter.set_reaction_awareness_note_getter(runtime.get_notes)
         _services[id(adapter)] = runtime

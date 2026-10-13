@@ -41,7 +41,10 @@ async def test_primary_startup_connect_binds_awareness_and_background_worker_sco
 
     observed = {}
     owner = "00000000-0000-0000-0000-000000000002"
-    configured = {"model": {"default": "openai/test-configured"}}
+    configured = {
+        "model": {"default": "openai/test-configured"},
+        "signal": {"reaction_awareness": True},
+    }
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: configured)
 
     class ModelRouteRunner:

@@ -242,11 +242,20 @@ class ReactionAwarenessLane:
                               (profile, scope, event_id)).fetchone()
         return row["status"] if row else None
 
+    def prune_expired(self) -> None:
+        """Delete records older than the retention TTL, independent of incoming traffic."""
+        self._delete_expired()
+        self.db.commit()
+
     def _prune(self, profile: str, scope: str) -> None:
+        self._delete_expired()
+        for table in ("awareness_targets", "awareness_outbox", "awareness_latest", "awareness_notes"):
+            self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} ORDER BY created DESC LIMIT -1 OFFSET ?)", (_MAX_ROWS,))
+
+    def _delete_expired(self) -> None:
         cutoff = time.time() - _TTL
         for table in ("awareness_targets", "awareness_outbox", "awareness_latest", "awareness_notes"):
             self.db.execute(f"DELETE FROM {table} WHERE created<?", (cutoff,))
-            self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} ORDER BY created DESC LIMIT -1 OFFSET ?)", (_MAX_ROWS,))
 
 
 def _prompt(body: str, emoji: str, action: str) -> str:

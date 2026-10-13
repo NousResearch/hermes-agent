@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import threading
+import weakref
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -314,6 +315,7 @@ class MCPOAuthManager:
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], _ProviderEntry] = {}
         self._entries_lock = threading.Lock()
+        self._retired_loops: weakref.WeakSet = weakref.WeakSet()
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
 
@@ -321,7 +323,13 @@ class MCPOAuthManager:
         """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
         None if the MCP SDK's OAuth support is unavailable."""
         key = self._key(server_name)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
         with self._entries_lock:
+            if loop in self._retired_loops:
+                raise RuntimeError("MCP OAuth provider requested from a stopped event loop")
             entry = self._entries.get(key)
             if entry is not None and entry.server_url != server_url:
                 logger.info("MCP OAuth '%s': URL changed from %s to %s, discarding cache", server_name, entry.server_url, server_url)
@@ -379,13 +387,17 @@ class MCPOAuthManager:
         with self._entries_lock:
             return self._entries.pop(self._key(server_name, hermes_home), None)
 
-    def clear_cached_providers(self) -> int:
+    def clear_cached_providers(self, *, retired_loop=None) -> int:
         """Drop every in-process provider, preserving persisted OAuth state; returns how many.
         For when the MCP loop is replaced: each entry's ``lock`` and ``pending_401`` futures,
         and the SDK provider's auth-flow state, are bound to the loop that created them, so a
         provider carried into a new loop fails (``Lock ... is bound to a different event loop``)
         or waits on state nothing can advance. The next connect cold-loads tokens from disk."""
         with self._entries_lock:
+            if retired_loop is not None:
+                # Detached tasks still run until the drain cancels them; they cannot repopulate
+                # the cache with a provider belonging to the loop that is being closed.
+                self._retired_loops.add(retired_loop)
             count = len(self._entries)
             self._entries.clear()
         if count:

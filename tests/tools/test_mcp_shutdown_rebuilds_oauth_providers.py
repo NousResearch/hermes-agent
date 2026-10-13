@@ -84,3 +84,45 @@ def test_provider_built_for_the_next_loop_survives_the_old_loops_teardown(lifecy
 
     assert seen["provider"] is not old, "the next loop was handed the stopped loop's provider"
     assert get_manager().get_or_build_provider("srv", URL, {}) is seen["provider"]
+
+
+def test_old_loop_cannot_repopulate_cache_after_it_is_detached(lifecycle, monkeypatch):
+    """A queued connection can resume after the handle/cache clear and before the drain."""
+    import asyncio
+    import threading
+    from tools import mcp_tool, mcp_tool_loop as loop
+    from tools.mcp_oauth_manager import get_manager
+
+    loop._ensure_mcp_loop()
+    old_loop = loop._running_loop()
+    resumed = asyncio.Event()
+    finished = threading.Event()
+    manager = get_manager()
+    built = []
+
+    async def queued_connection():
+        await resumed.wait()
+        try:
+            task = mcp_tool.MCPServerTask("srv")
+            task._auth_type = "oauth"
+            built.append(task._build_oauth_auth(URL, {}))
+        except RuntimeError:
+            pass  # an already-detached loop must refuse new providers
+        finally:
+            finished.set()
+
+    pending = asyncio.run_coroutine_threadsafe(queued_connection(), old_loop)
+    clear = manager.clear_cached_providers
+
+    def clear_then_resume(*args, **kwargs):
+        count = clear(*args, **kwargs)
+        old_loop.call_soon_threadsafe(resumed.set)
+        assert finished.wait(5), "queued connection did not resume in the teardown window"
+        return count
+
+    monkeypatch.setattr(manager, "clear_cached_providers", clear_then_resume)
+    lifecycle.shutdown_mcp_servers()
+    pending.result(5)
+    monkeypatch.setattr(manager, "clear_cached_providers", clear)
+    loop._ensure_mcp_loop()
+    assert manager.get_or_build_provider("srv", URL, {}) not in built

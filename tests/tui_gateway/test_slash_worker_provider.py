@@ -9,7 +9,7 @@ worker argv must carry ``--provider`` and the child must hand it to ``HermesCLI`
 
 from types import SimpleNamespace
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 class _Popen:

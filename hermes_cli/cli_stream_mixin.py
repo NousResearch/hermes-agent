@@ -220,7 +220,7 @@ class CLIStreamMixin:
             try:
                 # See #17666.
                 return path.read_text(encoding="utf-8-sig")
-            except (OSError, IOError):
+            except OSError:
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)
 
@@ -663,7 +663,7 @@ class CLIStreamMixin:
         what = bridge_generating_phrase(tool_name) or tool_name
         _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
 
-    def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
+    def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
 
         Drives the TUI spinner (tool.started stamps the elapsed timer); in "all"/"new"/"verbose"

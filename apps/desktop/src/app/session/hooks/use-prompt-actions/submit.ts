@@ -7,7 +7,6 @@ import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/c
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { profileScopeForSessionOwner, transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -36,13 +35,10 @@ import {
   setMessages,
   touchSessionActivity
 } from '@/store/session'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import {
-  profileScopeForTranscriptSession,
-  resolveActiveTranscriptSession
-} from '../../../contrib/hooks/use-background-sync'
 import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
@@ -889,69 +885,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
 
-        // Another Desktop window may own a newer transcript while this one
-        // still shows an open-time snapshot. Refuse the send and refresh
-        // rather than forking the session (#65047).
-        const guardStoredId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
-
-        if (guardStoredId && liveSessionId) {
-          const localSnapshot = updateSessionState(liveSessionId, state => state, targetStoredSessionId)
-
-          const refresh = await transcriptRefreshIfBehind(guardStoredId, localSnapshot.messages, {
-            excludeMessageId: optimisticId,
-            profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
-          })
-
-          if (sessionDriftReason()) {
-            return abortForSessionSwitch(liveSessionId)
-          }
-
-          if (refresh) {
-            if (refresh.competingView) {
-              updateSessionState(
-                liveSessionId,
-                state => ({
-                  ...state,
-                  awaitingResponse: false,
-                  busy: false,
-                  messages: refresh.messages,
-                  pendingBranchGroup: null
-                }),
-                targetStoredSessionId
-              )
-
-              if (targetIsCurrentView()) {
-                scope.setMessages(() => refresh.messages)
-                notify({
-                  kind: 'warning',
-                  message: copy.staleSessionBody,
-                  title: copy.staleSessionTitle
-                })
-              }
-
-              releaseBusy()
-
-              return false
-            }
-
-            // The surplus was this window's own server-side turn residue — a turn
-            // that died on an approval timeout leaves its tool/assistant rows
-            // server-side while the window only holds its optimistic user message
-            // (#124005). Graft the rows into the view silently and let the send
-            // proceed: the local view being behind is the expected aftermath of the
-            // turn's death, not evidence of a competing view.
-            updateSessionState(
-              liveSessionId,
-              state => ({ ...state, messages: refresh.messages }),
-              targetStoredSessionId
-            )
-
-            if (targetIsCurrentView()) {
-              scope.setMessages(() => refresh.messages)
-            }
-          }
-        }
-
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
@@ -967,6 +900,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // will be spoken by the voice model. Wins over HUD for this turn.
           ...(options?.surface && { surface: options.surface }),
           ...(options?.surface && options.voiceContext && { voice_context: options.voiceContext }),
+          ...(options?.voiceTurn && { voice_turn: true }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race

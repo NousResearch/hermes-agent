@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-import hermes_cli.banner as banner
+from hermes_cli import banner
 import model_tools
 import tools.mcp_tool_discovery
 
@@ -41,7 +41,7 @@ def test_empty_model_shows_the_free_tier_route_when_it_carries_inference(tmp_pat
     When nothing resolves the red "no model configured" line stays."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
-    import hermes_cli.anon_auth as anon_auth
+    from hermes_cli import anon_auth
 
     def render(carries: bool) -> str:
         with (

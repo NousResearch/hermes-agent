@@ -56,8 +56,8 @@ def save_b64(kind: str, b64_data: str, *, prefix: str, extension: str) -> Path:
 
 def save_url(
     kind: str, url: str, *, prefix: str, timeout: float, max_bytes: int, chunk_size: int,
-    content_types: Dict[str, str], url_extensions: Tuple[str, ...], default_extension: str,
-    label: str, empty_error: str, headers: Optional[Dict[str, str]] = None,
+    content_types: dict[str, str], url_extensions: tuple[str, ...], default_extension: str,
+    label: str, empty_error: str, headers: Optional[dict[str, str]] = None,
     require_known_content_type: bool = False, trusted_origin: bool = False,
 ) -> Path:
     """Stream-download *url* into the cache with a size cap.

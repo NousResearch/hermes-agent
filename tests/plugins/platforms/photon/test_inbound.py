@@ -25,8 +25,8 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
-def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -35,7 +35,7 @@ def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[Me
     return captured
 
 
-def _dm_event(text: str, msg_id: str = "spc-msg-abc") -> Dict[str, Any]:
+def _dm_event(text: str, msg_id: str = "spc-msg-abc") -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "platform": "iMessage",
@@ -111,8 +111,8 @@ _PNG_1X1_B64 = (
 
 
 def _attachment_event(
-    content: Dict[str, Any], msg_id: str = "spc-msg-att"
-) -> Dict[str, Any]:
+    content: dict[str, Any], msg_id: str = "spc-msg-att"
+) -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
@@ -123,8 +123,8 @@ def _attachment_event(
 
 
 def _voice_event(
-    content: Dict[str, Any], msg_id: str = "spc-msg-voice"
-) -> Dict[str, Any]:
+    content: dict[str, Any], msg_id: str = "spc-msg-voice"
+) -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "space": {"id": "+15551234567", "type": "dm", "phone": "+15551234567"},
@@ -160,7 +160,7 @@ async def test_ndjson_stream_preserves_unicode_line_separators(
         json.dumps(_dm_event("ordinary", msg_id="ordinary-line")),
     ]
     stream = payloads[0] + "\n\n" + payloads[1]
-    received: List[str] = []
+    received: list[str] = []
 
     class ChunkedResponse:
         status_code = 200
@@ -221,8 +221,8 @@ _CAF_BYTES = b"caff" + b"\x00" * 60  # Minimal CAF header magic
 
 
 def _caf_attachment_event(
-    content: Dict[str, Any], msg_id: str = "spc-msg-caf"
-) -> Dict[str, Any]:
+    content: dict[str, Any], msg_id: str = "spc-msg-caf"
+) -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "space": {"id": "+155****4567", "type": "dm", "phone": "+155****4567"},

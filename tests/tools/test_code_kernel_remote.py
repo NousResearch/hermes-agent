@@ -384,7 +384,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
             self.addCleanup(shutil.rmtree, root, True)
             local = root + kernel.kernel_dir
             r = subprocess.run(["bash", "-c", mkdir_cmd.replace(kernel.kernel_dir, local)],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, check=False)
             self.assertEqual(r.returncode, 0, r.stderr)
             for d in (local, f"{local}/cells", f"{local}/rpc"):
                 self.assertEqual(os.stat(d).st_mode & 0o777, 0o700, d)

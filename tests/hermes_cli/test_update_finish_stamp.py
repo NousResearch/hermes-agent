@@ -4,8 +4,8 @@ from hermes_cli.update_finish import finish_update
 
 
 def test_successful_historical_completion_stamps_before_restart(tmp_path, monkeypatch):
-    import hermes_cli.source_stamp as source_stamp
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import source_stamp
+    from hermes_cli import update_cmd
 
     events = []
     monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **kwargs: True)

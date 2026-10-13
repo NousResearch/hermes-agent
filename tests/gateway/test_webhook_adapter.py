@@ -31,6 +31,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _INSECURE_NO_AUTH,
+    _is_usable_secret,
 )
 
 
@@ -277,6 +278,9 @@ class TestValidateSignature:
             ("real-secret", "attacker-secret", b'{"a":1}', b'{"a":1}', False, False),
             ("real-secret", None, b'{"a":1}', b'{"a":2}', False, False),  # tampered body
             ("real-secret", None, b'{"a":1}', b'{"a":1}', True, False),  # replayed stale timestamp
+            ("whsec_", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to an empty key
+            ("whsec_ICAg", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to whitespace
+            ("whsec_AA==", None, b'{"a":1}', b'{"a":1}', False, False),  # decodes to a NUL byte, which signs like b""
         ],
     )
     def test_standard_webhooks_headers_validate_like_svix(self, secret, sign_with, body, received, stale, expected):
@@ -498,13 +502,18 @@ class TestHTTPHandling:
     @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
-        routes = {"test": {"prompt": "hi"}}
+        routes = {"test": {"prompt": "hi"}, "blank": {"prompt": "hi", "secret": "   "}}
         adapter = _make_adapter(routes=routes, secret="")
         adapter.handle_message = AsyncMock()
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 403
+            # A whitespace-only secret is unset too, even when the request is signed with it.
+            body = b'{"data": "value"}'
+            resp = await cli.post("/webhooks/blank", data=body, headers={
+                "Content-Type": "application/json", "X-Hub-Signature-256": _github_signature(body, "   ")})
             assert resp.status == 403
 
         adapter.handle_message.assert_not_called()
@@ -1243,3 +1252,23 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+class TestBlankRouteSecretFailsClosed:
+    @pytest.mark.parametrize("secret", ["   ", "\t", "\n", 123])
+    def test_connect_rejects_an_unusable_route_secret(self, secret):
+        adapter = _make_adapter(routes={"hook": {"secret": secret}})
+        with pytest.raises(ValueError, match="missing, blank, or not a string"):
+            asyncio.run(adapter.connect())
+        # The hot-reload path applies the same guard to agent-created dynamic routes.
+        assert adapter._dynamic_route_allowed("hook", {"secret": secret}) is False
+
+
+@pytest.mark.parametrize(
+    "value,usable",
+    [("s3cret", True), ("x", True), (" x ", True),
+     ("", False), ("   ", False), ("\t\n", False),
+     (None, False), (b"bytes", False), (123, False)],
+)
+def test_is_usable_secret_classifies_configured_secrets(value, usable):
+    assert _is_usable_secret(value) is usable

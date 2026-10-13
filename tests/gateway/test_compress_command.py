@@ -229,7 +229,7 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
 async def test_compress_command_preserves_platform_and_gateway_session_key():
     """The temporary compression agent must carry the originating source's
     platform and stable gateway session key, matching a normal gateway turn.
-    Without them ``_session_source_for_agent`` falls back to a default "cli"
+    Without them ``session_source_for`` falls back to a default "cli"
     host source, so an external context engine misattributes the retained
     transcript tail and later duplicates it on resume (#50422)."""
     history = _make_history()

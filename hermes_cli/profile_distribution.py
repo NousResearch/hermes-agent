@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,7 +23,8 @@ import hermes_yaml as yaml
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.profiles import (
-    DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store, profile_path_is_private,
+    DEFAULT_EXPORT_EXCLUDE_ROOT, SETUP_PROFILE_MARKER, profile_path_contains_private_store,
+    profile_path_is_private,
 )
 from utils import rmtree_readonly
 
@@ -34,7 +35,7 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 
 # Default distribution-owned paths (relative to profile root). Authors may override via
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
-DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
+DEFAULT_DIST_OWNED: tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
 
 # Distribution-specific user data extends the shared profile/runtime exclusions.
 USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
@@ -46,7 +47,7 @@ USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
 _CRON_STORE_REL = ("cron", "jobs.json")
 
 
-def _is_installer_owned_path(parts: Tuple[str, ...]) -> bool:
+def _is_installer_owned_path(parts: tuple[str, ...]) -> bool:
     """Entries a distribution never writes: credential stores (and Hermes' copies of them) at any
     depth, and runtime-owned entries nested under otherwise distribution-owned roots."""
     if profile_path_is_private(parts):
@@ -79,7 +80,7 @@ class EnvRequirement:
     default: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, data: Any) -> "EnvRequirement":
+    def from_dict(cls, data: Any) -> EnvRequirement:
         if not isinstance(data, dict):
             raise DistributionError(f"env_requires entry must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()
@@ -90,8 +91,8 @@ class EnvRequirement:
             default=data.get("default"),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"name": self.name, "description": self.description}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "description": self.description}
         if not self.required:
             out["required"] = False
         if self.default is not None:
@@ -107,15 +108,15 @@ class DistributionManifest:
     hermes_requires: str = ""
     author: str = ""
     license: str = ""
-    env_requires: List[EnvRequirement] = field(default_factory=list)
-    distribution_owned: List[str] = field(default_factory=list)
+    env_requires: list[EnvRequirement] = field(default_factory=list)
+    distribution_owned: list[str] = field(default_factory=list)
     # Tracked after install — where we pulled from, so ``update`` can re-pull.
     source: str = ""
     # ISO-8601 UTC timestamp written on install/update (empty in repo-shipped manifests).
     installed_at: str = ""
 
     @classmethod
-    def from_dict(cls, data: Any) -> "DistributionManifest":
+    def from_dict(cls, data: Any) -> DistributionManifest:
         if not isinstance(data, dict):
             raise DistributionError(f"{MANIFEST_FILENAME} must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()
@@ -135,8 +136,8 @@ class DistributionManifest:
             source=_str(data, "source"), installed_at=_str(data, "installed_at"),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"name": self.name, "version": self.version}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "version": self.version}
         # Key order is the on-disk YAML order (write_manifest uses sort_keys=False).
         optional = (
             ("description", self.description), ("hermes_requires", self.hermes_requires),
@@ -182,7 +183,7 @@ _VERSION_OP_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 _VERSION_OPS = {">=": operator.ge, "<=": operator.le, "==": operator.eq, "!=": operator.ne, ">": operator.gt, "<": operator.lt}
 
 
-def _parse_semver(v: str) -> Tuple[int, int, int]:
+def _parse_semver(v: str) -> tuple[int, int, int]:
     """major.minor.patch only; pre-release / build metadata ("0.12.0-rc1+abc") stripped."""
     parts = re.split(r"[-+]", str(v).strip().lstrip("v"), 1)[0].split(".")
     parts += ["0"] * (3 - len(parts))
@@ -249,7 +250,7 @@ def _git_clone(url: str, dest: Path) -> None:
         raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
 
 
-def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
+def _stage_source(source: str, workdir: Path) -> tuple[Path, str]:
     """Resolve *source* to ``(staged_dir, provenance)``: git URLs are shallow-cloned into
     *workdir* (``.git`` removed); a local directory is used in place."""
     src_str = source.strip()
@@ -331,7 +332,7 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
     manifest.name = canon
     manifest.source = provenance
     # Stamped once here so both fresh install and update propagate a fresh timestamp.
-    manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest.installed_at = datetime.now(UTC).isoformat(timespec="seconds")
     target_dir = get_profile_dir(canon)
     existing = target_dir.is_dir()
     return InstallPlan(
@@ -383,7 +384,7 @@ def _replace_entry(src: Path, dest: Path) -> None:
         shutil.copy2(src, dest)
 
 
-def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:
+def _shipped_cron_store(entries: list[tuple[Path, tuple[str, ...]]]) -> Optional[Path]:
     """Return the staged ``cron/jobs.json`` when the distribution owns it (via ``cron/`` or exactly)."""
     for src, rel_parts in entries:
         if rel_parts == _CRON_STORE_REL:
@@ -421,7 +422,7 @@ def _merge_cron_store(src: Path, home: Path) -> None:
         raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
 
 
-def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
+def _real_dir(base: Path, parts: tuple[str, ...]) -> Path:
     """Return ``base/parts`` as a chain of real directories.
 
     A user could have swapped an ancestor for a file; writing through it is impossible,
@@ -446,7 +447,7 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
-def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
+def _is_container(path: Path, rel: tuple[str, ...]) -> bool:
     """A container of roots, not a root itself. Under ``skills/`` that is a dir with no
     SKILL.md in it or above it (a category, whatever metadata it ships: DESCRIPTION.md,
     README.md, LICENSE; a dir inside a skill, like its ``scripts/``, belongs to that skill);
@@ -460,7 +461,7 @@ def _is_container(path: Path, rel: Tuple[str, ...]) -> bool:
     )
 
 
-def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+def _merge_dir(src: Path, dest: Path, rel: tuple[str, ...]) -> None:
     """Merge authored roots while leaving runtime-owned nested state untouched."""
     for child in src.iterdir():
         parts = (*rel, child.name)
@@ -474,7 +475,7 @@ def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
             _replace_entry(child, dest / child.name)
 
 
-def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+def _refuse_symlinked_containers(src: Path, dest: Path, rel: tuple[str, ...]) -> None:
     for child in src.iterdir():
         parts = (*rel, child.name)
         if _is_installer_owned_path(parts):
@@ -486,7 +487,7 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
             _refuse_store_ancestor_replacement(dest / child.name, parts)
 
 
-def _refuse_store_ancestor_replacement(dest: Path, rel_parts: Tuple[str, ...]) -> None:
+def _refuse_store_ancestor_replacement(dest: Path, rel_parts: tuple[str, ...]) -> None:
     """A payload file where the profile has a directory that holds credential stores
     (``platforms`` shipped as a file over ``platforms/``) would be a whole-directory replace,
     taking ``platforms/pairing`` with it. Refused before the first write. Only called for entries
@@ -498,7 +499,7 @@ def _refuse_store_ancestor_replacement(dest: Path, rel_parts: Tuple[str, ...]) -
         )
 
 
-def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
+def _merges_per_root(src: Path, rel_parts: tuple[str, ...]) -> bool:
     """An owned top-level dir, or an owned container (``skills/research/``, see
     ``_is_container``), is merged per authored root instead of replaced whole, so skills the installer
     added to it (``hermes skills install`` and agent-created skills land in
@@ -571,10 +572,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
-    # A shipped profile.yaml must not carry a backend-assigned role.
-    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
-        from hermes_cli.profiles import drop_profile_role
-        drop_profile_role(target)
+    from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
+    shipped_marker = any(rel_parts == (SETUP_PROFILE_MARKER,) for _, rel_parts in entries)
+    release_setup_copy(target, setup_state=setup_marker_state(target) if shipped_marker else None)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:
@@ -607,7 +607,7 @@ def install_distribution(
         return plan
 
 
-def _existing_profile(profile_name: str) -> Tuple[str, Path]:
+def _existing_profile(profile_name: str) -> tuple[str, Path]:
     """Return ``(canonical_name, profile_dir)`` or raise if the profile doesn't exist."""
     from hermes_cli.profiles import _existing_profile_dir
 
@@ -639,7 +639,7 @@ def update_distribution(profile_name: str, force_config: bool = False) -> Instal
         return plan
 
 
-def describe_distribution(profile_name: str) -> Dict[str, Any]:
+def describe_distribution(profile_name: str) -> dict[str, Any]:
     """Return a structured view of a profile's distribution metadata ({} if not a distribution)."""
     manifest = read_manifest(_existing_profile(profile_name)[1])
     return {} if manifest is None else manifest.to_dict()

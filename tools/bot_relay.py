@@ -211,7 +211,7 @@ def _title_slug(row: dict) -> str:
     return slug if slug in alias_forms(title) else ""
 
 
-def remote_target_forms(roster: list[dict], local_taken: "set[str] | frozenset[str]" = frozenset()) -> list[str]:
+def remote_target_forms(roster: list[dict], local_taken: set[str] | frozenset[str] = frozenset()) -> list[str]:
     """One unambiguous target string per row, shortest first: the bare handle when no other remote
     row and no LOCAL profile (``local_taken``: this gateway's handles and friendly-name slugs) answers
     to it; else the title slug under the same test (a remote ``default`` titled "CoS Bot" is
@@ -241,7 +241,7 @@ _SENDER_STAMP_RE = re.compile(r"^(Message from 🤖 .+? \(@)([A-Za-z0-9_-]+)(\):
 
 
 def qualify_sender_stamp(message: str, from_handle: Any, from_connection: Any, roster: list[dict],
-                         local_taken: "set[str] | frozenset[str]" = frozenset()) -> str:
+                         local_taken: set[str] | frozenset[str] = frozenset()) -> str:
     """Rewrite a relayed DM's ``Message from 🤖 <name> (@<handle>):`` stamp so the handle is the
     form THIS gateway can reply to: the sender's row in the local relay roster as
     ``remote_target_forms`` renders it, else ``handle@connection``. A relayed ``@hermes`` is another
@@ -553,7 +553,7 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
             "is_bot": True}
 
 
-def _delivery_child_session_env_names() -> "tuple[str, ...]":
+def _delivery_child_session_env_names() -> tuple[str, ...]:
     """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
 
     Synced with the session binding surface as vars are added; deliberately NOT a
@@ -577,7 +577,7 @@ def relaying_principal_author(principal: str) -> dict:
     return {"id": bot_author_id("relay", str(principal or "").strip()), "name": "relayed teammate", "is_bot": True}
 
 
-def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:
+def delivery_env(author: Optional[dict], profile_home: str | Path | None = None) -> dict[str, str]:
     """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
     HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
     that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
@@ -637,7 +637,7 @@ class TurnBusyError(RuntimeError):
     def __init__(self, profile: str, waited_seconds: float):
         self.profile, self.waited_seconds = profile, waited_seconds
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
-                         f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
+                         f"queued behind it for ~{round(waited_seconds)}s without it finishing. "
                          "The message was NOT delivered; retry shortly.")
 
 

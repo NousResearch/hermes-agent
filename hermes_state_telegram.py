@@ -228,7 +228,7 @@ class SessionTelegramTopicsMixin:
 
     def get_telegram_topic_binding(
         self, *, chat_id: str, thread_id: str, profile_name: str = "default"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Return the session binding for a Telegram DM topic, if present."""
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
         row = self._topic_read_one("""
@@ -239,7 +239,7 @@ class SessionTelegramTopicsMixin:
 
     def list_telegram_topic_bindings_for_chat(
         self, *, chat_id: str, profile_name: str = "default"
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """All bindings for one chat, newest first ([] when the table is absent)."""
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
         rows = self._topic_read_all(
@@ -248,7 +248,7 @@ class SessionTelegramTopicsMixin:
         )
         return [dict(row) for row in rows]
 
-    def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[dict[str, Any]]:
         """Reverse lookup via the UNIQUE INDEX on session_id; None when unbound."""
         row = self._topic_read_one("""
                     SELECT * FROM telegram_dm_topic_bindings
@@ -349,7 +349,7 @@ class SessionTelegramTopicsMixin:
 
     def list_unlinked_telegram_sessions_for_user(
         self, *, chat_id: str, user_id: str, profile_name: str = "default", limit: int = 10
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """This user's Telegram sessions not bound to a topic. Read-only: if the bindings table
         is absent, every session is unlinked and the profile-unscoped query is used.
         Scoped by ``profile_name`` so multiplexed profiles do not surface each other.

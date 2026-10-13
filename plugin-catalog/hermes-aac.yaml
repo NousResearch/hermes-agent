@@ -1,0 +1,27 @@
+name: hermes-aac
+title: Hermes AAC
+repo: https://github.com/TREE-Ind/hermes-aac
+sha: 0b1494ca967362a8692bda78100e12ba7a7a96af
+subdir: ""
+description: Communication boards, explicit speech, switch scanning and reviewed AI proposals for Hermes Desktop.
+maintainer: TREE-Ind
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.21.7"
+readme: true
+onboarding: false
+platforms: [windows]
+screenshots:
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/cockpit-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/studio-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/focus-1366.png
+known_issues:
+  - Experimental, nonclinical AAC; requires Hermes Desktop and configured services for optional AI and speech.
+  - Screenshots are actual React renders with mocked SDK/native boundaries, not live provider proof.
+  - Saved phrases and approved boards persist locally in plaintext; Stop cannot cancel provider synthesis.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

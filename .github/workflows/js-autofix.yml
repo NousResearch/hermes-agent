@@ -131,9 +131,9 @@ jobs:
   apply-patch:
     name: Apply patch
     needs: generate-patch
-    # Skip entirely when generate-patch found no fixes — saves a runner,
-    # avoids a redundant checkout/download, and keeps the job graph honest.
-    if: needs.generate-patch.outputs.has-fixes == 'true'
+    # Only the canonical repo has the bot app and PR-creation permission.
+    # Forks still run the normal JS checks; this publisher cannot open its bot PR there.
+    if: github.repository == 'NousResearch/hermes-agent' && needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: trusted-automation

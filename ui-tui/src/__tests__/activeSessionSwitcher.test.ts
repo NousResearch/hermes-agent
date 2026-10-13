@@ -140,7 +140,7 @@ describe('unified Sessions overlay helpers', () => {
   it('resolves status labels and hint fragments against the active language at call time', () => {
     expect(sessionStatusLabel('working')).toBe(messages().pickers.session.status.working)
     expect(sessionStatusLabel('mystery')).toBe('mystery')
-    expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
+    expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close · / search · /search <text> full-text search')
 
     applyLocale('pl', {
       lang: 'pl',
@@ -150,7 +150,7 @@ describe('unified Sessions overlay helpers', () => {
 
     try {
       expect(sessionStatusLabel('working')).toBe('pracuje')
-      expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc zamknij')
+      expect(orchestratorGlobalHotkeyHint()).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc zamknij · / search · /search <text> full-text search')
     } finally {
       resetLocale()
     }

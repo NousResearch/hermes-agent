@@ -150,7 +150,8 @@ export const orchestratorGlobalHotkeyHintSegments = (): OrchestratorHintSegment[
     { role: 'hotkey', text: 'Ctrl+R' },
     { role: 'text', text: h.refresh },
     { role: 'hotkey', text: 'Esc' },
-    { role: 'text', text: h.close }
+    { role: 'text', text: h.close },
+    { role: 'text', text: h.searchHint }
   ]
 }
 
@@ -310,6 +311,7 @@ export function ActiveSessionSwitcher({
   onClose,
   onNew,
   onNewPrompt,
+  onSearch,
   onResume,
   onSelect,
   t
@@ -636,6 +638,26 @@ export function ActiveSessionSwitcher({
       return
     }
 
+    // Plain `/` on a session row jumps straight to full-text search — no
+    // detour through the New row. The New row is excluded so its TextInput
+    // keeps `/` for typing real prompts like `/search foo`.
+    if (
+      !newSelected &&
+      ch === '/' &&
+      !key.ctrl &&
+      !key.meta &&
+      !key.shift &&
+      !key.return &&
+      !key.escape &&
+      !key.tab &&
+      !key.upArrow &&
+      !key.downArrow &&
+      !key.delete &&
+      !key.backspace
+    ) {
+      return onSearch()
+    }
+
     // `d` arms deletion on a resumable history row. (On the New row `d` is
     // captured by the prompt's TextInput, so it never reaches here.)
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
@@ -934,6 +956,7 @@ interface ActiveSessionSwitcherProps {
   onClose: (id: string) => Promise<null | SessionCloseResponse>
   onNew: () => void
   onNewPrompt: (prompt: string, modelArg?: string) => void
+  onSearch: () => void
   onResume: (id: string) => void
   onSelect: (id: string) => void
   t: Theme

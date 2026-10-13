@@ -10,6 +10,7 @@ import {
 } from '@hermes/ink'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
 import { JSON_RPC_METHOD_NOT_FOUND, type ServerRequest } from '@hermes/shared/json-rpc-channel'
+import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -131,6 +132,15 @@ export async function startPromptLiveSession({
   const trimmed = prompt.trim()
 
   if (!trimmed) {
+    return null
+  }
+
+  // Slash commands from the switcher's New row (e.g. `/search`) are overlay
+  // actions, not conversation starters; creating a live session for them
+  // leaves junk sessions behind.
+  if (looksLikeSlashCommand(trimmed)) {
+    dispatchSubmission(trimmed)
+
     return null
   }
 

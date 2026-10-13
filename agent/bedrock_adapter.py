@@ -869,18 +869,21 @@ def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False
 #              redacted blobs may be another model's (a /model switch from Claude) and non-Claude models
 #              reject them ("This model doesn't support the reasoningContent.reasoningText.signature field");
 #              the in-flight loop was produced by the model now answering and replays as captured.
+# A turn stamped by another model (CONVERSE_ISSUER_TYPE) never gets the in-flight verbatim replay: a fallback or
+# switch mid-loop hands the loop to a model that cannot open the previous one's sealed blobs (_reasoning_filter).
 _CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3")
 
 
 # reasoning_details record naming the model that minted a turn's Converse reasoning: its signatures are that
 # model's own, so it gets them back unmodified on every later turn and after a reload (AWS: "include the text and
-# its signature unmodified"); any other model still gets the per-policy prior-turn treatment.
+# its signature unmodified"); any other model gets the per-policy prior-turn treatment, and Claude gets no
+# reasoning at all from a turn another family minted.
 CONVERSE_ISSUER_TYPE = "bedrock.native_assistant"
 
 
-def _issued_by(msg: dict, model: Optional[str]) -> bool:
-    return model is not None and any(isinstance(d, dict) and d.get("type") == CONVERSE_ISSUER_TYPE
-                                     and d.get("model") == model for d in msg.get("reasoning_details") or [])
+def _issuer(msg: dict) -> Optional[str]:
+    return next((d["model"] for d in msg.get("reasoning_details") or []
+                 if isinstance(d, dict) and d.get("type") == CONVERSE_ISSUER_TYPE and isinstance(d.get("model"), str)), None)
 
 
 def _converse_replay_policy(model: Optional[str]) -> str:
@@ -921,6 +924,18 @@ def _filter_reasoning(blocks: list[dict], keep) -> list[dict]:
     return [kept for kept in map(keep, blocks) if kept is not None]
 
 
+def _reasoning_filter(policy: str, issuer: Optional[str], own: bool, *, in_loop: bool):
+    """Which reasoning one assistant turn may replay to the model now answering. A turn stamped by ANOTHER
+    model (fallback or ``/model`` switch, including mid tool loop) loses the in-flight loop's verbatim replay:
+    sealed ``redactedContent`` opens only for its issuer, and Claude rejects another family's blobs outright
+    (``Invalid `data` in `redacted_thinking` block``), so a non-Claude turn replays no reasoning to Claude.
+    Unstamped turns (older sessions) keep the policy, and the rejection-driven resend covers them."""
+    prior, loop = _REASONING_FILTERS[policy]
+    if issuer is not None and not own:
+        return _without_reasoning if policy == "signed" and _converse_replay_policy(issuer) != "signed" else prior
+    return loop if in_loop or (own and policy == "unsigned") else prior
+
+
 def convert_messages_to_converse(
     messages: list[dict], model: Optional[str] = None,
 ) -> tuple[Optional[list[dict]], list[dict]]:
@@ -929,7 +944,6 @@ def convert_messages_to_converse(
     same-role neighbours merge, placeholder user turns pad the ends. ``model`` selects the reasoning
     replay policy for turns before the in-flight tool loop (None replays every carrier verbatim)."""
     policy = _converse_replay_policy(model)
-    prior_filter, loop_filter = _REASONING_FILTERS[policy]
     # Tool results are role "tool" here, so the last role "user" message opens the in-flight tool loop.
     loop_start = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     system_blocks: list[dict] = []
@@ -951,8 +965,9 @@ def convert_messages_to_converse(
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            own = _issued_by(msg, model)
-            keep = loop_filter if idx >= loop_start or (own and policy == "unsigned") else prior_filter
+            issuer = _issuer(msg) if model is not None else None
+            own = issuer is not None and issuer == model
+            keep = _reasoning_filter(policy, issuer, own, in_loop=idx >= loop_start)
             blocks = _filter_reasoning(_assistant_blocks(msg, content, claude=policy == "signed", own=own), keep)
             append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":

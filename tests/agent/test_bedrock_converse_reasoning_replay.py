@@ -128,3 +128,68 @@ def test_converse_reasoning_survives_a_reload_from_state_db(model, expect):
     _, msgs = convert_messages_to_converse(history, model=model)
     reasoning = [b["reasoningContent"]["reasoningText"] for b in msgs[1]["content"] if "reasoningContent" in b]
     assert reasoning == [expect]
+
+
+GPT = "global.openai.gpt-6.1-sol"
+OPUS = "global.anthropic.claude-opus-5-5"
+
+
+def _bedrock_turn(model, tag, tool_id, *, reloaded):
+    """One tool turn as the agent stores it: produced by ``model`` through the real transport (which stamps it)."""
+    transport = BedrockTransport()
+    transport.build_kwargs(model=model, messages=[{"role": "user", "content": "x"}])
+    normalized = transport.normalize_response({"output": {"message": {"role": "assistant", "content": [
+        {"reasoningContent": {"reasoningText": {"text": f"think {tag}"}}},
+        {"reasoningContent": {"redactedContent": f"rsn_{tag}".encode()}},
+        {"toolUse": {"toolUseId": tool_id, "name": "read_file", "input": {"path": "a"}}},
+    ]}}, "stopReason": "tool_use", "usage": {}})
+    data = dict(normalized.provider_data)
+    if reloaded:  # bedrock_content_blocks is live-only; a state.db reload keeps reasoning_details
+        data.pop("bedrock_content_blocks")
+    call = {"id": tool_id, "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a"}'}}
+    return {"role": "assistant", "content": "", "tool_calls": [call], "reasoning_content": f"think {tag}", **data}
+
+
+def _session(issuer, *, reloaded):
+    """A prior tool turn, a final answer, then an in-flight tool loop: every assistant turn minted by ``issuer``."""
+    return [
+        {"role": "user", "content": "Q1"}, _bedrock_turn(issuer, "prior", "call_1", reloaded=reloaded),
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"}, {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"}, _bedrock_turn(issuer, "loop", "call_2", reloaded=reloaded),
+        {"role": "tool", "tool_call_id": "call_2", "content": "ok"},
+    ]
+
+
+def _replayed_reasoning(kwargs):
+    return [[next(iter(b["reasoningContent"])) for b in m["content"] if "reasoningContent" in b]
+            for m in kwargs["messages"] if m["role"] == "assistant" and any("toolUse" in b for b in m["content"])]
+
+
+@pytest.mark.parametrize("reloaded", [False, True])
+@pytest.mark.parametrize("issuer, target, expect", [
+    # The issuing model gets its own sealed blobs back, prior turn and in-flight loop alike.
+    (GPT, GPT, [["reasoningText", "redactedContent"]] * 2),
+    # Fallback or switch to Claude, including mid-loop: Claude cannot read another family's reasoning at all.
+    (GPT, OPUS, [[], []]),
+    # Another GPT cannot open the blob either (it hangs on it): readable text only, in the loop too.
+    (GPT, "global.openai.gpt-6-sol", [["reasoningText"]] * 2),
+])
+def test_reasoning_another_model_minted_never_replays_sealed(issuer, target, expect, reloaded):
+    """Invariant: a sealed redactedContent blob reaches only the model that minted it. Coatue field report:
+    a GPT-6.1 session fell back to Opus 5.5 after two read timeouts and every call 400'd on
+    ``Invalid `data` in `redacted_thinking` block`` because GPT's blobs were replayed verbatim."""
+    history = _session(issuer, reloaded=reloaded)
+    before = copy.deepcopy(history)
+    kwargs = BedrockTransport().build_kwargs(model=target, messages=history)
+    assert _replayed_reasoning(kwargs) == expect
+    toolus = [b["toolUse"]["toolUseId"] for m in kwargs["messages"] for b in m["content"] if "toolUse" in b]
+    assert toolus == ["call_1", "call_2"]
+    assert history == before
+
+
+def test_claude_minted_reasoning_still_replays_to_claude():
+    """Control: the gate is per issuer family, so Claude-to-Claude replay (signed thinking and redacted
+    blobs) stays verbatim, as Bedrock requires for Claude."""
+    history = _session("global.anthropic.claude-sonnet-5-5", reloaded=False)
+    kwargs = BedrockTransport().build_kwargs(model=OPUS, messages=history)
+    assert _replayed_reasoning(kwargs) == [["reasoningText", "redactedContent"]] * 2

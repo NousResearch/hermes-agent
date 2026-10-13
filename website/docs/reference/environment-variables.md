@@ -58,6 +58,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `XIAOMI_BASE_URL` | Override Xiaomi MiMo base URL (default: `https://api.xiaomimimo.com/v1`) |
 | `UPSTAGE_API_KEY` | Upstage API key for Solar models ([console.upstage.ai](https://console.upstage.ai/api-keys)) |
 | `UPSTAGE_BASE_URL` | Override Upstage base URL (default: `https://api.upstage.ai/v1`) |
+| `RAINDRAGON_API_KEY` | RainDragon API key for Gemma 4 models ([inference.raindragon.ai](https://inference.raindragon.ai/dashboard)) |
+| `RAINDRAGON_BASE_URL` | Override RainDragon base URL (default: `https://inference.raindragon.ai/v1`) |
 | `TOKENHUB_API_KEY` | Tencent TokenHub API key ([tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)) |
 | `TOKENHUB_BASE_URL` | Override Tencent TokenHub base URL (default: `https://tokenhub.tencentmaas.com/v1`) |
 | `TOKENPLAN_API_KEY` | Tencent TokenPlan API key (LKEAP; Anthropic Messages endpoint) |

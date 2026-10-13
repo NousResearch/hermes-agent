@@ -1027,6 +1027,7 @@ class TestBrowserExec:
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
+    @pytest.mark.platforms("posix")  # the fake CLI executes /bin/sh and cat
     def test_truncated_stderr_keeps_final_exception_line(self, tmp_path, monkeypatch):
         lines = [f'  File "<string>", line {i}, in frame_{i}' for i in range(400)]
         big = "Traceback (most recent call last):\n" + "\n".join(lines) + "\nValueError: the real cause"

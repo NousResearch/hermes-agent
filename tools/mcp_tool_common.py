@@ -73,6 +73,8 @@ _CREDENTIAL_PATTERN = re.compile(
     r"(?:ghp_[A-Za-z0-9_]{1,255}|sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){0,254}|Bearer\s+\S+"
     r"|(?:token|key|API_KEY|password|secret)=[^\s&,;\"']{1,255})", re.IGNORECASE)
 
+_URL_USERINFO_PATTERN = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^\s/?#]+@", re.IGNORECASE)
+
 
 def _env_ref_name(ref: str) -> str:
     """Bare env-var name from a ``${...}`` body; strips a Cursor-style ``env:`` prefix."""
@@ -84,6 +86,7 @@ def _env_ref_name(ref: str) -> str:
 
 def _sanitize_error(text: str) -> str:
     """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
+    text = _URL_USERINFO_PATTERN.sub(r"\1[REDACTED]@", text)
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
 
 

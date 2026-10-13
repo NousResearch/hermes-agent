@@ -325,6 +325,13 @@ Windows/Linux retain their previous toolbar startup fallback until native state 
 
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
+Back leads the cluster on every view that is not the session view, while a view
+is behind this one — the app's own view history (`store/view-history`), recorded
+per navigation by the wiring, never the router's query-string history. It is
+absent in the session view (where it could only point at another session) and
+when nothing is behind (a cold start straight into a page). Overlays hide the
+clusters, so there it renders alone in the titlebar band — the card starts below
+the band, and Back stays the way out.
 In Simple interface mode only sidebar, settings and the layout editor render,
 and the reserved cluster width shrinks with them (`TITLEBAR_FIXED_TOOLS` is the
 one table both the buttons and the width reservation read).

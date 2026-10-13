@@ -27,6 +27,7 @@ export const arChrome = {
     revealMissing: 'هذا المجلد ليس على هذا الحاسوب'
   },
   titlebar: {
+    back: 'رجوع',
     hideSidebar: 'إخفاء الشريط الجانبي',
     showSidebar: 'إظهار الشريط الجانبي',
     search: 'بحث',

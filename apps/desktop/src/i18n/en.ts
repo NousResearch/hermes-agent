@@ -523,6 +523,7 @@ export const en: Translations = {
   },
 
   titlebar: {
+    back: 'Back',
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
     search: 'Search',

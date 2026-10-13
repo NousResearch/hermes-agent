@@ -22,6 +22,7 @@ export const zhHantChrome = {
   },
 
   titlebar: {
+    back: '返回',
     hideSidebar: '隱藏側邊欄',
     showSidebar: '顯示側邊欄',
     search: '搜尋',

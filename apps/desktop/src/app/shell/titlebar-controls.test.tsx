@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useEffect } from 'react'
-import { MemoryRouter, useNavigate } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
@@ -12,6 +12,7 @@ import { I18nProvider } from '@/i18n'
 import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
+import { $viewHistory, noteViewChange } from '@/store/view-history'
 
 import { ROUTES_AREA } from '../routes'
 
@@ -21,9 +22,11 @@ import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
 
 let navigateTo: (to: string) => void = () => {}
+let currentPath = ''
 
 function NavigateProbe() {
   navigateTo = useNavigate()
+  currentPath = useLocation().pathname
 
   return null
 }
@@ -316,5 +319,52 @@ describe('titlebar app-action cluster', () => {
     expect(screen.queryByLabelText('HUD mode')).toBeNull()
     expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
+  })
+})
+
+describe('back affordance', () => {
+  const resetHistory = () => $viewHistory.set({ entries: [], index: -1 })
+
+  beforeEach(resetHistory)
+  afterEach(() => {
+    resetHistory()
+    cleanup()
+  })
+
+  it('stays off the session view, where it could only point at another session', () => {
+    noteViewChange('/session-1')
+    noteViewChange('/session-2')
+
+    renderControls('/session-2')
+
+    expect(screen.queryByLabelText('Back')).toBeNull()
+  })
+
+  it('leads the left cluster on a page view and returns to the view it came from', () => {
+    noteViewChange('/session-1')
+    noteViewChange('/capabilities')
+
+    renderControls('/capabilities')
+
+    const back = screen.getByLabelText('Back')
+
+    expect(within(screen.getByLabelText('Window controls')).getByLabelText('Back')).toBe(back)
+
+    act(() => back.click())
+
+    expect(currentPath).toBe('/session-1')
+    // Back in the session view: the affordance has nothing left to offer.
+    expect(screen.queryByLabelText('Back')).toBeNull()
+  })
+
+  it('renders alone in the titlebar band on an overlay, without claiming a cluster', () => {
+    noteViewChange('/session-1')
+    noteViewChange('/settings')
+
+    renderControls('/settings')
+
+    expect(screen.getByLabelText('Back')).not.toBeNull()
+    expect(windowControls()).toBeNull()
+    expect(appControls()).toBeNull()
   })
 })

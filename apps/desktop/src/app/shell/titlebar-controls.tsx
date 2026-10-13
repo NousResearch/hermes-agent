@@ -35,6 +35,7 @@ import {
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
+import { $canGoBack, backVisible, goBackToPreviousView } from '@/store/view-history'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
@@ -192,6 +193,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
+  const canGoBack = useStore($canGoBack)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
@@ -311,22 +313,50 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const view = appViewForPath(location.pathname)
 
+  // Back leads the cluster: it is the way OUT of the view, so it stands before
+  // everything that configures one. `backVisible` is the same rule the wiring's
+  // width reservation reads, so a visible button always has reserved space.
+  const leadingTools: TitlebarTool[] = backVisible(view, canGoBack)
+    ? [
+        {
+          icon: <TitlebarIcon name="arrow-left" />,
+          id: 'back',
+          label: t.titlebar.back,
+          onSelect: () => {
+            if (goBackToPreviousView(navigate)) {
+              triggerHaptic('tap')
+            }
+          }
+        }
+      ]
+    : []
+
   // Route changes can replace measured clusters without resizing the panels.
   useEffect(() => {
     window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
   }, [location.pathname, pageOwnsTitlebar])
 
-  // Overlays own the window. These clusters are `fixed` at a higher z-index
-  // than the overlay card, so they'd otherwise bleed over it — hide them (and
-  // the nested titleBar slots) and let the overlay's own chrome take over.
-  if (isOverlayView(view)) {
-    return null
-  }
-
   const leftClusterClass = cn(
     titlebarToolClusterClass,
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
   )
+
+  // Overlays own the window. These clusters are `fixed` at a higher z-index
+  // than the overlay card, so they'd otherwise bleed over it — hide them (and
+  // the nested titleBar slots) and let the overlay's own chrome take over.
+  // Back is the one exception: the card starts BELOW the titlebar band, so a
+  // lone button there covers nothing, and it is the way out of an overlay. It
+  // carries no `data-titlebar-cluster` marker, so the band-measurement hooks
+  // read exactly what they read today.
+  if (isOverlayView(view)) {
+    return leadingTools.length > 0 ? (
+      <div className={leftClusterClass}>
+        {leadingTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
+      </div>
+    ) : null
+  }
 
   // A contributed full page (`extension`) yields the fixed clusters only while
   // it actually projects chrome into the band — page-mounted `titleBar.*` slots
@@ -335,7 +365,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
-    const pageTools = [...leftTools, ...tools].filter(visibleTool)
+    const pageTools = [...leadingTools, ...leftTools, ...tools].filter(visibleTool)
 
     // Both markers are required even when a page contributes to only one side.
     return (
@@ -356,9 +386,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     )
   }
 
-  const visibleLeftTools = (
-    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
-  ).filter(visibleTool)
+  const visibleLeftTools = [
+    ...leadingTools,
+    ...(appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools])
+  ].filter(visibleTool)
 
   const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []
   const visiblePaneTools = tools.filter(visibleTool)

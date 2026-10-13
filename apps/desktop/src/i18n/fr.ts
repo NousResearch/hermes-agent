@@ -530,6 +530,7 @@ export const frOverrides = {
     }
   },
   titlebar: {
+    back: 'Retour',
     hideSidebar: 'Masquer la barre latérale',
     showSidebar: 'Afficher la barre latérale',
     search: 'Rechercher',

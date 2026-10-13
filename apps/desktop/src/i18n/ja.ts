@@ -221,6 +221,7 @@ export const jaOverrides = {
   },
 
   titlebar: {
+    back: '戻る',
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
     search: '検索',

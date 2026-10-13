@@ -13,6 +13,8 @@ export interface KanbanTask {
   tenant?: null | string
   created_at?: number
   latest_summary?: null | string
+  /** Stored completion result. Cards are the task rows, so the board carries it too. */
+  result?: null | string
   comment_count?: number
   link_counts?: { parents: number; children: number }
   /** N-of-M child completion, or null when the task has no children. */
@@ -116,7 +118,6 @@ export interface KanbanLinkTask {
  *  `started_at`/`worker_pid`/`last_heartbeat_at` are inherited — they live on
  *  KanbanTask now that the board's liveness arc reads them. */
 export interface KanbanTaskFull extends KanbanTask {
-  result?: null | string
   created_by?: null | string
   /** Per-task worker overrides. Null/absent = the assigned profile's own
    *  model, provider, and reasoning effort decide. */

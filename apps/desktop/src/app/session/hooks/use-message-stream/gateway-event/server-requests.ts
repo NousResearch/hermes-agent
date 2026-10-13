@@ -32,6 +32,7 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $sessionStates,
   $sessionTiles,
@@ -180,6 +181,42 @@ export function windowHostsSession(
   )
 }
 
+/** Browser requests resolve a tile's runtime through its observed stored binding.
+ * Prefer the runtime cache's tip to the navigation id: sibling branches must not
+ * become interchangeable just because the pane retains their shared root. */
+function requestNamesTile(
+  sessionId: string,
+  tile: ReturnType<typeof $sessionTiles.get>[number],
+  storedIdForRuntimeId: (runtimeId: string) => string | undefined
+): boolean {
+  if (!tile.runtimeId || !storedIdForRuntimeId(tile.runtimeId)) {
+    return Boolean(sessionId && sessionId === tile.runtimeId)
+  }
+
+  return requestNamesActiveSession({
+    activeSessionId: tile.runtimeId,
+    sessionId,
+    storedIdForRuntimeId
+  })
+}
+
+/** A focused tile takes precedence over the primary, including when unbound.
+ * The passed primary id remains authoritative for drafts/resume before stores
+ * catch up; $focusedRuntimeId can fall back to that primary for some tiles. */
+function previewActNamesForeground(
+  sessionId: string,
+  activeSessionId: null | string,
+  storedIdForRuntimeId: (runtimeId: string) => string | undefined
+): boolean {
+  if (!$focusedSessionIsTile.get()) {
+    return requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+  }
+
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === $focusedStoredSessionId.get())
+
+  return Boolean(tile?.runtimeId && requestNamesTile(sessionId, tile, storedIdForRuntimeId))
+}
+
 /**
  * The window.read claim. window.read has no per-window pane, but its answer is
  * keyed to the ANSWERING window's bounds — "below" is measured from them — so
@@ -197,11 +234,11 @@ export function windowHostsSession(
  * for that runtime, so a stale entry still maps within its own conversation.
  * No shown conversation — nothing claimed, as before.
  *
- * Scoped to window.read only. preview.act and tour refuse unless
- * isActiveSession (raw id equality), so a tolerated claim there would turn
- * another window's silence into a false refusal that wins the multi-window
- * race — and a tour refusal latches session["tour_bridge"] = "answered",
- * converting every later tour action in the session into a full 45s wait.
+ * Beyond window.read, only browser requests resolve tile identities; tour,
+ * terminal and theme claims keep their existing semantics. A tolerated tour
+ * claim could turn another window's silence into a false refusal that wins the
+ * multi-window race — and a tour refusal latches session["tour_bridge"] =
+ * "answered", converting every later tour action into a full 45s wait.
  * Pane-owned reads keep #113348's owner-waiting semantics.
  */
 export function windowReadClaimsSession(sessionId: string, activeSessionId: null | string): boolean {
@@ -235,7 +272,7 @@ export function previewSessionRoute({
   method,
   replayed,
   sessionId,
-  storedIdForRuntimeId
+  storedIdForRuntimeId = () => undefined
 }: {
   activeSessionId: null | string
   method?: string
@@ -247,8 +284,23 @@ export function previewSessionRoute({
     return 'run'
   }
 
-  // window.read routes through the tolerant claim (see windowReadClaimsSession);
-  // every other window-owned request keeps the strict host check.
+  if (method === 'preview.act') {
+    if (previewActNamesForeground(sessionId, activeSessionId, storedIdForRuntimeId)) {
+      return 'run'
+    }
+
+    return replayed && !activeSessionId && !$focusedSessionIsTile.get() ? 'retry' : 'ignore'
+  }
+
+  // Only browser reads broaden tile identity resolution. Other pane bridges
+  // keep their existing host and foreground semantics.
+  if (
+    method === 'preview.read' &&
+    $sessionTiles.get().some(tile => requestNamesTile(sessionId, tile, storedIdForRuntimeId))
+  ) {
+    return 'run'
+  }
+
   if (
     method === 'window.read'
       ? windowReadClaimsSession(sessionId, activeSessionId)
@@ -538,11 +590,8 @@ const previewRead: Handler = ({ request, sessionId }) => {
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
-  // drive_preview tool: click/type/scroll/press inside the guest page. Active
-  // session only: a background turn (including one in a tile this window hosts)
-  // must never reach into the page the user is working in (desktop AGENTS.md:
-  // offer, don't hijack). Window ownership is settled by WINDOW_OWNED_REQUESTS
-  // before this runs, so a refusal here reaches the tool instead of stalling it.
+  // Scoped background requests decline at the routing boundary so they cannot
+  // beat the foreground renderer's answer in the multi-window fanout.
   const p = request.params
 
   if (!isActiveSession) {
@@ -557,6 +606,23 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // The agent drives ITS session's page: with a tile focused, the primary's
   // agent must not reach into the tile's tabs (#73890).
   const owner = previewOwnerFor(sessionId)
+
+  const stillForeground = () =>
+    previewActNamesForeground(
+      sessionId,
+      deps.activeSessionIdRef.current,
+      id => deps.sessionStateByRuntimeIdRef.current.get(id)?.storedSessionId ?? undefined
+    )
+
+  const declineIfFocusChanged = () => {
+    if (stillForeground()) {
+      return false
+    }
+
+    declineNotShown(request)
+
+    return true
+  }
 
   // The keystroke loop has to be able to stop when this request is withdrawn
   // (tool timeout or turn interrupt). The local interrupted flag can flip
@@ -599,9 +665,18 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
 
           return
         }
+
+        if (declineIfFocusChanged()) {
+          return
+        }
       }
 
       const run = await loadPreviewEngine()
+
+      if (declineIfFocusChanged()) {
+        return
+      }
+
       const result = await run(action, signal, owner)
 
       answerValue(request, result)
@@ -807,8 +882,8 @@ export function handleServerRequest(
     deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
 
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    // Route window.read through the tolerant claim (see windowReadClaimsSession);
-    // every other window-owned request keeps the strict host check.
+    // Browser actions claim only the foreground; browser reads resolve tile
+    // identities. Other window-owned requests retain their existing claims.
     const route = previewSessionRoute({
       activeSessionId,
       method: request.method,
@@ -840,12 +915,21 @@ export function handleServerRequest(
         if (
           previewSessionRoute({
             activeSessionId: deps.activeSessionIdRef.current,
+            method: request.method === 'preview.act' || request.method === 'preview.read' ? request.method : undefined,
             replayed: false,
             sessionId,
             storedIdForRuntimeId
           }) === 'run'
         ) {
-          handler({ deps, request, sessionId, isActiveSession: true })
+          handler({
+            deps,
+            request,
+            sessionId,
+            isActiveSession:
+              request.method === 'preview.act'
+                ? previewActNamesForeground(sessionId, deps.activeSessionIdRef.current, storedIdForRuntimeId)
+                : true
+          })
         } else {
           declineNotShown(request)
         }
@@ -859,7 +943,10 @@ export function handleServerRequest(
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession:
+      request.method === 'preview.act'
+        ? previewActNamesForeground(sessionId, activeSessionId, storedIdForRuntimeId)
+        : requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
   })
 
   return true

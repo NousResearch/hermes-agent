@@ -42,6 +42,7 @@ _ALLOW_BOTS_ENV = {
     # guard would reject them outright (the same reason the chat-scoped allowlist above runs early).
     Platform.DISCORD: "DISCORD_ALLOW_BOTS",
     Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOW_BOTS",
     Platform.TELEGRAM: "TELEGRAM_ALLOW_BOTS",
     Platform.SLACK: "SLACK_ALLOW_BOTS",
 }

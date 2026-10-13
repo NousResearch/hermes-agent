@@ -799,6 +799,9 @@ class GatewayBusySessionMixin:
         return message
 
     async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
+        if getattr(event.source, "is_bot", False):
+            logger.debug("Busy ack suppressed for bot-authored message in %s", event.source.chat_id)
+            return
         try:
             await self._send_busy_reply(event, adapter, message)
         except Exception as e:

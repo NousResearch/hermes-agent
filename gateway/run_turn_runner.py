@@ -894,6 +894,11 @@ class TurnRunner:
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
             return
+        # Lifecycle diagnostics (including provider fallback notices) are UI affordances for a
+        # human caller. Sending them to a known bot peer can create a new inbound turn and a loop.
+        if getattr(ctx.source, "is_bot", False):
+            logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
+            return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
             logger.debug(

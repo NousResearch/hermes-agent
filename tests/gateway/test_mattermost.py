@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -298,6 +299,45 @@ class TestMattermostWebSocketParsing:
         # @mention is stripped from the message text
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
+
+    @pytest.mark.asyncio
+    async def test_known_peer_bot_is_marked_on_the_inbound_source(self):
+        """Regression for #137027: configured peer bots must enter the loop guard."""
+        self.adapter.config.extra["bot_users"] = ["peer_bot"]
+        self.adapter._download_attachments = AsyncMock(return_value=([], []))
+        post_data = {
+            "id": "post_from_peer", "user_id": "peer_bot", "channel_id": "dm_456", "message": "ping",
+        }
+        event = {
+            "event": "posted",
+            "data": {"post": json.dumps(post_data), "channel_type": "D", "sender_name": "@peer"},
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.await_args.args[0].source.is_bot is True
+
+
+def test_bot_turn_does_not_publish_runtime_status():
+    """#137027: a provider-fallback diagnostic must not become a peer-bot message."""
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_runner = object.__new__(TurnRunner)
+    turn_runner._schedule = MagicMock()
+    turn_runner._ctx = SimpleNamespace(
+        mute_notification_reply=False,
+        source=SimpleNamespace(platform=Platform.MATTERMOST, is_bot=True),
+        _status_adapter=object(),
+        _run_still_current=lambda: True,
+        user_config={},
+        _status_chat_id="dm_456",
+        _status_thread_metadata=None,
+        _cleanup_progress=False,
+    )
+
+    turn_runner._status_callback_sync("warn", "⚠️ Model fallback: unavailable")
+
+    turn_runner._schedule.assert_not_called()
 
 
     @pytest.mark.asyncio

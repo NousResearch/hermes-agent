@@ -1489,8 +1489,6 @@
     "desktop.sessionUnavailable",
     "desktop.setProfileFailed",
     "desktop.skillCommandsAvailable",
-    "desktop.slashCommandIgnoredBody",
-    "desktop.slashCommandIgnoredTitle",
     "desktop.stopFailed",
     "desktop.sttDisabled",
     "desktop.unarchiveFailed",

@@ -4270,8 +4270,6 @@ export interface Translations extends NoticeTranslations {
     promptFailed: string
     providerCredentialRequired: string
     emptySlashCommand: string
-    slashCommandIgnoredTitle: string
-    slashCommandIgnoredBody: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string

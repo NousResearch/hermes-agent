@@ -35,7 +35,10 @@ function prefetchGuideCatalogs(storedId: null | string): void {
 }
 
 /** Runs a slash command as if typed; `hidden` keeps its user row out of every transcript. */
-export type KickoffSlashCommand = (command: string, options: { hidden: true; sessionId: string }) => Promise<void>
+export type KickoffSlashCommand = (
+  command: string,
+  options: { hidden: true; sessionId: string }
+) => Promise<void | boolean>
 
 interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
   requestGateway: AmbientGatewayRequest

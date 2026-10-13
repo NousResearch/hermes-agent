@@ -4,7 +4,6 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages, getSession } from '@/hermes'
-import { en } from '@/i18n/en'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
@@ -6081,6 +6080,9 @@ describe('usePromptActions send from a window behind the stored transcript', () 
     cleanup()
     $notifications.set([])
     setSessions(() => [])
+    // The slash+attachment suites stage chips in the main composer scope;
+    // leaving them would leak into the next suite's sends.
+    $composerAttachments.set([])
   })
 
   it('sends without a pre-send transcript read or a warning, even when another view is ahead (#65047)', async () => {
@@ -6126,19 +6128,37 @@ describe('usePromptActions send from a window behind the stored transcript', () 
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 
-  it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {
-    // The attachment's refText gets prepended ahead of the typed text by
-    // buildContextText, so the merged wire text no longer starts with "/".
-    // Before the fix, submitText's attachment-count gate silently fell through
-    // to a normal prompt.submit — /goal (and every other slash command) with an
-    // attachment vanished into a regular chat message with no feedback.
-    const requestGateway = vi.fn(async (method: string) => {
+  it('executes a slash command alongside an attachment instead of refusing it (#81798)', async () => {
+    // Before the fix, submitText's attachment-count gate refused the whole
+    // send ("Command not sent") whenever chips were staged — /goal (and every
+    // other slash command) with a file attached simply did nothing. The
+    // backend already strips @image:/@file: refs from the command text
+    // itself (gateway/platforms/event.py:_command_text), so a prompt-taking
+    // dispatch executes the command AND carries the chips into its kickoff
+    // submit; an exec-only command executes and the chips stay staged.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
       if (method === 'slash.exec') {
-        throw new Error('slash.exec must never be called when an attachment is present')
+        // /goal <text> comes back from the backend as a `send` dispatch: the
+        // goal is set and the first-turn kickoff prompt is handed back.
+        return {
+          display: '/goal align with the handoff doc',
+          message: 'Goal set: align with the handoff doc',
+          notice: '⊙ Goal set: align with the handoff doc',
+          type: 'send'
+        } as never
       }
 
-      if (method === 'prompt.submit') {
-        throw new Error('prompt.submit must never be called for a slash command')
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/.hermes/desktop-attachments/handoff.md',
+          ref_text: '@file:.hermes/desktop-attachments/handoff.md',
+          uploaded: true
+        } as never
       }
 
       return {} as never
@@ -6161,11 +6181,63 @@ describe('usePromptActions send from a window behind the stored transcript', () 
       ]
     })
 
-    expect(ok).toBe(false)
-    expect(requestGateway).not.toHaveBeenCalled()
-    expect($notifications.get()).toEqual(
-      expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
+    expect(ok).toBe(true)
+    // The command executed (no refusal) and the staged chip rode the kickoff
+    // submit — the merged wire text carries the @file: ref ahead of the goal.
+    // shared_metrics.slash_command is the fire-and-forget usage counter that
+    // precedes every typed command.
+    expect(calls.map(c => c.method)).toEqual([
+      'shared_metrics.slash_command',
+      'slash.exec',
+      'file.attach',
+      'prompt.submit'
+    ])
+    expect(calls[1]?.params).toMatchObject({ command: 'goal align with the handoff doc' })
+    const submitted = calls[3]?.params?.text
+
+    expect(submitted).toContain('@file:.hermes/desktop-attachments/handoff.md')
+    expect(submitted).toContain('Goal set: align with the handoff doc')
+    // No refusal warning — the command ran.
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+
+  it('executes an exec-only slash command and keeps the staged attachment in the composer (#81798)', async () => {
+    // /status renders text and never reaches prompt.submit. The chips were
+    // staged for a real message, so they must survive the command: the idle
+    // submit path no longer clears the composer scope for slash commands.
+    // A pathless chip (pre-baked ref, no disk path) keeps the test hermetic —
+    // no eager drop-time upload and no submit-time file.attach.
+    $composerAttachments.set([
+      {
+        id: 'file:handoff.md',
+        kind: 'file',
+        label: 'handoff.md',
+        refText: '@file:`/Users/alice/handoff.md`'
+      }
+    ])
+
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
+
+    const ok = await handle!.submitText('/status')
+
+    expect(ok).toBe(true)
+    // The command executed (no refusal); the usage counter precedes it.
+    // /status is an `rpc` desktop surface — it runs session.status directly,
+    // never slash.exec/command.dispatch, and never prompt.submit.
+    expect(calls).toEqual(['shared_metrics.slash_command', 'session.status'])
+    // No prompt.submit — and the chip is still staged for the next message.
+    expect($composerAttachments.get().map(a => a.id)).toEqual(['file:handoff.md'])
   })
 })
 

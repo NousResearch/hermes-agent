@@ -55,7 +55,8 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset,
+        RoomID, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
@@ -63,7 +64,9 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
+        "TYPING": "m.typing",
         "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+    Membership = type("_MembershipStub", (), {"JOIN": "join"})  # type: ignore[misc,assignment]
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
@@ -903,6 +906,10 @@ class MatrixAdapter(BasePlatformAdapter):
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
 
+    def conversation_user_id(self) -> str:
+        """Return the authenticated Matrix identity for mention ownership."""
+        return str(getattr(self._client, "mxid", "") or self._user_id or "")
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -1337,6 +1344,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
+        client.add_event_handler(getattr(EventType, "TYPING", "m.typing"), self._on_typing, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
@@ -2126,7 +2134,14 @@ class MatrixAdapter(BasePlatformAdapter):
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
-        self._background_read_receipt(room_id, event_id)
+        is_text_msgtype = source_content.get("msgtype") in ("m.text", "m.notice")
+        if not (
+            self.conversation_middleware().delays_messages
+            and is_text_msgtype
+            and not is_dm
+            and not is_mentioned
+        ):
+            self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
@@ -2157,6 +2172,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        is_mentioned = self._is_bot_mentioned(
+            source_content.get("body", body), source_content.get("formatted_body"), mention_user_ids
+        )
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2166,12 +2186,16 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        metadata = dict(extra.pop("metadata", {}) or {})
+        metadata["conversation_mentioned"] = is_mentioned
+        if await self._is_verified_two_member_room(room_id, sender):
+            metadata["conversation_two_member_room"] = True
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
-            user_id=sender, user_name=display_name, **extra)
+            user_id=sender, user_name=display_name, metadata=metadata, **extra)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2197,7 +2221,9 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
             return
-        if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+        if self.conversation_middleware().delays_messages:
+            await self.handle_message(msg_event)
+        elif msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
@@ -2484,6 +2510,22 @@ class MatrixAdapter(BasePlatformAdapter):
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
+    async def _on_typing(self, event: Any) -> None:
+        """Forward peer typing as a room-level Groupchat coordination signal."""
+        middleware = self.conversation_middleware()
+        if not middleware.delays_messages:
+            return
+        room_id = str(getattr(event, "room_id", ""))
+        content = getattr(event, "content", None) or {}
+        users = (content.get("user_ids", []) if isinstance(content, dict)
+                 else getattr(content, "user_ids", []))
+        if not room_id or not users:
+            return
+        own_user_id = self.conversation_user_id()
+        if own_user_id and all(str(user) == own_user_id for user in users):
+            return
+        middleware.typing(room_id)
+
     async def _on_reaction(self, event: Any) -> None:
         sender = str(getattr(event, "sender", ""))
         if self._is_self_sender(sender):
@@ -2757,6 +2799,39 @@ class MatrixAdapter(BasePlatformAdapter):
             if value:
                 return str(value)
         return None
+
+    async def _is_verified_two_member_room(self, room_id: str, sender: str) -> bool:
+        """True only when joined members are exactly this bot and the sender.
+
+        Invited accounts do not count. Unknown or unavailable membership fails
+        closed, leaving Groupchat's configured relevance policy in force.
+        """
+        own_user_id = str(self._user_id or "")
+        if not own_user_id or not sender or own_user_id == sender:
+            return False
+        client = getattr(self, "_client", None)
+        state_store = getattr(client, "state_store", None) if client else None
+        if state_store is not None:
+            try:
+                members = await state_store.get_members(
+                    RoomID(room_id), memberships=(Membership.JOIN,)
+                )
+                if members is not None:
+                    joined = {str(member) for member in members}
+                    if joined == {own_user_id, sender}:
+                        return True
+                    if len(joined) > 2:
+                        return False
+            except Exception as exc:
+                logger.debug("Matrix: joined-member lookup failed in %s: %s", room_id, exc)
+        if client is not None and hasattr(client, "get_joined_members"):
+            try:
+                members = await client.get_joined_members(RoomID(room_id))
+                if members is not None:
+                    return {str(member) for member in members} == {own_user_id, sender}
+            except Exception as exc:
+                logger.debug("Matrix: joined-members request failed in %s: %s", room_id, exc)
+        return False
 
     async def _get_room_member_count(self, room_id: str) -> Optional[int]:
         """state_store first (cached), then a direct joined_members API query."""

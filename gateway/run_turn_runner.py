@@ -930,6 +930,18 @@ class TurnRunner:
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
+        # A policy that classifies final replies must decide before drafts,
+        # edits, or interim commentary become public.
+        conversation_adapter = self._runner._delivery_adapter_for(ctx.source)
+        conversation_middleware = getattr(
+            conversation_adapter, "conversation_middleware", None
+        )
+        if (
+            callable(conversation_middleware)
+            and conversation_middleware().buffers_output
+        ):
+            want_stream_deltas = False
+            want_interim_messages = False
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer

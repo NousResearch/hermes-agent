@@ -393,9 +393,11 @@ def test_concurrent_evidence_updates_do_not_lose_a_count(tmp_path):
 def test_injected_candidate_content_cannot_write_a_forged_count(tmp_path):
     """A caller-supplied _candidate_content must not be written verbatim.
 
-    The frozen candidate is only honoured when THIS process's staging pass produced it, identified
-    by a per-pass nonce the caller cannot derive. Here the write gate is off (no staging ran), so
-    the merge runs on the public delta and the forged candidate is simply never used.
+    The frozen candidate is honoured only on the trusted replay path — the per-request
+    _skill_gate_bypass flag, which is set only when an approved staging record is re-driven, and even
+    then the on-disk source digest must still match. Here the write gate is off (no staging ran), so
+    the merge runs on the public delta with private keys stripped, and the forged candidate is
+    simply never used.
     """
     skill_dir = tmp_path / "test-skill"
     skill_dir.mkdir()
@@ -417,11 +419,12 @@ def test_injected_candidate_content_cannot_write_a_forged_count(tmp_path):
     assert "success_count: 12" in text, text[:200]
 
 
-def test_forged_candidate_is_rejected_even_with_a_matching_nonce_shape(tmp_path):
-    """Guessing the key name is not enough: the nonce value must match this process's staging pass.
+def test_forged_candidate_is_rejected_even_with_a_matching_staged_by_shape(tmp_path):
+    """Guessing the provenance key is not enough: trust is a per-request flag, not caller data.
 
     A caller who supplies _staged_by with a plausible value must still not be honoured, because
-    the nonce is generated per staging pass and is not predictable.
+    honouring a frozen candidate requires the _skill_gate_bypass flag — set only on the trusted
+    replay/approve paths — and even then the on-disk source digest must still match.
     """
     skill_dir = tmp_path / "test-skill"
     skill_dir.mkdir()

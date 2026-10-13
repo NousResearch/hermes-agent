@@ -381,6 +381,24 @@ class TestCreateProfile:
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
+    @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
+    def test_clone_drops_skill_venvs_and_uv_caches(self, profile_env, clone_kwargs):
+        """Regression for #137905: a skill's local .venv/.uv-cache is machine-local runtime
+        state (pyvenv.cfg and console scripts hardcode absolute paths), so it must not ride
+        a profile clone. The skill itself and its regular files still copy."""
+        default_home = profile_env / ".hermes"
+        skill = default_home / "skills" / "minimax"
+        (skill / ".venv" / "lib").mkdir(parents=True)
+        (skill / ".venv" / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+        (skill / ".venv" / "lib" / "heavy.py").write_text("x = 1\n", encoding="utf-8")
+        (skill / ".uv-cache" / "archive-v0").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# minimax\n", encoding="utf-8")
+
+        clone = create_profile("clone", no_alias=True, **clone_kwargs)
+        assert (clone / "skills" / "minimax" / "SKILL.md").is_file()
+        assert not (clone / "skills" / "minimax" / ".venv").exists()
+        assert not (clone / "skills" / "minimax" / ".uv-cache").exists()
+
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
             create_profile("lonely", sync_imports=True, no_alias=True)

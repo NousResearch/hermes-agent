@@ -387,7 +387,6 @@ def _guest_sign_in(token_status, token_body):
         monkeypatch.setattr(auth_device_flow, "time", fake_time)
         monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {
             "auth_method": anon_auth.ANON_AUTH_METHOD, "anon_token": "t", "portal_base_url": "https://p"})
-        monkeypatch.setattr(anon_auth, "guest_enabled", lambda: True)
         monkeypatch.setattr(anon_auth, "_anon_headers", dict)
         replies = {
             "/api/oauth/device/code": (200, {"device_code": "d", "user_code": "U", "verification_uri": "https://p/v",

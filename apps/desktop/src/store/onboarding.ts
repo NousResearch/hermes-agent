@@ -16,11 +16,17 @@ import {
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import {
+  $freeTierStatus,
+  ackFreeTierNotice,
+  freeTierReadyPending,
+  refreshFreeTierStatus,
+  setFreeTierRoute
+} from '@/store/free-tier'
 import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
-import { afterOnboardingStateRead, guidedOnboardingActive } from '@/store/onboarding-gate'
+import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -570,18 +576,11 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  // Not during the guided first launch. The free tier carries inference
-  // there, and a credential probe that fires anyway (a free-tier token mid
-  // refresh, a setup-profile session before its runtime settles) would drop
-  // the provider picker over the guide the user is in the middle of. Sign-in
-  // is offered where the guide chooses to, on its own ready screen.
-  afterOnboardingStateRead(() => {
-    if (guidedOnboardingActive()) {
-      return
-    }
-
-    patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
-  })
+  // Not over first-run onboarding. The free account may still be in
+  // the making, and a credential probe that fires meanwhile would drop the
+  // provider picker over it; onboarding hands over to the picker
+  // itself when the account fails.
+  afterOnboardingSurfaceClear(() => patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true }))
 }
 
 /** Credential warning delivered passively (session create/activate/resume
@@ -598,7 +597,8 @@ let pendingCredentialWarning: null | string = null
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
-  if (!warning || !isProviderSetupErrorMessage(warning) || guidedOnboardingActive()) {
+  // Stash while the due check is still undecided: submit consumes it later. Drop only under an open onboarding.
+  if (!warning || !isProviderSetupErrorMessage(warning) || onboardingSurfaceOpen()) {
     pendingCredentialWarning = null
 
     return
@@ -854,18 +854,13 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
  */
 async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
   setFreeTierRoute(runtime.freeTier)
-  const status = await refreshFreeTierStatus(ctx.requestGateway)
+  await refreshFreeTierStatus(ctx.requestGateway)
 
-  // The guided first launch IS the introduction. Raising the ready screen on
-  // top of it (a readiness round fires when the layout pick assembles the
-  // window) covered the guide mid-conversation, and dismissing it remounted
-  // the card the user had just answered.
-  afterOnboardingStateRead(() => {
-    if (guidedOnboardingActive()) {
-      return
-    }
-
-    if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
+  // The onboarding intro is the introduction: opening it acks the notice
+  // (store/onboarding-run.ts). Read the status when the overlay is free, not
+  // now, so that ack is honoured.
+  afterOnboardingSurfaceClear(() => {
+    if (freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)) {
       patch({ freeTierReady: true })
     }
   })

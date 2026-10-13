@@ -97,6 +97,24 @@ describe('sortPinnedSessions', () => {
     expect(sortPinnedSessions(pinned, 'cost', dots).map(s => s.id)).toEqual(['dear', 'cheap'])
   })
 
+  it('ranks by the displayed title on name — case and accents fold, numbers read naturally', () => {
+    const pinned = [
+      session('beta10', { title: 'beta 10' }),
+      session('alpha-accent', { title: 'álpha' }),
+      session('beta2', { title: 'beta 2' }),
+      session('alpha', { title: 'Alpha' })
+    ]
+
+    // Folded compare puts Alpha before álpha (the tie-break), and natural
+    // ordering puts 2 before 10 rather than after it.
+    expect(sortPinnedSessions(pinned, 'name', dots).map(s => s.id)).toEqual([
+      'alpha',
+      'alpha-accent',
+      'beta2',
+      'beta10'
+    ])
+  })
+
   it('keeps the pin order for ties, so an equal-ranked pair does not shuffle on every render', () => {
     const pinned = [session('a', { last_active: 5 }), session('b', { last_active: 5 })]
 

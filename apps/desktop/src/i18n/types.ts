@@ -2744,6 +2744,7 @@ catalog: CatalogTranslations
       created: string
       tokens: string
       cost: string
+      name: string
       manual: string
       preview: string
       pr: string

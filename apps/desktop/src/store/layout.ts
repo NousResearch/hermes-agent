@@ -305,7 +305,11 @@ const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'cl
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
 /** What the Pinned section can be ordered by: the same keys, plus `manual` —
  *  Pinned's own hand-dragged pin order, which is what it ships with. */
-export const PINNED_SORT_KEYS: readonly SidebarOrdering[] = ['manual', ...SIDEBAR_SORT_KEYS]
+/** What the Pinned section can be ordered by: the sort keys the filter menu
+ *  offers, plus `name` (the rows' displayed titles, alphabetically) and
+ *  `manual` — Pinned's own hand-dragged pin order, which is what it ships with. */
+export const PINNED_SORT_KEYS = ['name', ...SIDEBAR_SORT_KEYS, 'manual'] as const
+export type PinnedSortKey = (typeof PINNED_SORT_KEYS)[number]
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
 // projects store, or a repo scan flips $sidebarAgentsGrouped directly, so that
@@ -344,14 +348,14 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
 // top. Picking a key here re-orders that one section; the flat list has its own
 // Ordering in the filter menu. Connection-scoped for the same reason the pin
 // order is: the ids it ranks name rows in one gateway's state.db.
-export const $pinnedSortKey = connectionScopedAtom<SidebarOrdering>(
+export const $pinnedSortKey = connectionScopedAtom<PinnedSortKey>(
   SIDEBAR_PINNED_SORT_STORAGE_KEY,
   'manual',
   oneOf(PINNED_SORT_KEYS, 'manual'),
   { includeProfile: false }
 )
 
-export function setPinnedSortKey(key: SidebarOrdering) {
+export function setPinnedSortKey(key: PinnedSortKey) {
   $pinnedSortKey.set(key)
 }
 

@@ -3151,6 +3151,7 @@ export const en: Translations = {
       created: 'Created',
       tokens: 'Tokens',
       cost: 'Cost',
+      name: 'Name',
       manual: 'Manual',
       preview: 'Preview',
       pr: 'PR',

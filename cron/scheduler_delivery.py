@@ -1603,9 +1603,9 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
     thread_seeded = False
     inchannel_seeded = False
-    if t.opened_thread_id:
+    if seed_thread_id := t.opened_thread_id or (t.thread_id if t.origin_target and t.mirror_this_target else None):
         _seed_cron_thread_session(
-            job, t.runtime_adapter, t.platform_name, t.chat_id, t.opened_thread_id, t.mirror_text,
+            job, t.runtime_adapter, t.platform_name, t.chat_id, seed_thread_id, t.mirror_text,
             **seed_kwargs,
         )
         thread_seeded = True

@@ -26,3 +26,30 @@ def test_interrupted_child_entry_carries_its_partial_output():
     assert entry["status"] == entry["exit_reason"] == "interrupted"
     assert entry["summary"] == "Audited 3 of 7 modules; two findings so far."
     assert entry["error"] == "Operation interrupted."
+
+
+def test_interrupted_explicit_delivery_survives_result_validation():
+    """Delivery beats later cleanup prose while the stop remains visible and never retries."""
+    from tools.delegate_tool_child_run import _validate_child_output_schema
+    from tools.delegate_tool_reply import delegate_tool_reply
+
+    child = SimpleNamespace(
+        model="m", _delegate_role="leaf", _delegate_reply_chunks=[],
+        _delegate_output_schema={"type": "object", "required": ["finding"]},
+    )
+    delegate_tool_reply('{"finding": "retain this report"}', parent_agent=child)
+    result = {
+        "final_response": "Operation interrupted.", "interrupted": True,
+        "messages": [
+            {"role": "assistant", "content": "Cleanup still running."},
+            {"role": "assistant", "content": "Operation interrupted."},
+        ],
+    }
+    schema = _validate_child_output_schema(child, result, 0, "child-task", None)
+    entry = _build_result_entry(child, result, 0, 1.0, schema)
+
+    assert entry["summary"] == '{"finding": "retain this report"}'
+    assert entry["status"] == entry["exit_reason"] == "interrupted"
+    assert entry["error"] == "Operation interrupted."
+    assert entry["schema_valid"] is True
+    assert schema.retries == 0

@@ -47,9 +47,6 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def test_is_destructive_command_treats_cp_as_mutating():
-    from agent.tool_dispatch_helpers import _is_destructive_command
-    assert _is_destructive_command("cp .env.local .env") is True
 
 
 
@@ -2222,6 +2219,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("manage_catalog", {"action": "search", "query": "blender"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
+        ("delegate_tool_reply", {"content": "Explicit child result"}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)

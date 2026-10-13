@@ -300,3 +300,8 @@ class TestElisionNoticeWiring:
         text = msg["content"][0]["text"]
         assert text.index(_UPSTREAM_ELISION_NOTICE.strip()) < text.index("</untrusted_tool_result>")
         assert _UPSTREAM_ELISION_NOTICE.strip() not in msg["content"][1]["text"] and msg["content"][2] == img
+
+
+def test_is_destructive_command_treats_cp_as_mutating():
+    from agent.tool_dispatch_helpers import _is_destructive_command
+    assert _is_destructive_command("cp .env.local .env") is True

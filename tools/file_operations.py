@@ -141,6 +141,7 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 # Echoed by the size probe when the path exists but is not a regular file.
 # `wc -c` prints only digits, so this can never collide with a real size.
 NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
+PERMISSION_DENIED_SENTINEL = "__hermes_permission_denied__"
 
 # Echoed by the compound read/write probes when the path does not exist. A
 # compound command only reports its *last* exit status, so the missing-file
@@ -641,9 +642,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"Cannot read '{path}': not a regular file (directory, dangling symlink, "
             "FIFO, socket, or device). Reading it could block indefinitely."))
 
+    @staticmethod
+    def _permission_denied_error(path: str) -> ReadResult:
+        return ReadResult(
+            error=f"Permission denied: '{path}' exists but cannot be accessed."
+        )
+
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
-        ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
+        ``"missing"``, ``"permission_denied"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
         ``"env_unavailable"``, or the named working-directory error when the exec
         wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
@@ -656,10 +663,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
-            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+            f"if [ -f {arg} ]; then "
+            f"if [ -r {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"else echo {PERMISSION_DENIED_SENTINEL}; fi; "
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -L {arg} ]; then "
+            f"__hermes_stat_error=$(LC_ALL=C stat -L {arg} 2>&1 >/dev/null); "
+            f"case \"$__hermes_stat_error\" in *'Permission denied'*|*'Operation not permitted'*) "
+            f"echo {PERMISSION_DENIED_SENTINEL};; *) echo {NOT_REGULAR_SENTINEL};; esac; "
+            f"else __hermes_stat_error=$(LC_ALL=C stat -L {arg} 2>&1 >/dev/null); "
+            f"case \"$__hermes_stat_error\" in *'Permission denied'*|*'Operation not permitted'*) "
+            f"echo {PERMISSION_DENIED_SENTINEL};; *) echo {MISSING_SENTINEL};; esac; fi"
+        )
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
+        if stat_output == PERMISSION_DENIED_SENTINEL:
+            return 0, "permission_denied"
         if stat_output == MISSING_SENTINEL:
             return 0, "missing"
         if stat_output == NOT_REGULAR_SENTINEL:
@@ -843,6 +861,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if sentinel not in output:
             # Single-line replies: the path is missing or not a regular file.
             marker = _strip_terminal_fence_leaks(output).strip()
+            if marker == PERMISSION_DENIED_SENTINEL:
+                return self._permission_denied_error(path)
             if marker == MISSING_SENTINEL:
                 return self._read_file_missing(path, offset, limit)
             if marker == NOT_REGULAR_SENTINEL:
@@ -935,6 +955,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             if os.path.islink(full):  # dangling: an entry, not an absent path (``_probe_regular_file``)
                 return self._not_regular_error(path)
             return self._read_file_missing(path, offset, limit)
+        except PermissionError:
+            return self._permission_denied_error(path)
         except OSError:
             return self._read_file_sequential(path, offset, limit)
         if not _stat.S_ISREG(st.st_mode):
@@ -991,6 +1013,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                         total_lines += 1
                         lineno += 1
                         pos = nl + 1
+        except PermissionError:
+            return self._permission_denied_error(path)
         except OSError:
             return self._read_file_sequential(path, offset, limit)
         if have_partial and offset <= lineno <= end_line:
@@ -1020,14 +1044,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         1000 bytes, the ``sed | cut`` page, ``wc -l``, whether the last byte is a
         newline, then the base64 and page pipeline statuses. Probes run only inside
         ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
-        reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` (a compound
-        command only reports its last status). Every stage silences stderr: the local
+        reaches ``head``/``sed``. Missing and permission-denied paths get distinct sentinels.
+        Every stage silences stderr: the local
         backend merges stderr into stdout and a stray diagnostic would land inside a
         segment. The byte clamp is ``4 * max_line_length + 1``; see ``_read_file_sequential``."""
         arg = self._escape_shell_arg(path)
         mark = f"echo {sentinel}"
         return (
-            f"if [ -f {arg} ]; then "
+            f"if [ -f {arg} ] && [ -r {arg} ]; then "
             f"wc -c < {arg} 2>/dev/null; {mark}; "
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
@@ -1035,8 +1059,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
-            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+            f"elif [ -f {arg} ]; then echo {PERMISSION_DENIED_SENTINEL}; "
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -L {arg} ]; then "
+            f"__hermes_stat_error=$(LC_ALL=C stat -L {arg} 2>&1 >/dev/null); "
+            f"case \"$__hermes_stat_error\" in *'Permission denied'*|*'Operation not permitted'*) "
+            f"echo {PERMISSION_DENIED_SENTINEL};; *) echo {NOT_REGULAR_SENTINEL};; esac; "
+            f"else __hermes_stat_error=$(LC_ALL=C stat -L {arg} 2>&1 >/dev/null); "
+            f"case \"$__hermes_stat_error\" in *'Permission denied'*|*'Operation not permitted'*) "
+            f"echo {PERMISSION_DENIED_SENTINEL};; *) echo {MISSING_SENTINEL};; esac; fi"
+        )
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
         """Not-found recovery shared by every read path. Unicode-equivalent spellings
@@ -1081,6 +1113,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._read_file_missing(path, offset, limit)
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "permission_denied":
+            return self._permission_denied_error(path)
         if status not in ("ok", "bad_size"):
             return self._env_unavailable_error(path, status)
         if self._is_image(path):  # never inlined — redirect to the vision tool
@@ -1246,6 +1280,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._suggest_similar_files(path)
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "permission_denied":
+            return self._permission_denied_error(path)
         if status not in ("ok", "bad_size"):
             return self._env_unavailable_error(path, status)
         if self._is_image(path):
@@ -1273,6 +1309,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"File not found: {path}", not_found=True)
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "permission_denied":
+            return self._permission_denied_error(path)
         if status not in ("ok", "bad_size"):
             return self._env_unavailable_error(path, status)
         if status == "bad_size":

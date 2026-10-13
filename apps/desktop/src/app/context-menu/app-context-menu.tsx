@@ -23,6 +23,7 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openPreview } from '@/store/preview'
 
+import { ChatSelectionItems } from './chat-selection-items'
 import { ShellMenuItems } from './shell-menu-items'
 import {
   $contextMenu,
@@ -117,6 +118,27 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
         onSelect={() => terminal.selectAll()}
       />
     ].filter(Boolean)
+  ]
+}
+
+function selectionSections(
+  target: Extract<OpenContextMenu, { kind: 'dom' }>['target'],
+  t: Translations
+): ReactNode[][] {
+  if (target.chatSelection)
+    {return [[<ChatSelectionItems key="chat-selection" selection={target.chatSelection} t={t} />]]}
+
+  if (!target.selectionText) {return []}
+
+  return [
+    [
+      <Item
+        icon="copy"
+        key="selection-copy"
+        label={t.common.copy}
+        onSelect={() => void writeClipboardText(target.selectionText)}
+      />
+    ]
   ]
 }
 
@@ -346,15 +368,8 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         shortcut={EDIT_SHORTCUTS.selectAll}
       />
     ])
-  } else if (target.selectionText) {
-    sections.push([
-      <Item
-        icon="copy"
-        key="selection-copy"
-        label={t.common.copy}
-        onSelect={() => void writeClipboardText(target.selectionText)}
-      />
-    ])
+  } else {
+    sections.push(...selectionSections(target, t))
   }
 
   return sections

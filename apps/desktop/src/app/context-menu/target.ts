@@ -1,3 +1,4 @@
+import { captureChatSelection, type ChatSelection } from './chat-selection'
 /**
  * What a right-click landed on, resolved from the DOM.
  *
@@ -21,6 +22,7 @@ export interface ContextMenuDomTarget {
   onImage: boolean
   /** The live selection's text at the moment of the click. */
   selectionText: string
+  chatSelection?: ChatSelection | null
 }
 
 /** Form fields and `contenteditable` hosts. Mirrors the keybind helper, but
@@ -52,6 +54,7 @@ export function resolveDomTarget(element: Element | null): ContextMenuDomTarget 
     linkUrl: linkUrl === '#' ? '' : linkUrl,
     imageUrl: image instanceof HTMLImageElement ? image.currentSrc || image.src : '',
     onImage: Boolean(image),
+    chatSelection: captureChatSelection(element),
     selectionText: window.getSelection()?.toString().trim() ?? ''
   }
 }

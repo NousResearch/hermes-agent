@@ -913,6 +913,28 @@ def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, cap
     assert capsys.readouterr().out.strip() == prose
 
 
+def test_local_turn_timeout_is_bounded_and_not_retried(monkeypatch, capsys):
+    calls = []
+
+    def timeout(argv, **kwargs):
+        calls.append((argv, kwargs))
+        timeout_seconds = kwargs.get("timeout", bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS)
+        raise subprocess.TimeoutExpired(argv, timeout_seconds, output="partial reply")
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    returncode = bot_mode_dm._run_local_turn(
+        ["hermes", "-p", "researcher"], "message.txt"
+    )
+
+    assert returncode != 0
+    assert len(calls) == 1
+    assert calls[0][1]["timeout"] == bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS
+    captured = capsys.readouterr()
+    assert captured.out == "partial reply"
+    assert "timed out" in captured.err.lower()
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):

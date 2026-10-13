@@ -420,25 +420,63 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+def _run_timed_turn(
+    command: list[str], *, env: Optional[dict[str, str]], timeout_seconds: float
+) -> tuple[Any, bool]:
+    """Run one turn attempt, returning a failure result when its child exceeds the deadline."""
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        ), False
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run kills and reaps its child before raising TimeoutExpired.
+        def _text(value: Any) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=_text(exc.stdout or exc.output),
+            stderr=(
+                f"Bot Chat turn timed out after {timeout_seconds:g} seconds.\n"
+                f"{_text(exc.stderr)}"
+            ),
+        ), True
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
     def _turn(turn_env=env):
-        return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
+        return _run_timed_turn(
+            [*argv, "--query-file", dm_file],
+            env=turn_env,
+            timeout_seconds=TURN_ATTEMPT_TIMEOUT_SECONDS,
+        )
 
-    proc = _turn()
-    if proc.returncode != 0:
+    proc, timed_out = _turn()
+    if proc.returncode != 0 and not timed_out:
         from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
         from tools.bot_relay import retry_turn_env
 
         # The re-run replays the same session and payload; the failed attempt already persisted the
         # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
         if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
-            proc = _turn(retry_turn_env(env))
+            proc, _ = _turn(retry_turn_env(env))
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()

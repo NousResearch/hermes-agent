@@ -1,6 +1,6 @@
 name: kumiho-memory
 repo: https://github.com/KumihoIO/kumiho-plugins
-sha: f7e2442abe474619ca8806b5c6e55ae84899ccf6
+sha: e032c86f1a733f07eba54173e4a351aa432d68d6
 subdir: hermes
 title: Kumiho Memory
 description: >-
@@ -14,7 +14,7 @@ maintainer: KumihoIO
 tier: community
 category: memory
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/KumihoIO/kumiho-plugins/tree/f7e2442abe474619ca8806b5c6e55ae84899ccf6/hermes
+docs_url: https://github.com/KumihoIO/kumiho-plugins/tree/e032c86f1a733f07eba54173e4a351aa432d68d6/hermes
 version: "0.1.0"
 platforms: []
 capabilities:

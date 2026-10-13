@@ -10,17 +10,25 @@ export function CopyLastButton({
   onClick,
   copied,
   color,
+  title = "Copy last assistant response as raw markdown",
+  ariaLabel = "Copy last assistant response",
+  copiedLabel = "copied",
+  label = "copy last response",
 }: {
   onClick: () => void;
   copied: boolean;
   color: string;
+  title?: string;
+  ariaLabel?: string;
+  copiedLabel?: string;
+  label?: string;
 }) {
   return (
     <Button
       ghost
       onClick={onClick}
-      title="Copy last assistant response as raw markdown"
-      aria-label="Copy last assistant response"
+      title={title}
+      aria-label={ariaLabel}
       className={cn(
         "absolute z-10",
         "normal-case tracking-normal font-normal",
@@ -36,7 +44,7 @@ export function CopyLastButton({
       <span className="inline-flex items-center gap-1.5">
         <Copy className="h-3 w-3 shrink-0" />
         <span className="hidden min-[400px]:inline tracking-wide">
-          {copied ? "copied" : "copy last response"}
+          {copied ? copiedLabel : label}
         </span>
       </span>
     </Button>

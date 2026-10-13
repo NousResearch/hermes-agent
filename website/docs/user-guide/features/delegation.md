@@ -291,6 +291,23 @@ Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then
 
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
+### Changing the route from the CLI
+
+`/subagent model` prints the effective delegation route (provider, model, and whether hot reload is on); `/subagent model set <provider>/<model>` pins `delegation.provider` + `delegation.model` without hand-editing `config.yaml`. Bare values (`/subagent model set openrouter`) are rejected with a usage message.
+
+### Adopting a change without a respawn (`delegation.hot_reload_model`)
+
+By default a child freezes its `provider:model` at spawn — editing `delegation.model` mid-run does not touch subagents that are already running. Set `delegation.hot_reload_model: true` to let a **running** child re-read `delegation.provider` / `delegation.model` before each provider API request and rebind in place, so the change lands on that child's next request with no respawn or kill:
+
+```yaml
+delegation:
+  model: "your-inexpensive-model"
+  provider: "openrouter"
+  hot_reload_model: true
+```
+
+The toggle itself is frozen at spawn (flipping it does not start hot-reloading an already-running child), and it has no effect on unpinned children — a pure-inherit child has no spawn-independent route to re-read, so its inherited binding stands.
+
 ## The `/review` Command
 
 `/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.

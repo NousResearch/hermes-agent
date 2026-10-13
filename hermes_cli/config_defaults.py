@@ -1153,6 +1153,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # How inbound voice / audio reaches the main model (see agent/audio_routing.py).
+    # "auto" (default) = attach the clip as a native OpenAI-style input_audio part on
+    # an OpenAI-compatible chat-completions backend, so the model hears the audio
+    # itself instead of a lossy STT transcript; Anthropic / Gemini / Codex / Bedrock
+    # wires and an unknown backend degrade to the existing path-pointing text note.
+    # "on" = attach regardless of backend (a model that already rejected audio this
+    # session still gets the text note), "off" = never attach. Clips over 8 MB or 10
+    # minutes, and clips needing an unavailable ffmpeg to normalize to wav/mp3, always
+    # take the text note.
+    "media": {
+        "native_audio": "auto",
+    },
+
     "stt": {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
@@ -1330,6 +1343,11 @@ DEFAULT_CONFIG = {
     "delegation": {
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        # false (default): a child freezes provider:model at spawn. true: a RUNNING child
+        # re-reads delegation.provider/model before EACH provider API request and rebinds its
+        # live route in place, so a config change takes effect on that child's next request
+        # without respawning it. No effect on unpinned (pure-inherit) children.
+        "hot_reload_model": False,
         # Fallback chain for delegated children (same entry format as the top-level list).
         # For an unpinned child, null = inherit the parent chain; [] = disable fallback.
         # A child pinned by provider, endpoint, or model gets no fallback unless this

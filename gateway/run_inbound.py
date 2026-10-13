@@ -1722,6 +1722,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_native_audio_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
@@ -1729,6 +1730,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
+        # Buffer clip paths for a one-shot native input_audio attach at run_conversation
+        # (agent/audio_routing.py). ``_classify_inbound_media`` yields no audio_paths when the
+        # STT pass already ran on this event (``_gateway_pending_stt_text``), so fall back to the
+        # event's own STT-eligible paths — the clip still exists, only the transcript is done.
+        # audio_file_paths never qualify: classify routes MessageType.AUDIO/DOCUMENT there.
+        self._buffer_native_audio_paths(
+            session_key, audio_paths or self._pending_event_audio_paths(event)
+        )
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
         if "@" in message_text:
@@ -1763,6 +1772,43 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         paths = list(state.persistent.native_image_paths or []) if state is not None else []
         if paths:
             state.persistent.native_image_paths = []
+        return paths
+
+    def _buffer_native_audio_paths(self, session_key: str, paths: list[str]) -> None:
+        """Buffer this turn's STT-voice clip paths for a native input_audio attach at run_conversation.
+
+        One-shot like ``native_image_paths``: the buffer is reset at the start of every
+        ``_prepare_inbound_message_text`` for this session and consumed once at the run.
+        ``media.native_audio: off`` skips buffering entirely — the path-pointing text note is the
+        whole message then, and no stale clip may ride a later turn.
+        """
+        paths = list(dict.fromkeys(paths or []))
+        if not paths:
+            return
+        try:
+            from agent.audio_routing import audio_input_mode
+
+            if audio_input_mode(self._hermes_config_readonly()) == "off":
+                return
+        except Exception:
+            pass
+        self._session_state(session_key).persistent.native_audio_paths = paths
+        logger.debug("Native audio: buffered %d clip path(s) for %s", len(paths), session_key)
+
+    @staticmethod
+    def _hermes_config_readonly() -> dict:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            return load_config_readonly()
+        except Exception:
+            return {}
+
+    def _consume_pending_native_audio_paths(self, session_key: str) -> list[str]:
+        state = self._peek_session_state(session_key)
+        paths = list(state.persistent.native_audio_paths or []) if state is not None else []
+        if paths:
+            state.persistent.native_audio_paths = []
         return paths
 
     async def _mark_durable_active_turn(self, event: MessageEvent, session_key: str) -> bool:

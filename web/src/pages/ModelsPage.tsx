@@ -33,6 +33,8 @@ import { compactNumber } from "@hermes/shared";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Switch } from "@nous-research/ui/ui/components/switch";
@@ -43,8 +45,19 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { ModelRoutingCard } from "@/components/ModelRoutingCard";
+import { showsRoutingBlock } from "@/lib/model-routing";
+import { setNestedValue } from "@/lib/nested";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
 import { assignmentToPickerCurrent } from "@/lib/model-picker-current";
+
+/** Models-page copy; en/zh seed the optional block, other locales fall back. */
+type ModelsPageCopy = NonNullable<Translations["models"]["page"]>;
+function modelsPageCopy(t: Translations): ModelsPageCopy {
+  return t.models.page ?? (en.models.page as ModelsPageCopy);
+}
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -90,6 +103,7 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+  const { t } = useI18n();
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
@@ -100,10 +114,10 @@ function TokenBar({
   // color-mix on the same value so themes don't need to ship two
   // separate hex literals.
   const segments: Array<{ color: string; label: string; value: number }> = [
-    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
-    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
-    { value: input, color: "var(--series-input-token)", label: "Input" },
-    { value: output, color: "var(--series-output-token)", label: "Output" },
+    { value: cacheRead, color: "#60a5fa", label: t.models.tokenCacheRead ?? "Cache Read" }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: t.models.tokenReasoning ?? "Reasoning" }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: t.models.tokenInput ?? "Input" },
+    { value: output, color: "var(--series-output-token)", label: t.models.tokenOutput ?? "Output" },
   ].filter((s) => s.value > 0);
 
   return (
@@ -152,6 +166,8 @@ function CapabilityBadges({
 }: {
   capabilities: ModelsAnalyticsModelEntry["capabilities"];
 }) {
+  const { t } = useI18n();
+  const L = modelsPageCopy(t);
   const hasAny =
     capabilities.supports_tools ||
     capabilities.supports_vision ||
@@ -163,17 +179,17 @@ function CapabilityBadges({
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
         <span className="inline-flex items-center gap-1 bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success">
-          <Wrench className="h-2.5 w-2.5" /> Tools
+          <Wrench className="h-2.5 w-2.5" /> {L.tools}
         </span>
       )}
       {capabilities.supports_vision && (
         <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-          <Eye className="h-2.5 w-2.5" /> Vision
+          <Eye className="h-2.5 w-2.5" /> {L.vision}
         </span>
       )}
       {capabilities.supports_reasoning && (
         <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
-          <Brain className="h-2.5 w-2.5" /> Reasoning
+          <Brain className="h-2.5 w-2.5" /> {L.reasoning}
         </span>
       )}
       {capabilities.model_family && (
@@ -216,13 +232,16 @@ function UseAsMenu({
     task: string;
   } | null>(null);
 
+  const { t } = useI18n();
+  const L = modelsPageCopy(t);
+
   const assign = async (
     scope: "main" | "auxiliary",
     task: string,
     confirmExpensiveModel = false,
   ) => {
     if (!provider || !model) {
-      setError("Missing provider/model");
+      setError(L.missingProviderModel);
       return;
     }
     setBusy(true);
@@ -241,7 +260,7 @@ function UseAsMenu({
           task,
           message:
             result.confirm_message ||
-            "This model has unusually high known pricing.",
+            L.highPricing,
         });
         return;
       }
@@ -275,7 +294,7 @@ function UseAsMenu({
         className="h-6 px-2 text-xs uppercase"
         prefix={busy ? <Spinner /> : null}
       >
-        Use as <ChevronDown className="h-3 w-3" />
+        {L.useAs} <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
@@ -287,17 +306,17 @@ function UseAsMenu({
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
-              Main model
+              {L.mainModel}
             </span>
             {isMain && (
               <span className="text-display text-xs tracking-wider text-primary">
-                current
+                {L.current}
               </span>
             )}
           </button>
 
           <div className="border-t border-border/50 px-3 py-1.5 text-display text-xs tracking-wider text-text-tertiary">
-            Auxiliary task
+            {L.auxiliaryTask}
           </div>
 
           <button
@@ -306,7 +325,7 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{L.allAuxiliaryTasks}</span>
           </button>
 
           {auxTaskRows(auxTasks).map((t) => (
@@ -317,10 +336,10 @@ function UseAsMenu({
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.label}</span>
+              <span>{L.auxTaskLabels[t.key] ?? t.label}</span>
               {mainAuxTask === t.key && (
                 <span className="text-display text-xs tracking-wider text-primary">
-                  current
+                  {L.current}
                 </span>
               )}
             </button>
@@ -335,11 +354,11 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={L.expensiveWarning}
         description={pendingConfirm?.message}
         destructive
-        confirmLabel="Switch anyway"
-        cancelLabel="Cancel"
+        confirmLabel={L.switchAnyway}
+        cancelLabel={t.common.cancel}
         loading={busy}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
@@ -554,6 +573,8 @@ function AuxiliaryTasksModal({
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const modalRef = useModalBehavior({ open: true, onClose });
+  const { t } = useI18n();
+  const L = modelsPageCopy(t);
 
   const resetAllAux = async () => {
     setConfirmReset(false);
@@ -586,7 +607,7 @@ function AuxiliaryTasksModal({
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={L.close}
         >
           <X />
         </Button>
@@ -597,7 +618,7 @@ function AuxiliaryTasksModal({
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"
             >
-              Auxiliary Tasks
+              {L.auxiliaryTasksTitle}
             </h2>
             <Button
               size="sm"
@@ -607,14 +628,12 @@ function AuxiliaryTasksModal({
               className="h-6 text-xs uppercase"
               prefix={resetBusy ? <Spinner /> : null}
             >
-              Reset all to auto
+              {L.resetAllToAuto}
             </Button>
           </div>
           <p className="text-xs text-text-secondary mt-2">
-            Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
+            {L.auxIntro} <span className="font-mono">{L.auxIntroAuto}</span>{" "}
+            {L.auxIntroTail}
           </p>
         </header>
 
@@ -626,8 +645,8 @@ function AuxiliaryTasksModal({
             const eff = cur?.effective;
             const effRoute =
               eff?.provider && eff.provider !== "auto"
-                ? `${eff.provider} · ${eff.model || "(provider default)"}`
-                : "auto (use main model)";
+                ? `${eff.provider} · ${eff.model || L.providerDefault}`
+                : L.autoUseMain;
             return (
               <div
                 key={t.key}
@@ -635,17 +654,19 @@ function AuxiliaryTasksModal({
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{t.label}</span>
+                    <span className="text-xs font-medium">
+                      {L.auxTaskLabels[t.key] ?? t.label}
+                    </span>
                     <span className="text-xs text-text-tertiary">
-                      {t.hint}
+                      {L.auxTaskHints[t.key] ?? t.hint}
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
                     {isAuto && t.inheritFrom
-                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
+                      ? `${L.auxInherits} ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
                       : isAuto
-                        ? "auto (use main model)"
-                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                        ? L.autoUseMain
+                        : `${cur?.provider} · ${cur?.model || L.providerDefault}`}
                   </div>
                 </div>
                 {t.inheritFrom && !isAuto && (
@@ -672,7 +693,7 @@ function AuxiliaryTasksModal({
                   onClick={() => setPicker({ kind: "aux", task: t.key })}
                   className="h-6 text-xs uppercase"
                 >
-                  Change
+                  {L.change}
                 </Button>
               </div>
             );
@@ -687,7 +708,10 @@ function AuxiliaryTasksModal({
             currentAssignment={assignmentToPickerCurrent(
               aux?.tasks.find((a) => a.task === picker.task),
             )}
-            title={`Set Auxiliary: ${auxTaskLabel(aux?.tasks, picker.task)}`}
+            title={L.setAuxiliary.replace(
+              "{task}",
+              L.auxTaskLabels[picker.task] ?? auxTaskLabel(aux?.tasks, picker.task),
+            )}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await api.setModelAssignment({
                 confirm_expensive_model: confirmExpensiveModel,
@@ -706,10 +730,10 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
-          description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
+          title={L.resetAuxTitle}
+          description={L.resetAuxDescription}
           destructive
-          confirmLabel="Reset all"
+          confirmLabel={L.resetAll}
           loading={resetBusy}
         />
       </div>
@@ -734,6 +758,8 @@ function MoaModelsModal({
   const [picker, setPicker] = useState<MoaPickerTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
+  const L = modelsPageCopy(t);
 
   // Nested ModelPickerDialog owns Escape while open — don't dismiss MoA too.
   const closeMoaUnlessPickerOpen = useCallback(() => {
@@ -841,14 +867,11 @@ function MoaModelsModal({
             id="moa-modal-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
-            Configure Mixture of Agents presets
+            {L.moaTitle}
           </h2>
         </header>
         <div className="space-y-4 p-5">
-          <p className="text-xs text-text-secondary">
-            Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.
-          </p>
-
+          <p className="text-xs text-text-secondary">{L.moaIntro}</p>
           <div className="flex flex-wrap items-center gap-2">
             <select
               className="border border-border bg-background px-2 py-1 text-xs"
@@ -857,23 +880,23 @@ function MoaModelsModal({
             >
               {presetNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
-            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>Set default</Button>
-            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
+            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>{L.setDefault}</Button>
+            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>{t.common.delete}</Button>
             <input
               className="border border-border bg-background px-2 py-1 text-xs"
-              placeholder="new preset name"
+              placeholder={L.newPresetName}
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
             />
-            <Button size="sm" outlined disabled={!newName.trim() || !!draft.presets[newName.trim()]} onClick={addPreset}>Add preset</Button>
+            <Button size="sm" outlined disabled={!newName.trim() || !!draft.presets[newName.trim()]} onClick={addPreset}>{L.addPreset}</Button>
           </div>
 
           <div className="text-xs text-text-secondary">
-            Default: <span className="font-mono">{draft.default_preset}</span>
+            {L.defaultLabel} <span className="font-mono">{draft.default_preset}</span>
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Reference models</div>
+            <div className="text-display text-xs font-medium tracking-wider">{L.referenceModels}</div>
             {preset.reference_models.map((slot, index) => (
               <div
                 key={`${selected}-${slot.provider}-${slot.model}-${index}`}
@@ -894,25 +917,25 @@ function MoaModelsModal({
                   }
                 />
                 <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
-                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
-                <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>{L.change}</Button>
+                <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>{L.remove}</Button>
               </div>
             ))}
-            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }] }))}>Add reference model</Button>
+            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }] }))}>{L.addReferenceModel}</Button>
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Aggregator</div>
+            <div className="text-display text-xs font-medium tracking-wider">{L.aggregator}</div>
             <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
               <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.aggregator)}</div>
-              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>Change</Button>
+              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>{L.change}</Button>
             </div>
           </div>
 
           {error && <div className="text-xs text-destructive">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
-            <Button ghost onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button onClick={() => void save()} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
+            <Button ghost onClick={onClose} disabled={busy}>{t.common.cancel}</Button>
+            <Button onClick={() => void save()} disabled={busy}>{busy ? t.common.saving : t.common.save}</Button>
           </div>
         </div>
       </div>
@@ -926,10 +949,10 @@ function MoaModelsModal({
               ? preset.aggregator
               : preset.reference_models[picker.index]
           }
-          title="Select MoA Model"
+          title={L.selectMoaModel}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
-              setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");
+              setError(L.moaRecursiveError);
               return;
             }
             setError(null);
@@ -965,6 +988,8 @@ function ModelSettingsPanel({
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
     null,
   );
+  const { t } = useI18n();
+  const L = modelsPageCopy(t);
 
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
@@ -1008,9 +1033,9 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <CardTitle className="text-sm">{L.modelSettings}</CardTitle>
           <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
-            applies to new sessions
+            {L.appliesNewSessions}
           </span>
         </div>
       </CardHeader>
@@ -1022,13 +1047,13 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Main model
+                {L.mainModel}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
-              {mainProv || "(unset)"}
+              {mainProv || L.unset}
               {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainModel || L.unset}
             </div>
           </div>
           <Button
@@ -1036,7 +1061,7 @@ function ModelSettingsPanel({
             onClick={() => setPicker({ kind: "main" })}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Change
+            {L.change}
           </Button>
         </div>
 
@@ -1046,13 +1071,16 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Auxiliary tasks
+                {L.auxiliaryTasks}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {auxOverrideCount > 0
-                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${auxTaskCount - auxOverrideCount} auto`
-                : `${auxTaskCount} tasks · all auto`}
+                ? L.overridesSummary
+                    .replace("{count}", String(auxOverrideCount))
+                    .replace("{s}", auxOverrideCount > 1 ? "s" : "")
+                    .replace("{auto}", String(auxTaskCount - auxOverrideCount))
+                : L.allAutoSummary.replace("{count}", String(auxTaskCount))}
             </div>
           </div>
           <Button
@@ -1061,7 +1089,7 @@ function ModelSettingsPanel({
             onClick={() => setAuxModalOpen(true)}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {L.configure}
           </Button>
         </div>
 
@@ -1070,13 +1098,19 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Brain className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Mixture of Agents
+                {L.mixtureOfAgents}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {moa
-                ? `${moa.reference_models.length} reference${moa.reference_models.length === 1 ? "" : "s"} · ${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`
-                : "not loaded"}
+                ? L.moaSummary
+                    .replace("{refs}", String(moa.reference_models.length))
+                    .replace("{s}", moa.reference_models.length === 1 ? "" : "s")
+                    .replace(
+                      "{agg}",
+                      `${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`,
+                    )
+                : L.notLoaded}
             </div>
           </div>
           <Button
@@ -1086,7 +1120,7 @@ function ModelSettingsPanel({
             disabled={!moa}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {L.configure}
           </Button>
         </div>
 
@@ -1095,7 +1129,7 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={L.setMainModel}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await applyAssignment({
                 confirmExpensiveModel,
@@ -1157,13 +1191,23 @@ export default function ModelsPage() {
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
   const [showTokens, setShowTokens] = useState(false);
+  // Full config + schema back the Model routing block (subagent preferred +
+  // fallback routes, main-agent fallback, hot-reload) that moved here from the
+  // Settings page. Only the routing keys are ever touched; Save writes the
+  // whole round-tripped config, exactly like the Settings page's Save.
+  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
+  const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
+  const [routingSaving, setRoutingSaving] = useState(false);
   const { t } = useI18n();
+  const L = modelsPageCopy(t);
+  const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
     api
       .getConfig()
       .then((cfg) => {
+        setConfig(cfg);
         const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
         setShowTokens(dash.show_token_analytics === true);
       })
@@ -1171,7 +1215,24 @@ export default function ModelsPage() {
         // Default to hidden on any failure — safer than showing wrong numbers.
         setShowTokens(false);
       });
+    api
+      .getSchema()
+      .then((resp) => setSchema(resp.fields))
+      .catch(() => setSchema(null));
   }, []);
+
+  const saveRouting = useCallback(async () => {
+    if (!config) return;
+    setRoutingSaving(true);
+    try {
+      await api.saveConfig(config);
+      showToast(t.config.configSaved, "success");
+    } catch (e) {
+      showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
+    } finally {
+      setRoutingSaving(false);
+    }
+  }, [config, showToast, t.config.configSaved, t.config.failedToSave]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1265,6 +1326,7 @@ export default function ModelsPage() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="models:top" />
+      <Toast toast={toast} />
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ModelSettingsPanel
@@ -1324,19 +1386,41 @@ export default function ModelsPage() {
               </div>
               {!showTokens && (
                 <p className="mt-4 text-xs text-text-tertiary leading-relaxed">
-                  Token & cost analytics are hidden because the local counts
-                  exclude auxiliary calls (compression, vision, web extract,
-                  …) and provider retries, so they diverge from your provider
-                  bill. Enable{" "}
+                  {L.tokenHiddenBody} {L.tokenHiddenEnable}{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
-                  show the local debug estimate anyway.
+                  {L.tokenHiddenIn}{" "}
+                  <a href="/config" className="underline">
+                    {L.tokenHiddenConfig}
+                  </a>{" "}
+                  {L.tokenHiddenTail}
                 </p>
               )}
             </CardContent>
           </Card>
         )}
       </div>
+
+      {showsRoutingBlock(schema) && config && schema && (
+        <section className="flex min-w-0 flex-col gap-2">
+          <ModelRoutingCard
+            config={config}
+            schema={schema}
+            onChange={(key, value) =>
+              setConfig((prev) => setNestedValue(prev ?? {}, key, value))
+            }
+          />
+          <div className="flex items-center justify-end">
+            <Button
+              size="sm"
+              className="uppercase"
+              onClick={() => void saveRouting()}
+              disabled={routingSaving}
+            >
+              {routingSaving ? t.common.saving : t.common.save}
+            </Button>
+          </div>
+        </section>
+      )}
 
       {loading && !data && (
         <div className="flex items-center justify-center py-24">

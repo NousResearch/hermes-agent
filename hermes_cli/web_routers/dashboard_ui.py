@@ -20,7 +20,8 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, LocaleSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody,
+    _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -95,6 +96,40 @@ async def get_dashboard_font(profile: Optional[str] = None):
         return {"font": font if font in _FONT_CHOICES else _FONT_DEFAULT_ID}
 
     return await config_scoped_to_thread(profile, _run)
+
+
+# Supported dashboard UI locales, kept in sync with SUPPORTED_LOCALES in
+# web/src/i18n/resolve-locale.ts (which mirrors the `Locale` union in
+# web/src/i18n/types.ts). The frontend owns the catalogs; the backend only needs
+# the id allow-list so a hand-edited config can't be echoed back as a locale the
+# SPA has no catalog for. Same pattern as _FONT_CHOICES.
+_LOCALE_CHOICES = frozenset({
+    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk", "af",
+    "ko", "it", "ga", "pt", "ru", "hu", "ar",
+})
+
+
+@router.get("/api/dashboard/locale")
+async def get_dashboard_locale(profile: Optional[str] = None):
+    """Return the user's saved UI language (``dashboard.locale``), or ``null`` when
+    unset or unsupported. Nested under the dashboard prefs so the language follows
+    the user to any browser."""
+    def _run():
+        locale = cfg_get(load_config(), "dashboard", "locale", default="")
+        return {"locale": locale if locale in _LOCALE_CHOICES else None}
+
+    return await config_scoped_to_thread(profile, _run)
+
+
+@router.put("/api/dashboard/locale")
+async def set_dashboard_locale(body: LocaleSetBody, profile: Optional[str] = None):
+    """Persist the chosen UI language to config.yaml (``dashboard.locale``). An
+    unsupported id is a 400 rather than a silent coercion: unlike a stale theme id,
+    a wrong language is immediately visible, so the picker should surface it."""
+    if body.locale not in _LOCALE_CHOICES:
+        raise HTTPException(status_code=400, detail="Unsupported locale.")
+    await asyncio.to_thread(_set_dashboard_key, "locale", body.locale, profile)
+    return {"ok": True, "locale": body.locale}
 
 
 @router.put("/api/dashboard/font")

@@ -67,6 +67,9 @@ class PersistentState:
     approvals: Optional[dict[str, Any]] = None  # {"command": ..., "pattern_key": ...}
     update_prompt_pending: bool = False  # /update prompt awaiting a reply
     native_image_paths: list[str] = field(default_factory=list)  # consumed one-shot
+    # STT-voice clip paths to attach as native input_audio parts at run_conversation —
+    # consumed one-shot like native_image_paths (see agent/audio_routing.py).
+    native_audio_paths: list[str] = field(default_factory=list)
     # Legacy runner-level pending text (flushed on shutdown); not the adapter-level one.
     pending_command_text: Optional[str] = None
     run_generation: int = 0  # monotonic; NEVER reset (stale-run detection depends on it)
@@ -236,6 +239,7 @@ LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_pending_approvals": _spec("persistent", "approvals", None),
     "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
     "_pending_native_image_paths_by_session": _spec("persistent", "native_image_paths", list),
+    "_pending_native_audio_paths_by_session": _spec("persistent", "native_audio_paths", list),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
     "_session_run_generation": _spec("persistent", "run_generation", int),
 }

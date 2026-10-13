@@ -139,3 +139,77 @@ def test_credential_pool_falls_back_to_env_when_dotenv_is_only_op_ref(monkeypatc
         environ_value=None,
     )
     assert token == "op://Vault/Item/field"
+
+
+# ---------------------------------------------------------------------------
+# Patch 3 — process-env bootstrap token reaches per-profile hydration (#137458)
+# ---------------------------------------------------------------------------
+
+
+def _capture_apply_all(monkeypatch):
+    """Replace apply_all with a recorder; returns the capture dict."""
+    captured = {}
+
+    def fake_apply_all(secrets_cfg, home_path, environ=None):
+        captured["environ"] = dict(environ) if environ is not None else None
+        from agent.secret_sources.registry import ApplyReport
+        return ApplyReport()
+
+    monkeypatch.setattr("agent.secret_sources.registry.apply_all", fake_apply_all)
+    return captured
+
+
+def _onepassword_enabled(monkeypatch, from_env_loader):
+    monkeypatch.setattr(
+        from_env_loader, "_load_secrets_config",
+        lambda _home: {"onepassword": {"enabled": True,
+                                       "env": {"SOME_KEY": "op://Vault/Item/field"}}})
+
+
+def test_hydration_seeds_process_env_op_token(tmp_path, monkeypatch):
+    """A token injected via the process environment (systemd, `op run`,
+    exported shell) must reach the private mapping that apply_all hydrates
+    from — _is_global_env strips it, so the 1Password source would otherwise
+    see no auth and every op:// ref would fail silently."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "proc-token")
+    captured = _capture_apply_all(monkeypatch)
+    _onepassword_enabled(monkeypatch, env_loader)
+
+    env_loader.hydrate_profile_secret_sources(home)
+
+    assert captured["environ"] is not None
+    assert captured["environ"]["OP_SERVICE_ACCOUNT_TOKEN"] == "proc-token"
+
+
+def test_hydration_prefers_profile_token_file_over_process_env(tmp_path, monkeypatch):
+    """A profile that pins its own token in .op.env keeps it: the process-env
+    seed must not clobber an explicitly configured per-profile token."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".op.env").write_text(
+        "OP_SERVICE_ACCOUNT_TOKEN=file-token\n", encoding="utf-8")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "proc-token")
+    captured = _capture_apply_all(monkeypatch)
+    _onepassword_enabled(monkeypatch, env_loader)
+
+    env_loader.hydrate_profile_secret_sources(home)
+
+    assert captured["environ"]["OP_SERVICE_ACCOUNT_TOKEN"] == "file-token"
+
+
+def test_hydration_ignores_token_when_onepassword_disabled(tmp_path, monkeypatch):
+    """No seeding when the 1Password source isn't enabled — the credential
+    stays out of the private mapping entirely."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "proc-token")
+    captured = _capture_apply_all(monkeypatch)
+    monkeypatch.setattr(
+        env_loader, "_load_secrets_config",
+        lambda _home: {"onepassword": {"enabled": False}})
+
+    env_loader.hydrate_profile_secret_sources(home)
+
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in (captured["environ"] or {})

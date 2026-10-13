@@ -18,6 +18,8 @@ from typing import Any, Optional
 # Effort above ``high`` (Gemini 4's top thinkingLevel) buys a larger total thinking+output budget.
 # 262,144 is Google's starting point for hard reasoning; the API caps 1,048,576 at the window minus input.
 _LONG_DECODE_BUDGETS = {"xhigh": 262_144, "max": 1_048_576, "ultra": 1_048_576}
+# Smallest per-request cap (unary; streamed hops get 65,536): hop counts derived from it are upper bounds.
+_HOP_TOKENS = 32_768
 _USAGE_COUNT_KEYS = (
     "promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount", "thoughtsTokenCount",
     "toolUsePromptTokenCount", "totalTokenCount",
@@ -30,6 +32,22 @@ def long_decode_max_output_tokens(model: str, reasoning_config: Any) -> Optional
     if not name.startswith("gemini-4") or not isinstance(reasoning_config, dict) or reasoning_config.get("enabled") is False:
         return None
     return _LONG_DECODE_BUDGETS.get(str(reasoning_config.get("effort") or "").strip().lower())
+
+
+def long_decode_hops(max_output_tokens: Any) -> int:
+    """Most hops a request with this total budget can take; 1 when it fits one request. The stale
+    watchdog scales by it (one timer spans every unary hop) and the hop loops stop one past it, so a
+    server that keeps answering CONTINUATION can't bill forever."""
+    budget = max_output_tokens if isinstance(max_output_tokens, int) and not isinstance(max_output_tokens, bool) else 0
+    return max(1, -(-budget // _HOP_TOKENS))
+
+
+def long_decode_stale_multiplier(api_payload: Any) -> int:
+    """Non-streaming stale budgets are one timer around every unary hop of a long decode: scale it by
+    the hop count so a healthy multi-hop answer isn't killed and re-billed from hop 1. The run-budget
+    cap still applies afterwards; streaming re-arms on every chunk and needs no scaling."""
+    extra = api_payload.get("extra_body") if isinstance(api_payload, dict) else None
+    return long_decode_hops(extra.get("max_output_tokens")) if isinstance(extra, dict) else 1
 
 
 def _candidate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -48,7 +66,9 @@ def continuation_token(payload: dict[str, Any]) -> Optional[str]:
 def merge_hop_usage(hops: list[dict[str, Any]]) -> dict[str, Any]:
     """Sum every count across hops; ``initialPromptTokenCount`` (the google-genai name) is hop 1's prompt."""
     merged = {key: sum(int(h.get(key) or 0) for h in hops) for key in _USAGE_COUNT_KEYS if any(key in h for h in hops)}
-    merged["initialPromptTokenCount"] = int(hops[0].get("promptTokenCount") or 0) if hops else 0
+    first = hops[0] if hops else {}
+    merged["initialPromptTokenCount"] = int(first.get("promptTokenCount") or 0)
+    merged["initialCachedContentTokenCount"] = int(first.get("cachedContentTokenCount") or 0)
     return merged
 
 

@@ -43,6 +43,10 @@ describe('shouldPreserveCtrlJNewline', () => {
     ).toBe(true)
   })
 
+  it('preserves Ctrl+J as newline inside tmux, which forwards it as a bare LF', () => {
+    expect(shouldPreserveCtrlJNewline({ TERM: 'tmux-256color', TMUX: '/tmp/tmux-1000/default,1234,0' })).toBe(true)
+  })
+
   it('keeps bare local POSIX LF-compatible prompts submitting on Ctrl+J', () => {
     expect(shouldPreserveCtrlJNewline({ TERM: 'xterm-256color' })).toBe(false)
   })

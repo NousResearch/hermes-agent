@@ -255,6 +255,10 @@ export async function cutSelection(
 }
 
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.TMUX) {
+    return true
+  }
+
   if (env.WT_SESSION) {
     return true
   }
@@ -299,8 +303,8 @@ export function isCtrlJNewline(input: string, key: ReturnDecisionKey): boolean {
  * submitting. An explicit modified Enter (Shift/Ctrl, or the platform action
  * modifier) always inserts a newline. Beyond that, terminals that can't send a
  * distinct Shift+Enter collapse a modified Enter / Ctrl+J down to a bare LF —
- * shouldPreserveCtrlJNewline() detects that via env (SSH, Windows Terminal,
- * Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
+ * shouldPreserveCtrlJNewline() detects that via env (tmux, SSH, Windows
+ * Terminal, Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
  * but aren't env-detectable, so a bare LF is treated as a newline there as well.
  * Plain Enter (CR) stays submit everywhere.
  */

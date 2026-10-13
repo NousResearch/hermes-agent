@@ -432,6 +432,7 @@ def _script_argv(
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
+    *, secret_env_resolver: Optional[Callable[[Path], dict[str, str]]] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -442,12 +443,17 @@ def _run_job_script(
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
-    ``.py`` scripts (#8714).
+    ``.py`` scripts (#8714). secret_env_resolver: only the no_agent path passes one (wake-gate
+    and monitor scripts never do); its values are layered over the scrubbed env right before
+    Popen and exact-match scrubbed from every output, whatever ``security.redact_secrets`` says.
     """
+    from cron.secret_env import SecretResolveError, scrub_secret_values
+
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
+    secret_values: list[str] = []
     try:
         argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
@@ -480,6 +486,14 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        if secret_env_resolver is not None:
+            # After the scrub: build_subprocess_env's filters would drop a name passed as extra=.
+            try:
+                secrets = secret_env_resolver(path)
+            except SecretResolveError as exc:
+                return False, str(exc)
+            secret_values = list(secrets.values())
+            env.update(secrets)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -512,8 +526,8 @@ def _run_job_script(
             except subprocess.TimeoutExpired:
                 continue
 
-        stdout = (stdout_raw or "").strip()
-        stderr = (stderr_raw or "").strip()
+        stdout = scrub_secret_values((stdout_raw or "").strip(), secret_values)
+        stderr = scrub_secret_values((stderr_raw or "").strip(), secret_values)
 
         # Redact secrets before ANY return path.
         try:
@@ -533,7 +547,7 @@ def _run_job_script(
             return False, "\n".join(parts)
         return True, stdout
     except Exception as exc:
-        return False, f"Script execution failed: {exc}"
+        return False, scrub_secret_values(f"Script execution failed: {exc}", secret_values)
 
 
 def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.Thread]:
@@ -557,10 +571,16 @@ def _run_job_script_with_claim_heartbeat(
     """Run a cron script while heartbeating its owned one-shot claim. A long script can outlive
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
-    dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim.
+    A job's ``secret_env`` is resolved only when the script IS the job (``no_agent``): an agent
+    job's wake-gate script reaches here too and must never see it, even on a hand-edited record."""
+    from cron.secret_env import job_secret_env_resolver
+
+    resolver = job_secret_env_resolver(job) if job.get("no_agent") else None
+
     def run() -> tuple[bool, str]:
         return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
-                               interpreter=job.get("interpreter"))
+                               interpreter=job.get("interpreter"), secret_env_resolver=resolver)
 
     schedule = job.get("schedule")
     claim = job.get("run_claim")

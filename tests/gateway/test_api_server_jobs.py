@@ -557,3 +557,27 @@ class TestCronPromptScanParity:
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
 
+
+
+class TestSecretEnvIsNotSettableOverHttp:
+    """Job-scoped secret_env (CORP-764) is CLI-only: neither the create nor the update route may
+    carry it (or its script pin) into cron.jobs."""
+
+    _FIELDS = {"secret_env": {"NOTICE_REPORT_SLACK_TOKEN": "wincred://hermes/x"},
+               "secret_env_script_sha256": "a" * 64}
+
+    @pytest.mark.asyncio
+    async def test_create_and_update_drop_secret_env(self, adapter):
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), \
+                 patch(f"{_MOD}._cron_create", mock_create), \
+                 patch(f"{_MOD}._cron_update", mock_update):
+                await cli.post("/api/jobs", json={
+                    "name": "n", "schedule": "*/5 * * * *", "prompt": "p", **self._FIELDS})
+                resp = await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json=dict(self._FIELDS))
+        assert not set(self._FIELDS) & set(mock_create.call_args[1])
+        assert resp.status == 400
+        mock_update.assert_not_called()

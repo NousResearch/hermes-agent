@@ -193,6 +193,51 @@ Rules:
 - It is validated **at run time**, not at creation — a cron job is long-lived, and the venv may be rebuilt or moved between when you create the job and when it fires. A missing or non-executable interpreter produces a clear script failure that is delivered like any other error.
 - To clear it later: `hermes cron edit <job_id> --interpreter ""`.
 
+### Job-scoped secrets
+
+Cron scripts never inherit Hermes' provider or messaging credentials. When one script needs its own token (say, a read-only Slack token), give it to **that job only** with `--secret-env`. The job stores a *reference* to a secret store; the value is fetched fresh on every run and handed to that script's process alone.
+
+```bash
+# 1. Store the token in Windows Credential Manager. cmdkey prompts for it,
+#    so it never lands in your shell history.
+cmdkey /generic:hermes/notice-report-slack /user:hermes /pass
+
+# 2. Create the job paused, with the reference (not the token).
+hermes cron create "0 9 * * 1-5" \
+  --no-agent \
+  --script notice_report.py \
+  --secret-env NOTICE_REPORT_SLACK_TOKEN=wincred://hermes/notice-report-slack \
+  --paused
+
+# 3. Try it once, then resume.
+hermes cron run <job_id>
+hermes cron resume <job_id>
+```
+
+The script reads it like any env var (`os.environ["NOTICE_REPORT_SLACK_TOKEN"]`); exit non-zero when it is missing or empty.
+
+How it behaves:
+
+- **References only.** `jobs.json` holds `NAME → wincred://<target>`. Anything that is not a reference (a pasted token, say) is rejected when you save it, and the error does not repeat what you typed. `wincred://` (Windows Credential Manager, generic credentials written by `cmdkey`) is the only store supported so far.
+- **Only this script sees it.** The value is added after Hermes scrubs the child environment, right before the script starts. Agent jobs, pre-run (wake-gate) scripts, monitor scripts, other cron jobs, the agent's terminal, and the Hermes process environment never get it.
+- **Fail-closed.** If any reference cannot be resolved (missing credential, empty value, timeout, not on Windows, anything unexpected), the script does not start. The usual failure alert is sent, naming only the variable and the kind of failure, never the reference or the value. The job is not paused automatically.
+- **Never written down.** Values are not cached. Every exact occurrence of a value in the script's output is replaced with `[REDACTED-SECRET-ENV]` before it reaches run history, delivery, failure alerts, `last_error`, or logs, even with `security.redact_secrets: false`. A script that encodes or splits the value can still leak it; keep the script honest.
+- **The script is pinned.** Setting `--secret-env` records the script's SHA-256. If the file changes, nothing is resolved and the run fails until you review the change and run `hermes cron edit <job_id> --repin-script`. Changing the job's script, interpreter or workdir is refused unless the same command re-pins (`hermes cron edit <job_id> --interpreter … --repin-script`). The pin covers the script file only, not modules it imports or files it sources.
+- **CLI only.** Only `hermes cron create/edit` can set or change it. The agent's `cronjob` tool, the dashboard and the API server cannot, and the agent cannot change the script, mode, workdir or interpreter of a job that has it. `hermes cron list` shows variable names and the store type (`NOTICE_REPORT_SLACK_TOKEN (wincred)`), never the reference.
+- **Names.** `[A-Z][A-Z0-9_]`, up to 8 per job. Names Hermes manages or that steer the runtime (`SLACK_BOT_TOKEN`, provider keys, `HERMES_*`, `PYTHON*`, `PATH`, `OP_*`, …) are refused.
+- **Profile distributions** do not carry references, and installing one never overwrites yours.
+
+Editing:
+
+```bash
+hermes cron edit <job_id> --secret-env NAME=wincred://hermes/other   # add or replace (re-pins)
+hermes cron edit <job_id> --remove-secret-env NAME
+hermes cron edit <job_id> --clear-secret-env                         # drop all, and the pin
+hermes cron edit <job_id> --repin-script                             # after reviewing a script edit
+```
+
+What it does not protect against: anything running as your Windows user can read Credential Manager directly, including commands the agent runs in its terminal. Give the token the narrowest scope that works.
+
 ## Schedule Syntax
 
 Same as all other cron jobs:

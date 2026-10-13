@@ -802,3 +802,118 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+class TestSecretEnvIsCliOnly:
+    """Job-scoped secret_env (CORP-764): the CLI lane of cronjob() sets references and pins the
+    script; the model-facing handler can neither set them nor retarget a job that carries them."""
+
+    FAKE_VALUE = "FAKE-SECRET-VALUE-0123456789"
+    TARGET = "hermes/notice-report-slack"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        from hermes_constants import get_hermes_home
+
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        self.jobs_file = tmp_path / "cron" / "jobs.json"
+        self.scripts = get_hermes_home() / "scripts"
+        self.scripts.mkdir(parents=True, exist_ok=True)
+        (self.scripts / "notice.py").write_text("print('notice')\n", encoding="utf-8")
+        (self.scripts / "other.py").write_text("print('other')\n", encoding="utf-8")
+
+    def _create(self):
+        created = json.loads(cronjob(
+            action="create", schedule="every 1h", script="notice.py", no_agent=True,
+            secret_env={"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{self.TARGET}"}))
+        assert created["success"] is True, created
+        return created
+
+    def _dispatch(self, args):
+        from tools.registry import registry
+
+        return json.loads(registry.dispatch("cronjob_manage", args))
+
+    def test_cli_lane_stores_references_and_pins_the_script(self):
+        import hashlib
+
+        from cron.jobs import get_job
+
+        created = self._create()
+        stored = get_job(created["job_id"])
+        assert stored["secret_env"] == {"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{self.TARGET}"}
+        assert stored["secret_env_script_sha256"] == hashlib.sha256(
+            (self.scripts / "notice.py").read_bytes()).hexdigest()
+        # Tool results are LLM context: names and schemes only.
+        assert created["job"]["secret_env"] == ["NOTICE_REPORT_SLACK_TOKEN (wincred)"]
+        assert self.TARGET not in json.dumps(created)
+        listing = json.loads(cronjob(action="list"))
+        assert self.TARGET not in json.dumps(listing)
+
+    def test_raw_value_is_rejected_without_echo(self):
+        result = json.loads(cronjob(
+            action="create", schedule="every 1h", script="notice.py", no_agent=True,
+            secret_env={"NOTICE_REPORT_SLACK_TOKEN": self.FAKE_VALUE}))
+        assert result["success"] is False
+        assert self.FAKE_VALUE not in json.dumps(result)
+        assert not self.jobs_file.exists() or self.FAKE_VALUE not in self.jobs_file.read_text(encoding="utf-8")
+
+    def test_update_repins_and_clears(self):
+        import hashlib
+
+        from cron.jobs import get_job
+
+        job_id = self._create()["job_id"]
+        (self.scripts / "notice.py").write_text("print('edited')\n", encoding="utf-8")
+        assert json.loads(cronjob(action="update", job_id=job_id, repin_script=True))["success"]
+        assert get_job(job_id)["secret_env_script_sha256"] == hashlib.sha256(
+            (self.scripts / "notice.py").read_bytes()).hexdigest()
+
+        assert json.loads(cronjob(action="update", job_id=job_id, secret_env={}))["success"]
+        stored = get_job(job_id)
+        assert "secret_env" not in stored and "secret_env_script_sha256" not in stored
+        result = json.loads(cronjob(action="update", job_id=job_id, repin_script=True))
+        assert result["success"] is False
+
+    def test_schema_does_not_expose_secret_env(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        props = CRONJOB_SCHEMA["parameters"]["properties"]
+        assert "secret_env" not in props and "repin_script" not in props
+
+    def test_handler_cannot_set_secret_env(self):
+        from cron.jobs import create_job, get_job
+
+        plain = create_job(prompt=None, schedule="every 1h", script="notice.py", no_agent=True)
+        self._dispatch({"action": "create", "schedule": "every 1h", "script": "notice.py",
+                        "no_agent": True, "name": "via-model",
+                        "secret_env": {"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{self.TARGET}"}})
+        self._dispatch({"action": "update", "job_id": plain["id"], "repin_script": True,
+                        "secret_env": {"NOTICE_REPORT_SLACK_TOKEN": f"wincred://{self.TARGET}"}})
+        raw = self.jobs_file.read_text(encoding="utf-8")
+        assert "secret_env" not in raw
+        assert "secret_env" not in get_job(plain["id"])
+
+    @pytest.mark.parametrize("field, value", [
+        ("script", "other.py"), ("script", ""), ("no_agent", False), ("workdir", "/tmp"),
+        ("interpreter", "/usr/bin/python3"),
+    ])
+    def test_handler_cannot_retarget_a_secret_env_job(self, field, value):
+        from cron.jobs import get_job
+
+        job_id = self._create()["job_id"]
+        before = get_job(job_id)
+        result = self._dispatch({"action": "update", "job_id": job_id, field: value})
+        assert result["success"] is False
+        assert "hermes cron edit" in result["error"]
+        after = get_job(job_id)
+        for key in ("script", "no_agent", "workdir", "interpreter", "secret_env_script_sha256"):
+            assert after.get(key) == before.get(key)
+
+    def test_handler_may_still_rename_or_resend_unchanged_fields(self):
+        job_id = self._create()["job_id"]
+        result = self._dispatch({"action": "update", "job_id": job_id, "name": "renamed",
+                                 "script": "notice.py", "no_agent": True})
+        assert result["success"] is True

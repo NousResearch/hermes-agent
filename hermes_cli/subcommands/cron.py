@@ -11,6 +11,12 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+_SECRET_ENV_HELP = (
+    "no-agent jobs only: give the script env var NAME from an external secret store, resolved "
+    "fresh each run (REF like wincred://hermes/my-token; the value itself is never stored). "
+    "Repeatable. The script is pinned; after editing it run `hermes cron edit --repin-script`.")
+
+
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
     cron_parser = subparsers.add_parser(
@@ -81,6 +87,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
             "ship. .sh/.bash still run under bash. Omit to use Hermes' Python.")
+    cron_create.add_argument("--secret-env", dest="secret_env", action="append", metavar="NAME=REF",
+        help=_SECRET_ENV_HELP)
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "
@@ -151,6 +159,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--secret-env", dest="secret_env", action="append", metavar="NAME=REF",
+        help=_SECRET_ENV_HELP + " Adds or replaces; re-pins the script.")
+    cron_edit.add_argument("--remove-secret-env", dest="remove_secret_env", action="append",
+        metavar="NAME", help="Drop one secret_env variable. Repeatable.")
+    _flag(cron_edit, "--clear-secret-env", help="Drop every secret_env variable and the script pin.")
+    _flag(cron_edit, "--repin-script",
+        help="Re-pin the secret_env job's script to its current contents (after reviewing an edit).")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

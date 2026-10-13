@@ -57,6 +57,9 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
     core functions already accept.
     """
     normalized = dict(updates or {})
+    if {"secret_env", "secret_env_script_sha256"}.intersection(normalized):
+        # CLI-only: references and the script pin are set by a person at the terminal.
+        raise ValueError("secret_env can only be changed with `hermes cron edit`.")
     for key in ("model", "provider", "workdir"):
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])

@@ -523,6 +523,11 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if job.get("secret_env"):
+        from cron.secret_env import secret_env_display
+
+        # Names and schemes only: a tool result is LLM context, and a target names a credential.
+        result["secret_env"] = secret_env_display(job["secret_env"])
     return result
 
 

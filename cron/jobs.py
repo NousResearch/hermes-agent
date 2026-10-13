@@ -33,6 +33,7 @@ from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECOND
 from cron.env_settings import cron_env_setting
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
+from cron.secret_env import SECRET_ENV_FIELD_NORMALIZERS, apply_secret_env_update, validate_secret_env_job
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -1756,6 +1757,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
+    **SECRET_ENV_FIELD_NORMALIZERS,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1764,6 +1766,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
+    **SECRET_ENV_FIELD_NORMALIZERS,
     "reasoning_effort": _normalize_reasoning_effort,
 }
 
@@ -1836,6 +1839,8 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    secret_env: Optional[dict[str, str]] = None,
+    secret_env_script_sha256: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1872,6 +1877,7 @@ def create_job(
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
+    validate_secret_env_job(f)
     prompt_text = _coerce_job_text(prompt).strip()
     if not prompt_text and not f["script"] and not normalized_skills:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
@@ -1934,6 +1940,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+        ("secret_env", f["secret_env"]), ("secret_env_script_sha256", f["secret_env_script_sha256"]),
     ):
         if value is not None:
             job[key] = value
@@ -2128,6 +2135,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
                 updated.get("monitor_url") or None,
                 bool(updated.get("no_agent")),
                 _normalize_job_optional_text(updated.get("script")))
+        apply_secret_env_update(job, updated, updates)
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
         if "schedule" in updates:

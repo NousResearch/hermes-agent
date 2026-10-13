@@ -227,6 +227,7 @@ def _last_run_display(job: dict[str, Any]) -> str:
 
 def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
     """``(label, value)`` detail rows for one job in ``cron list``."""
+    from cron.secret_env import secret_env_display
     # `repeat` / `deliver` may be present-but-null (dict-default only covers a missing key).
     repeat_info = job.get("repeat") or {}
     repeat_times = repeat_info.get("times")
@@ -248,6 +249,7 @@ def _job_rows(job: dict[str, Any]) -> list[tuple[str, str]]:
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
         ("Python", job.get("interpreter")),
+        ("Secret env", ", ".join(secret_env_display(job.get("secret_env")))),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
@@ -774,20 +776,62 @@ _JOB_DETAIL_LINES = (
     ("no_agent", "  Mode: no-agent (script stdout delivered directly)"),
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("workdir", "  Workdir: {}"),
-    ("interpreter", "  Python: {}"))
+    ("interpreter", "  Python: {}"),
+    ("secret_env", "  Secret env: {}"))
 
 
 def _print_job_details(job_data: dict[str, Any]) -> None:
     """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
     for key, template in _JOB_DETAIL_LINES:
-        if job_data.get(key):
-            print(template.format(job_data[key]))
+        value = job_data.get(key)
+        if value:
+            print(template.format(", ".join(value) if isinstance(value, list) else value))
+
+
+def _shown_env_name(name: str) -> str:
+    """Echo a typed NAME only when it looks like one (a pasted token must not reappear)."""
+    return name if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name) else "<invalid name>"
+
+
+def _parse_secret_env_items(items: Optional[Iterable[str]]) -> dict[str, str]:
+    """``--secret-env NAME=REF`` items → mapping. Errors never echo the item: a user who typed
+    the token itself must not see it again on screen or in scrollback."""
+    parsed: dict[str, str] = {}
+    for item in items or ():
+        name, sep, ref = str(item).partition("=")
+        name = name.strip()
+        if not sep or not name or not ref.strip():
+            raise ValueError("--secret-env expects NAME=REF (e.g. NAME=wincred://hermes/my-token).")
+        if name in parsed:
+            raise ValueError(f"--secret-env {_shown_env_name(name)} given more than once.")
+        parsed[name] = ref.strip()
+    return parsed
+
+
+def _edited_secret_env(job: dict[str, Any], args) -> Optional[dict[str, str]]:
+    """The job's secret_env after this edit's flags ({} clears), or None when untouched."""
+    additions = _parse_secret_env_items(getattr(args, "secret_env", None))
+    removals = [str(name).strip() for name in getattr(args, "remove_secret_env", None) or ()]
+    clear = getattr(args, "clear_secret_env", False)
+    if not (additions or removals or clear):
+        return None
+    current = {} if clear else dict(job.get("secret_env") or {})
+    for name in removals:
+        if current.pop(name, None) is None and not clear:
+            raise ValueError(f"--remove-secret-env {_shown_env_name(name)}: not set on this job.")
+    return {**current, **additions}
 
 
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
+    try:
+        secret_env = _parse_secret_env_items(getattr(args, "secret_env", None)) or None
+    except ValueError as exc:
+        print(color(f"Failed to create job: {exc}", Colors.RED))
+        return 1
     result = _cron_api(
+        secret_env=secret_env,
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
@@ -836,7 +880,13 @@ def cron_edit(args):
     elif add_skills or remove_skills:
         final_skills = [skill for skill in existing_skills if skill not in remove_skills]
         final_skills += [skill for skill in add_skills if skill not in final_skills]
-    result = _cron_api(action="update", job_id=args.job_id,
+    try:
+        secret_env = _edited_secret_env(job, args)
+    except ValueError as exc:
+        print(color(f"Failed to update job: {exc}", Colors.RED))
+        return 1
+    result = _cron_api(action="update", job_id=args.job_id, secret_env=secret_env,
+                       repin_script=bool(getattr(args, "repin_script", False)),
                        schedule=getattr(args, "schedule", None),
                        prompt=getattr(args, "prompt", None), skills=final_skills,
                        no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))

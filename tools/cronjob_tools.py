@@ -673,6 +673,11 @@ def _action_create(a: dict[str, Any]) -> str:
             [a["context_from"]] if isinstance(a["context_from"], str) else a["context_from"])))
     if error:
         return tool_error(error, success=False)
+    secret_pin = None
+    if a["secret_env"] and _no_agent:  # on an agent job create_job refuses secret_env itself
+        secret_pin, error = _secret_env_script_pin(script)
+        if error:
+            return tool_error(error, success=False)
 
     context_from = a["context_from"]
     if a["continuity"] is not None:
@@ -696,6 +701,7 @@ def _action_create(a: dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
+            secret_env=a["secret_env"] or None, secret_env_script_sha256=secret_pin,
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -935,8 +941,35 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
     return None
 
 
+def _secret_env_script_pin(script: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``(sha256, None)`` of the job script as it will run, or ``(None, error)``."""
+    from cron.scheduler_script import _resolve_script_path
+    from cron.secret_env import script_sha256
+
+    path, err = _resolve_script_path(str(script or ""))
+    if path is None:
+        return None, f"secret_env needs the job's script to pin: {err}"
+    return script_sha256(path), None
+
+
+def _update_secret_env(job: dict[str, Any], a: dict[str, Any], updates: dict[str, Any]) -> Optional[str]:
+    """secret_env / repin_script — the CLI-only lane (never forwarded by the model handler).
+    Setting references, or an explicit repin, pins the script as it is now; {} clears both."""
+    if a["secret_env"] is None and not a["repin_script"]:
+        return None
+    if a["secret_env"] is not None:
+        updates["secret_env"] = a["secret_env"] or None
+    if not _pick(updates, job, "secret_env"):
+        return None if a["secret_env"] is not None else "repin_script needs a job with secret_env."
+    pin, error = _secret_env_script_pin(_pick(updates, job, "script"))
+    if pin is not None:
+        updates["secret_env_script_sha256"] = pin
+    return error
+
+
 # Validation order is behavior (first failing field wins): keep this sequence.
-_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_context_from, _update_run_fields)
+_UPDATE_STEPS = (_update_core_fields, _update_script_fields, _update_context_from, _update_run_fields,
+                 _update_secret_env)
 
 
 def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
@@ -1014,7 +1047,9 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    secret_env: Optional[dict[str, str]] = None,
+    repin_script: bool = False) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1173,9 +1208,34 @@ _HANDLER_FORWARDED_ARGS = (
     "paused_reason", "pinned")
 
 
+# What decides which program receives a job's secret_env. The model may not change them on such a
+# job: pointing it at another script (or interpreter) would hand that program the values.
+# ``interpreter`` is not forwarded to the model today; listed so a future forward stays locked.
+_SECRET_ENV_LOCKED_ARGS = ("script", "no_agent", "workdir", "interpreter")
+
+
+def _secret_env_job_lock(args: dict) -> Optional[str]:
+    """Error JSON when a model update would retarget a job that carries secret_env."""
+    changes = {key: args[key] for key in _SECRET_ENV_LOCKED_ARGS if args.get(key) is not None}
+    if str(args.get("action") or "").strip().lower() != "update" or not changes:
+        return None
+    try:
+        job = resolve_job_ref(str(args.get("job_id") or ""))
+    except AmbiguousJobReference:
+        return None  # cronjob() reports the ambiguity
+    if not job or not job.get("secret_env") or all(job.get(k) == v for k, v in changes.items()):
+        return None
+    return tool_error(
+        f"Job '{job['id']}' uses secret_env, so its {', '.join(sorted(changes))} can only be "
+        "changed by the user with `hermes cron edit`.", success=False)
+
+
 def _cronjob_handler(args, **kw):
     """Model-tool dispatch: resolves the one model-facing ``monitor`` field into the stored
     ``monitor_script``/``monitor_url`` pair (legacy field names still accepted)."""
+    locked = _secret_env_job_lock(args)
+    if locked is not None:
+        return locked
     _mon_script, _mon_url = _split_monitor_arg(args.get("monitor"), args.get("monitor_script"), args.get("monitor_url"))
     return cronjob(
         action=args.get("action", ""),

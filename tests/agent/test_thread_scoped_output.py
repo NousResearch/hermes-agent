@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 import agent.thread_scoped_output as thread_output
 from agent.process_bootstrap import _SafeWriter, _install_safe_stdio
 from agent.thread_scoped_output import thread_scoped_silence
@@ -213,3 +215,52 @@ def test_safe_stdio_and_silence_alternation_never_grows_the_chain(monkeypatch):
         assert real_out.getvalue() == "kept\n"
     finally:
         sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def _delegation_cycle():
+    """The incident's hand-built shape: the bootstrap _SafeWriter wrapping the
+    thread-routing proxy, whose passthrough delegates back into that writer."""
+    state = thread_output._RoutingState(sink=io.StringIO())
+    routing = thread_output._ThreadRoutingStream(passthrough=None, state=state)
+    safe = _SafeWriter(routing)
+    routing._passthrough = safe
+    return safe, routing
+
+
+def test_delegation_cycle_misses_as_attribute_error_never_recursion():
+    """An intentional two-proxy cycle (bootstrap proxy wrapping the thread-scoped
+    proxy wrapping it back) must make attribute misses look like plain misses —
+    AttributeError, so ``getattr(obj, name, default)`` yields the default —
+    instead of recursing to RecursionError, which ``getattr``'s default cannot
+    catch and which killed every agent build in the long-lived gateway
+    (gateway.error.log, 2026-10-09).  A self-wrapping _SafeWriter must
+    terminate the same way."""
+    safe, routing = _delegation_cycle()
+    for proxy in (safe, routing):
+        with pytest.raises(AttributeError):
+            proxy.line_buffering
+        assert getattr(proxy, "line_buffering", False) is False
+
+    self_loop = _SafeWriter(None)
+    object.__setattr__(self_loop, "_inner", self_loop)
+    with pytest.raises(AttributeError):
+        self_loop.line_buffering
+    assert getattr(self_loop, "line_buffering", False) is False
+
+
+def test_logging_buffering_probes_survive_a_delegation_cycled_stdio(monkeypatch):
+    """``setup_logging`` runs on every AIAgent build and probes sys.stdout for
+    ``line_buffering``/``reconfigure`` (and sys.stderr for ``encoding``); with a
+    delegation-cycled proxy bound there the probes must see a miss and move on,
+    never crash setup (the 2026-10-09 gateway incident's fatal read)."""
+    import hermes_logging
+
+    safe, _routing = _delegation_cycle()
+    monkeypatch.setattr(hermes_logging, "_line_buffered_stdout", None)
+    monkeypatch.setattr(sys, "stdout", safe)
+    hermes_logging._line_buffer_piped_stdout()  # must not raise
+    assert hermes_logging._line_buffered_stdout is None
+
+    safe_err, _routing_err = _delegation_cycle()
+    monkeypatch.setattr(sys, "stderr", safe_err)
+    assert hermes_logging._safe_stderr() is safe_err

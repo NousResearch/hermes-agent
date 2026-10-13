@@ -282,3 +282,48 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_duplicate_plugin_names_deduplicated_in_workspace(tmp_path):
+    """Two plugin dirs with the same [project].name produce one workspace member.
+
+    When the same plugin is installed in multiple homes' plugin dirs,
+    enabled_plugin_dirs() returns all paths.  Buildable members keep their
+    declared [project].name, so ``uv lock`` would fail with duplicate names.
+    _generate_pyproject() must skip duplicates, keeping the first occurrence.
+    """
+    import tomllib
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n',
+        encoding="utf-8",
+    )
+
+    # Two buildable plugin dirs with the same [project].name but different paths
+    plugin_a = tmp_path / "plugin-a"
+    plugin_b = tmp_path / "plugin-b"
+    for plugin in (plugin_a, plugin_b):
+        plugin.mkdir()
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname="hermes-telemetry"\nversion="1.0"\nrequires-python=">=3.11"\n'
+            '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["build"]\n',
+            encoding="utf-8",
+        )
+        (plugin / "plugin.yaml").write_text("name: hermes-telemetry\n", encoding="utf-8")
+        (plugin / "build").mkdir()
+        (plugin / "build" / "backend.py").write_text(
+            "def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n"
+            "    return 'hermes_telemetry-1.0-py3-none-any.whl'\n"
+            "build_editable = build_wheel\n",
+            encoding="utf-8",
+        )
+
+    root = tmp_path / "workspace"
+    workspace._generate_pyproject([plugin_a, plugin_b], root, source=core)
+
+    document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    members = document["tool"]["uv"]["workspace"]["members"]
+    assert len(members) == 1, f"Expected 1 deduplicated member, got {len(members)}: {members}"

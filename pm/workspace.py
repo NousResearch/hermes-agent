@@ -119,9 +119,16 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    seen_names: set[str] = set()
+    members = []
+    for identity, plugin_dir in member_sources(plugin_dirs).items():
+        if not _is_member_candidate(plugin_dir):
+            continue
+        name = _member_name(plugin_dir, identity)
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        members.append(_workspace_member(plugin_dir, root, identity=identity).relative_to(root).as_posix())
 
     if members:
         import tomllib
@@ -232,6 +239,27 @@ def _member_key(identity: Path) -> str:
     digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
     name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
     return f"{name}-{digest}"
+
+
+def _member_name(plugin_dir: Path, identity: Path) -> str:
+    """Compute the effective workspace member name that *_workspace_member* assigns.
+
+    Virtual members (no build backend) get a unique ``hermes-plugin-<key>`` name.
+    Buildable members keep their declared ``[project].name``.  This lets
+    *_generate_pyproject* detect name conflicts before ``uv lock`` fails.
+    """
+    import tomllib
+
+    key = _member_key(identity)
+    declaration = read_python_declaration(plugin_dir)
+    pyproject = declaration.pyproject
+    if pyproject is None:
+        return f"hermes-plugin-{key}"
+    document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
+    if virtual:
+        return f"hermes-plugin-{key}"
+    return document.get("project", {}).get("name", f"hermes-plugin-{key}")
 
 
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:

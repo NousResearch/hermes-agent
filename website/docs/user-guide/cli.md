@@ -265,7 +265,7 @@ Commands are case-insensitive — `/HELP` works the same as `/help`. Installed s
 
 ## Quick Commands
 
-You can define custom commands that run shell commands instantly without invoking the LLM. These work in both the CLI and messaging platforms (Telegram, Discord, etc.).
+You can define custom commands that run shell commands instantly without invoking the LLM, or that send a saved prompt to the agent. These work in both the CLI and messaging platforms (Telegram, Discord, etc.).
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -279,9 +279,12 @@ quick_commands:
   restart:
     type: alias
     target: /gateway restart
+  review-tests:
+    type: prompt
+    prompt: "Review the test coverage of {args} and list the untested branches."
 ```
 
-Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](./configuration.md#quick-commands) for more examples.
+Then type `/status`, `/gpu`, `/restart`, or `/review-tests src/auth` in any chat. See the [Configuration guide](./configuration.md#quick-commands) for more examples.
 
 ## Preloading Skills at Launch
 

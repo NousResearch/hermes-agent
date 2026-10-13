@@ -792,8 +792,9 @@ gateway:
     timed_out: "Chuaigh an mear-ordú thar am (30s)."
     error: "Earráid mhear-ordaithe: {error}"
     no_command: "Níl aon ordú sainithe don mhear-ordú '/{command}'."
-    unsupported_type: "Tá cineál nach dtacaítear leis ag an mear-ordú '/{command}' (tacaítear le: 'exec', 'alias')."
+    unsupported_type: "Tá cineál nach dtacaítear leis ag an mear-ordú '/{command}' (tacaítear le: 'exec', 'alias', 'prompt')."
     no_target: "Níl aon sprioc sainithe don mhear-ordú '/{command}'."
+    no_prompt: "Níl leid sainithe ag an mearordú '/{command}'."
   unknown_command: "Ordú anaithnid `/{command}`. Clóscríobh /commands chun a fheiceáil cad atá ar fáil, nó seol arís gan an slais tosaigh chun é a sheoladh mar ghnáth-theachtaireacht."
   session:
     auto_reset_notice: "◐ Athshocraíodh an seisiún tar éis é a stopadh. Glanadh stair an chomhrá.\nÚsáid /resume chun seisiún roimhe seo a bhrabhsáil agus a athchóiriú.\n"
@@ -3204,11 +3205,12 @@ cli:
     command_error: "Earráid ordú breiseáin: {error}"
   quick:
     no_target: "Níl aon sprioc sainithe don ordú gasta '{command}'"
-    unsupported_type: "Tá cineál gan tacaíocht ag an ordú gasta '{command}' (le tacaíocht: 'exec', 'alias')"
+    unsupported_type: "Tá cineál gan tacaíocht ag an ordú gasta '{command}' (le tacaíocht: 'exec', 'alias', 'prompt')"
     no_command: "Níl aon ordú sainithe don ordú gasta '{command}'"
     no_output: "Níor thug an t-ordú aon aschur ar ais"
     timed_out: "Chuaigh an t-ordú gasta thar am (30s)"
     error: "Earráid ordú gasta: {error}"
+    no_prompt: "Níl leid sainithe ag an mearordú '{command}'"
   reload_mcp:
     title: "⚠️  /reload-mcp — Rabhadh: taisce leid á cur ar neamhní"
     detail: "Athchruthaíonn athlódáil freastalaithe MCP an tacar uirlisí don seisiún seo agus\ncuireann sé taisce leid an tsoláthraí ar neamhní. Seolfaidh an chéad teachtaireacht eile\nna comharthaí ionchuir iomlána arís (féadann sé a bheith costasach ar shamhlacha le\ncomhthéacs fada nó réasúnaíocht ard)."

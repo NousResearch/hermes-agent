@@ -162,7 +162,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 ### Quick Commands
 
-User-defined quick commands map a short slash command to either a shell command or another slash command. Configure them in `~/.hermes/config.yaml`:
+User-defined quick commands map a short slash command to a shell command, another slash command, or a saved prompt for the agent. Configure them in `~/.hermes/config.yaml`:
 
 ```yaml
 quick_commands:
@@ -175,9 +175,12 @@ quick_commands:
   inbox:
     type: alias
     target: /gmail unread
+  triage:
+    type: prompt
+    prompt: "Triage {args}: reproduce it, find the root cause, and propose a minimal fix."
 ```
 
-Then type `/status`, `/deploy`, or `/inbox` in the CLI or a messaging platform. Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
+Then type `/status`, `/deploy`, `/inbox`, or `/triage issue 42` in the CLI or a messaging platform. A `prompt` command sends its text to the agent as your message (`{args}` is replaced with what follows the command). Quick commands are resolved at dispatch time and may not appear in every built-in autocomplete/help table.
 
 String-only prompt shortcuts are not supported as quick commands. Put longer reusable prompts in a skill, or use `type: alias` to point at an existing slash command.
 

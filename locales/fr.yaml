@@ -934,8 +934,9 @@ gateway:
     timed_out: "Délai de la commande rapide dépassé (30 s)."
     error: "Erreur de commande rapide : {error}"
     no_command: "La commande rapide '/{command}' n'a aucune commande définie."
-    unsupported_type: "La commande rapide '/{command}' a un type non pris en charge (pris en charge : 'exec', 'alias')."
+    unsupported_type: "La commande rapide '/{command}' a un type non pris en charge (pris en charge : 'exec', 'alias', 'prompt')."
     no_target: "La commande rapide '/{command}' n'a aucune cible définie."
+    no_prompt: "La commande rapide '/{command}' n'a pas de prompt défini."
   unknown_command: "Commande inconnue `/{command}`. Tapez /commands pour voir ce qui est disponible, ou renvoyez le texte sans la barre oblique initiale pour l'envoyer comme message normal."
   session:
     auto_reset_notice: |
@@ -3513,11 +3514,12 @@ cli:
     command_error: "Erreur de commande de plugin : {error}"
   quick:
     no_target: "La commande rapide '{command}' n'a pas de cible définie"
-    unsupported_type: "La commande rapide '{command}' a un type non pris en charge (types acceptés : 'exec', 'alias')"
+    unsupported_type: "La commande rapide '{command}' a un type non pris en charge (types acceptés : 'exec', 'alias', 'prompt')"
     no_command: "La commande rapide '{command}' n'a pas de commande définie"
     no_output: "La commande n'a rien renvoyé"
     timed_out: "Délai de la commande rapide dépassé (30 s)"
     error: "Erreur de commande rapide : {error}"
+    no_prompt: "La commande rapide '{command}' n'a pas de prompt défini"
   reload_mcp:
     title: "⚠️  /reload-mcp — Avertissement d'invalidation du cache de prompt"
     detail: |-

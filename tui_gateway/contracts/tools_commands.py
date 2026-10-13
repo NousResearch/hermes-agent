@@ -202,6 +202,8 @@ class CommandCatalogMeta(Result):
     argument_mode: ArgumentMode | None = None
     desktop: str | None = None
     desktop_subcommands: list[str] | None = None
+    # ``type: prompt`` quick commands with ``review_button`` set: the Review pane button label.
+    review_button: str | None = None
 
 
 class CommandCategory(Result):

@@ -27,6 +27,7 @@ from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
+from gateway.run_quick_commands import GatewayQuickCommandsMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
@@ -67,7 +68,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayQuickCommandsMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -744,23 +745,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         self._queue_or_replace_pending_event(_quick_key, event)
         return None
 
-    def _hm_quick_commands(self) -> dict:
-        """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
-        cfg = self.config
-        qc = (cfg.get("quick_commands") if isinstance(cfg, dict) else getattr(cfg, "quick_commands", None)) or {}
-        return qc if isinstance(qc, dict) else {}
-
-    @staticmethod
-    def _hm_expand_alias_quick_command(event: MessageEvent, qcmd: dict) -> Optional[str]:
-        """Rewrite ``event.text`` to an alias quick command's target; returns the new command name."""
-        target = (qcmd.get("target") or "").strip()
-        if not target:
-            return None
-        target = target if target.startswith("/") else f"/{target}"
-        event.text = f"{target} {event.get_command_args().strip()}".strip()
-        target_command = target.lstrip("/")
-        return target_command.split()[0] if target_command else target_command
-
     async def _hm_command_hooks(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, command: str, canonical: str
     ) -> tuple[bool, Optional[str], Optional[str]]:
@@ -1024,26 +1008,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return await getattr(self, f"_hm_cmd_{canonical.replace('-', '_')}")(event, source, _quick_key)
         return False, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
-        """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
-        gateway process has every API key in os.environ; output is redacted too)."""
-        try:
-            from tools.environments.local import build_subprocess_env
-            proc = await asyncio.create_subprocess_shell(
-                exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            output = (stdout or stderr).decode().strip()
-            if output:
-                from agent.redact import redact_sensitive_text
-                output = redact_sensitive_text(output)
-            return output or t("gateway.quick_command.no_output")
-        except TimeoutError:
-            return t("gateway.quick_command.timed_out")
-        except Exception as e:
-            return t("gateway.quick_command.error", error=e)
-
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: MessageEvent, source: SessionSource, command: Optional[str]
     ) -> tuple[bool, Optional[str], Optional[str]]:
@@ -1052,29 +1016,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if self._draining:
             return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
-        qcmd = self._hm_quick_commands().get(command) if command else None
-        if qcmd is not None:
-            # Quick commands are slash capabilities too — and type:exec ones run a shell command in
-            # the gateway process. They are never in the registry, so the early gate never fires for
-            # them; apply the same admin/user policy to the raw typed name here.
-            # The early gate above only fires for registry-known commands, so quick commands (never in the
-            # registry) would otherwise reach this dispatch sink unchecked. (#44727)
-            _denied = self._check_slash_access(source, command)
-            if _denied is not None:
-                return True, _denied, command
-            qtype = qcmd.get("type")
-            if qtype == "exec":
-                exec_cmd = qcmd.get("command", "")
-                if not exec_cmd:
-                    return True, t("gateway.quick_command.no_command", command=command), command
-                return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
-            if qtype != "alias":
-                return True, t("gateway.quick_command.unsupported_type", command=command), command
-            new_command = self._hm_expand_alias_quick_command(event, qcmd)
-            if new_command is None:
-                return True, t("gateway.quick_command.no_target", command=command), command
-            command = new_command  # Fall through to normal command dispatch below
+        # User-defined quick commands (exec/alias bypass the agent loop; prompt becomes the turn)
+        _handled, _result, command = await self._hm_dispatch_quick_command(event, source, command)
+        if _handled or command is None:
+            return _handled, _result, command
 
         # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
         # underscored autocomplete form matches plugin commands registered with hyphens.

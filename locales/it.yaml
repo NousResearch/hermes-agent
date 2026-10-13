@@ -792,8 +792,9 @@ gateway:
     timed_out: "Comando rapido scaduto (30s)."
     error: "Errore del comando rapido: {error}"
     no_command: "Il comando rapido '/{command}' non ha nessun comando definito."
-    unsupported_type: "Il comando rapido '/{command}' ha un tipo non supportato (supportati: 'exec', 'alias')."
+    unsupported_type: "Il comando rapido '/{command}' ha un tipo non supportato (supportati: 'exec', 'alias', 'prompt')."
     no_target: "Il comando rapido '/{command}' non ha nessuna destinazione definita."
+    no_prompt: "Il comando rapido '/{command}' non ha un prompt definito."
   unknown_command: "Comando sconosciuto `/{command}`. Digita /commands per vedere quelli disponibili, oppure reinvia senza la barra iniziale per mandarlo come messaggio normale."
   session:
     auto_reset_notice: "◐ Sessione reimpostata dopo l'interruzione. Cronologia della conversazione cancellata.\nUsa /resume per sfogliare e ripristinare una sessione precedente.\n"
@@ -3204,11 +3205,12 @@ cli:
     command_error: "Errore nel comando del plugin: {error}"
   quick:
     no_target: "Il comando rapido '{command}' non ha una destinazione definita"
-    unsupported_type: "Il comando rapido '{command}' ha un tipo non supportato (supportati: 'exec', 'alias')"
+    unsupported_type: "Il comando rapido '{command}' ha un tipo non supportato (supportati: 'exec', 'alias', 'prompt')"
     no_command: "Il comando rapido '{command}' non ha un comando definito"
     no_output: "Il comando non ha restituito output"
     timed_out: "Comando rapido scaduto (30s)"
     error: "Errore nel comando rapido: {error}"
+    no_prompt: "Il comando rapido '{command}' non ha un prompt definito"
   reload_mcp:
     title: "⚠️  /reload-mcp — Avviso di invalidazione della cache dei prompt"
     detail: "Il ricaricamento dei server MCP ricostruisce il set di strumenti per questa sessione e\ninvalida la cache dei prompt del provider. Il prossimo messaggio\ninvierà di nuovo tutti i token di input (può essere costoso su modelli\na contesto lungo o ad alto ragionamento)."

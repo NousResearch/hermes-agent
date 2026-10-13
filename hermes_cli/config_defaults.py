@@ -1701,7 +1701,7 @@ DEFAULT_CONFIG = {
     },
     # Permanently allowed dangerous command patterns (added via "always" approval).
     "command_allowlist": [],
-    # User-defined quick commands that bypass the agent loop (type: exec only).
+    # User-defined slash commands: type exec (shell, no LLM), alias (slash command) or prompt (agent turn).
     "quick_commands": {},
     # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
     # ...). Value: {"append": text} keeps the built-in hint and appends; {"replace": text}

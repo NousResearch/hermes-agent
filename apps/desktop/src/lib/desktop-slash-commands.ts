@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 import { translateNow } from '@/i18n/runtime'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
@@ -13,6 +15,8 @@ export interface CommandCatalogMeta {
   desktop?: string | null
   /** Subcommands the desktop surface may offer and forward; absent = all. */
   desktop_subcommands?: readonly string[] | null
+  /** `type: prompt` quick commands that opted into the Review pane: the button label. */
+  review_button?: string | null
 }
 
 export interface CommandsCatalogLike {
@@ -404,10 +408,30 @@ const ALIAS_TO_CANONICAL = new Map<string, string>(
 
 let rememberedCatalog: CommandsCatalogLike | undefined
 
+/** Reactive mirror of the last catalog the composer saw (panes that render catalog-driven actions). */
+export const $desktopCommandsCatalog = atom<CommandsCatalogLike | undefined>(undefined)
+
 /** Last catalog the composer saw — used so Space/Enter know argument mode
  *  without waiting for another `/` keystroke. */
 export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
   rememberedCatalog = catalog
+  $desktopCommandsCatalog.set(catalog)
+}
+
+export interface ReviewPromptButton {
+  command: string
+  label: string
+}
+
+/** `type: prompt` quick commands marked `review_button` in config.yaml, sorted by label. */
+export function reviewPromptButtons(catalog: CommandsCatalogLike | undefined): ReviewPromptButton[] {
+  return Object.entries(catalog?.commands ?? {})
+    .flatMap(([command, meta]) => {
+      const label = meta?.review_button?.trim()
+
+      return label ? [{ command: command.startsWith('/') ? command : `/${command}`, label }] : []
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
 }
 
 function liveCatalog(): CommandsCatalogLike | undefined {

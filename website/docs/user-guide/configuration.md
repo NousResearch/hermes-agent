@@ -2645,7 +2645,7 @@ whatsapp:
 
 ## Quick Commands
 
-Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+Define custom commands that run shell commands without invoking the LLM, alias one slash command to another, or send a saved prompt to the agent. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
 
 ```yaml
 quick_commands:
@@ -2664,14 +2664,20 @@ quick_commands:
   restart:
     type: alias
     target: /gateway restart
+  release-notes:
+    type: prompt
+    description: Release notes
+    prompt: "Write release notes for {args} from the commits since the last tag, grouped by user-facing change."
+    review_button: true
 ```
 
-Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+Usage: type `/status`, `/disk`, `/update`, `/gpu`, `/restart`, or `/release-notes v2.3` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target. `prompt` commands send the configured text to the agent as your message: `{args}` is replaced with whatever follows the command, and without the placeholder the arguments are appended as a new paragraph.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
-- **Type** — supported types are `exec` and `alias`; other types show an error
+- **Type** — supported types are `exec`, `alias`, and `prompt`; other types show an error
+- **Review pane buttons** — `review_button: true` (or a label string) on a `prompt` command adds it as a button in the Desktop app's Review pane; clicking it sends `/<name>` to the chat that owns the changes
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.

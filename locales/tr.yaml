@@ -792,8 +792,9 @@ gateway:
     timed_out: "Hızlı komut zaman aşımına uğradı (30 sn)."
     error: "Hızlı komut hatası: {error}"
     no_command: "'/{command}' hızlı komutunun tanımlı bir komutu yok."
-    unsupported_type: "'/{command}' hızlı komutunun türü desteklenmiyor (desteklenenler: 'exec', 'alias')."
+    unsupported_type: "'/{command}' hızlı komutunun türü desteklenmiyor (desteklenenler: 'exec', 'alias', 'prompt')."
     no_target: "'/{command}' hızlı komutunun tanımlı bir hedefi yok."
+    no_prompt: "'/{command}' hızlı komutunda tanımlı bir istem yok."
   unknown_command: "Bilinmeyen komut `/{command}`. Kullanılabilir komutları görmek için /commands yazın veya normal mesaj olarak göndermek için baştaki eğik çizgi olmadan yeniden gönderin."
   session:
     auto_reset_notice: "◐ Oturum durdurulduktan sonra sıfırlandı. Konuşma geçmişi temizlendi.\nÖnceki bir oturuma göz atıp geri yüklemek için /resume kullanın.\n"
@@ -3204,11 +3205,12 @@ cli:
     command_error: "Eklenti komutu hatası: {error}"
   quick:
     no_target: "'{command}' hızlı komutunun tanımlı bir hedefi yok"
-    unsupported_type: "'{command}' hızlı komutunun türü desteklenmiyor (desteklenenler: 'exec', 'alias')"
+    unsupported_type: "'{command}' hızlı komutunun türü desteklenmiyor (desteklenenler: 'exec', 'alias', 'prompt')"
     no_command: "'{command}' hızlı komutunun tanımlı bir komutu yok"
     no_output: "Komut çıktı döndürmedi"
     timed_out: "Hızlı komut zaman aşımına uğradı (30 sn)"
     error: "Hızlı komut hatası: {error}"
+    no_prompt: "'{command}' hızlı komutunda tanımlı bir istem yok"
   reload_mcp:
     title: "⚠️  /reload-mcp — İstem önbelleği geçersiz kılma uyarısı"
     detail: "MCP sunucularını yeniden yüklemek bu oturumun araç setini yeniden oluşturur\nve sağlayıcının istem önbelleğini geçersiz kılar. Bir sonraki mesajda\ngiriş tokenlarının tamamı yeniden gönderilir (uzun bağlamlı veya yoğun\nakıl yürüten modellerde pahalı olabilir)."

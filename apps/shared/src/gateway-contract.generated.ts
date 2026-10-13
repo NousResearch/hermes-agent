@@ -3759,6 +3759,7 @@ export interface CommandCatalogMeta {
   argument_mode?: ArgumentMode | null
   desktop?: string | null
   desktop_subcommands?: string[] | null
+  review_button?: string | null
 }
 export type ArgumentMode = 'options' | 'text' | 'mixed'
 export interface CommandCategory {

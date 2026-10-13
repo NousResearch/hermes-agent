@@ -457,20 +457,6 @@ def _catalog_registry(cat: _Catalog) -> None:
             cat.add(name, desc, category)
 
 
-def _catalog_quick_commands(cat: _Catalog) -> None:
-    qcmds = _load_cfg().get("quick_commands", {}) or {}
-    if not (isinstance(qcmds, dict) and qcmds):
-        return
-    cat.cat_map.setdefault("User commands", [])  # category exists even when every entry is malformed
-    for qname, qc in sorted(qcmds.items()):
-        if not isinstance(qc, dict):
-            continue
-        qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
-        desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", desc, "User commands")
-
-
 def _catalog_plugin_commands(cat: _Catalog) -> None:
     plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
     if plugin_cmds:
@@ -567,22 +553,6 @@ def _(rid, params: dict) -> dict:
 
 # command.dispatch stages. Each takes (rid, params, session, name, arg) and
 # returns a JSON-RPC envelope, or None to fall through to the next stage.
-
-
-def _dispatch_quick(rid, params, session, name, arg):
-    qc = _load_cfg().get("quick_commands", {}).get(name)
-    if qc is None:
-        return None
-    if qc.get("type") == "exec":
-        # Sanitized env: the TUI server process holds every API key in os.environ.
-        env = _tools_mod("tools.environments.local").build_subprocess_env()
-        r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
-        output = _joined_output(r)[:4000]
-        output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
-        if r.returncode != 0:
-            return _err(rid, 4018, output or f"quick command failed with exit code {r.returncode}")
-        return _exec_out(rid, output)
-    return _ok(rid, {"type": "alias", "target": qc.get("target", "")}) if qc.get("type") == "alias" else None
 
 
 def _plugin_command_handler(name: str):
@@ -1132,7 +1102,7 @@ def _(rid, params: dict) -> dict:
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+        target = base if base in _PENDING_INPUT_COMMANDS or _is_prompt_quick_command(base) else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan

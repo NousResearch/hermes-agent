@@ -792,8 +792,9 @@ gateway:
     timed_out: "El comando rápido agotó el tiempo (30 s)."
     error: "Error del comando rápido: {error}"
     no_command: "El comando rápido '/{command}' no tiene ningún comando definido."
-    unsupported_type: "El comando rápido '/{command}' tiene un tipo no compatible (compatibles: 'exec', 'alias')."
+    unsupported_type: "El comando rápido '/{command}' tiene un tipo no compatible (compatibles: 'exec', 'alias', 'prompt')."
     no_target: "El comando rápido '/{command}' no tiene ningún destino definido."
+    no_prompt: "El comando rápido '/{command}' no tiene un prompt definido."
   unknown_command: "Comando desconocido `/{command}`. Escribe /commands para ver los disponibles, o reenvíalo sin la barra inicial para mandarlo como mensaje normal."
   session:
     auto_reset_notice: "◐ La sesión se reinició tras detenerse. Historial de la conversación borrado.\nUsa /resume para explorar y restaurar una sesión anterior.\n"
@@ -3204,11 +3205,12 @@ cli:
     command_error: "Error en comando de plugin: {error}"
   quick:
     no_target: "El comando rápido '{command}' no tiene destino definido"
-    unsupported_type: "El comando rápido '{command}' tiene un tipo no admitido (admitidos: 'exec', 'alias')"
+    unsupported_type: "El comando rápido '{command}' tiene un tipo no admitido (admitidos: 'exec', 'alias', 'prompt')"
     no_command: "El comando rápido '{command}' no tiene comando definido"
     no_output: "El comando no devolvió salida"
     timed_out: "Comando rápido: tiempo agotado (30 s)"
     error: "Error en comando rápido: {error}"
+    no_prompt: "El comando rápido '{command}' no tiene un prompt definido"
   reload_mcp:
     title: "⚠️  /reload-mcp — Aviso de invalidación de la caché de prompt"
     detail: "Recargar los servidores MCP reconstruye el conjunto de herramientas de esta sesión e\ninvalida la caché de prompt del proveedor. El próximo mensaje\nreenviará todos los tokens de entrada (puede ser costoso en modelos de\ncontexto largo o razonamiento intenso)."

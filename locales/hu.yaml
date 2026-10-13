@@ -802,8 +802,9 @@ gateway:
     timed_out: "A gyorsparancs időtúllépés miatt leállt (30 s)."
     error: "Gyorsparancs-hiba: {error}"
     no_command: "A '/{command}' gyorsparancshoz nincs parancs megadva."
-    unsupported_type: "A '/{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias')."
+    unsupported_type: "A '/{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias', 'prompt')."
     no_target: "A '/{command}' gyorsparancshoz nincs cél megadva."
+    no_prompt: "A(z) '/{command}' gyorsparancshoz nincs prompt megadva."
   unknown_command: "Ismeretlen parancs: `/{command}`. A /commands paranccsal megnézheted, mi érhető el, vagy küldd el újra a kezdő perjel nélkül, hogy normál üzenetként menjen."
   session:
     auto_reset_notice: |
@@ -3221,11 +3222,12 @@ cli:
     command_error: "Pluginparancs-hiba: {error}"
   quick:
     no_target: "A '{command}' gyorsparancsnak nincs megadott célja"
-    unsupported_type: "A '{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias')"
+    unsupported_type: "A '{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias', 'prompt')"
     no_command: "A '{command}' gyorsparancsnak nincs megadott parancsa"
     no_output: "A parancs nem adott kimenetet"
     timed_out: "A gyorsparancs időtúllépésbe futott (30s)"
     error: "Gyorsparancs-hiba: {error}"
+    no_prompt: "A(z) '{command}' gyorsparancshoz nincs prompt megadva"
   reload_mcp:
     title: "⚠️  /reload-mcp — figyelmeztetés a prompt-cache érvénytelenítésére"
     detail: "Az MCP-szerverek újratöltése újraépíti a munkamenet eszközkészletét, és\nérvényteleníti a szolgáltató prompt-cache-ét. A következő üzenet újra\nelküldi a teljes bemenetet (hosszú kontextusú vagy erősen érvelő\nmodelleknél drága lehet)."

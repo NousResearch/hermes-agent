@@ -5,8 +5,8 @@
 #   source skills/github/github-auth/scripts/gh-env.sh
 #
 # After sourcing, these variables are set:
-#   GH_AUTH_METHOD  - "gh", "curl", or "none"
-#   GITHUB_TOKEN    - personal access token (set if method is "curl")
+#   GH_AUTH_METHOD  - "gh", "curl", "git", or "none"
+#   GITHUB_TOKEN    - preconfigured environment/profile token (never extracted from Git)
 #   GH_USER         - GitHub username
 #   GH_OWNER        - repo owner  (only if inside a git repo with a github remote)
 #   GH_REPO         - repo name   (only if inside a git repo with a github remote)
@@ -28,11 +28,9 @@ elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && 
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
-elif [ -f "$HOME/.git-credentials" ]; then
-    GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
-    if [ -n "$GITHUB_TOKEN" ]; then
-        GH_AUTH_METHOD="curl"
-    fi
+elif [ -f "$HOME/.git-credentials" ] && grep -q "github.com" "$HOME/.git-credentials" 2>/dev/null; then
+    # Presence only. Git credentials must never become an agent-visible API token.
+    GH_AUTH_METHOD="git"
 fi
 
 # Resolve username for curl method
@@ -61,6 +59,7 @@ unset _remote_url
 echo "GitHub Auth: $GH_AUTH_METHOD"
 [ -n "$GH_USER" ]       && echo "User: $GH_USER"
 [ -n "$GH_OWNER_REPO" ] && echo "Repo: $GH_OWNER_REPO"
-[ "$GH_AUTH_METHOD" = "none" ] && echo "⚠ Not authenticated — see github-auth skill"
+[ "$GH_AUTH_METHOD" = "git" ] && echo "Git credentials detected; API actions require gh or a preconfigured GITHUB_TOKEN"
+[ "$GH_AUTH_METHOD" = "none" ] && echo "Not authenticated — see github-auth skill"
 
 export GH_AUTH_METHOD GITHUB_TOKEN GH_USER GH_OWNER GH_REPO GH_OWNER_REPO

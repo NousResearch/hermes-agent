@@ -51,3 +51,29 @@ def test_snake_case_translation_carries_thinking_budget():
     assert translated == {"include_thoughts": False, "thinking_budget": 0}
     translated = _snake_case_gemini_thinking_config({"includeThoughts": False})
     assert translated == {"include_thoughts": False}
+
+
+@pytest.mark.parametrize(
+    "reasoning,level,shown,budget",
+    [
+        ({"effort": "none"}, "low", False, None),  # Gemini 4 cannot stop thinking: floor level, hidden
+        ({"effort": "minimal"}, "low", True, None),  # "minimal" 400s on Gemini 4
+        ({"effort": "medium"}, "medium", True, None),
+        ({"effort": "high"}, "high", True, None),
+        ({"effort": "xhigh"}, "high", True, 262_144),  # above high buys long-decode budget instead
+        ({"effort": "max"}, "high", True, 1_048_576),
+    ],
+)
+def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning, level, shown, budget):
+    from providers import get_provider_profile
+
+    config = _build_gemini_thinking_config("gemini-4-argon", reasoning)
+    assert config == {"includeThoughts": shown, "thinkingLevel": level}  # never thinkingBudget (400 with a level)
+    profile = get_provider_profile("gemini")
+    native = profile.build_extra_body(model="gemini-4-argon", reasoning_config=reasoning,
+                                      base_url="https://generativelanguage.googleapis.com/v1beta")
+    assert native.get("max_output_tokens") == budget
+    # The OpenAI-compat subpath has no long decode: no budget rides there.
+    compat = profile.build_extra_body(model="gemini-4-argon", reasoning_config=reasoning,
+                                      base_url="https://generativelanguage.googleapis.com/v1beta/openai")
+    assert "max_output_tokens" not in compat

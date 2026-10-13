@@ -32,6 +32,12 @@ from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
+from agent.conversation_compression_todo import (  # re-exported for existing importers
+    _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+    _pruned_skill_reload_notice,
+    _strip_stale_todo_snapshot,
+    _todo_snapshot_is_only_content,
+)
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
@@ -2298,78 +2304,11 @@ def _compressed_has_busy_steer(messages: list) -> bool:
     )
 
 
-def _strip_stale_todo_snapshot(content: Any) -> Any:
-    """Remove a previously merged todo-snapshot block from message content.
-    Snapshots are appended to the trailing user turn, so a surviving header is stale; stripping before
-    re-injection prevents accumulation across boundaries."""
-    from tools.todo_tool import TODO_INJECTION_HEADER
-    if isinstance(content, str):
-        idx = content.find(TODO_INJECTION_HEADER)
-        if idx == -1:
-            return content
-        return content[:idx].rstrip()
-    if isinstance(content, list):
-        cleaned = []
-        for part in content:
-            text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
-            idx = text.find(TODO_INJECTION_HEADER) if text else -1
-            if idx == -1:
-                cleaned.append(part)
-            elif stripped := text[:idx].rstrip():
-                cleaned.append({**part, "text": stripped})
-        return cleaned
-    return content
-
-
-def _todo_snapshot_is_only_content(content: Any, stripped: Any) -> bool:
-    """Return whether stripping the snapshot leaves no structured content.
-    Text snapshots trail a string; structured ones occupy their own text part, so only an empty remainder
-    proves the row was scaffolding alone. Text extraction is deliberately not used: image, audio and other
-    non-text parts must survive."""
-    if isinstance(content, str) and isinstance(stripped, str):
-        return not stripped.strip()
-    if isinstance(content, list) and isinstance(stripped, list):
-        return not stripped
-    return False
-
-
 def _replace_message_content(message: dict, content: Any) -> None:
     """Rewrite message content without allowing an old API sidecar to replay."""
     from agent.turn_context import drop_stale_api_content
     message["content"] = content
     drop_stale_api_content(message)
-
-
-# Compaction re-injects the todo list verbatim but prunes skills to markers, so
-# couple them: tell the model to reload pruned skills BEFORE acting on tasks.
-# Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
-_PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
-
-
-def _pruned_skill_reload_notice(compressed: list) -> str:
-    """Reload notice for skills whose bodies were pruned, or ``""``.
-    Scans ``[SKILL_PRUNED: ...]`` markers in the post-compression transcript; first-seen order, deduplicated,
-    capped at ``_MAX_PRUNED_SKILL_MARKERS``."""
-    from agent.context_compressor import _MAX_PRUNED_SKILL_MARKERS, _extract_pruned_skill_names
-    names: list = []
-    for message in compressed:
-        if not isinstance(message, dict):
-            continue
-        for name in _extract_pruned_skill_names(_message_text(message)):
-            if name not in names:
-                names.append(name)
-    del names[_MAX_PRUNED_SKILL_MARKERS:]
-    if not names:
-        return ""
-    calls = "; ".join(f"skill_view(name='{name}')" for name in names)
-    return (
-        f"{_PRUNED_SKILL_RELOAD_NOTICE_HEADER}\n"
-        "The task list above crossed the compression boundary verbatim, but "
-        "the skill instructions that governed it were pruned. Before "
-        f"executing any preserved task that depends on these skills, reload "
-        f"them first: {calls}. After reloading, re-check that each pending "
-        "task is still justified — findings recorded before the boundary may have invalidated it."
-    )
 
 
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:

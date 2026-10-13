@@ -316,3 +316,42 @@ class TestNoticeStripLifecycle:
         assert "fresh task" in tail_text
         assert "skill_view(name='hodle-design-system')" in tail_text
         assert "keep this human text" in tail_text
+
+    def test_strip_keeps_user_row_merged_after_snapshot(self):
+        """#137652: the pre-call repair can weld a later user row AFTER the
+        snapshot block. The strip must remove only the injected block — header,
+        task lines (indented subtasks included) — never the merged message."""
+        content = (
+            "first request\n\n"
+            + TODO_INJECTION_HEADER
+            + "\n- [>] 1. parent task (in_progress)\n"
+            "  - [ ] 1a. subtask (pending)\n\n"
+            "SECOND MESSAGE: please also update the docs"
+        )
+        stripped = _strip_stale_todo_snapshot(content)
+        assert stripped == "first request\n\nSECOND MESSAGE: please also update the docs"
+
+    def test_strip_keeps_user_row_merged_after_notice(self):
+        """#137652 with the reload notice riding the snapshot: the notice
+        paragraph is scaffolding and goes; the user text after it stays."""
+        content = (
+            "user text\n\n"
+            + TODO_INJECTION_HEADER
+            + "\n- [ ] t1. old task (pending)\n\n"
+            + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+            + "\nreload skill_view(name='old-skill') first.\n\n"
+            "MERGED USER TEXT"
+        )
+        stripped = _strip_stale_todo_snapshot(content)
+        assert stripped == "user text\n\nMERGED USER TEXT"
+        assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in stripped
+
+    def test_strip_of_snapshot_leading_row_keeps_merged_user_text(self):
+        """A row whose text starts AT the header (snapshot folded into an empty
+        tail) still keeps any user text merged after the block (#137652)."""
+        content = (
+            TODO_INJECTION_HEADER
+            + "\n- [>] 1. task (in_progress)\n\n"
+            "merged follow-up"
+        )
+        assert _strip_stale_todo_snapshot(content) == "merged follow-up"

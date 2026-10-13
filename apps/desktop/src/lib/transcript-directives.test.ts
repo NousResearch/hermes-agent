@@ -14,7 +14,11 @@ describe('segmentTranscriptDirectives', () => {
   it('parses multiple attributes and accepts single quotes', () => {
     expect(directive(`::vis{file="a b.html" height='480'}`)).toEqual({
       kind: 'directive',
-      directive: { name: 'vis', attrs: { file: 'a b.html', height: '480' }, source: `::vis{file="a b.html" height='480'}` }
+      directive: {
+        name: 'vis',
+        attrs: { file: 'a b.html', height: '480' },
+        source: `::vis{file="a b.html" height='480'}`
+      }
     })
   })
 

@@ -1,18 +1,18 @@
 name: hermes-dreaming
 repo: https://github.com/itpartypattaya/hermes-dreaming
-sha: a6407ce09eb12aff866bedaacabc3ec392686815
+sha: 4309b794eae6d8ea25b3d8becb0c1ceff41a689c
 description: "Nightly deterministic memory consolidation (\"dreaming\"): corroborates candidate facts with what humans actually said on distinct days, proposes the few worth keeping with a verbatim edit anchor, asks whether stale memory entries still hold, and wakes the agent only when there is work — including a memory file close to its char limit. Fact sources: the holographic store, a SQLite or JSONL export, or none. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — scripts make no network or LLM calls and read state.db and the fact store read-only (plus Hermes config.yaml's memory/timezone keys and the pending/memory approval queue); the user-run installer copies three gate scripts into $HERMES_HOME/scripts, seeds $HERMES_HOME/dreaming.json and creates (or with --rebind re-points) two Hermes cron jobs, through Hermes' cron API, bound to this plugin's own skill with only the memory toolset, plus one no_agent job (every 15 min, no model) that, with holographic >= 0.8.0, reads the store's `forgotten` table (ids, no text) and removes lines about forgotten facts from the dream's own cache, diary and the output files of its own cron jobs; with a chat --deliver target the report is attached as a session you can reply to. Those agent runs send recent human messages (up to 200 / 40k chars) and fact snippets to your configured model; state goes to $HERMES_HOME/cache and a diary to $HERMES_HOME/memories/DREAMS.md (configurable); memory files are changed by the agent through the regular memory tool, and with the holographic provider it also adds candidate facts via fact_store (with holographic >= 0.8.0 also change / end / correct / forget, the last three only on a human's own answer), lowers trust on human-rejected facts via fact_feedback and, when keywords.enabled is set (off by default), adds search keywords to facts via fact_store update."
 maintainer: itpartypattaya
 tier: community
 category: memory
 requires_hermes: ">=0.21"
-docs_url: https://github.com/itpartypattaya/hermes-dreaming/blob/a6407ce09eb12aff866bedaacabc3ec392686815/README.md
-version: "2.5.0"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/a6407ce09eb12aff866bedaacabc3ec392686815/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-dreaming/blob/4309b794eae6d8ea25b3d8becb0c1ceff41a689c/README.md
+version: "2.5.1"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/4309b794eae6d8ea25b3d8becb0c1ceff41a689c/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/a6407ce09eb12aff866bedaacabc3ec392686815/docs/overview.png"
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/a6407ce09eb12aff866bedaacabc3ec392686815/docs/lifecycle.png"
-  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/a6407ce09eb12aff866bedaacabc3ec392686815/docs/files.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/4309b794eae6d8ea25b3d8becb0c1ceff41a689c/docs/overview.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/4309b794eae6d8ea25b3d8becb0c1ceff41a689c/docs/lifecycle.png"
+  - "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/4309b794eae6d8ea25b3d8becb0c1ceff41a689c/docs/files.png"
 platforms: []
 capabilities:
   provides_tools: []

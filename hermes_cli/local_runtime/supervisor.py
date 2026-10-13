@@ -124,7 +124,7 @@ def _api_key_file_supported(executable: Path) -> bool:
     """Older pinned builds predate --api-key-file; a failed probe falls back to argv."""
     try:
         return "--api-key-file" in _engine_help(executable)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 

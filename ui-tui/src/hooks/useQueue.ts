@@ -52,10 +52,10 @@ export function useQueue() {
   // Queue presentation only depends on the active profile/session destination.
   // Reads inside callbacks still resolve getUiState() synchronously so a drain
   // immediately after navigation cannot hit the previous destination.
-  useStore($uiQueueScope)
+  const queueScope = useStore($uiQueueScope)
   const queues = useRef(new Map<string, PendingQueue>())
   const unbound = useRef<PendingQueue>({ edit: null, items: [] })
-  const [, refresh] = useState(0)
+  const [queueRevision, refresh] = useState(0)
 
   const getQueue = useCallback(() => {
     const { sid, info } = getUiState()
@@ -111,7 +111,12 @@ export function useQueue() {
     [getQueue]
   )
 
-  const queuedDisplay = queueRef.current.map(item => item.display)
+  // MainApp's full-state subscription still renders this hook on unrelated UI
+  // updates. Preserve display identity so downstream composer/layout memos hit.
+  const queuedDisplay = useMemo(
+    () => queueRef.current.map(item => item.display),
+    [queueRef, queueScope, queueRevision]
+  )
   const queueEditIdx = queueEditRef.current
   const syncQueue = useCallback(() => refresh(version => version + 1), [])
 

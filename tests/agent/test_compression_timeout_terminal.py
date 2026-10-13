@@ -13,6 +13,8 @@ fail-closed boundary:
 
 from __future__ import annotations
 
+import itertools
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -114,14 +116,13 @@ def test_overflow_recovery_timeout_ends_turn_without_provider_reentry():
     assert result["compression_exhausted"] is True
 
 
-def test_pre_api_compression_timeout_is_typed_terminal():
-    """Mid-turn pre-API pass that hits the host timeout ends the turn."""
+def _pre_api_agent_whose_compression_times_out(context_length):
+    """An agent whose pre-API pass fires every turn and whose compression always hits the host timeout."""
     agent = _make_agent()
     agent.context_compressor.protect_first_n = 0
     agent.context_compressor.protect_last_n = 0
     agent.context_compressor._threshold_tokens = 1
-    # The typed terminal is the over-window outcome; a request that fits its window is sent uncompressed.
-    agent.context_compressor._resolved_context_length = 1
+    agent.context_compressor._resolved_context_length = context_length
     agent.context_compressor.should_compress = MagicMock(return_value=True)
     agent.context_compressor.should_compress_info = MagicMock(
         return_value=(True, None)
@@ -132,7 +133,6 @@ def test_pre_api_compression_timeout_is_typed_terminal():
     agent.context_compressor.get_active_compression_failure_cooldown = MagicMock(
         return_value=None
     )
-
     compression_calls = []
 
     def _timed_out(messages, _system_message, **_kwargs):
@@ -147,6 +147,13 @@ def test_pre_api_compression_timeout_is_typed_terminal():
         return messages, agent._cached_system_prompt
 
     agent._compress_context = _timed_out
+    return agent, compression_calls
+
+
+def test_pre_api_compression_timeout_is_typed_terminal():
+    """Mid-turn pre-API pass that hits the host timeout ends the turn."""
+    # The typed terminal is the over-window outcome; a request that fits its window is sent uncompressed.
+    agent, compression_calls = _pre_api_agent_whose_compression_times_out(1)
 
     from agent.turn_context import PreflightCompressionTimedOut
 
@@ -175,3 +182,79 @@ def test_pre_api_compression_timeout_is_typed_terminal():
         assert result["failed"] is True
         assert result["compression_exhausted"] is True
         assert result["turn_exit_reason"] == "context_compression_timeout"
+
+
+def _run_mid_turn_timeout(context_length):
+    """One turn whose turn-start estimate is under the threshold while the pre-API request (system prompt,
+    tools, new message) is over it: only the pre-API pass compresses, and it times out."""
+    agent, compression_calls = _pre_api_agent_whose_compression_times_out(context_length)
+    agent.context_compressor.should_compress = MagicMock(side_effect=itertools.chain([False], itertools.repeat(True)))
+    agent.client.chat.completions.create.return_value = _mock_response("answer")
+    history = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old response"},
+    ]
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("continue", conversation_history=history)
+    assert compression_calls == [1]
+    return agent, result
+
+
+def test_pre_api_compression_timeout_sends_a_request_that_fits_its_window(caplog):
+    """A request well inside its window whose summary hit the host timeout ended the turn as
+    ``compression_exhausted``, and the gateway then auto-reset the session. It fits: send it unchanged."""
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        agent, result = _run_mid_turn_timeout(1_000_000)
+
+    agent.client.chat.completions.create.assert_called_once()
+    sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+    assert [m["content"] for m in sent if m["role"] != "system"] == ["old request", "old response", "continue"]
+    assert result["final_response"] == "answer"
+    assert not result["failed"]
+    assert not result.get("compression_exhausted")
+    assert "Pre-API compression timed out but the request" in caplog.text
+
+
+def test_pre_api_compression_timeout_of_unknown_fit_is_typed_terminal():
+    """With the window unknown, "fits" is unproven: the turn ends as before."""
+    with patch("agent.turn_preflight.request_exceeds_model_window", return_value=None):
+        agent, result = _run_mid_turn_timeout(1_000_000)
+
+    agent.client.chat.completions.create.assert_not_called()
+    assert result["compression_exhausted"] is True
+    assert result["turn_exit_reason"] == "context_compression_timeout"
+
+
+def test_pre_api_timeout_after_provider_proven_overflow_is_typed_terminal():
+    """The provider already rejected this request as too long: even when the local estimate says it fits,
+    a timed-out recovery pass must not send it again."""
+    from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
+
+    agent, compression_calls = _pre_api_agent_whose_compression_times_out(1_000_000)
+    messages = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "old response"},
+        {"role": "user", "content": "continue"},
+    ]
+    verdict = PreflightGateVerdict(
+        action="", pending_moa_prepared_request=None, messages=messages, active_system_prompt="sys",
+        conversation_history=messages[:2], api_call_count=1, compression_attempts=0, final_response=None,
+        failed=False, _turn_exit_reason=None, _compression_timeout_exhausted=False,
+        _preflight_compression_blocked=False, _provider_overflow_recovery_pending=True,
+        _last_preflight_pressure=None,
+    )
+
+    out = run_preflight_compression(
+        agent, verdict, compressor=agent.context_compressor, request_pressure_tokens=5_000,
+        provider_overflow_preflight=True, defer_preflight=lambda _tokens: False, moa_prepared_request=None,
+        system_message="sys", user_message="continue", max_compression_attempts=3, effective_task_id="t",
+    )
+
+    assert compression_calls == [1]
+    assert out.action == "break"
+    assert out._compression_timeout_exhausted is True
+    assert out._turn_exit_reason == "context_compression_timeout"

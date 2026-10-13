@@ -20,7 +20,9 @@ These tests pin the contract:
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,6 +33,7 @@ from agent.context_compressor import (
 )
 from agent.conversation_compression import (
     CompressionCommitFence,
+    _run_pinned_compression_retry,
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
 )
@@ -230,6 +233,96 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
 
 
+def test_fallback_runs_inside_the_pass_ceiling():
+    """A primary that kept streaming used the whole ceiling and its fallback then got another, so one
+    pass could hold the turn for two ceilings. The fallback's window is reserved inside the one ceiling."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary of earlier turns"}]
+    deadlines = []
+    stop = threading.Event()
+
+    def worker(fence):
+        deadlines.append(fence.deadline_monotonic)
+        if take_pinned_summary_route() is None:
+            # A slow summary that streams until the host stops waiting for it, then takes 0.2s to unwind.
+            while not fence.deadline_exceeded and not stop.wait(0.01):
+                fence.touch_progress()
+            stop.wait(0.2)
+            return original, ""
+        assert fence.begin_commit()
+        fence.finish_commit()
+        return compressed, "summarized-prompt"
+
+    started = time.monotonic()
+    try:
+        msgs, _prompt = _run(worker, chain=[dict(CHAIN_ENTRY, timeout=0.5)], timeouts=[], messages=original,
+                             idle=1.0, ceiling=2.0)
+    finally:
+        stop.set()
+
+    assert msgs == compressed
+    primary_deadline, fallback_deadline = deadlines
+    assert primary_deadline - started <= 1.5 + 0.1, "the primary leaves the fallback its 0.5s"
+    # The primary's unwind came out of the fallback's 0.5s, not on top of it.
+    assert fallback_deadline - primary_deadline <= 0.5 + 0.02, "the fallback ends by the pass ceiling"
+
+
+def test_deterministic_summary_runs_inside_the_pass_ceiling():
+    """After the primary and the configured fallback, the deterministic summary's pre-commit work (callbacks,
+    pruning) also ran on a fresh window past the pass. It now shares what is left of the one ceiling."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "deterministic summary"}]
+    deadlines = []
+    stop = threading.Event()
+
+    def worker(fence):
+        deadlines.append(fence.deadline_monotonic)
+        route = take_pinned_summary_route()
+        if route is None:
+            while not fence.deadline_exceeded and not stop.wait(0.01):
+                fence.touch_progress()
+            return original, ""
+        if not route.get("deterministic"):
+            stop.wait(0.2)
+            return original, ""  # the fallback model spent 0.2s and produced nothing
+        stop.wait(0.1)  # pre-commit work before the commit is admitted
+        assert fence.begin_commit()
+        fence.finish_commit()
+        return compressed, "summarized-prompt"
+
+    started = time.monotonic()
+    try:
+        with _patch_chain([dict(CHAIN_ENTRY, timeout=0.5)]):
+            msgs, _prompt = run_compress_context_with_progress_timeout(
+                worker=worker, messages=original, system_prompt_fallback="degraded-prompt",
+                idle_timeout_seconds=1.0, total_ceiling_seconds=5.0, request_exceeds_window=True,
+            )
+    finally:
+        stop.set()
+
+    assert msgs == compressed
+    assert len(deadlines) == 3
+    # An over-window pass is one idle window (1.0s) end to end: primary, fallback and deterministic summary.
+    assert max(deadlines) - started <= 1.0 + 0.05
+    assert time.monotonic() - started <= 1.0 + 0.15
+
+
+def test_fallback_with_no_time_left_in_the_pass_is_skipped(caplog):
+    """A primary whose teardown outlasted the reserved window leaves the fallback nothing: skip it plainly,
+    without minting a fence or starting a summary it has no time to finish."""
+    minted, ran = [], []
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        recovered = _run_pinned_compression_retry(
+            dict(CHAIN_ENTRY, label="fallback_chain[0](custom)"), worker=ran.append, messages=[],
+            system_prompt_fallback="degraded-prompt", idle_timeout_seconds=1.0, total_ceiling_seconds=-0.2,
+            on_commit_overrun=None, on_timeout_cause=None, telemetry_agent=None, new_fence=lambda: minted.append(1),
+        )
+
+    assert recovered is None
+    assert not minted and not ran
+    assert "no time left for fallback_chain[0](custom)" in caplog.text
+
+
 def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):
     """The cancelled primary worker persists ``stall_interrupted`` while the fallback retry is already
     running; that cooldown must not no-op the retry (#112387). Real AIAgent, real ``compress_context``
@@ -278,8 +371,9 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     def route_after_primary_unwound():
         # Pin the race outcome from the report: the primary persisted its backoff before the retry ran.
+        # The lookup before the primary started (its fallback reservation) has nothing to wait for.
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline and compressor._summary_failure_cooldown_until <= time.monotonic():
+        while routes and time.monotonic() < deadline and compressor._summary_failure_cooldown_until <= time.monotonic():
             time.sleep(0.001)
         return real_route()
 

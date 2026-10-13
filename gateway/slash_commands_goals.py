@@ -2,6 +2,7 @@
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
+from gateway.message_actor import source_for_event_actor
 
 import logging
 
@@ -39,7 +40,7 @@ class GatewayGoalCommandsMixin:
             return t("gateway.goal.unavailable")
 
         def authorize_gate():
-            if not self._resume_caller_is_admin(event.source):
+            if not self._resume_caller_is_admin(source_for_event_actor(event)):
                 return t("gateway.goal.gate_add_admin_only")
             return None
 

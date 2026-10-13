@@ -9,6 +9,7 @@ from pm import install_hint
 import logging
 from typing import TYPE_CHECKING
 import asyncio
+from gateway.run_turn_bg import bg_prompt_preview
 import dataclasses
 import inspect
 import json
@@ -23,6 +24,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.message_actor import turn_author_for_event
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
@@ -87,12 +89,6 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
-
-
-def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
-    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
-    text = " ".join(str(prompt or "").split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -2196,6 +2192,7 @@ class GatewayTurnMixin:
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
+                turn_author=turn_author_for_event(event),
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
@@ -2543,7 +2540,7 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 await adapter.emit_warning(
                     source.chat_id,
-                    t("gateway.background.failed", preview=_bg_prompt_preview(prompt)),
+                    t("gateway.background.failed", preview=bg_prompt_preview(prompt)),
                     metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
@@ -3938,6 +3935,7 @@ class GatewayTurnMixin:
             followup_result = await self._run_agent(
                 message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                 source=next_source, session_id=session_id, session_key=next_session_key,
+                turn_author=turn_author_for_event(pending_event) if pending_event is not None else None,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
@@ -4271,6 +4269,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        turn_author: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
@@ -4312,6 +4311,7 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            turn_author=turn_author,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

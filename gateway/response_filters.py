@@ -146,3 +146,13 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
+
+
+# Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
+_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
+
+
+def surface_passes_raw_text(platform: Any) -> bool:
+    """True only for programmatic/local surfaces that must keep raw text."""
+    value = str(getattr(platform, "value", platform) or "").strip().lower()
+    return value in _GATEWAY_RAW_TEXT_PLATFORMS

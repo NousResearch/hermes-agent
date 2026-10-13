@@ -27,6 +27,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
+from gateway.run_turn_runner_clarify_delivery import clarify_expired_notice
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
@@ -57,12 +58,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
         return bool(probe())
     return getattr(adapter_cls, "send_exec_approval", None) is not None
-
-
-# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
-# Slack click handler shows on a dead entry).
-def _clarify_expired_notice() -> str:
-    return t("gateway.clarify.expired")
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -1434,7 +1429,7 @@ class TurnRunner:
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
+                    retire(ctx._status_adapter, clarify_id, clarify_expired_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
@@ -1697,7 +1692,8 @@ class TurnRunner:
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
-                kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
+                kwargs["turn_author"] = ctx.turn_author if ctx.turn_author is not None else {
+                                         "id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                          "is_bot": bool(getattr(ctx.source, "is_bot", False))}
             if ctx.title_user_message is not None:
                 kwargs["title_user_message"] = ctx.title_user_message

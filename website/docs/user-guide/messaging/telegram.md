@@ -248,6 +248,20 @@ telegram:
 
 With this mode enabled, unmentioned group messages from explicitly allowlisted chats/topics are appended to the shared chat/topic session transcript as observed context, but they do not dispatch the agent. `allowed_chats` gates where the bot responds; `group_allowed_chats` authorizes the shared group session used for observed context, so use the same chat IDs for this mode. A later `@botname` mention, reply to the bot, or configured mention pattern in that same allowlisted chat/topic can use that observed context. The triggered message is also tagged with `[nickname|user_id]` and gets a per-turn safety prompt so the model treats prior observed lines as context, not instructions addressed to the bot.
 
+In observed groups, both bare `/command` and `/command@your_bot` are accepted and retain the authenticated sender in their session source. Commands addressed to another bot remain excluded. Command routing follows the native session settings: `group_sessions_per_user: true` (the default) isolates non-topic group commands by participant, while forum topics are shared by default (`thread_sessions_per_user: false`).
+
+To route commands to the same shared chat/topic session as observed context and ordinary triggered turns, an operator can explicitly set this top-level option in the serving profile's `config.yaml`:
+
+```yaml
+group_sessions_per_user: false
+```
+
+This setting shares group sessions across participants throughout that profile, including other group chats and platforms; it is not limited to Telegram observed groups. Different chats, topics, and DMs still have separate session keys. Keep `group_sessions_per_user: true` for per-user group isolation; topic isolation also requires `thread_sessions_per_user: true`. Observed context and ordinary triggered-message attribution remain shared as described above.
+
+Authorization still uses the actual sender, including model-picker button taps. Model pickers belong to their requester, bind callbacks to their message, topic, and session, and expire when superseded for the same session. On a multiplexed gateway, commands must satisfy both the receiving bot’s slash policy and the profile serving the conversation.
+
+Stateful slash commands require an identifiable sender, even when no slash policy is configured. `/help`, `/status`, and `/whoami` remain available for callers without an identity. Adapters that anonymize their session source must retain the real sender on `MessageEvent.user_id` and `user_name`.
+
 Equivalent environment variable:
 
 ```bash

@@ -17,6 +17,7 @@ import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
+from gateway.message_actor import source_for_event_actor
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -819,7 +820,7 @@ class GatewayBusySessionMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
-        if not self._is_user_authorized_for_source(event.source):
+        if not self._is_user_authorized_for_source(source_for_event_actor(event)):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
@@ -827,7 +828,7 @@ class GatewayBusySessionMixin:
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
-        if not self._admit_bot_message_for_source(event.source):
+        if not self._admit_bot_message_for_source(source_for_event_actor(event)):
             return True
         event._bot_loop_admitted = True
 
@@ -1113,29 +1114,6 @@ class GatewayBusySessionMixin:
         if not _loop_arg or _loop_arg in {"status", "pause", "resume", "stop", "clear", "cancel", "help", "--help", "-h"}:
             return await self._handle_loop_command(event)
         return t("gateway.busy.reject_loop")
-
-    def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
-        """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
-        use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
-        from gateway.slash_access import policy_for_runner_source
-        if not canonical_cmd:
-            return None
-        policy = policy_for_runner_source(self, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
-            return None
-        logger.info(
-            "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
-            canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
-        )
-        allowed_preview = sorted(policy.user_allowed_commands)
-        if allowed_preview:
-            suffix = (
-                t("gateway.unauthorized.admin_only_can_run") + ", ".join(f"/{c}" for c in allowed_preview[:12])
-                + ("…" if len(allowed_preview) > 12 else "") + t("gateway.unauthorized.admin_only_whoami_hint")
-            )
-        else:
-            suffix = t("gateway.unauthorized.admin_only_none")
-        return t("gateway.unauthorized.admin_only", command=canonical_cmd, suffix=suffix)
 
     def _same_chat_runs(self, source: SessionSource, own_key: str) -> list[tuple[str, str, str]]:
         """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is

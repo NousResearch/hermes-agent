@@ -335,3 +335,36 @@ async def test_complete_only_adapter_is_left_alone(monkeypatch, tmp_path):
 
     assert result["final_response"] == "done-2"
     assert adapter.completed == []
+
+
+@pytest.mark.asyncio
+async def test_queued_shared_route_uses_each_turns_actor(monkeypatch, tmp_path):
+    from gateway.session import build_session_key
+
+    authors = []
+
+    class AuthorAgent(_TwoTurnAgent):
+        def run_conversation(self, message, **kwargs):
+            authors.append(kwargs["turn_author"])
+            return super().run_conversation(message, **kwargs)
+
+    AuthorAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, AuthorAgent)
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group")
+    key = build_session_key(source, group_sessions_per_user=False)
+    adapter._pending_messages[key] = MessageEvent(
+        text="the follow-up", source=source, user_id="second", user_name="Bob", message_id="queued-actor",
+    )
+    await runner._run_agent(
+        message="first", context_prompt="", history=[], source=source,
+        session_id="shared-actors", session_key=key,
+        turn_author={"id": "first", "name": "Alice", "is_bot": False},
+    )
+    assert authors == [
+        {"id": "first", "name": "Alice", "is_bot": False},
+        {"id": "second", "name": "Bob", "is_bot": False},
+    ]
+    assert source.user_id is None
+    assert adapter.started == ["queued-actor"]

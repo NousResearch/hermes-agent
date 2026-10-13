@@ -4,6 +4,7 @@ mixins (``slash_commands_model/_session/_status/_goals``); this module keeps the
 the one-off commands.  run.py helpers are imported lazily."""
 
 from __future__ import annotations
+from gateway.message_actor import event_actor_identity, source_for_event_actor
 
 import asyncio
 import contextlib
@@ -321,21 +322,21 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
-        from gateway.slash_access import policy_for_runner_source
-        source = event.source
-        policy = policy_for_runner_source(self, source)
+        source = source_for_event_actor(event)
+        policies = self._slash_policies_for_source(source)
+        if policies is None:
+            return "⛔ /whoami is unavailable without profile policy context."
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = t("gateway.whoami.scope_dm" if chat_type in {"dm", "direct", "private", ""} else "gateway.whoami.scope_group")
         user_id = (source.user_id if source else None) or "?"
         head = t("gateway.whoami.header", platform=platform, scope=scope, user_id=user_id)
-        if not policy.enabled:
+        if not any(p.enabled for p in policies):
             return head + t("gateway.whoami.tier_unrestricted")
-        if policy.is_admin(user_id):
+        if all(p.is_admin(user_id) for p in policies):
             return head + t("gateway.whoami.tier_admin")
-        # Non-admin: floor first (mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS), then operator
-        # additions, deduped in order.
-        runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
+        # The catalog uses the same actor and both policies as command dispatch.
+        runnable = sorted(self._catalog_options(event).get("allowed_commands", set()))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else t("gateway.shared.none_marker")
         return head + t("gateway.whoami.tier_user", commands=runnable_str)
 
@@ -456,7 +457,7 @@ class GatewaySlashCommandsMixin(
             if fallback_keys == sibling_keys
             else "stop_command_chat_scope"
         )
-        if fallback_keys and self._is_user_authorized_for_source(source):
+        if fallback_keys and self._is_user_authorized_for_source(source_for_event_actor(event)):
             for fallback_key in fallback_keys:
                 await _stop(fallback_key, reason)
             logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
@@ -591,17 +592,22 @@ class GatewaySlashCommandsMixin(
         return _execute("version").text
 
     def _catalog_options(self, event: MessageEvent) -> dict:
-        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
-        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
-        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_runner_source
-        source = event.source
-        # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
-        # policy_for_source treats None as ungated.
-        policy = policy_for_runner_source(self, source)
-        if policy.enabled and not policy.is_admin(source.user_id if source else None):
-            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
-        return {}
+        """Keep catalogs within the event actor's serving-profile and identity gates."""
+        from gateway.slash_access import IDENTITY_FREE_FLOOR_COMMANDS
+        source = source_for_event_actor(event)
+        policies = self._slash_policies_for_source(source)
+        if policies is None:
+            return {"allowed_commands": set()}
+        actor = getattr(source, "user_id", None)
+        if actor and all(p.is_admin(actor) for p in policies):
+            return {}
+        candidates = set(IDENTITY_FREE_FLOOR_COMMANDS)
+        if actor:
+            for policy in policies:
+                candidates.update(policy.user_allowed_commands)
+        return {"allowed_commands": {
+            name for name in candidates if all(p.can_run(actor, name) for p in policies)
+        }}
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -921,14 +927,15 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_runner_source
         from hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_runner_source(self, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        policies = self._slash_policies_for_source(source_for_event_actor(event))
+        actor_user_id, _ = event_actor_identity(event)
+        if requested and (policies is None or not actor_user_id
+                          or not all(p.is_admin(actor_user_id) for p in policies)):
             return t("gateway.approvals.admin_only")
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).

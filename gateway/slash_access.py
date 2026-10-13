@@ -12,7 +12,7 @@ site in ``gateway/run.py`` via the live registry; never affects plain chat.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, FrozenSet, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 # Read-only floor every allowed user keeps under gating, so a non-admin can still discover what
 # they can do. ``user_allowed_commands`` only adds to this set, never restricts it.
@@ -25,6 +25,9 @@ _SCOPE_KEYS = {
     "dm": ("allow_admin_from", "user_allowed_commands"),
     "group": ("group_allow_admin_from", "group_user_allowed_commands"),
 }
+
+
+IDENTITY_FREE_FLOOR_COMMANDS: frozenset[str] = frozenset({"help", "status", "whoami"})
 
 
 @dataclass(frozen=True)

@@ -1719,9 +1719,24 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            # Volatile platform data is a fixed snapshot for this turn. The agent keeps
+            # only a bounded RAM sidecar keyed by the stable platform message id so the
+            # exact provider bytes can be replayed on later turns without persistence.
             from agent.notification_presentation import notification_turn
+            from agent.turn_context import bind_volatile_user_context
+
+            volatile_context = ctx.volatile_user_context
+            if (
+                getattr(agent, "provider", None) == "moa"
+                or getattr(agent, "api_mode", None) == "codex_app_server"
+                or ctx.moa_config is not None
+            ):
+                volatile_context = None
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                return agent.run_conversation(api_message, **kwargs)
+                with bind_volatile_user_context(
+                    agent, volatile_context, ctx.inbound_message_id
+                ):
+                    return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the

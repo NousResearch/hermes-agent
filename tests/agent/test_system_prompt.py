@@ -791,6 +791,43 @@ class TestSessionStartLike:
         start = _session_start_like(agent, now)
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
 
+    @pytest.mark.parametrize(
+        "parent_end_reason, expected_date",
+        [("session_reset", "2026-06-15"), ("compression", "2026-01-01")],
+    )
+    def test_lineage_date_stops_at_non_compression_parent(
+        self, parent_end_reason, expected_date
+    ):
+        from agent.system_prompt import _session_start_like
+
+        root_id = "20260101_120000_root"
+        session_id = "20260615_090000_child"
+
+        class _Db:
+            def get_conversation_root(self, sid):
+                return root_id
+
+            def get_session(self, sid):
+                sessions = {
+                    session_id: {"parent_session_id": root_id},
+                    root_id: {
+                        "parent_session_id": None,
+                        "end_reason": parent_end_reason,
+                    },
+                }
+                return sessions.get(sid)
+
+        now = datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC"))
+        agent = SimpleNamespace(
+            session_id=session_id,
+            session_start=datetime(2026, 6, 15, 9, 0),
+            _session_db=_Db(),
+        )
+
+        start = _session_start_like(agent, now)
+
+        assert start.strftime("%Y-%m-%d") == expected_date
+
     def test_lineage_walk_failure_falls_open_to_segment_id(self):
         from agent.system_prompt import _session_start_like
 

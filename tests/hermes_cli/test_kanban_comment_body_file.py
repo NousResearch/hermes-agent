@@ -84,3 +84,8 @@ def test_comment_delimiter_keeps_flags_literal(task_id):
         assert args.author is None
         assert kc.kanban_command(args) == 0
         assert comments(task_id)[-1].body == "--body-file - --author literal"
+    args = parser.parse_args(["kanban", "comment", task_id, "--author", "reviewer", "--", "--body-file", "-"])
+    assert args.body_file is None
+    assert args.author == "reviewer"
+    assert kc.kanban_command(args) == 0
+    assert comments(task_id)[-1].body == "--body-file -"

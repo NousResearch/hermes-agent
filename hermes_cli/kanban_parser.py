@@ -28,7 +28,13 @@ class _KanbanArgumentParser(argparse.ArgumentParser):
         # Protect the delimiter across argparse's two passes: its first pass
         # can consume a leading '--' while positionals are suppressed.
         if args is not None and "--" in args:
-            return super().parse_known_args(args, namespace)
+            text = next(action for action in self._actions if action.dest == "text")
+            original_nargs = text.nargs
+            text.nargs = "+"
+            try:
+                return super().parse_known_args(args, namespace)
+            finally:
+                text.nargs = original_nargs
         self._intermixed = False
         try:
             return self.parse_known_intermixed_args(args, namespace)

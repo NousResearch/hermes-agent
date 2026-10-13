@@ -181,7 +181,7 @@
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "bippy": "0.5.43",
-    "concurrently": "10.0.4",
+    "concurrently": "10.0.6",
     "cross-env": "10.1.0",
     "electron": "41.10.6",
     "electron-builder": "27.0.0-alpha.6",

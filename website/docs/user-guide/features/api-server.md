@@ -434,12 +434,18 @@ Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** f
 Authenticated readiness check for monitoring and control planes. It reports
 bounded status for the active profile's config, state database, configured
 model, disk space, gateway/platform state, active API runs, pending process
-completions, and active delegations. The response exposes status and counts,
-not config values, credentials, paths, commands, queue payloads, or raw errors.
+completions, active delegations, and in-process dependencies needed for an API
+turn. Dependency checks import the provider client and enabled platform adapters
+in the gateway interpreter and report whether it is running from the committed
+dependency environment. They do not make provider calls or read credentials.
+The response exposes status and counts, not config values, credentials, paths,
+commands, queue payloads, or raw exception messages.
 
 The public `/health` route remains a cheap liveness probe and does not run
 readiness checks. A degraded readiness result still uses HTTP 200; inspect the
-top-level `status` and `readiness.checks` fields.
+top-level `status` and `readiness.checks.dependencies` fields. Dependency
+readiness detects import and environment faults, but does not guarantee that a
+provider request will succeed or that an update can recover a failed gateway.
 
 ## Runs API (streaming-friendly alternative)
 

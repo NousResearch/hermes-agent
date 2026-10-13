@@ -2454,7 +2454,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         readiness = collect_runtime_readiness(
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
-            active_delegations=active_delegations)
+            active_delegations=active_delegations, platforms=sorted(platforms))
         return web.json_response({
 "status": readiness["status"], "readiness": readiness, "platform": "hermes-agent",
             "version": _hermes_version(), "gateway_state": gw_state,

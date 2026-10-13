@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from agent.message_metadata import MESSAGE_UID, message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import _placeholders
 from hermes_state_messages import _parse_tool_calls
@@ -16,6 +17,79 @@ from hermes_state_messages import _parse_tool_calls
 
 class SessionCoverageMixin:
     """Coverage helpers for SessionDB; relies on SessionMessagesMixin's codec/identity helpers."""
+
+    def _carried_tail_ids(
+        self, conn, tail_ids: list[int], compacted_messages: list[dict[str, Any]],
+    ) -> dict[int, int]:
+        """Rows of *tail_ids* that *compacted_messages* already carry -> ``{row id: index of the carrying dict}``.
+
+        A row above the watermark is normally a concurrent append the summary never saw, so the commit
+        clones it after the compacted set. A row the compressor ALSO held (flushed after the watermark
+        was read, or left unnamed so coverage fell back to the watermark) is already in the compacted
+        set as a carried copy; cloning it too stores the message twice, with a fresh id and timestamp
+        each (#137197). A dict names its row by ``_row_id``, by ``message_uid``, by identity plus
+        timestamp, or, carrying none of those, by identity alone. Each dict claims at most one row and
+        each row is claimed once, so a second row with the same text (another surface's append) keeps
+        its clone.
+        """
+        if not tail_ids or not compacted_messages:
+            return {}
+        by_row: dict[int, tuple[int, tuple[Any, ...]]] = {}
+        by_uid: dict[str, int] = {}
+        by_key: dict[tuple[Any, ...], int] = {}
+        bare: dict[tuple[Any, ...], list[int]] = {}
+        for index, message in enumerate(compacted_messages):
+            if not isinstance(message, dict):
+                continue
+            identity = self._row_identity(
+                message.get("role", "unknown"), message.get("content"), message.get("tool_call_id"),
+                _parse_tool_calls(message.get("tool_calls")))
+            row_id = message.get("_row_id")
+            if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
+                # Authoritative only while the stored identity still matches (a stale stamp names another row).
+                by_row.setdefault(row_id, (index, identity))
+            else:
+                row_id = None
+            uid = message_uid_or_none(message)
+            if uid is not None:
+                by_uid.setdefault(uid, index)
+            timestamp = coerce_epoch(message.get("timestamp"), field="message timestamp")
+            if timestamp is not None:
+                by_key.setdefault((*identity, timestamp), index)
+            elif row_id is None and uid is None:
+                bare.setdefault(identity, []).append(index)
+        carried: dict[int, int] = {}
+        claimed: set[int] = set()
+        for row in conn.execute(
+            f"SELECT id, role, content, tool_call_id, tool_calls, timestamp, {MESSAGE_UID} FROM messages "
+            f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
+        ).fetchall():
+            identity = self._row_identity(
+                row["role"], self._decode_content(row["content"]), row["tool_call_id"],
+                _parse_tool_calls(row["tool_calls"]))
+            index = None
+            if (named := by_row.get(int(row["id"]))) is not None and named[1] == identity:
+                index = named[0]
+            if index is None and row[MESSAGE_UID]:
+                index = by_uid.get(row[MESSAGE_UID])
+            if index is None:
+                timestamp = coerce_epoch(row["timestamp"], field="message timestamp")
+                if timestamp is not None:
+                    index = by_key.get((*identity, timestamp))
+                if index is None and (queue := bare.get(identity)):
+                    index = queue.pop(0)
+            if index is not None and index not in claimed:
+                claimed.add(index)
+                carried[int(row["id"])] = index
+        return carried
+
+    @staticmethod
+    def _carried_tail_slots(carried: dict[int, int], compacted_count: int, tail_count: int) -> int:
+        """How many of the carried tail's *tail_count* dicts name a row in *carried*: those originals sit
+        above the watermark, so the positional rewind below it must take that many fewer rows."""
+        if tail_count <= 0:
+            return 0
+        return sum(1 for index in carried.values() if index >= compacted_count - int(tail_count))
 
     def _resolve_carried_row_ids(
         self, conn, session_id: str, carried_messages: list[dict[str, Any]],

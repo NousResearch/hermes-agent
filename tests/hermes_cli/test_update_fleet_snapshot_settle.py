@@ -142,6 +142,8 @@ def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) ->
     )
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
+    # The fleet-verify pass refreshes the dashboard through this seam, not the hook above (#125988).
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda _plan: [])
     monkeypatch.setattr(update_cmd, "_warn_stale_serve_runtimes", lambda _rows: None)
     monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(_fleet_probe_expected_runtimes=lambda *a: True))

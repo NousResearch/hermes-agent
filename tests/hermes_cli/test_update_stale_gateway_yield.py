@@ -114,6 +114,9 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     seen = {}
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
+    # The fleet-verify pass refreshes the dashboard through this seam; unstubbed it restarts a
+    # live hermes-dashboard unit on hosts that run one (#125988).
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
     monkeypatch.setattr(surv, "signal_stale_fleet_survivors",

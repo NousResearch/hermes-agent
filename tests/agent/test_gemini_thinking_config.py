@@ -51,3 +51,29 @@ def test_snake_case_translation_carries_thinking_budget():
     assert translated == {"include_thoughts": False, "thinking_budget": 0}
     translated = _snake_case_gemini_thinking_config({"includeThoughts": False})
     assert translated == {"include_thoughts": False}
+
+
+@pytest.mark.parametrize("model", ["gemma-4-26b-a4b-it", "google/gemma-4-31b-it", "gemma4:31b-cloud"])
+def test_gemma4_rides_thinking_level_only(model):
+    """Gemma 4 on the gemini provider thinks by default and accepts only ``thinkingLevel``
+    (``minimal``/``high``); ``thinkingBudget`` is HTTP 400 and no config at all burns a small
+    output cap on hidden thought. Off and low efforts map to ``minimal``, high efforts to ``high``."""
+    for reasoning in ({"enabled": False}, {"effort": "none"}):
+        assert _build_gemini_thinking_config(model, reasoning) == {"thinkingLevel": "minimal", "includeThoughts": False}
+    for effort in ("minimal", "low", "medium"):
+        assert _build_gemini_thinking_config(model, {"effort": effort}) == {"thinkingLevel": "minimal", "includeThoughts": True}
+    for effort in ("high", "xhigh", "max"):
+        assert _build_gemini_thinking_config(model, {"effort": effort}) == {"thinkingLevel": "high", "includeThoughts": True}
+    for config in (_build_gemini_thinking_config(model, {"effort": e}) for e in ("none", "low", "high")):
+        assert "thinkingBudget" not in config
+
+
+def test_gemma4_minimal_off_switch_keeps_small_output_caps():
+    """The off switch spends no thought tokens, so the 64-token title call keeps its cap instead
+    of being raised to the 65,535 ceiling; a real thinking level still gets the headroom."""
+    from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
+
+    off = _build_gemini_thinking_config("gemma-4-31b-it", {"enabled": False})
+    assert _effective_gemini_max_output_tokens(64, off) == 64
+    high = _build_gemini_thinking_config("gemma-4-31b-it", {"effort": "high"})
+    assert _effective_gemini_max_output_tokens(64, high) == 65535

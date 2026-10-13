@@ -161,19 +161,34 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
+def _is_gemma4_model(normalized_model: str) -> bool:
+    return "gemma-4" in normalized_model or "gemma4" in normalized_model
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if not isinstance(reasoning_config, dict):
         return None
     normalized_model = (model or "").strip().lower().removeprefix("google/")
+    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
+    off = reasoning_config.get("enabled") is False or effort == "none"
+    if _is_gemma4_model(normalized_model):
+        # Gemma 4 thinks by default and only ``thinkingLevel`` steers it: ``thinkingBudget`` (any
+        # value, 0 included) and every level other than ``minimal``/``high`` are HTTP 400, and
+        # ``includeThoughts: False`` alone still burns the whole budget on hidden thought
+        # (``finishReason=MAX_TOKENS`` with no answer on the 64-token title call). ``minimal`` is
+        # the off switch the API accepts; everything up to ``medium`` rides it so a small cap
+        # still leaves room for the answer.
+        if off or effort in {"minimal", "low", "medium"}:
+            return {"thinkingLevel": "minimal", "includeThoughts": not off}
+        return {"thinkingLevel": "high", "includeThoughts": True}
     # Gemini-only; Gemma/PaLM on the same provider 400 on the field even as ``{"includeThoughts": False}``.
     # ``thinking_config`` is a Gemini-only request parameter. The same ``gemini`` provider also serves Gemma
     # (and historically PaLM/Bard); those reject the field with HTTP 400 "Unknown name 'thinking_config':
     # Cannot find field" — including the polite ``{"includeThoughts": False}`` form. Omit the field entirely
-    # on non-Gemini models. (#17426)
+    # on non-Gemini models other than Gemma 4. (#17426)
     if not normalized_model.startswith("gemini"):
         return None
-    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if reasoning_config.get("enabled") is False or effort == "none":
         # ``includeThoughts: False`` only omits thought parts from the returned
         # response; the model may still reason internally and bill thought

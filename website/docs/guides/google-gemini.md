@@ -188,6 +188,11 @@ Useful evaluation IDs include:
 
 These models are best treated as evaluation options on Gemini API keys. Google's Gemma API pricing is free-tier-only and the usage caps are low compared with production Gemini models, so sustained Hermes agent use should normally move to a paid Gemini model, a self-hosted deployment, or another provider with appropriate quota.
 
+Gemma 4 thinks by default and only accepts `thinkingLevel` (`minimal` or `high`), never
+`thinkingBudget`. Hermes maps `/reasoning none`, `minimal`, `low` and `medium` to `minimal`
+(the level that spends no thought tokens, so small-budget auxiliary calls such as title
+generation still get an answer) and `high` and above to `high`.
+
 To use a Gemma model that is hidden from the picker, set it directly:
 
 ```yaml

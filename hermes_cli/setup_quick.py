@@ -205,18 +205,35 @@ def _blank_slate_minimize_config(config: dict):
 
 def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, on_error=None) -> None:
     """Record the bundled-skills opt-out marker and sync (essential skills are always seeded);
-    ``on_success(sync_result)`` / ``on_error(exc)`` report the outcome."""
+    ``on_success(sync_result)`` / ``on_error(exc)`` report the outcome.
+
+    Opting out also removes the bundled skills already on disk: the installer seeds the full
+    catalog BEFORE the setup wizard runs, so the marker alone (which only blocks future
+    seeding) left a "blank" profile holding every bundled skill. Only pristine, manifest-tracked
+    copies are removed; user-edited, hub-installed, local and essential skills are kept. The
+    removed names land in the sync result under ``"removed"``."""
     try:
         from tools.skills_sync import sync_skills
-        from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
+        from tools.skills_sync_bundled_ops import remove_pristine_bundled_skills, set_bundled_skills_opt_out
         set_bundled_skills_opt_out(opt_out)
+        removed = remove_pristine_bundled_skills(dry_run=False).get("removed", []) if opt_out else []
         result = sync_skills(quiet=True)
+        if isinstance(result, dict):
+            result["removed"] = removed
         if on_success is not None:
             on_success(result)
     except Exception as exc:
         logger.debug("blank-slate %s error: %s", log_label, exc)
         if on_error is not None:
             on_error(exc)
+
+
+def _report_removed_skills(result) -> None:
+    """Tell the user how many already-seeded bundled skills the opt-out removed (silent if none)."""
+    removed = result.get("removed", []) if isinstance(result, dict) else []
+    if removed:
+        from hermes_cli.setup import print_info
+        print_info(f"  Removed {len(removed)} bundled skill(s) seeded during install.")
 
 
 def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
@@ -265,8 +282,8 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
         return
     save_config(config)
     # Blank Slate means no bundled skills; record the opt-out so future `hermes update` runs
-    # don't re-inject them.
-    _set_bundled_skills_opt_out(True, "skill opt-out")
+    # don't re-inject them, and remove the copies the installer already seeded.
+    _set_bundled_skills_opt_out(True, "skill opt-out", on_success=_report_removed_skills)
     _blank_slate_done(config, hermes_home, "  Enable tools:        hermes tools", "  Enable plugins:      hermes plugins",
                       intro="Enable anything later, on demand:")
 
@@ -285,7 +302,8 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
         copied = len(result.get("copied", [])) if isinstance(result, dict) else 0
         print_success(f"Seeded {copied} bundled skills.")
 
-    def _opted_out(_result) -> None:
+    def _opted_out(result) -> None:
+        _report_removed_skills(result)
         _info("No skills seeded (except the essential `hermes-agent`",
               "skill). A .no-bundled-skills marker keeps future",
               "`hermes update` runs from re-injecting them. Opt back in any",

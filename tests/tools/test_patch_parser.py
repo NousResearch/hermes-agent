@@ -989,7 +989,7 @@ class TestSafeCursorHunkSelection:
         )
 
     def test_already_applied_later_hunk_does_not_hide_remaining_source_match(self, monkeypatch):
-        import tools.fuzzy_match as fuzzy_match
+        from tools import fuzzy_match
 
         patch = (
             "*** Begin Patch\n"
@@ -1134,7 +1134,7 @@ class TestHunkTargetIdentity:
         body = ("@@\n-label = pending\n+label = done\n"
                 "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == "label = done\nvalue = old\nlabel = done\nvalue = one\nvalue = two\n"
@@ -1166,7 +1166,7 @@ class TestHunkTargetIdentity:
     def test_a_unique_hint_still_selects_its_block(self, tmp_path, spacing):
         source = f"# first\nvalue{spacing}old\n# " + "x" * 3000 + f"\n# target\nvalue{spacing}old\n"
 
-        result, fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
+        result, _fo, final = _apply_body(tmp_path, source, "@@ target @@\n-value = old\n+value = new")
 
         assert result.success is True, result.error
         assert final.startswith(f"# first\nvalue{spacing}old\n") and final.endswith("# target\nvalue = new\n")
@@ -1177,7 +1177,7 @@ class TestHunkTargetIdentity:
         body = ("@@\n # second\n@@ # top @@\n+" + addition + "\n"
                 "@@\n-value = old\n+value = one\n@@\n-value = old\n+value = two")
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == ("# top\n" + addition + "\n# first\nvalue = old\n"
@@ -1188,7 +1188,7 @@ class TestHunkTargetIdentity:
         source = "def first():\n    return False\ndef second():\n" + indent + "return False\n"
         body = "@@\n def second():\n@@\n-    return False\n+    return True"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == "def first():\n    return False\ndef second():\n" + indent + "return True\n"
@@ -1197,7 +1197,7 @@ class TestHunkTargetIdentity:
         source = "def first():\n    return False\ndef second():\n    return 1\n"
         body = "@@\n def second():\n@@\n-    return False\n+    return True"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == "def first():\n    return True\ndef second():\n    return 1\n"
@@ -1215,7 +1215,7 @@ class TestHunkTargetPrecedence:
         body = "@@ target @@\n-value = old\n+value = patched"
         body += "\n@@ footer @@\n-footer = old\n+footer = new" if footer else ""
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == source.replace("# target\nvalue = old", "# target\nvalue = patched").replace(
@@ -1238,7 +1238,7 @@ class TestHunkTargetPrecedence:
         source = "def first():\n    active = False\n# " + "x" * 1000 + "\ndef second():\n" + later + "\n"
         body = "@@\n def second():\n@@\n-    active = False\n+    active = True"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == source.replace(later, "    active = True")
@@ -1247,7 +1247,7 @@ class TestHunkTargetPrecedence:
         source = 'def first():\n    label = "x"\ndef second():\n    label = \u201cx\u201d\n'
         body = '@@\n def second():\n@@\n-    label = "x"\n+    label = "y"'
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final.startswith('def first():\n    label = "x"\n')
@@ -1285,7 +1285,7 @@ class TestHunkTargetPrecedence:
         source = f"{old}\nmid = 0\n{old}\n"
         body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == f"{first}\nmid = 0\n{second}\n"
@@ -1294,7 +1294,7 @@ class TestHunkTargetPrecedence:
         source = "a = 0\nb = 0\nc = 0\nd = 0\ne = 0\n"
         body = "@@\n a = 0\n-b = 0\n+b = 1\n c = 0\n@@\n c = 0\n-d = 0\n+d = 1\n e = 0"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == "a = 0\nb = 1\nc = 0\nd = 1\ne = 0\n"
@@ -1308,7 +1308,7 @@ class TestPlannerEscapeDrift:
         source = "def first():\n    x = 'a'\n\ndef second():\n    x = 'a'\n"
         body = "@@\n def second():\n@@\n-    x = \\'a\\'\n+    x = \\'b\\'"
 
-        result, fo, final = _apply_body(tmp_path, source, body)
+        result, _fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is True, result.error
         assert final == "def first():\n    x = 'a'\n\ndef second():\n    x = 'b'\n"

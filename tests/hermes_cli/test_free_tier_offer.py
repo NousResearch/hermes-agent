@@ -26,8 +26,7 @@ class _Clock:
 @pytest.fixture
 def clock(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "root" / "profiles" / "setup"))
-    monkeypatch.setattr(anon_auth, "has_guest", lambda: True)
-    monkeypatch.setattr(anon_auth, "guest_enabled", lambda: True)
+    monkeypatch.setattr(anon_auth, "free_inference_active", lambda state=None: True)
     fake = _Clock()
     monkeypatch.setattr(free_tier_offer, "_clock", fake)
     return fake
@@ -105,11 +104,10 @@ def test_record_is_install_wide_across_profiles(clock, tmp_path, monkeypatch):
     assert free_tier_offer.offer_due_in() == DELAY
 
 
-@pytest.mark.parametrize("signed_in,tier_on", [(True, True), (False, False)], ids=["signed-in", "tier-off"])
-def test_never_offered_off_the_free_tier(clock, monkeypatch, signed_in, tier_on):
+def test_never_offered_off_the_free_tier(clock, monkeypatch):
+    """Signed in, a connector-only guest, or off the desktop backend: the trial carries nothing here."""
     free_tier_offer.record_task_done()
     clock.now += DELAY
-    monkeypatch.setattr(anon_auth, "has_guest", lambda: not signed_in)
-    monkeypatch.setattr(anon_auth, "guest_enabled", lambda: tier_on)
+    monkeypatch.setattr(anon_auth, "free_inference_active", lambda state=None: False)
     assert free_tier_offer.offer_due_in() is None
     assert free_tier_offer.claim_offer() is False

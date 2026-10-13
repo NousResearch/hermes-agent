@@ -60,7 +60,8 @@ export function extendInterruptedReply(messages: ChatMessage[], rawText: string,
       parts: [{ ...assistantTextPart(text, occurredAt), completedAt: occurredAt }],
       timestamp: occurredAt,
       completedAt: occurredAt,
-      pending: false
+      pending: false,
+      interrupted: true
     }
   ]
 }

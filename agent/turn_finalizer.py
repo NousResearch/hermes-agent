@@ -574,6 +574,16 @@ def finalize_turn(
                 "Send `continue` to let the model summarize."
             )
 
+    # Interrupted turns always carry a reasoned user-visible line (never bare
+    # "Operation interrupted." / empty). Fill BEFORE transcript close / persist so
+    # history, CLI, gateway, API SSE, Desktop/WebUI, and Relay Android all see it.
+    if interrupted:
+        from agent.interrupt_control import ensure_interrupt_final_response
+
+        final_response = ensure_interrupt_final_response(
+            agent, final_response, turn_exit_reason=_turn_exit_reason,
+        )
+
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
     # ``turn_exit_reason`` collapsed to code="unknown", retryable=True on every surface.
@@ -739,6 +749,9 @@ def finalize_turn(
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    elif interrupted and final_response:
+        # Surfaces that only read ``error`` (API cancelled runs, some clients) still get the reason.
+        result["error"] = final_response
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

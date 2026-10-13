@@ -498,9 +498,10 @@ class CLIStreamMixin:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
-        # Still inside a "reasoning block" at end-of-stream = false positive (the model
-        # mentioned a tag in prose and never closed it): recover the buffer as regular text.
-        if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
+        # Anything still in the prefilter at end-of-stream is regular text: either a false-positive
+        # reasoning block (tag mentioned in prose, never closed) or a held-back partial open-tag
+        # prefix ("<", "<R") that never completed.
+        if getattr(self, "_stream_prefilt", ""):
             self._in_reasoning_block = False
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""

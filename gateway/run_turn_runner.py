@@ -26,7 +26,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
-from gateway.turn_context import TurnContext
+from gateway.turn_context import TurnContext, plugin_injection_review_suppressed
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
@@ -1092,7 +1092,7 @@ class TurnRunner:
                         cache.move_to_end(ctx.session_key)
                 self._runner._init_cached_agent_for_turn(out.agent, ctx._interrupt_depth)
                 # Cached agent may have been created with old config.
-                out.agent.max_iterations = max_iterations
+                out.agent.max_iterations, out.agent.skip_background_review = max_iterations, ctx.skip_background_review
                 logger.debug("Reusing cached agent for session %s", ctx.session_key)
                 out.reused = True
                 return out
@@ -1131,7 +1131,7 @@ class TurnRunner:
             # Reload from disk — do not reuse the startup snapshot.
             # See #60955.
             fallback_model=self._runner._refresh_fallback_model(),
-            skip_context_files=skip_context_files,
+            skip_context_files=skip_context_files, skip_background_review=ctx.skip_background_review,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )

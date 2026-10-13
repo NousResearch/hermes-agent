@@ -16,7 +16,10 @@ from unittest.mock import MagicMock
 
 from gateway.config import Platform
 from gateway.session import SessionSource
-from gateway.turn_context import TurnContext
+from gateway.turn_context import (
+    TurnContext,
+    plugin_injection_review_suppressed,
+)
 
 
 def _make_runner(ctx):
@@ -30,6 +33,11 @@ def _make_runner(ctx):
 
 
 class TestTurnContext:
+    def test_plugin_injection_review_metadata_recognizes_only_injected_turns(self):
+        event = SimpleNamespace(metadata={"hermes_plugin_injection": True})
+        assert plugin_injection_review_suppressed(event) is True
+        assert plugin_injection_review_suppressed({}) is False
+
     def test_defaults_are_independent_containers(self):
         a, b = TurnContext(), TurnContext()
         a.last_progress_msg[0] = "x"
@@ -39,10 +47,105 @@ class TestTurnContext:
         assert b.repeat_count == [0]
         assert b._cleanup_msg_ids == []
 
+    def test_plugin_injection_disables_background_review_for_agent_turn(
+        self, monkeypatch
+    ):
+        """The suppression flag reaches the agent constructor for an injected turn."""
+        from gateway.run_turn_runner import TurnRunner
+
+        captured = {}
+
+        class _Agent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        runner = MagicMock()
+        runner._prefill_messages = None
+        runner._refresh_fallback_model.return_value = None
+        ctx = TurnContext(
+            source=SessionSource(
+                platform=Platform.LOCAL, chat_id="chat", user_id="user"
+            ),
+            user_config={},
+            enabled_toolsets=[],
+            disabled_toolsets=[],
+            session_id="session",
+            session_key="session-key",
+            skip_background_review=True,
+            AIAgent=_Agent,
+        )
+        turn_runner = TurnRunner(runner, ctx)
+        monkeypatch.setattr("gateway.run._checkpoint_agent_kwargs", lambda _config: {})
+
+        turn_runner._build_fresh_agent(
+            {"model": "test-model", "runtime": {}},
+            "local",
+            None,
+            10,
+            None,
+            {},
+            False,
+        )
+
+        assert captured["skip_background_review"] is True
+
+    def test_cached_agent_review_suppression_is_per_turn(self, monkeypatch):
+        """A plugin turn suppresses reviews without leaking into the next normal turn."""
+        import threading
+
+        from gateway.run_turn_runner import TurnRunner
+
+        class _Agent:
+            max_iterations = 10
+            session_id = "session"
+
+        agent = _Agent()
+        cache = {"session-key": (agent, "signature", None, "session")}
+        runner = MagicMock()
+        runner._agent_cache_lock = threading.Lock()
+        runner._agent_cache = cache
+        runner._session_db = None
+        runner._agent_config_signature.return_value = "signature"
+        runner._refresh_fallback_model.return_value = None
+        ctx = TurnContext(
+            source=SessionSource(
+                platform=Platform.LOCAL, chat_id="chat", user_id="user"
+            ),
+            user_config={},
+            enabled_toolsets=[],
+            disabled_toolsets=[],
+            session_id="session",
+            session_key="session-key",
+            skip_background_review=True,
+        )
+        turn_runner = TurnRunner(runner, ctx)
+        monkeypatch.setattr(turn_runner, "_current_message_count", lambda: None)
+
+        reused, was_cached = turn_runner._resolve_turn_agent(
+            {"model": "test-model", "runtime": {}},
+            "local",
+            None,
+            10,
+            None,
+            {},
+        )
+        assert reused is agent and was_cached
+        assert agent.skip_background_review is True
+
+        ctx.skip_background_review = False
+        reused, was_cached = turn_runner._resolve_turn_agent(
+            {"model": "test-model", "runtime": {}},
+            "local",
+            None,
+            10,
+            None,
+            {},
+        )
+        assert reused is agent and was_cached
+        assert agent.skip_background_review is False
 
 
 class TestTurnRunner:
-
     def test_send_progress_messages_no_queue_returns(self):
         ctx = TurnContext(progress_queue=None)
         runner = _make_runner(ctx)

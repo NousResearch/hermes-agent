@@ -31,6 +31,11 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
    *  so mouse users get a visible affordance for the refresh hotkey. */
   searchTrailingAction?: ReactNode
+  /** Overlay variant: the same page rendered inside an overlay card
+   *  (`OverlayView`/`Panel`) rather than the workspace pane. The card owns the
+   *  window chrome, so the header drops the titlebar band it clears on a page,
+   *  and the page's own surface fill would paint over the card. */
+  overlay?: boolean
 }
 
 function ShellTabs({
@@ -65,6 +70,7 @@ export function PageSearchShell({
   searchValue,
   searchHidden = false,
   searchTrailingAction,
+  overlay = false,
   ...props
 }: PageSearchShellProps) {
   const hasTabs = (tabs?.length ?? 0) > 0
@@ -72,7 +78,13 @@ export function PageSearchShell({
   return (
     <section
       {...props}
-      className={cn('flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)', className)}
+      className={cn(
+        'flex h-full min-w-0 flex-col overflow-hidden',
+        // On a page the shell IS the workspace surface; inside an overlay card
+        // it would paint an opaque page fill over the card behind it.
+        !overlay && 'bg-(--ui-chat-surface-background)',
+        className
+      )}
     >
       {/*
         Header lives in the page body, below the window chrome (the shell floats
@@ -91,7 +103,14 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {(hasTabs || !searchHidden) && (
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
+          <div
+            className={cn(
+              'grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2',
+              // Nothing to clear in an overlay: the card is already inset below
+              // the titlebar, so the band would be a blank stripe.
+              !overlay && 'pt-[calc(var(--titlebar-height)+0.5rem)]'
+            )}
+          >
             <div className="flex min-w-0 items-center justify-start">
               {!searchHidden && (
                 <SearchField
@@ -115,7 +134,9 @@ export function PageSearchShell({
         )}
         {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">{children}</div>
+      <div className={cn('min-h-0 flex-1 overflow-hidden', !overlay && 'bg-(--ui-chat-surface-background)')}>
+        {children}
+      </div>
     </section>
   )
 }

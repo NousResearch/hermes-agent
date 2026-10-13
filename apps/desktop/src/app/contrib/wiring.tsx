@@ -181,9 +181,10 @@ import {
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
-// The workspace-route full-page views (skills/messaging/artifacts) are the
+// The workspace-route full-page views (messaging/artifacts) are the
 // ChatRoutesSurface's and live in ./surfaces.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
+const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
@@ -349,6 +350,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const {
     agentsOpen,
+    capabilitiesOpen,
     chatOpen,
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
@@ -1356,6 +1358,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
           />
+        </Suspense>
+      )}
+
+      {capabilitiesOpen && (
+        <Suspense fallback={null}>
+          <CapabilitiesView onClose={closeOverlayToPreviousRoute} overlay />
         </Suspense>
       )}
 

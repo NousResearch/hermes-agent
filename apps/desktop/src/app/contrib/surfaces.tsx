@@ -39,7 +39,6 @@ import type { SidebarActions, WiringActions } from './types'
 // (agents/settings/…) are the controller's and stay in wiring.tsx.
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
 
 export function LegacySessionRedirect() {
   const { sessionId } = useParams()
@@ -190,10 +189,13 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
     <Routes>
       <Route element={chatView} index />
       <Route element={chatView} path=":sessionId" />
-      <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
       <Route element={null} path="agents" />
+      {/* Capabilities is an OVERLAY now (it used to take the workspace pane —
+          and with it the session tabs the user was working in). It renders in
+          the controller's overlay set instead, like Settings. */}
+      <Route element={null} path="capabilities" />
       <Route element={null} path="command-center" />
       <Route element={null} path="cron" />
       <Route element={null} path="profiles" />

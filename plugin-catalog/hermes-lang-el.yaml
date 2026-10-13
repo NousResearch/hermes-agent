@@ -1,6 +1,6 @@
 name: hermes-lang-el
 repo: https://github.com/axiom-agent-ai/hermes-lang-el
-sha: caa5a0d4e350ed4e6a056b1e3ebcde5e22a04775
+sha: d11eacf4b38e05ba77ca4e9bbf2700463139c209
 description: >-
   Complete Greek (Ελληνικά) language pack for the Hermes Desktop app. Translates
   5,062 of 5,065 desktop UI strings (settings, composer, sidebar, command center,

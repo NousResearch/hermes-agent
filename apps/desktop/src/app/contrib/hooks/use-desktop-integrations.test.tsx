@@ -714,15 +714,16 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('route-scoped restoration', () => {
-    it('restores a non-session route like /capabilities', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
+    it('restores a non-session page route like /artifacts', () => {
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/artifacts')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
       render({ profileReady: true, sessions })
 
-      // /capabilities is not a session route — no ownership validation needed.
-      expect(navigate).toHaveBeenCalledWith('/capabilities', { replace: true })
+      // /artifacts is a workspace PAGE, not a session route — no ownership
+      // validation needed, and it is a destination worth booting back into.
+      expect(navigate).toHaveBeenCalledWith('/artifacts', { replace: true })
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
@@ -731,6 +732,16 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions: [] })
 
       // Overlay routes should not be restored.
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('does NOT restore /capabilities either — it is an overlay now', () => {
+      // Capabilities floats over the chat like Settings, so booting back into
+      // it would be as wrong as booting into Settings.
+      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
+
+      render({ profileReady: true, sessions: [] })
+
       expect(navigate).not.toHaveBeenCalled()
     })
 

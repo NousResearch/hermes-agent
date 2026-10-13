@@ -1356,6 +1356,27 @@ def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile:
     return mirrored
 
 
+def messaging_platforms_for_home(runtime: Optional[dict[str, Any]], home: Path) -> dict[str, Any]:
+    """Platform map the Channels page should show for ``home``.
+
+    A host gateway stores its own adapters under bare names (``whatsapp``) and
+    secondary adapters as ``<profile>:<platform>``. A named profile only sees
+    its prefixed entries. Using the directory's basename for the host
+    (``data``, ``.hermes``) drops the bare entries and the page invents
+    "restart to apply".
+    """
+    if home.parent.name == "profiles":
+        return profile_platforms_from_multiplexer(runtime, home.name)
+    plats = (runtime or {}).get("platforms")
+    if not isinstance(plats, dict):
+        return {}
+    return {
+        key: value
+        for key, value in plats.items()
+        if isinstance(key, str) and ":" not in key and isinstance(value, dict)
+    }
+
+
 def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
     """The ``<profile>:<platform>`` entries of a multiplexer record, re-keyed to bare platform names — the
     same shape a standalone gateway for ``profile`` writes into its own ``gateway_state.json`` — plus the

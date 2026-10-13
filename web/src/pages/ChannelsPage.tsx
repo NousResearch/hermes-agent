@@ -56,7 +56,16 @@ const STATE_BADGE: Record<
   fatal: { tone: "destructive", label: "Error" },
 };
 
-function stateBadge(state: string) {
+function stateBadge(state: string, platformId?: string) {
+  if (platformId === "whatsapp" && state === "disconnected") {
+    return { tone: "warning" as const, label: "Bridge down" };
+  }
+  if (platformId === "whatsapp" && state === "retrying") {
+    return { tone: "warning" as const, label: "Retrying bridge" };
+  }
+  if (platformId === "whatsapp" && state === "pending_restart") {
+    return { tone: "warning" as const, label: "Bridge status unknown" };
+  }
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
 
@@ -570,7 +579,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, platform.id);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -609,6 +618,16 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.id === "whatsapp" &&
+                        (platform.state === "disconnected" ||
+                          platform.state === "retrying" ||
+                          platform.state === "pending_restart") && (
+                          <span className="text-xs text-muted-foreground">
+                            The gateway process is up. The WhatsApp bridge is not
+                            connected, so chats are not answered. The gateway retries
+                            the bridge on its own.
+                          </span>
+                        )}
                       {platform.ingress_url && (
                         <span className="text-xs text-muted-foreground break-all">
                           Callback URL (shared listener):{" "}
@@ -981,9 +1000,14 @@ function WhatsAppOnboardingPanel({
               disabled={phase === "waiting" || phase === "applying"}
               placeholder="15551234567,15557654321"
             />
-            {hasSavedAllowedUsers && (
+            {hasSavedAllowedUsers && platform.whatsapp_setup?.allowed_users_kind === "list" && platform.whatsapp_setup.allowed_users_preview && (
               <span className="text-xs text-muted-foreground">
-                A saved allowlist is already stored for this profile. Leave this blank to keep it.
+                Saved numbers: {platform.whatsapp_setup.allowed_users_preview}. Leave this blank to keep them.
+              </span>
+            )}
+            {hasSavedAllowedUsers && platform.whatsapp_setup?.allowed_users_kind !== "list" && (
+              <span className="text-xs text-muted-foreground">
+                Saved allowlist: all senders. There is no number list. Leave this blank to keep that.
               </span>
             )}
           </div>

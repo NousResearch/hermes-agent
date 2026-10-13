@@ -286,19 +286,29 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return result
 
 
-_BRIDGE_SOURCE_FILES = ("bridge.js", "bridge_helpers.js", "package.json", "package-lock.json")
+def _bridge_source_names(source: Path) -> list[str]:
+    """Top-level bridge scripts. A partial copy (bridge.js without allowlist.js) crashes on import."""
+    names: list[str] = []
+    if not source.is_dir():
+        return names
+    for path in source.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix == ".js" or path.name in {"package.json", "package-lock.json"}:
+            names.append(path.name)
+    return sorted(names)
 
 
 def sync_newer_bridge_files(source: Path, dest: Path) -> None:
     """Copy bridge sources onto a volume mirror when the image copy is newer.
 
     The first boot copies the whole tree once. Later image updates must refresh
-    bridge.js itself, or the gateway keeps running the old script from HERMES_HOME.
+    every script the bridge imports, or the gateway keeps a mix of new and old files.
     """
     import shutil
 
     dest.mkdir(parents=True, exist_ok=True)
-    for name in _BRIDGE_SOURCE_FILES:
+    for name in _bridge_source_names(source):
         src = source / name
         if not src.is_file():
             continue

@@ -1702,6 +1702,10 @@ export interface MessagingPlatform {
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;
+    /** empty | all | list. "all" means every sender is allowed; the wildcard is not a phone number. */
+    allowed_users_kind?: "empty" | "all" | "list" | string;
+    /** Comma-separated numbers when kind is list. Empty for allow-all. */
+    allowed_users_preview?: string;
     home_channel_set?: boolean;
   } | null;
   env_vars: MessagingPlatformEnvVar[];

@@ -268,9 +268,19 @@ def _messaging_platform_payload(
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
+        allowed_raw = env_value("WHATSAPP_ALLOWED_USERS").strip()
+        if not allowed_raw:
+            allowed_kind, allowed_preview = "empty", ""
+        elif allowed_raw == "*":
+            # The wildcard is an allow-all flag, not a phone number. Do not echo it into the form.
+            allowed_kind, allowed_preview = "all", ""
+        else:
+            allowed_kind, allowed_preview = "list", allowed_raw
         payload["whatsapp_setup"] = {
             "mode": whatsapp_mode if whatsapp_mode in {"bot", "self-chat"} else "",
-            "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
+            "allowed_users_set": bool(allowed_raw),
+            "allowed_users_kind": allowed_kind,
+            "allowed_users_preview": allowed_preview,
             "home_channel_set": bool(home_channel),
         }
     return payload

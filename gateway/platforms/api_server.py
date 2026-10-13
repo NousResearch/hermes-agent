@@ -2376,6 +2376,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
         if not resolve_display_setting(user_config, "api_server", "interim_assistant_messages", True):
             interim_assistant_callback = None
+        # Mirror the messaging-platform agent build (GatewayRunner
+        # _run_background_task_inner): agent.disabled_toolsets is a
+        # per-profile denial policy, and skipping it here silently
+        # re-enables toolsets the routed profile explicitly disabled —
+        # e.g. delegation removed as an operational/safety measure
+        # (#91415). Applies to every api_server deployment, not just
+        # multiplexed ones.
+        from agent.skill_utils import parse_config_string_list
+
+        agent_cfg = user_config.get("agent") or {}
+        _raw_disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        disabled_toolsets = parse_config_string_list(_raw_disabled_toolsets) or None
+        if _raw_disabled_toolsets and not disabled_toolsets:
+            # A denial policy whose configured value fails to parse degrades
+            # to "deny nothing" (fail-open) — surface the misconfiguration in
+            # the gateway log rather than letting it be discovered from an
+            # unexpectedly available toolset.
+            logger.warning(
+                "agent.disabled_toolsets value %r parsed to no toolsets; "
+                "disabling nothing for this api_server agent",
+                _raw_disabled_toolsets,
+            )
+
         max_iterations = _current_max_iterations()
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
@@ -2390,7 +2413,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
             "ephemeral_system_prompt": ephemeral_system_prompt or None,
-            "enabled_toolsets": enabled_toolsets, "session_id": session_id,
+            "enabled_toolsets": enabled_toolsets, "disabled_toolsets": disabled_toolsets,
+            "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,

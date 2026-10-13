@@ -56,6 +56,21 @@ def service_tier_word(tier: Any) -> str:
     return {"priority": "fast", None: "normal", "": "normal"}.get(tier, tier)
 
 
+def static_tier_request_overrides(
+    tier: Any, model: Any, *, provider: str | None = None, base_url: str | None = None,
+) -> dict[str, Any]:
+    """The request_overrides a STATIC tier pins for the session (``{}`` for normal/auto/cold and for a
+    model without fast capacity). The one translation every surface that builds an agent from a chosen
+    tier goes through, so a composer pick and a config default cannot disagree (#135672)."""
+    if tier not in STATIC_TIERS:
+        return {}
+    from hermes_cli.models import resolve_fast_mode_overrides
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier) or {}
+    except Exception:  # health: allow BLE001 -- a tier is a preference: a broken catalog lookup must never fail an agent build
+        return {}
+
+
 def begin_turn(agent: Any, conversation_history: Any) -> None:
     """Open (or refuse) the fast window at a user-turn boundary."""
     mode = getattr(agent, "service_tier", None)

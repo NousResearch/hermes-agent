@@ -2683,6 +2683,10 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    # One resolved tier feeds both agent.service_tier and the static tier's pinned request_overrides
+    # (agent.fast_mode contract): a pick that reaches only service_tier sends every request at normal speed (#135672).
+    from agent.fast_mode import static_tier_request_overrides
+    service_tier = service_tier_override if service_tier_override is not None else _load_service_tier()
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -2692,7 +2696,7 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=service_tier,
         enabled_toolsets=_load_enabled_toolsets(platform),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
@@ -2707,8 +2711,11 @@ def _make_agent(
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
-        request_overrides=runtime.get("request_overrides"),
+        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it,
+        # plus the static tier's pinned fast params — a composer pick must not stop at agent.service_tier (#135672).
+        request_overrides={**(runtime.get("request_overrides") or {}),
+                           **static_tier_request_overrides(service_tier, model, provider=runtime.get("provider"),
+                                                           base_url=runtime.get("base_url"))},
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

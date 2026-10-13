@@ -30,13 +30,17 @@ NOTE = (
     "Settled once; do not re-offer a row the user skipped. Each installed row names target_profile: "
     "its tools and skills are live now in that profile's open chats and in every new chat of it; "
     "they are callable in this chat only when this chat runs in that profile. A failed row carries "
-    "the reason in detail."
+    "the reason in detail. Report an app integration as a Hermes plugin, separately from any "
+    "native-app prerequisite; a connected row describes the integration, not native-app installation."
 )
 
 MANAGE_CATALOG_SCHEMA = {
     "name": "manage_catalog",
     "description": (
-        "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
+        "Find and install Hermes catalog plugins and hub skills for the user. For an app integration, "
+        "say 'add the <app> integration to Hermes', not 'install <app>'. A catalog plugin install is "
+        "not a promise to install its native application; only promise native-app installation as a "
+        "separate, supported action. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
         "one approval card with a row per item and blocks until every row is installed, skipped or "
         "failed, or the card is closed; the host installs each approved row into this chat's profile at "

@@ -10,7 +10,8 @@ rows in two days on one live board). These tests pin down six behaviours:
   re-trap the card;
 * an unresolved ``blocker_auth`` parks the card ``blocked`` exactly once and
   does not skip it forever while it shows as ``ready``;
-* rate-limit retries back off exponentially and are bounded;
+* rate-limit retries back off exponentially and are bounded, also with
+  cooldown 0 and in the review lane;
 * an unblock with the blocker still present buys one run, then re-parks to triage;
 * every respawn claim records who initiated it and which run it retries;
 * repeated identical guard ticks are recorded once.
@@ -222,6 +223,46 @@ def test_rate_limit_exhaustion_parks_then_unblock_recovers(kanban_home, all_assi
         assert kb.unblock_task(conn, tid)
         kbd.dispatch_once(conn, spawn_fn=spawns)
     assert spawns.calls == [tid]
+
+
+def test_zero_cooldown_disables_waiting_but_not_the_exhaustion_ceiling(kanban_home, monkeypatch):
+    """Cooldown 0 means "retry without waiting". It must not also remove the
+    separate cap on consecutive rate-limited runs."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE", "3")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rl", assignee="worker")
+        for i in range(2):
+            _end_run(conn, tid, "rate_limited", 1_000 + i)
+            assert kbd.check_respawn_guard(conn, tid) is None
+        _end_run(conn, tid, "rate_limited", 1_002)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_exhausted"
+
+
+def test_review_lane_exhaustion_parks_and_unblock_returns_to_review(kanban_home, all_assignees_spawnable, spawns,
+                                                                    monkeypatch):
+    """A review card that keeps hitting the quota wall parks ``blocked`` like a
+    ready card would. It must not sit in ``review`` refused on every tick. The
+    unblock sends it back to ``review``, not to the implementer."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "1")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE", "2")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="review me", assignee="reviewer")
+        impl = kb.claim_task(conn, tid)
+        assert kb.request_review(conn, tid, summary="ready", expected_run_id=impl.current_run_id)
+        now = int(kb.time.time())  # after the implementer's run, which request_review ended now
+        _end_run(conn, tid, "rate_limited", now + 1, status="review")
+        _end_run(conn, tid, "rate_limited", now + 2, status="review")
+        for _ in range(3):
+            kbd.dispatch_once(conn, spawn_fn=spawns)
+        task = kb.get_task(conn, tid)
+        blocked = _events(conn, tid, "blocked")
+        assert (task.status, task.block_kind) == ("blocked", "needs_input")
+        assert len(blocked) == 1 and blocked[0]["source_status"] == "review"
+        assert spawns.calls == []
+
+        assert kb.unblock_task(conn, tid, actor="ops", source="cli")
+        assert kb.get_task(conn, tid).status == "review"
 
 
 def test_repeated_guard_ticks_record_one_event_per_reason(kanban_home, all_assignees_spawnable, spawns, monkeypatch):

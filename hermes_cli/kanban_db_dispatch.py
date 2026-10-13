@@ -1609,12 +1609,9 @@ def check_respawn_guard(
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
-        if rl_cooldown <= 0:
-            # Cooldown disabled — respawn immediately, skipping blocker_auth so
-            # the stamped rate-limit text doesn't re-trap the task.
-            return None
         # Bounded backoff: the trailing run of consecutive rate-limited
-        # outcomes doubles the wait up to the cap, then parks the card.
+        # outcomes doubles the wait up to the cap, then parks the card. The
+        # ceiling is checked first so a zero cooldown cannot switch it off.
         max_streak = _kb._resolve_rate_limit_max_consecutive()
         recent = conn.execute(
             "SELECT outcome FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
@@ -1623,6 +1620,10 @@ def check_respawn_guard(
         streak = next((i for i, r in enumerate(recent) if r["outcome"] != "rate_limited"), len(recent))
         if streak >= max_streak:
             return "rate_limit_exhausted"
+        if rl_cooldown <= 0:
+            # Cooldown disabled — respawn immediately, skipping blocker_auth so
+            # the stamped rate-limit text doesn't re-trap the task.
+            return None
         backoff = min(rl_cooldown << (streak - 1), max(rl_cooldown, _kb._resolve_rate_limit_max_cooldown_seconds()))
         ended_at = _kb._to_epoch(latest_run["ended_at"])
         if ended_at is not None and (now - ended_at) < backoff:
@@ -2138,11 +2139,12 @@ def _dispatch_lane_task(
             if (last is None or last["kind"] != "respawn_guarded"
                     or last["payload"] != _kb._json_or_null(payload)):
                 _kb._append_event(conn, task_id, "respawn_guarded", payload)
-        if lane == "ready" and guard_reason in _PARKING_GUARD_REASONS:
+        if guard_reason in _PARKING_GUARD_REASONS:
             # No tick clears these: park for an operator (sticky) instead of
-            # showing a ``ready`` card that is skipped forever. Counters and
-            # ``last_failure_error`` are kept; ``unblock_task`` resets them.
-            _kb.block_task(conn, task_id, kind="needs_input",
+            # showing a ``ready``/``review`` card that is skipped forever. Counters
+            # and ``last_failure_error`` are kept; ``unblock_task`` resets them and
+            # resumes the lane it left (``source_status``).
+            _kb.block_task(conn, task_id, kind="needs_input", from_review=lane == "review",
                            reason=f"dispatcher parked: {guard_reason}")
         return False
 

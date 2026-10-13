@@ -54,6 +54,10 @@ class ProcessCheckpointMixin:
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
+        from tools.process_registry_consumed import _sweep_consumed_markers
+
+        # Consumption outlives the finished-session cache, including across restarts.
+        _sweep_consumed_markers()
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():

@@ -1,0 +1,46 @@
+<Rive version="1" kind="fragment">
+  <!-- Original geometric smoke fixture; MIT, see the skill's LICENSE. -->
+  <Artboard name="Smoke" id="0:1" width="320" height="200" styleId="0:3" defaultStateMachineId="0:20">
+    <LayoutComponentStyle id="0:3"/>
+    <Fill name="Background">
+      <SolidColor colorValue="FFF4F2ED"/>
+    </Fill>
+
+    <!-- Earlier siblings draw in front: keep the marker above the track. -->
+    <Shape name="Marker" id="0:2" x="64" y="100" rotation="0.7853981633974483">
+      <Rectangle width="32" height="32" originX="0.5" originY="0.5"/>
+      <Fill><SolidColor colorValue="FFBA7A2E"/></Fill>
+    </Shape>
+    <Shape name="Left stop" x="64" y="100">
+      <Ellipse width="12" height="12"/>
+      <Fill><SolidColor colorValue="FF45484D"/></Fill>
+    </Shape>
+    <Shape name="Right stop" x="256" y="100">
+      <Ellipse width="12" height="12"/>
+      <Fill><SolidColor colorValue="FF45484D"/></Fill>
+    </Shape>
+    <Shape name="Track" x="160" y="100">
+      <Rectangle width="192" height="8" originX="0.5" originY="0.5"/>
+      <Fill><SolidColor colorValue="FFD5D1C8"/></Fill>
+    </Shape>
+
+    <LinearAnimation name="Travel" id="0:10" fps="60" duration="120" loopValue="loop">
+      <KeyedObject objectId="0:2">
+        <!-- Node.x is key 13; confirm through the CLI Shape schema. -->
+        <KeyedProperty propertyKey="13">
+          <KeyFrameDouble frame="0" value="64" interpolationType="linear"/>
+          <KeyFrameDouble frame="60" value="256" interpolationType="linear"/>
+          <KeyFrameDouble frame="120" value="64" interpolationType="linear"/>
+        </KeyedProperty>
+      </KeyedObject>
+    </LinearAnimation>
+    <StateMachine name="Slide" id="0:20">
+      <StateMachineLayer name="Motion">
+        <AnyState x="0" y="-120"/>
+        <ExitState x="400" y="-120"/>
+        <EntryState x="0" y="0"><StateTransition stateToId="0:21"/></EntryState>
+        <AnimationState id="0:21" animationId="0:10" x="200" y="0"/>
+      </StateMachineLayer>
+    </StateMachine>
+  </Artboard>
+</Rive>

@@ -143,7 +143,10 @@ class TestDoctorToolAvailabilitySummary:
         'run hermes setup' summary like any missing key (#9516)."""
         unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
                        {"name": "homeassistant", "env_vars": [], "tools": []}]
-        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        # Both toolsets are enabled for the CLI; ``homeassistant`` is the no-env-var
+        # control that exercises the generic "system dependency not met" detail.
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor",
+                            lambda: {"image_gen", "homeassistant"})
         monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
         monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", list)
         fake_model_tools = types.SimpleNamespace(

@@ -482,7 +482,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const flushAbandonedClarify = () => {
     const { clarify } = getOverlayState()
 
-    if (!clarify || persistedAbandonedClarify.has(clarify.requestId)) {
+    if (!clarify || clarify.answerPending || persistedAbandonedClarify.has(clarify.requestId)) {
       return
     }
 

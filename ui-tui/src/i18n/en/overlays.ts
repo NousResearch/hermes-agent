@@ -18,6 +18,7 @@ export const overlaysEn = {
       toggle: 'Space toggle',
       confirmAndContinue: 'confirm and continue',
       lockAnswer: 'lock answer',
+      lockingAnswer: 'locking answer…',
       typingHint: (enterAction: string) => `Enter ${enterAction} · Esc back`,
       hint: (enterAction: string) =>
         `↑/↓ select · Enter ${enterAction} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`

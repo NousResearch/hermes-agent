@@ -702,6 +702,18 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+def _migrate_to_51_notice(results: dict[str, Any], quiet: bool) -> None:
+    # 50 → 51, notice half: approvals.mode defaulted to "manual" when these installs were seeded,
+    # and "smart" has been the default since #62661. Flipping a security posture silently is not
+    # this ladder's call, so the value stays and the user gets the exact command once.
+    approvals = read_raw_config().get("approvals")
+    if isinstance(approvals, dict) and _lower_is("manual")(approvals.get("mode")) and not quiet:
+        print(
+            "  ⚠ approvals.mode is still \"manual\" — the default is now \"smart\" (low-risk "
+            "commands are auto-approved). If manual was the old seeded default rather than your "
+            "choice, run: hermes config unset approvals.mode")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -835,6 +847,64 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: defaults changed after installs were seeded with the old values. The v30-era
+    # config writer persisted the whole DEFAULT_CONFIG of the day, so a value that is still exactly
+    # the old default is the template copied, never a choice — it is dropped and follows the
+    # current default at read time; any other explicit value is preserved. approvals.mode
+    # (manual → smart) is deliberately NOT rewritten: it is a security posture the user should
+    # change on purpose — the notice step below names the command (`hermes config unset
+    # approvals.mode`) instead of flipping it silently.
+    (51, _rewrite_stale_default(
+        section="approvals", key="timeout", old=60, new=None,
+        added="removed approvals.timeout: 60 (the old default)",
+        message=(
+            "  ✓ Removed approvals.timeout: 60 — the old default, copied into config.yaml by the "
+            "early setup wizard. Approval prompts now wait the default 300s (see #136754). Set "
+            "approvals.timeout to a number to pin it again."))),
+    (51, _rewrite_stale_default(
+        section="agent", key="clarify_timeout", old=600, new=None,
+        added="removed agent.clarify_timeout: 600 (the old default)",
+        message=(
+            "  ✓ Removed agent.clarify_timeout: 600 — the old default, copied into config.yaml by the "
+            "early setup wizard. Clarify prompts now wait the default 3600s (see #136754). Set "
+            "agent.clarify_timeout to a number to pin it again."))),
+    (51, _rewrite_stale_default(
+        section="agent", key="restart_drain_timeout", old=180, new=None,
+        added="removed agent.restart_drain_timeout: 180 (the old default)",
+        message=(
+            "  ✓ Removed agent.restart_drain_timeout: 180 — the old default, copied into config.yaml "
+            "by the early setup wizard. A restart now waits for the drain to finish instead of "
+            "force-killing after 3 minutes (see #136754). Set agent.restart_drain_timeout to pin it."))),
+    (51, _rewrite_stale_default(
+        section="compression", key="hygiene_hard_message_limit", old=400, new=None,
+        added="removed compression.hygiene_hard_message_limit: 400 (the old default)",
+        message=(
+            "  ✓ Removed compression.hygiene_hard_message_limit: 400 — the old default, copied into "
+            "config.yaml by the early setup wizard. The hard force-compress threshold now follows "
+            "the default 5000 messages (see #136754)."))),
+    (51, _rewrite_stale_default(
+        section="delegation", key="child_timeout_seconds", old=600, new=None,
+        added="removed delegation.child_timeout_seconds: 600 (the old default)",
+        message=(
+            "  ✓ Removed delegation.child_timeout_seconds: 600 — the old default, copied into "
+            "config.yaml by the early setup wizard. Delegated children are no longer cut off after "
+            "10 minutes (see #136754). Set delegation.child_timeout_seconds to pin a wall-clock cap."))),
+    (51, _rewrite_stale_default(
+        section="curator", key="prune_builtins", old=True, new=None,
+        added="removed curator.prune_builtins: true (the old default)",
+        message=(
+            "  ✓ Removed curator.prune_builtins: true — the old default, copied into config.yaml by "
+            "the early setup wizard. The curator no longer prunes built-in skills (see #136754)."))),
+    (51, _rewrite_stale_default(
+        section="updates", key="pre_update_backup", old=False, new=None,
+        added="removed updates.pre_update_backup: false (the old default)",
+        message=(
+            "  ✓ Removed updates.pre_update_backup: false — the old default, copied into config.yaml "
+            "by the early setup wizard. `hermes update` takes the default quick pre-update backup "
+            "again (see #136754)."))),
+    # One-time notice for the one stale default that must not be flipped silently (see
+    # _migrate_to_51_notice).
+    (51, _migrate_to_51_notice),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

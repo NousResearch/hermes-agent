@@ -5,7 +5,7 @@ description: "Session status for Hermes Desktop: a thin bar next to every sideba
 maintainer: mochiNJ
 tier: community
 category: desktop
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/mochiNJ/hermes-waypoint
 version: "2.5.0"
 screenshots:

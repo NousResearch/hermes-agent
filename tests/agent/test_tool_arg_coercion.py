@@ -132,6 +132,17 @@ class TestCoerceToolArgs:
     def test_empty_args(self):
         assert coerce_tool_args("test_tool", {}) == {}
 
+    def test_typeless_union_coerced_unless_it_accepts_strings(self):
+        """anyOf-only properties are coerced in branch order; a string branch keeps strings as sent."""
+        schema = self._mock_schema({
+            "flag": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]},
+            "ref": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"flag": "true", "ref": "42"}) == {"flag": True, "ref": "42"}
+            assert coerce_tool_args("test_tool", {"flag": '["a"]'}) == {"flag": ["a"]}
+            assert coerce_tool_args("test_tool", {"flag": "maybe"}) == {"flag": "maybe"}
+
 
 
 

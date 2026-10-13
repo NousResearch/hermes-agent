@@ -39,7 +39,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
-        expected = prop_schema.get("type")
+        expected = prop_schema.get("type") or _union_branch_types(prop_schema)
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
@@ -78,6 +78,23 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
 
     return args
+
+
+def _union_branch_types(schema: dict) -> list | None:
+    """Branch types of a type-less anyOf/oneOf property (``notify: anyOf[boolean, array]``), in schema order.
+
+    None when a branch has no plain type or accepts a string: a string value is
+    then already valid (or ambiguous), so it must not be reinterpreted.
+    """
+    for union_key in ("anyOf", "oneOf"):
+        branches = schema.get(union_key)
+        if not isinstance(branches, list) or not branches:
+            continue
+        types = [b.get("type") if isinstance(b, dict) else None for b in branches]
+        if all(isinstance(t, str) for t in types) and "string" not in types:
+            return types
+        return None
+    return None
 
 
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:

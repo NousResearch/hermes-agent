@@ -6,7 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
-import { answerSetupCard, hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
+import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
   type ComposerAttachment,
@@ -17,6 +17,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
+import { answerParkedCard } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -270,34 +271,31 @@ export function useComposerSubmit({
     return true
   }
 
-  // True when the draft was consumed as a parked setup card's answer.
-  const answerParkedCard = (text: string, payloadPresent: boolean) => {
-    // A clarify card parked on this session owns the turn: the agent is blocked
-    // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
-    // through steer/queue sits undelivered until the clarify's own timeout
-    // (default 5 min) — the message looks sent and nothing happens. Typing a
-    // real message instead of picking an option IS the answer "none of these":
-    // skip the question so the tool returns, then route the words normally.
-    // A setup card is the exception: the setup turn reads typed words as its
-    // answer, so they go back as the card's answer and the turn carries on.
+  // True when the draft was consumed as a parked card's answer.
+  const answerParkedCardWithDraft = (text: string, payloadPresent: boolean) => {
+    // A card parked on this session owns the turn: the agent is blocked inside
+    // its tool batch, so a steer or queued follow-up would sit undelivered until
+    // the card's own timeout. Plain text answers the card instead (a clarify
+    // takes it as its next question's answer) and is not sent again.
     //
-    // A slash command or attachments cannot be a setup answer either. The skip
-    // is fire-and-forget, not awaited: it clears the card synchronously and
-    // both RPCs ride the same socket in call order, so the gateway resolves the
-    // clarify before it sees the follow-up. Awaiting first would leave the draft
-    // live for a tick — long enough for a second Enter to send it twice.
+    // A slash command or attachments cannot be an answer: the card is skipped
+    // and the draft routes normally. The skip is fire-and-forget, not awaited:
+    // it clears the card synchronously and both RPCs ride the same socket in
+    // call order, so the gateway resolves the clarify before it sees the
+    // follow-up. Awaiting first would leave the draft live for a tick, long
+    // enough for a second Enter to send it twice.
     //
-    // /btw and /bg run beside the turn (snapshot / separate session) and answer
-    // neither parked card. With attachments the draft isn't routed as a slash
+    // /btw and /bg run beside the turn (snapshot / separate session) and touch
+    // no parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
-    const cardParked = payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)
+    const routable = payloadPresent && !queueEdit && !isSideQuestion
 
     if (
-      cardParked &&
+      routable &&
       !attachments.length &&
       !SLASH_COMMAND_RE.test(text.trim()) &&
-      answerSetupCard(sessionId, text.trim())
+      answerParkedCard(sessionId ?? '', text.trim())
     ) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
@@ -307,12 +305,12 @@ export function useComposerSubmit({
       return true
     }
 
-    if (cardParked) {
+    if (routable && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
     // Same for a pending connection card: ordinary typing continues the operation.
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
+    if (routable && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }
 
@@ -349,7 +347,7 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (answerParkedCard(text, payloadPresent)) {
+    if (answerParkedCardWithDraft(text, payloadPresent)) {
       return
     }
 

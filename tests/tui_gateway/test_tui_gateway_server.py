@@ -19,6 +19,7 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tools import async_delegation as ad
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
@@ -215,8 +216,6 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         server._sessions.pop(sid, None)
 
 
-
-
 def test_dashboard_process_isolation_config_coerces_raw_values():
     cfg = {
         "dashboard": {
@@ -238,8 +237,6 @@ def test_dashboard_process_isolation_config_coerces_raw_values():
         "compute_host_heartbeat_secs": 15,
         "compute_host_respawn_max": 3,
     }
-
-
 
 
 def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(monkeypatch):
@@ -374,13 +371,6 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
                 )
             raise BrokenPipeError("broken pipe")
 
-    class _ImmediateThread:
-        def __init__(self, target=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            assert self._target is not None
-            self._target()
 
     session = _session(agent=None, agent_ready=threading.Event())
     server._sessions["iso-fallback"] = session
@@ -633,13 +623,6 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
 
 
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            assert self._target is not None
-            self._target()
 
     class _Agent:
         model = "gold-model"
@@ -1506,8 +1489,6 @@ def test_usage_ticker_unbounded_join_waits_out_blocked_emit(monkeypatch):
     assert order == ["session.usage", "message.complete"]
 
 
-
-
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 
@@ -1662,8 +1643,6 @@ def test_dispatch_rejects_non_object_params():
     assert resp["error"]["code"] == -32602
 
 
-
-
 def test_system_battery_fails_open(monkeypatch):
     def boom():
         raise RuntimeError("no battery subsystem")
@@ -1743,8 +1722,6 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
 
     assert on_resp["result"]["record_key"] == "ctrl+o"
     assert status_resp["result"]["record_key"] == "ctrl+o"
-
-
 
 
 def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
@@ -1944,8 +1921,6 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     # The submit proceeds into normal handling (here: unknown session error),
     # NOT the voice_stopped consumption path.
     assert resp.get("result") != {"voice_stopped": True}
-
-
 
 
 def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
@@ -2211,8 +2186,6 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
     finally:
         server._wake_owner_transport = None
         server._wake_owner_surface = ""
-
-
 
 
 def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
@@ -2637,8 +2610,6 @@ def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
     assert server._load_disabled_toolsets() is None
 
 
-
-
 def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-off,nope")
     monkeypatch.setitem(
@@ -2850,8 +2821,6 @@ def test_tool_start_ships_full_args(monkeypatch):
     assert events[0][2]["args"] == {"command": long_command}
     # Empty args stay omitted. Argless tools get no noise key.
     assert "args" not in events[1][2]
-
-
 
 
 def test_history_to_messages_keeps_reasoning_only_assistant_turn():
@@ -3367,8 +3336,6 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     assert resp["result"]["messages"] == expected
     assert resp["result"]["message_count"] == (1 if omit_messages else 2)
     assert resp["result"]["messages_omitted"] is omit_messages
-
-
 
 
 def test_live_visible_history_falls_back_without_db_or_key():
@@ -4496,8 +4463,6 @@ def test_config_sync_ignores_env_seed_without_config_model(monkeypatch):
     server._sync_agent_model_with_config("sid", session)
 
 
-
-
 def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
     # Internal callers (config sync, /moa one-shot + restore) pass
     # persist_override=False; even with persist_switch_by_default=True the
@@ -4558,8 +4523,6 @@ def test_startup_runtime_does_not_treat_inference_provider_as_explicit(monkeypat
     )
 
     assert server._resolve_startup_runtime() == ("nous/hermes-test", None)
-
-
 
 
 def test_load_fallback_model_merges_chain_providers_first(monkeypatch):
@@ -4788,8 +4751,6 @@ def test_attaching_a_different_login_keeps_the_creator_and_warns_once(monkeypatc
     assert server._attach_session_transport(record, other)
 
     assert server._session_auth_user_id(record) == "basic:alice"
-
-
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -5313,8 +5274,6 @@ def test_ws_disconnect_running_sidecar_still_closes_without_orphan_timer(monkeyp
         assert scheduled == []
     finally:
         server._sessions.pop("sidecar-sid", None)
-
-
 
 
 def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
@@ -5857,8 +5816,6 @@ def test_superseded_runtime_finalized_without_reclaimed_broadcast(monkeypatch):
         server._sessions.pop("new-sid", None)
         server._pending_ws_reaps.pop("old-sid", None)
         server._pending_ws_reaps.pop("new-sid", None)
-
-
 
 
 def test_lazy_unpersisted_resume_rebinds_transport_and_cancels_reap(monkeypatch):
@@ -7770,16 +7727,6 @@ def test_notification_poller_delivers_owned_events(
 def _configure_immediate_prompt_run(
     monkeypatch, tmp_path, *, immediate_threads=True
 ):
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            if self._target is not None:
-                self._target()
-
-        def is_alive(self):
-            return False
 
     if immediate_threads:
         monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -8197,7 +8144,6 @@ def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     finally:
         server._sessions.pop("sid_b", None)
         process_registry._completion_consumed.discard(event["session_id"])
-
 
 
     """session.create must NOT eagerly write a DB row.
@@ -8671,12 +8617,6 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         def set_session_title(self, _key, _title):
             raise ValueError("Title already in use")
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **kw):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     agent = _Agent()
     session = {
@@ -8948,8 +8888,6 @@ def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
     # No revision (legacy callers): full payload.
     resp = server.handle_request({"id": "3", "method": "pet.info", "params": {}})
     assert resp["result"]["spritesheetBase64"] == "A" * 1024
-
-
 
 
 def test_config_set_approval_mode_rejects_unknown_value():
@@ -9413,8 +9351,6 @@ def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     assert server.os.environ["HERMES_INTERACTIVE"] == "1"
 
 
-
-
 def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
     """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
     its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
@@ -9754,8 +9690,6 @@ def test_setup_readiness_unknown_profile_never_answers_for_launch_profile(monkey
         assert resp["result"]["profile"] == "ghost"
 
 
-
-
 def test_complete_slash_returns_plain_string_fields():
     # prompt_toolkit hands us FormattedText (a list subclass) for
     # display/display_meta; the TUI's CompletionItem contract is plain
@@ -9774,10 +9708,6 @@ def test_complete_slash_returns_plain_string_fields():
     for item in items:
         assert isinstance(item["display"], str), item
         assert isinstance(item["meta"], str), item
-
-
-
-
 
 
 def test_complete_slash_details_args():
@@ -9799,8 +9729,6 @@ def test_complete_slash_details_args():
     assert any(item["text"] == " thinking" for item in resp_root["result"]["items"])
     assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
-
-
 
 
 _SLASH_FILLER_COUNT = 60
@@ -10049,7 +9977,6 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
     assert agent.verbose_logging is True
 
 
-
 def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
     """A model switch against a lazy-created live session must apply to the
     real agent, not just process env, before the prompt is dispatched.
@@ -10090,7 +10017,6 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
         assert calls == [("start", "sid"), ("apply", "sid", agent, "new/model")]
     finally:
         server._sessions.pop("sid", None)
-
 
 
 def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
@@ -11596,12 +11522,6 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
                 "messages": [{"role": "assistant", "content": "ok"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     server._sessions["sid"] = _session(agent=_Agent())
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
@@ -11636,12 +11556,6 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
                 "messages": [{"role": "assistant", "content": "ok"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     fake_ctx = types.ModuleType("agent.context_references")
     fake_ctx.preprocess_context_references = (
@@ -12111,8 +12025,6 @@ def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     )
 
 
-
-
 def test_commands_catalog_has_no_duplicate_or_alias_colliding_names():
     """No command may be advertised twice, and no advertised command may
     shadow an alias of a different command (e.g. the historical /compact
@@ -12373,12 +12285,6 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
-
-
-
-
-
-
 
 
 def test_input_detect_drop_path_with_spaces(tmp_path):
@@ -13065,8 +12971,6 @@ def test_session_redirect_rejects_when_idle_without_agent(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
-
-
 def test_session_info_includes_session_title(monkeypatch):
     class _FakeDB:
         def get_session_title(self, key):
@@ -13223,12 +13127,6 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
                 "messages": [{"role": "assistant", "content": "agent reply"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     server._sessions["sid"] = _session(agent=_RacyAgent())
     session_ref["s"] = server._sessions["sid"]
@@ -13316,12 +13214,6 @@ def test_prompt_submit_merges_on_model_switch_marker(monkeypatch):
         from tui_gateway.server import _is_model_switch_marker
         return _is_model_switch_marker(entry)
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     # Test both: no prior marker, and prior marker present
     for label, prior_history in [
@@ -13415,12 +13307,6 @@ def test_prompt_submit_merges_on_personality_pivot_marker(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     server._sessions["sid"] = _session(
         agent=_PivotAgent(),
@@ -13485,12 +13371,6 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
                 "messages": [{"role": "assistant", "content": "ok"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **kw):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     corrupted = "hello[" + "~[[e" * 8
     server._sessions["sid"] = _session(agent=_Agent())
@@ -13526,12 +13406,6 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
                 "messages": [{"role": "assistant", "content": "reply"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     server._sessions["sid"] = _session(agent=_Agent())
     emits: list[tuple] = []
@@ -13581,12 +13455,6 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     def _apply_pending(_sid, session):
         with session["history_lock"]:
@@ -13636,12 +13504,6 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     original_history = [
         {"role": "user", "content": "first"},
@@ -13857,12 +13719,6 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     original_history = [
         {"role": "user", "content": "first"},
@@ -13957,12 +13813,6 @@ def test_prompt_submit_truncate_translates_display_prefix_ordinal(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     tip_history = [
         {"role": "user", "content": "post-compress A"},
@@ -14832,13 +14682,21 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     class _FakeThread:
         def __init__(self, target=None, daemon=None, **_thread_options):
             self.target = target
+            self._joined = False
             threads.append(self)
 
         def start(self):
             return None
 
+        def join(self, timeout=None):
+            self._joined = True
+
         def is_alive(self):
-            return True
+            # Win32 pipe readers become fakes too (shared module):
+            # communicate() joins them, then polls is_alive — "alive after
+            # join" would raise TimeoutExpired. Threads this test tracks
+            # are never joined, so they stay alive.
+            return not self._joined
 
     ready = threading.Event()
     ready.set()  # build finished...
@@ -15099,8 +14957,6 @@ def test_apply_pending_model_switch_runs_queued_pick(monkeypatch):
     # Idempotent: a second turn start with nothing queued is a no-op.
     server._apply_pending_model_switch("sid", session)
     assert calls == ["anthropic/claude-sonnet-4.6"]
-
-
 
 
 def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):
@@ -15996,8 +15852,6 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     # /sessions to it.
     assert captured["sessions_dir"] is not None
     assert str(captured["sessions_dir"]).endswith("sessions")
-
-
 
 
 # --------------------------------------------------------------------------
@@ -17200,8 +17054,6 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
             server._sessions.pop(key, None)
 
 
-
-
 # --------------------------------------------------------------------------
 # model.options — curated-list parity with `hermes model` and classic /model
 # --------------------------------------------------------------------------
@@ -17274,8 +17126,6 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "error" in resp
     assert resp["error"]["code"] == 5033
     assert "catalog blew up" in resp["error"]["message"]
-
-
 
 
 def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypatch):
@@ -17438,8 +17288,6 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
 # ---------------------------------------------------------------------------
 
 
-
-
 def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
     """The post-turn heap trim must run after the turn's pre-turn history snapshots are dropped:
     malloc_trim cannot return pages still referenced, so a retained snapshot of a large tool
@@ -17492,16 +17340,6 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         assert observed["alive_at_trim"] is False, "a pre-turn history snapshot survived to the heap trim"
     finally:
         server._sessions.pop("sid_trim", None)
-
-
-class _ImmediateThread:
-    """Runs the target callable synchronously so assertions can follow."""
-
-    def __init__(self, target=None, daemon=None, **_thread_options):
-        self._target = target
-
-    def start(self):
-        self._target()
 
 
 def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
@@ -17762,7 +17600,6 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
 
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
-
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
@@ -18239,8 +18076,6 @@ def test_browser_manage_use_swaps_the_profiles_browser_tools_for_new_agents(monk
     manage(action="use", enabled=False, profile="other")
     backend = lambda home: yaml.safe_load((home / "config.yaml").read_text())["browser"]["backend"]
     assert (backend(other_home), backend(get_hermes_home())) == ("off", "browser-use")
-
-
 
 
 def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
@@ -18824,8 +18659,6 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
 # ── config.get indicator normalization ───────────────────────────────
 
 
-
-
 def test_config_get_indicator_normalizes_casing_and_whitespace(monkeypatch):
     """Hand-edited config.yaml stays consistent with what the TUI shows.
 
@@ -18853,8 +18686,6 @@ def test_config_get_indicator_falls_back_to_default_for_unknown(monkeypatch):
     assert resp["result"] == {"value": "kaomoji"}
 
 
-
-
 # ── config.set indicator validation ──────────────────────────────────
 
 
@@ -18876,13 +18707,7 @@ def test_config_set_indicator_accepts_known_value(monkeypatch):
     assert written == {"display.tui_status_indicator": "emoji"}
 
 
-
-
-
-
 # ── reload.env ───────────────────────────────────────────────────────
-
-
 
 
 def test_reload_env_rpc_surfaces_errors(monkeypatch):
@@ -18934,8 +18759,6 @@ def test_make_agent_reads_nested_max_turns(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 200
 
 
-
-
 def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     _setup_make_agent_mocks(
         monkeypatch, {"agent": {"max_turns": 400}, "max_turns": 100}
@@ -18945,8 +18768,6 @@ def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 400
-
-
 
 
 def test_make_agent_uses_session_runtime_overrides(monkeypatch):
@@ -19035,16 +18856,12 @@ def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
     assert kwargs["max_iterations"] == 50
 
 
-
-
 def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": None, "max_turns": 40})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
     assert kwargs["max_iterations"] == 40
-
-
 
 
 def test_notification_poller_delivers_completion(monkeypatch):
@@ -19064,11 +18881,6 @@ def test_notification_poller_delivers_completion(monkeypatch):
                 "messages": [{"role": "assistant", "content": "ok"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-        def start(self):
-            self._target()
 
     sess = _session(agent=_Agent())
     server._sessions["sid_poll"] = sess
@@ -19132,11 +18944,6 @@ def test_notification_poller_skips_consumed(monkeypatch):
             turns.append(prompt)
             return {"final_response": "ok", "messages": []}
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-        def start(self):
-            self._target()
 
     sess = _session(agent=_Agent())
     server._sessions["sid_skip"] = sess
@@ -19327,7 +19134,6 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["started_at"] == datetime(2026, 1, 1, 12, 0, 0).timestamp()
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history
-
 
 
 def test_session_save_lands_in_the_sessions_own_profile_a_b_a(monkeypatch, tmp_path):
@@ -19922,8 +19728,6 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
         assert all("result" in r for r in results), results
     finally:
         server._sessions.pop("race-spawn", None)
-
-
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
@@ -20671,8 +20475,6 @@ def test_subscription_change_requires_tier_or_cancel():
     assert res["error"] == "invalid_request"
 
 
-
-
 def test_subscription_upgrade_echoes_status_and_idempotency(monkeypatch):
     import hermes_cli.nous_billing as nb
 
@@ -20773,8 +20575,6 @@ def test_get_usage_includes_active_subagents(monkeypatch):
     monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 4
-
-
 
 
 def test_get_usage_safe_when_active_count_raises(monkeypatch):
@@ -21507,8 +21307,6 @@ def test_build_persist_message_with_image_refs_appends_existing_paths(monkeypatc
     assert result == f"what is in this photo?\n@image:{img}"
 
 
-
-
 def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, tmp_path):
     """Only paths that still exist are persisted; a missing file must not
     inject a dangling @image ref into the transcript."""
@@ -21631,12 +21429,6 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
                 "messages": [{"role": "assistant", "content": "reply"}],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     server._sessions["sid"] = _session(agent=_Agent())
     try:
@@ -21658,8 +21450,6 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
-
-
 
 
 def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):
@@ -21981,12 +21771,6 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     class _StubDb:
         def __init__(self):
@@ -22101,12 +21885,6 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
 
     class _StubDb:
         def get_messages_as_conversation(self, *_args, **_kwargs):
@@ -22164,8 +21942,6 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         assert captured.get("reject_active_turn_lease") is True
     finally:
         server._sessions.pop("archive-trunc-sid", None)
-
-
 
 
 def test_prompt_submit_unmatched_row_id_refuses_even_with_ordinal(monkeypatch):

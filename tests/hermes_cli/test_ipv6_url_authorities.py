@@ -13,6 +13,7 @@ import pytest
 import uvicorn
 
 from hermes_cli import main_dashboard, web_server, web_server_lifecycle
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 def _stub_uvicorn(monkeypatch):
@@ -105,12 +106,6 @@ class TestBrowserOpenUrl:
 
         opened = []
 
-        class _ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self._target = target
-
-            def start(self):
-                self._target()
 
         monkeypatch.setattr(web_server_lifecycle.threading, "Thread", _ImmediateThread)
         monkeypatch.setattr(web_server_lifecycle.time, "sleep", lambda _s: None)

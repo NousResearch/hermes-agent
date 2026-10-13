@@ -12,6 +12,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 from hermes_state import SessionDB
 from tui_gateway import server
 
@@ -478,12 +479,6 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
-            self._target = lambda: target(*args, **(kwargs or {}))
-
-        def start(self):
-            self._target()
 
     session["agent"] = _Agent()
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)

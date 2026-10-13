@@ -19,11 +19,11 @@ from tools.voice_mode_transcript import (
     is_voice_stop_phrase,
     voice_stop_hint,
 )
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 class TestVoiceStopHint:
     """The 'Say "stop" to end the voice chat.' hint shown on voice-mode start."""
-
 
 
     def test_disabled_phrases_show_no_hint(self):
@@ -154,18 +154,6 @@ class TestContinuousLoopStopPhraseSignal:
         assert silent_limit == []
         assert delivered == []
         assert still_active is False
-
-
-
-
-class _ImmediateThread:
-    """Thread stand-in that runs the target synchronously on start()."""
-
-    def __init__(self, target):
-        self._target = target
-
-    def start(self):
-        self._target()
 
 
 class TestStopPhraseSurvivesHallucinationFilter:

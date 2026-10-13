@@ -11,14 +11,7 @@ import subprocess
 
 from hermes_state import SessionDB
 from tui_gateway import server
-
-
-class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 
 def _master_repo(path):

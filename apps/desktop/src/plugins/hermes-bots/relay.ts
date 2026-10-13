@@ -134,10 +134,31 @@ interface RelayAgentRow {
   title: string
 }
 
+/** An untitled default is the unused local registry profile. Any other profile,
+ * or Bot Mode metadata on default, is a bot that must remain relay-reachable. */
+function isRelayBotProfile(profile: RosterRow): boolean {
+  if (typeof profile?.name !== 'string' || !profile.name) {
+    return false
+  }
+
+  if (profile.name !== 'default') {
+    return true
+  }
+
+  const botMeta = profile.ui_meta?.['hermes-bots']
+
+  return Boolean(
+    (botMeta && typeof botMeta === 'object' && !Array.isArray(botMeta) && Object.keys(botMeta).length) ||
+      profile.display_name?.trim() ||
+      profile.description?.trim()
+  )
+}
+
 /** Remove the mandatory local registry source only when Electron identifies
- * one unambiguous REMOTE primary. Older or inconsistent route inventories
- * fail open to the prior peer set. Distinct remote peers always remain. */
-function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
+ * one unambiguous REMOTE primary and the local registry has no Bot. Older or
+ * inconsistent inventories, and failed local reads, fail open to the prior
+ * peer set. Distinct remote peers always remain. */
+async function relayEligibleRoutes(routes: ProfileRoute[]): Promise<ProfileRoute[]> {
   const routesByConnection = new Map<string, ProfileRoute[]>()
 
   for (const route of routes) {
@@ -184,6 +205,19 @@ function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
   }
 
   const localId = localGroups[0][0]
+  const localRoute = localGroups[0][1][0]
+
+  try {
+    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(localRoute, 'profiles.list', {
+      include_sessions: false
+    })
+
+    if (!Array.isArray(res?.profiles) || res.profiles.some(isRelayBotProfile)) {
+      return routes
+    }
+  } catch {
+    return routes
+  }
 
   return routes.filter(route => route.connectionId !== localId)
 }
@@ -251,7 +285,7 @@ async function relayConnections(): Promise<RelayConnection[]> {
 
   try {
     const rawRoutes = await host.profileRoutes()
-    const routes = relayEligibleRoutes(Array.isArray(rawRoutes) ? rawRoutes : [])
+    const routes = await relayEligibleRoutes(Array.isArray(rawRoutes) ? rawRoutes : [])
     const byConnection = new Map<string, ProfileRoute>()
 
     for (const route of routes) {

@@ -6099,7 +6099,7 @@
    "extra_body": {
     "thinking_config": {
      "includeThoughts": false,
-     "thinkingBudget": 0
+     "thinkingLevel": "low"
     }
    },
    "messages": [
@@ -11534,7 +11534,7 @@
      "google": {
       "thinking_config": {
        "include_thoughts": false,
-       "thinking_budget": 0
+       "thinking_level": "low"
       }
      }
     }

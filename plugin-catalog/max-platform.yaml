@@ -1,19 +1,33 @@
 name: max-platform
 title: Hermes MAX.ru Integration
 repo: https://github.com/Realmagnum/hermes-max-integration
-sha: 9b4df24c07933968742edb156283a75bd43a6aa8
-image: https://raw.githubusercontent.com/Realmagnum/hermes-max-integration/9b4df24c07933968742edb156283a75bd43a6aa8/assets/banner.jpg
-description: "MAX messenger (max.ru) gateway adapter for Hermes Agent with polling/webhook, streaming, interactive callbacks, media/voice forwarding, PNG tables, and Desktop sidebar."
+sha: 50c7a9a7c16b6207a079b7b883718dd863e9e951
+version: "2.11.0"
+requires_hermes: ">=0.21.4"
+image: https://raw.githubusercontent.com/Realmagnum/hermes-max-integration/50c7a9a7c16b6207a079b7b883718dd863e9e951/assets/banner.jpg
+docs_url: https://github.com/Realmagnum/hermes-max-integration/blob/50c7a9a7c16b6207a079b7b883718dd863e9e951/README.md
+description: >-
+  MAX messenger gateway with polling/webhook, streaming, interactive questions,
+  native attachments, Core voice transcription, optional PNG tables and a Desktop
+  sessions sidebar. Disclosure — sends bot credentials and message/file content
+  to the MAX Bot API (platform-api2.max.ru) and upload hosts; inbound downloads
+  use a host allowlist and SSRF protections. The bundled Russian Trusted Root CA
+  extends trust only for API/upload clients, not attachment downloads. Caches
+  media under HERMES_HOME. Webhook mode opens a listener and requires a secret
+  and public HTTPS; polling startup may remove existing webhook subscriptions.
+  Optional Playwright/Chromium rendering launches browser processes. A public
+  output hook adds filename captions to file-only MAX agent replies. No plugin
+  telemetry, self-update or Core source rewriting. The pinned Core dependency
+  audit reports PyJWT 2.13.0 advisories; see the pinned compatibility documentation.
 maintainer: Realmagnum
 tier: community
 category: platform
-requires_hermes: ">=0.20"
 platforms: []
-docs_url: https://github.com/Realmagnum/hermes-max-integration/blob/9b4df24c07933968742edb156283a75bd43a6aa8/README.md
-version: "2.10.2"
+readme: true
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks:
+    - transform_llm_output
   provides_middleware: []
   requires_env:
     - MAX_BOT_TOKEN

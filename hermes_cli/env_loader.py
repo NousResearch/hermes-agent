@@ -173,6 +173,31 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
         return _hydrate_profile_secret_sources(Path(hermes_home))
 
 
+def _seed_op_bootstrap_token(cfg: dict, local_env: dict) -> None:
+    """Seed the 1Password service-account token from the process environment
+    into a profile's private hydration mapping (#137458).
+
+    ``_is_global_env`` deliberately excludes credentials, so a token injected
+    via systemd ``EnvironmentFile``, ``op run`` or an exported shell would
+    otherwise be stripped here and every ``op://`` reference would fail
+    silently ("No accounts configured"). Seeding the configured token var —
+    instead of classifying it global — keeps the token inside the profile's
+    private mapping, and profile files (``.env``, ``.op.env``) keep precedence
+    via setdefault.
+    """
+    from agent.secret_sources.onepassword import _DEFAULT_TOKEN_ENV
+
+    op_cfg = cfg.get("onepassword") if isinstance(cfg, dict) else None
+    if not isinstance(op_cfg, dict) or not op_cfg.get("enabled"):
+        return
+    token_env = str(op_cfg.get("service_account_token_env") or _DEFAULT_TOKEN_ENV)
+    if token_env in local_env:
+        return
+    token_value = os.environ.get(token_env, "").strip()
+    if token_value:
+        local_env[token_env] = token_value
+
+
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
     home_key = str(home.resolve())
@@ -205,6 +230,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         if op_env.exists():
             for _name, _value in load_env_file(op_env).items():
                 local_env.setdefault(_name, _value)
+        _seed_op_bootstrap_token(cfg, local_env)
         local_env["HERMES_HOME"] = str(home)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:

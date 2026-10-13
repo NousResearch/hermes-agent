@@ -140,7 +140,7 @@ Alert or derive events from bounded attributes such as:
 
 ```text
 hermes.status = failed|unknown
-hermes.delivery_outcome = failed|not_configured
+hermes.delivery_outcome = failed|partial|not_configured
 hermes.error_class = auth_failed|rate_limited|timeout|network_error|
                      dispatch_failed|interrupted|empty_response|
                      invalid_config|unknown

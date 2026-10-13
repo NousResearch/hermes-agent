@@ -75,6 +75,7 @@ must never test `== "ok"` for "the user got their result":
 | `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
 | `error` | Agent run failed | `last_error` |
 | `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `delivery_partial` | Only with `cron.delivery.partial_ok: true`: the output reached at least one target and another target failed | `last_delivery_error` names the failed targets (`last_error` is `null`) |
 | `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
 
 ### Job Lifecycle States

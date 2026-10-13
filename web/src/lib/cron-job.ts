@@ -118,7 +118,9 @@ export function cronJobFormFromJob(job: CronJob): CronJobFormState {
  *  new status can never fall through to a neutral "unknown"-looking badge.
  *  In particular `delivery_failed` (agent run succeeded, output never reached
  *  the target) is amber, not green and not the same red as a run error, and
- *  its detail lives in `last_delivery_error` (last_error is null for it). */
+ *  its detail lives in `last_delivery_error` (last_error is null for it).
+ *  `delivery_partial` (opt-in via `cron.delivery.partial_ok`: some targets got
+ *  the output, others failed) is amber with the same detail source. */
 export type CronLastResultTone = "success" | "warning" | "destructive";
 
 export interface CronLastResult {
@@ -131,6 +133,7 @@ export interface CronLastResult {
 const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
   ok: "success",
   delivery_failed: "warning",
+  delivery_partial: "warning",
   blocked_config: "warning",
   error: "destructive",
 };
@@ -143,7 +146,7 @@ export function cronLastResult(
   const tone = CRON_LAST_RESULT_TONE[status] ?? "destructive";
   if (status === "ok") return { status, tone, detail: null };
   const detail =
-    status === "delivery_failed"
+    status === "delivery_failed" || status === "delivery_partial"
       ? asString(job.last_delivery_error).trim() || asString(job.last_error).trim()
       : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
   return { status, tone, detail: detail || null };

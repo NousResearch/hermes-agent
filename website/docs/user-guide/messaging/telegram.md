@@ -426,6 +426,44 @@ The proxy applies to both the main Telegram connection and the fallback IP trans
 
 If the fallback IP discovery path is unhealthy on your host, set `HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=true` to keep cold connect on the plain `api.telegram.org` path. You can also bound DNS-over-HTTPS fallback discovery with `HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT` in seconds; the default is `5`.
 
+## HTTP Read Timeout
+
+Set `platforms.telegram.extra.http_read_timeout` in the owning profile's
+`$HERMES_HOME/config.yaml` (for a named profile, its own profile directory):
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      http_read_timeout: 120.0
+```
+
+The optional setting is in **seconds**, defaults to **20.0**, and accepts a
+positive finite number (including fractional seconds). It controls HTTP **read
+inactivity**, not the total duration of a transfer: a download that keeps
+receiving data can take longer than this value.
+
+Precedence is the owning profile's nonblank legacy
+`HERMES_TELEGRAM_HTTP_READ_TIMEOUT` environment override, then that profile's
+YAML value, then 20 seconds. In a multiplexed gateway, a secondary profile reads
+only its own scoped override; it never inherits the launch profile's value.
+Missing, null, or blank values are unset. A selected value that is malformed,
+boolean, zero, negative, NaN, or infinite logs a warning and uses 20 seconds
+(an invalid explicit environment override does not fall through to YAML).
+Prefer YAML for new configuration; the existing environment variable remains
+supported for compatibility.
+
+The value applies to both gateway HTTP request clients, across direct, proxy,
+and fallback-IP routes, including Bot API requests and file downloads that use
+the request default. Explicit per-operation timeouts still take precedence;
+PTB's long-poll timeout handling remains unchanged. Connect, pool, write,
+media-write, and initialization timeouts are not changed. This setting does not
+configure standalone `hermes send` requests.
+
+The setting is read when the gateway builds its Telegram clients. Reloading
+YAML alone does not change existing clients: apply it on the next connection
+with the updated configuration, or restart the owning profile's gateway.
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.

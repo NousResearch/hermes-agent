@@ -28,7 +28,7 @@ _READY_TIMEOUT_S = 10.0
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_LIMIT = 2000
 
-_servers: dict[str, "LightpandaServer"] = {}
+_servers: "dict[str, LightpandaServer]" = {}
 _servers_lock = threading.Lock()
 
 
@@ -119,6 +119,7 @@ def _binary_supports_http_cache(binary: str) -> bool:
             [binary, "help"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
+            check=False,
         )
         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
     except Exception as e:

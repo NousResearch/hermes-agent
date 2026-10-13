@@ -35,7 +35,7 @@ import os
 import sys
 import threading
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -53,7 +53,6 @@ pytestmark = pytest.mark.skipif(
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GRID_SECONDS = 6 * 3600  # sparse idle ticks; due/pre-due ticks are added per occurrence
 HOLD_STEPS = 30  # long run: 30 x 30 s = 15 virtual minutes (> 5 min fire-claim TTL)
-UTC = timezone.utc
 
 
 @dataclasses.dataclass(frozen=True)

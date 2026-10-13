@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -73,7 +73,7 @@ def _entry_matches(e: Any, event: Optional[str], command: str) -> bool:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -641,7 +641,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
         mtime = os.path.getmtime(os.path.expanduser(path)) if path else None
     except OSError:
         return None
-    return None if mtime is None else datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return None if mtime is None else datetime.fromtimestamp(mtime, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def script_is_executable(command: str) -> bool:

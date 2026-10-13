@@ -90,6 +90,8 @@ export interface ConnectionTarget {
   connectUrl: null | string
   /** The vendor account of a managed target once a mint named one; empty before that and on MCP targets. */
   connectionId: string
+  /** The account name a managed target connects under; absent when the account has none. */
+  alias?: null | string
   /** Toolkit metadata on connector targets; empty on an MCP target. */
   tools: string[]
   /** Credentials an MCP install is still waiting for; empty on every other target. */
@@ -122,6 +124,12 @@ export interface ConnectionRequest {
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
+  /** A `manage_connections` display card: no targets, the directory with these slugs pinned. */
+  display?: ConnectorDisplay | null
+}
+
+export interface ConnectorDisplay {
+  suggested: string[]
 }
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
@@ -255,6 +263,7 @@ export function parseConnectionTarget(entry: ConnectionOperationTarget): Connect
     state: targetState(entry.state) ?? 'pending',
     tools: entry.tools ?? [],
     connectionId: entry.connection_id ?? '',
+    alias: entry.alias ?? null,
     requiredEnv: envFields(entry.required_env),
     instructions: entry.instructions ?? null,
     discoveryError: entry.discovery_error ?? null
@@ -275,12 +284,15 @@ export function normalizeConnectionRequest(
     .map(parseConnectionTarget)
     .filter((target): target is ConnectionTarget => target !== null)
 
-  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
+  const display = payload.display ? { suggested: payload.display.suggested } : null
+
+  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || (targets.length === 0 && !display)) {
     return null
   }
 
   return {
     deadlineAt: payload.deadline_at,
+    display,
     opId: payload.op_id,
     receivedAt: Date.now() / 1000,
     seq: payload.seq,
@@ -334,25 +346,27 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     state: live.state,
     tools: live.tools ?? target.tools,
     connectionId: live.connection_id ?? target.connectionId,
+    alias: live.alias === undefined ? target.alias : live.alias,
     requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv,
     instructions: live.instructions === undefined ? target.instructions : live.instructions,
     discoveryError: live.discovery_error === undefined ? target.discoveryError : live.discovery_error
   }
 
-  const same =
-    next.catalog === target.catalog &&
-    next.connectUrl === target.connectUrl &&
-    next.connectionId === target.connectionId &&
-    next.detail === target.detail &&
-    next.instructions === target.instructions &&
-    next.discoveryError === target.discoveryError &&
-    next.state === target.state &&
-    next.tools.length === target.tools.length &&
-    next.tools.every((tool, index) => tool === target.tools[index]) &&
-    sameEnvFields(next.requiredEnv, target.requiredEnv)
-
-  return same ? target : next
+  return sameTarget(next, target) ? target : next
 }
+
+const sameTarget = (next: ConnectionTarget, target: ConnectionTarget): boolean =>
+  next.catalog === target.catalog &&
+  next.connectUrl === target.connectUrl &&
+  next.connectionId === target.connectionId &&
+  next.alias === target.alias &&
+  next.detail === target.detail &&
+  next.instructions === target.instructions &&
+  next.discoveryError === target.discoveryError &&
+  next.state === target.state &&
+  next.tools.length === target.tools.length &&
+  next.tools.every((tool, index) => tool === target.tools[index]) &&
+  sameEnvFields(next.requiredEnv, target.requiredEnv)
 
 // Every frame carries a fresh array, so identity would churn the row and remount its open inputs.
 const sameEnvFields = (next: SetupField[], previous: SetupField[]): boolean =>

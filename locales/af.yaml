@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — standaardverwerking"
     choice_auto: "auto — vinnig vir die eerste sekondes van elke beurt"
     choice_cold: "cold — vinnig slegs vir die eerste beurt van 'n sessie"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6x prys)"
-    ultrafast_not_supported: "⚡ Ultrafast is slegs beskikbaar vir GPT-6 Astra (huidige model: `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, 6x prys"
+    ultrafast_not_supported: "⚡ Ultrafast is nie beskikbaar vir `{model}` op hierdie rekening of roete nie."
   footer:
     status: "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
     usage: "Gebruik: `/footer [on|off|status]`"
@@ -2279,6 +2279,7 @@ cli:
     failed: "Verbinding het misluk"
     authorized_no_tools: "Gemagtig. Gereedskap nie beskikbaar nie."
     connected: "Verbind"
+    named_account: "Hermes het hierdie {name}-rekening {alias} genoem. Hernoem dit enige tyd."
     waiting: "Wag…"
   editor:
     only_interactive: "Die eksterne redigeerder is slegs binne die interaktiewe CLI beskikbaar."
@@ -2660,7 +2661,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast is slegs beskikbaar vir GPT-6 Astra (huidige model: {model})."
+      ultrafast_not_supported: "(._.) Ultrafast is nie beskikbaar vir {model} op hierdie rekening of roete nie."
       usage: "Gebruik: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} gestel op {value} {scope}"

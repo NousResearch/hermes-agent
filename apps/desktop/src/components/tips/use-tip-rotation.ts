@@ -120,8 +120,7 @@ export function useTipRotation(copy: Translations['tips']) {
 
       // The engine-update campaign outranks the walk: it says something about
       // THIS machine. It shares the cooldown, so taking the moment still costs
-      // it the usual hours. (The local-setup offer left the rotation: it runs on
-      // events in store/local-setup-offer.ts, not on this clock.)
+      // it the usual hours.
       if (offerUpdate()) {
         return
       }

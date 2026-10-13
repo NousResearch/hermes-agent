@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -38,7 +37,7 @@ def auth_json_path():
 
 
 def _read_nous_provider_state() -> Optional[dict]:
-    """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
+    """The profile's Nous state, or None. A free-tier identity counts only while guests are allowed:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
     attached to a request.
 
@@ -52,29 +51,13 @@ def _read_nous_provider_state() -> Optional[dict]:
         nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
-        from hermes_cli.anon_auth import guest_enabled, is_guest_state
+        from hermes_cli.anon_auth import guest_allowed, is_guest_state
 
-        if is_guest_state(nous_provider) and not guest_enabled():
+        if is_guest_state(nous_provider) and not guest_allowed():
             return None
         return nous_provider
     except Exception:
         return None
-
-
-def _parse_timestamp(value: object) -> Optional[datetime]:
-    normalized = _clean(value)
-    if normalized is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized)
-    except ValueError:
-        return None
-    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
-    expires = _parse_timestamp(expires_at)
-    return expires is None or (expires - datetime.now(timezone.utc)).total_seconds() <= max(0, int(skew_seconds))
 
 
 def _read_user_token_override() -> Optional[str]:
@@ -94,14 +77,16 @@ def _read_user_token_override() -> Optional[str]:
 def peek_nous_access_token() -> Optional[str]:
     """Cheap token probe: env override or cached auth-store token, no expiry check and no network —
     availability scans must stay off the synchronous OAuth refresh path (:func:`read_nous_access_token`)."""
-    return _read_user_token_override() or _clean((_read_nous_provider_state() or {}).get("access_token"))
+    from hermes_cli.anon_auth import held_connectors_token
+
+    return _read_user_token_override() or _clean(held_connectors_token(_read_nous_provider_state()))
 
 
 def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override.
 
     A read: with no Nous identity there is no bearer and the answer is None. The free-tier identity
-    is created by the boot bootstrap (``hermes_cli.free_tier_bootstrap``), never on a token-read
+    is created by the boot bootstrap or the first hosted connector action, never on a token-read
     path (NS-845 Q1.2). A retired free-tier credential IS replaced here, once: that is the explicit
     dead-credential rule, shared with inference.
     """
@@ -110,9 +95,11 @@ def read_nous_access_token() -> Optional[str]:
     nous_provider = _read_nous_provider_state() or {}
     if not nous_provider:
         return None
+    from hermes_cli.anon_auth import held_connectors_token
+
+    if fresh_token := _clean(held_connectors_token(nous_provider, skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
+        return fresh_token
     cached_token = peek_nous_access_token()
-    if cached_token and not _access_token_is_expiring(nous_provider.get("expires_at"), _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
-        return cached_token
     try:
         from hermes_cli.auth import resolve_nous_access_token
 
@@ -138,7 +125,8 @@ def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dea
     if code == ANON_ACCOUNT_LOCKED:
         return None
     try:
-        if ensure_portal_identity(explicit=True) is None:
+        # The identity this replaces served connectors and managed tools: the connectors gate applies.
+        if ensure_portal_identity(explicit=True, for_connectors=True) is None:
             return None
         return _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS))
     except Exception as exc:

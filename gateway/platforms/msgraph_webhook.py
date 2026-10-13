@@ -167,14 +167,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         return web.json_response({
             "status": "ok", "platform": self.platform.value, "webhook_path": self._webhook_path,
             "accepted": self._accepted_count, "duplicates": self._duplicate_count})
 
-    async def _handle_validation(self, request: "web.Request") -> "web.Response":
+    async def _handle_validation(self, request: web.Request) -> web.Response:
         """Graph subscription validation handshake: echo ``validationToken`` verbatim as text/plain. Bare GETs
         are rejected so the endpoint can't be enumerated."""
         if not self._source_ip_allowed(request):
@@ -203,7 +203,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._schedule_notification(notification, self._build_message_event(notification, receipt_key))
         return "accepted"
 
-    async def _handle_notification(self, request: "web.Request") -> "web.Response":
+    async def _handle_notification(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         # Graph never sends validationToken on POST, but tolerate clients replaying it in-band.
@@ -224,7 +224,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(status=403)
         return web.Response(status=400)
 
-    async def _read_notifications(self, request: "web.Request") -> tuple[int, list]:
+    async def _read_notifications(self, request: web.Request) -> tuple[int, list]:
         """Read and validate the POST body; returns (error_status, []) or (0, notifications)."""
         try:
             content_length = request.content_length
@@ -245,7 +245,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notifications = body.get("value") if isinstance(body, dict) else None
         return (0, notifications) if isinstance(notifications, list) else (400, [])
 
-    def _source_ip_allowed(self, request: "web.Request") -> bool:
+    def _source_ip_allowed(self, request: web.Request) -> bool:
         """Loopback-only binds may omit ``allowed_source_cidrs`` (local proxies, dev tunnels);
         network-accessible binds fail closed without one."""
         if self._source_allowlist_required_but_missing():

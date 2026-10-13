@@ -41,7 +41,7 @@ _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 class RemoteRegistration:
     """Child-side twin of ``PluginRegistration``: ``dispose()`` releases the Hermes-side entry."""
 
-    def __init__(self, runtime: "HostRuntime", handle_id: int, kind: str, key: str):
+    def __init__(self, runtime: HostRuntime, handle_id: int, kind: str, key: str):
         self._runtime, self._id, self.kind, self.key = runtime, handle_id, kind, key
         self._disposed = False
 
@@ -59,7 +59,7 @@ class RemoteRegistration:
 class RemoteFacade:
     """``ctx.state`` / ``ctx.llm`` / ...: every method call runs on the Hermes-side facade."""
 
-    def __init__(self, runtime: "HostRuntime", plugin_key: str, name: str):
+    def __init__(self, runtime: HostRuntime, plugin_key: str, name: str):
         self._runtime, self._plugin_key, self._name = runtime, plugin_key, name
         self._methods: dict[str, bool] = {}  # method name -> is a coroutine function in Hermes
 
@@ -86,7 +86,7 @@ class RemotePluginContext:
     """What ``register(ctx)`` receives inside the host. Mirrors ``PluginContext``'s public surface as
     announced by Hermes at load, so ``hasattr(ctx, "register_x")`` answers the same as in-process."""
 
-    def __init__(self, runtime: "HostRuntime", plugin_key: str, info: dict[str, Any]):
+    def __init__(self, runtime: HostRuntime, plugin_key: str, info: dict[str, Any]):
         self._runtime, self._plugin_key = runtime, plugin_key
         self._methods = set(info.get("ctx_methods") or ())
         self._facades: dict[str, RemoteFacade] = {}

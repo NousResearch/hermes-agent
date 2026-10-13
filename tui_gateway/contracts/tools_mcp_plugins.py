@@ -772,3 +772,36 @@ class PluginsManageResult(Result):
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
        doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
            "or remove a user install.")
+
+
+class PluginCatalogLookupStatus(WireEnum):
+    found = "found"
+    invalid_name = "invalid_name"
+    unknown = "unknown"
+    unavailable = "unavailable"
+
+
+class PluginCatalogLookupParams(ProfileParams):
+    name: str
+
+
+class PluginCatalogLookupEntry(Result):
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+
+    name: str
+    repo: str
+    sha: str
+    subdir: str
+
+
+class PluginCatalogLookupResult(Result):
+    """``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;
+    ``unavailable`` means neither the live catalog nor the in-tree fallback could be read."""
+
+    status: PluginCatalogLookupStatus
+    entry: PluginCatalogLookupEntry | None = None
+
+
+method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
+       doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
+           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")

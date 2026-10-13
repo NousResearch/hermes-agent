@@ -208,6 +208,7 @@ describe('onboarding run', () => {
 
   it('releases the boot hold when the user takes the way out while the start is still pending', async () => {
     let exit: () => void = () => undefined
+
     const intro = {
       failed: vi.fn(),
       opened: vi.fn(),

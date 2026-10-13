@@ -212,14 +212,14 @@ class TestBuildPersistedMessage:
         assert "..." in msg  # has_more indicator
 
     def test_message_conditions_the_do_not_rerequest_promise(self):
-        """#126351: the pointer must not promise the file forever — spill files are
-        pruned after the session retention window, and the notice says what to do."""
+        """#126351: the pointer must not promise the file forever, and the recovery line
+        must never tell the model to blindly re-run the producing tool — that call may
+        have been a mutation whose effect already landed."""
         msg = _build_persisted_message(
             preview="preview", has_more=True, original_size=50_000,
             file_path="/tmp/hermes-results/test123.txt")
-        assert "retention" in msg
-        assert "pruned" in msg
-        assert "re-run the original tool" in msg
+        assert "re-run the original tool" not in msg
+        assert "inspect the current state before retrying" in msg
 
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
@@ -563,6 +563,17 @@ class TestSpillover:
         monkeypatch.setattr(
             hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": 0}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
+        # YAML ``.inf`` / ``.nan`` parse as floats; int() on them raises and used to
+        # silently kill every sweep after the once-per-home flag was set.
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": float("inf")}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": float("nan")}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 
     def test_cleanup_missing_dir_returns_zero(self):

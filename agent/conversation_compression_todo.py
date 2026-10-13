@@ -7,29 +7,56 @@ is stale and is stripped before the fresh one is folded in.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Compaction re-injects the todo list verbatim but prunes skills to markers, so
 # couple them: tell the model to reload pruned skills BEFORE acting on tasks.
 # Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
+# One rendered todo item opener: ``<indent>- <marker> <id>. `` (see TodoStore.format_for_injection).
+_TASK_LINE_RE = re.compile(r"^(?:  )*- (\[.\]) \S")
+
+
+def _todo_snapshot_task_lines_end(lines: list[str]) -> int:
+    """Return how many leading *lines* belong to rendered task items.
+    ``TodoStore.format_for_injection`` renders each item as ``<indent>- <marker> <id>. <content> (<status>)``.
+    Content may span lines (including blank ones), so an item runs from its marker line to the first line ending
+    in the status suffix that matches its marker. Anything that does not open an item ends the task list."""
+    from tools.todo_tool import _STATUS_MARKERS
+    count = 0
+    while count < len(lines):
+        match = _TASK_LINE_RE.match(lines[count])
+        status = next((s for s, m in _STATUS_MARKERS.items() if m == match.group(1)), None) if match else None
+        if status is None:
+            return count
+        suffix = f" ({status})"
+        last = next((i for i in range(count, len(lines)) if lines[i].endswith(suffix)), None)
+        if last is None:
+            return count
+        count = last + 1
+    return count
 
 
 def _cut_todo_snapshot_block(text: str) -> str:
     """Remove the todo-snapshot block from *text*, keeping any text after it.
-    The block is ``TODO_INJECTION_HEADER`` plus its newline-joined task lines, optionally followed by the
-    pruned-skill reload paragraph; it ends at the first blank line that starts other text. The pre-call
-    consecutive-user repair can join a later user turn after a blank line onto a row carrying a snapshot,
-    and that turn must survive the strip (#137652)."""
+    The block is ``TODO_INJECTION_HEADER`` plus its rendered task items (whose content may itself contain blank
+    lines), optionally followed by the pruned-skill reload paragraph. The pre-call consecutive-user repair can
+    join a later user turn after a blank line onto a row carrying a snapshot, and that turn must survive the
+    strip (#137652)."""
     from tools.todo_tool import TODO_INJECTION_HEADER
     idx = text.find(TODO_INJECTION_HEADER)
     if idx == -1:
         return text
-    head, rest = text[:idx].rstrip(), text[idx + len(TODO_INJECTION_HEADER):]
-    end = rest.find("\n\n")
-    if end != -1 and rest[end + 2:].startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER):
-        end = rest.find("\n\n", end + 2)
-    tail = _cut_todo_snapshot_block(rest[end:].strip("\n")) if end != -1 else ""
+    head = text[:idx].rstrip()
+    lines = text[idx + len(TODO_INJECTION_HEADER):].lstrip("\n").split("\n")
+    lines = lines[_todo_snapshot_task_lines_end(lines):]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER):
+        blank = next((i for i, line in enumerate(lines) if not line.strip()), len(lines))
+        lines = lines[blank:]
+    tail = _cut_todo_snapshot_block("\n".join(lines).strip("\n"))
     return f"{head}\n\n{tail}" if head and tail else head or tail
 
 

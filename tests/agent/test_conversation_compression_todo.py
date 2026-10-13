@@ -92,3 +92,27 @@ def test_list_part_keeps_text_after_snapshot():
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
     content = [{"type": "text", "text": f"words\n\n{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)\n\n{SECOND}"}, image]
     assert _strip_stale_todo_snapshot(content) == [{"type": "text", "text": f"words\n\n{SECOND}"}, image]
+
+
+MULTILINE = "prepare release notes\n\ninclude migration steps"
+
+
+def test_multiline_todo_keeps_one_copy_across_two_folds_and_merged_turn():
+    agent = _agent({"id": "1", "content": MULTILINE, "status": "pending"})
+    rows = [{"role": "user", "content": "first request"}]
+    _fold_todo_snapshot(agent, rows)
+    rows.append({"role": "user", "content": SECOND})
+    rows, _ = _merge_consecutive_users(rows)
+
+    _fold_todo_snapshot(agent, rows)
+    _fold_todo_snapshot(agent, rows)
+
+    content = rows[-1]["content"]
+    assert content == f"first request\n\n{SECOND}\n\n{TODO_INJECTION_HEADER}\n- [ ] 1. {MULTILINE} (pending)"
+    assert content.count("include migration steps") == 1
+
+
+def test_strip_multiline_nested_tasks_and_notice_keep_later_turn():
+    content = (f"a\n\n{TODO_INJECTION_HEADER}\n- [>] p. parent\n\nmore (in_progress)\n  - [ ] c. child\n\nx (pending)"
+               f"\n\n{NOTICE}\n\n{SECOND}")
+    assert _strip_stale_todo_snapshot(content) == f"a\n\n{SECOND}"

@@ -1,0 +1,24 @@
+name: kumiho-memory
+repo: https://github.com/KumihoIO/kumiho-plugins
+sha: f7e2442abe474619ca8806b5c6e55ae84899ccf6
+subdir: hermes
+title: Kumiho Memory
+description: >-
+  Recall and save decisions, preferences and facts in your Kumiho Cloud workspace.
+  Portable Agent Plugins v1 package with hosted OAuth MCP and six skills.
+  Disclosure: queries and approved captures are sent to mcp.kumiho.cloud;
+  Hermes owns OAuth credentials and asks before write-capable calls. Optional
+  local backfill preparation reads only user-selected history files and writes
+  review packets; no automatic transcript uploads, telemetry or background jobs.
+maintainer: KumihoIO
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/KumihoIO/kumiho-plugins/tree/f7e2442abe474619ca8806b5c6e55ae84899ccf6/hermes
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

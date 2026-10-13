@@ -152,8 +152,14 @@ def test_expanded_submit_row_is_rewritten_on_the_session_that_owns_it(monkeypatc
             server._start_inflight_turn(session, "look at @notes.md")
         assert server._persist_session_row_for_submit("rid", session, "look at @notes.md", None) is None
 
+        staged = session["_submit_user_row"]
+        before_version = staged.get("message_version_uid")
+        stored = db.get_messages(child)[-1]
+        assert before_version and before_version == stored["message_version_uid"]
         expanded = "look at @notes.md\n\n<file notes.md>todo</file>"
         server._adopt_submit_user_row(session, agent, expanded, "look at @notes.md")
+        assert staged["message_version_uid"] != before_version
+        assert staged["message_version_uid"] == db.get_messages(child)[-1]["message_version_uid"]
         assert [r[1] for r in _rows(db, child) if r[0] == "user" and "notes.md" in r[1]] == [expanded], (
             f"the rewritten row must live in the continuation {child}: {_rows(db, child)}")
     finally:
@@ -174,6 +180,8 @@ def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
     sid, key, session, _agent, child = _rotated_session(monkeypatch, db)
     try:
         server._append_model_switch_marker(session, model="test-model-2", provider="test-provider")
+        entry = session["history"][-1]
+        assert entry.get("message_version_uid") == db.get_messages(child)[-1]["message_version_uid"]
         prefix = server._MODEL_SWITCH_MARKER_PREFIX
         assert [r for r in _full_rows(db, child) if prefix in r[1]], f"marker not in the live session: {_full_rows(db, child)}"
         assert not [r for r in _full_rows(db, key) if prefix in r[1]], (

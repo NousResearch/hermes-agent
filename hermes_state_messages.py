@@ -25,6 +25,8 @@ from hermes_state_common import (
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
+from hermes_state_versions import MESSAGE_VERSION_UID, message_version_column, prepare_replacement_versions, versioned_insert_params
+
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
@@ -33,8 +35,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
-                   tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   tool_call_uid, message_version_uid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -62,7 +64,7 @@ _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND 
 _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
                               + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
-_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
+_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid, message_version_uid FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
@@ -292,7 +294,7 @@ class SessionMessagesMixin:
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
             message_uid_or_none(msg), _absorbed_uids_json(msg),
-            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
+            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg), msg.get(MESSAGE_VERSION_UID))
 
     @staticmethod
     def _stamp_tool_call_uids(msg: dict[str, Any], tool_calls: Any, batch_index: dict[str, str]) -> None:
@@ -395,12 +397,13 @@ class SessionMessagesMixin:
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
-        message_uid: Optional[str] = None) -> int:
+        message_uid: Optional[str] = None, message_version_uid: Optional[str] = None) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates. ``message_uid``: the id a caller
         that keeps the message as a live dict already stamped on it (``stamp_message_uid``); minted when
-        absent, but then only the row carries it."""
+        absent, but then only the row carries it. ``message_version_uid`` similarly accepts an explicit
+        copy version or a fresh caller-minted version; omit it for a newly authored version."""
         msg = dict(locals())  # every keyword above is a message-dict field of the same name
         # Encode outside the write txn (display metadata first: log-order parity).
         msg["display_metadata"] = self._encode_display_metadata(display_metadata)
@@ -491,7 +494,7 @@ class SessionMessagesMixin:
             return inserted
         return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
-    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")
+    _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp", MESSAGE_VERSION_UID)
 
     def _execute_transcript_write(self, fn, messages: list[dict[str, Any]], **kwargs):
         """``_execute_write(fn)`` for callbacks that stamp row state onto the caller's *messages* (every
@@ -753,7 +756,7 @@ class SessionMessagesMixin:
             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
 
     def _insert_message_rows(self, conn, session_id: str, messages: list[dict[str, Any]], *,
-                             prune_checkpoints: bool = True) -> tuple[int, int]:
+                             prune_checkpoints: bool = True, copy_versions: bool = False) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
         A caller that re-archives some rows afterwards passes ``prune_checkpoints=False`` and prunes once they
@@ -770,8 +773,8 @@ class SessionMessagesMixin:
             # the live dict never disagree. Tool calls get their per-occurrence ids the same way.
             stamp_message_uid(msg)
             self._stamp_tool_call_uids(msg, tool_calls, batch_tool_index)
-            cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
-                session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+            params = self._message_row_params(session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant")
+            cur = conn.execute(_INSERT_MESSAGE_SQL, versioned_insert_params(conn, params, _MESSAGE_WRITE_COLUMNS, copy_version=copy_versions, source_row_id=msg.get("_row_id")))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
             # timestamp (notably mid-turn steers) may be carried through several compaction generations; if
             # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
@@ -840,6 +843,7 @@ class SessionMessagesMixin:
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
+            prepare_replacement_versions(conn, messages, lambda msg: self._serialized_message_row(session_id, msg, 0.0))
             kept = kept_tool_calls = 0
             if archive_dropped:
                 # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
@@ -853,7 +857,7 @@ class SessionMessagesMixin:
                                  (session_id, live[kept][0]))
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:], copy_versions=True)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
                          (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
         self._execute_transcript_write(_do, messages)
@@ -882,6 +886,8 @@ class SessionMessagesMixin:
             msg["_row_id"] = row[0]
             if row[5]:
                 msg[MESSAGE_UID] = row[5]
+            if row[6]:
+                msg[MESSAGE_VERSION_UID] = row[6]
             kept += 1
         return kept
 
@@ -964,7 +970,7 @@ class SessionMessagesMixin:
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
-        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages, copy_versions=True)
         if unseen:
             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
                 conn,
@@ -1056,7 +1062,7 @@ class SessionMessagesMixin:
             # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
             # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
             self._carry_parent_timestamps(conn, session_id, compacted_messages)
-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages, copy_versions=True)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
@@ -1125,7 +1131,7 @@ class SessionMessagesMixin:
             "AND role = 'user' AND active = 1 AND content IS ?",
             (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
 
-    def set_user_message_content(self, session_id: str, row_id: int, content: Any) -> int:
+    def set_user_message_content(self, session_id: str, row_id: int, content: Any, *, message_version_uid: str | None = None) -> int:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
         time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
         expansion, native image parts): the early row must show what the transcript will replay, not the
@@ -1133,8 +1139,9 @@ class SessionMessagesMixin:
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
         return self._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), row_id, session_id))
+            "UPDATE messages SET content = ?, message_version_uid = COALESCE(?, message_version_uid) "
+            "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+            (self._encode_content(content), message_version_uid, row_id, session_id))
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
@@ -1513,7 +1520,7 @@ class SessionMessagesMixin:
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency)."""
         return self._read_all(
-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
+            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS}, {message_version_column(self)} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
 

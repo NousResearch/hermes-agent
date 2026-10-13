@@ -1,5 +1,5 @@
-"""Durable message-identity columns for SessionDB (schema v31): the codec between the live identity keys
-(``agent.message_metadata``) and the ``message_uid`` / ``absorbed_message_uids`` / ``tool_call_uids`` /
+"""Durable message-identity columns for SessionDB: the codec between the live identity keys
+(``agent.message_metadata``) and the ``message_uid`` / ``message_version_uid`` / ``absorbed_message_uids`` / ``tool_call_uids`` /
 ``tool_call_uid`` columns, shared by the transcript writers, restore, and transcript repair."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
 
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, MESSAGE_VERSION_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from agent.message_sanitization import coalesce_tool_call_id
 from hermes_state_common import _json_or
 
@@ -78,6 +78,8 @@ def _restore_row_identity(row: Any, msg: MutableMapping[str, Any]) -> None:
     """A stored row's uid and tool-call uids onto its live dict (the stored value wins). A live per-occurrence
     list that already holds the stored uid is kept: it is a fold's union the row has not been rewritten
     with yet, and replacing it with the stored single uid would strip the later occurrence."""
+    if MESSAGE_VERSION_UID in row.keys() and row[MESSAGE_VERSION_UID]:
+        msg[MESSAGE_VERSION_UID] = row[MESSAGE_VERSION_UID]
     if row[MESSAGE_UID]:
         msg[MESSAGE_UID] = row[MESSAGE_UID]
     if row["tool_call_uids"] and (stored := _uid_map(row["tool_call_uids"])):

@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, MESSAGE_VERSION_UID, copy_identity_fields, message_uid_or_none)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
@@ -22,7 +22,7 @@ from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 # which logical message (or which call occurrence) the row is. ``tool_call_uids`` IS payload: it follows
 # ``tool_calls`` (an assistant merge unions both), so it is rewritten with the row.
 _NON_PAYLOAD_COLUMNS = frozenset(
-    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uid"})
+    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, MESSAGE_VERSION_UID, "tool_call_uid"})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
 # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
 # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
@@ -75,6 +75,7 @@ def stamp_inserted_row_snapshots(conn: sqlite3.Connection, session_id: str, mess
             f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})", (session_id, *chunk)
         ).fetchall():
             by_id[int(row["id"])][DB_ROW_SNAPSHOT] = transcript_row_snapshot(row)
+            by_id[int(row["id"])][MESSAGE_VERSION_UID] = row[MESSAGE_VERSION_UID]
 
 
 def is_content_blank(content: Any) -> bool:

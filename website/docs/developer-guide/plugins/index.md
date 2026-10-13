@@ -1535,6 +1535,36 @@ def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
 ```
 
+### Native Discord interaction commands with explicit privacy
+
+Use `ctx.register_discord_interaction_command()` when a native Discord application command needs a verified actor/context and must choose its response route explicitly. This API is separate from `register_command()`; legacy text slash commands, `!` commands, and other plugins keep their current dispatch path.
+
+```python
+from hermes_cli.plugin_interactions import DiscordInteractionReply
+
+async def _handle_profile(raw_args, interaction):
+    # `interaction.user.id` is Discord-authenticated identity, not application authorization.
+    # Keep the plugin's owner/permission check here, on the server.
+    if interaction.user.id not in configured_owner_ids():
+        return DiscordInteractionReply.private("You are not allowed to view this profile.")
+    profile = await load_profile(interaction.user.id)
+    return [
+        DiscordInteractionReply.private(profile),
+        DiscordInteractionReply.private("Profile loaded."),  # ephemeral followup
+    ]
+
+def register(ctx):
+    ctx.register_discord_interaction_command(
+        "profile", _handle_profile, description="View your private profile",
+    )
+```
+
+The `interaction` context provides `id`, `user` (`id`, `username`, `display_name`), `server_id` (or `None` in DMs), `channel_id`, and `command_name`. Hermes supplies it only after the Discord slash authorization gate succeeds and validates the IDs. That gate verifies/admit the transport actor; it is **not** the plugin's owner check or application-level authorization.
+
+Handlers return `DiscordInteractionReply.private(text)` and/or `DiscordInteractionReply.public(text)`, either one reply or a list. Private output uses only the interaction's ephemeral original response/followups. Public output uses only the normal channel transport for shared narration. Replies must be explicitly routed; plain strings are rejected. Hermes establishes an ephemeral defer before invoking the handler; if that cannot be established, the handler is not run. Private replies are delivered before any explicitly public output; if private delivery fails, remaining public output is suppressed. Hermes never sends a private reply publicly and then deletes it.
+
+Use `private()` for personal data, admin/help/status output, confirmations, and errors. Use `public()` only for content intentionally shared in the RPG channel. Never treat an ephemeral reply or the verified Discord identity as authorization: perform the plugin's owner/policy check server-side for each protected operation.
+
 ### Dispatch tools from slash commands
 
 Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.

@@ -60,6 +60,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id,
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugin_interaction_api import PluginInteractionRegistrationMixin, PluginInteractionRegistryMixin
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(PluginInteractionRegistrationMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -670,6 +671,7 @@ class PluginContext:
         }
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
+
 
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
@@ -1150,7 +1152,7 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
-class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+class PluginManager(PluginInteractionRegistryMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
@@ -2184,8 +2186,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
-
-
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
 
 

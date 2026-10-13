@@ -1258,13 +1258,14 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_slash_context import DiscordSlashInteractionContextMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+                     DiscordSlashInteractionContextMixin, DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -4526,11 +4527,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         if self._username_resolved_ids:
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {len(self._username_resolved_ids)} resolved ID(s)")
 
-    def format_message(self, content: str) -> str:
-        """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
-        if not content:
-            return content
-        return convert_table_to_bullets(content)
 
     async def _defer_unless_expired(self, interaction: discord.Interaction, warn_fmt: str, *warn_args) -> bool:
         """Ephemeral defer(); False (after a warning) when the interaction token already expired
@@ -4681,6 +4677,11 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 _auto_register(plugin_name, plugin_desc, plugin_args_hint)
         except Exception as e:
             logger.warning("Discord auto-register from plugin commands failed: %s", e)
+        try:
+            from plugins.platforms.discord.plugin_interactions import register_plugin_interaction_commands
+            register_plugin_interaction_commands(self, tree, discord, already_registered, slot_cap)
+        except Exception:
+            logger.exception("Discord interaction command registration failed")
         self._register_skill_group(tree)
         if dropped_over_cap:
             # One over-limit command makes Discord reject the entire sync (error 30032).
@@ -4839,13 +4840,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         )
         return (len(self._skill_entries), self._skill_group_hidden_count)
 
-    def _interaction_guild_id(self, interaction: discord.Interaction) -> Optional[str]:
-        """Resolve the guild id of a slash interaction (mirrors the message path)."""
-        guild_id = getattr(interaction, "guild_id", None)
-        if guild_id is None:
-            guild = getattr(getattr(interaction, "channel", None), "guild", None)
-            guild_id = getattr(guild, "id", None)
-        return str(guild_id) if guild_id else None
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""

@@ -162,6 +162,15 @@ export const SETTINGS_MANIFEST = {
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
+    downloadsSaveDirect: {
+      subpage: 'desktop',
+      keywords: ['download', 'downloads', 'save', 'dialog', 'preview pane', 'file', 'agent'],
+      available: () => Boolean(window.hermesDesktop?.downloadSaveDirect),
+      copy: t => ({
+        label: t.settings.config.downloadsSaveDirectTitle,
+        description: t.settings.config.downloadsSaveDirectDesc
+      })
+    },
     warmBotBackends: {
       subpage: 'desktop',
       keywords: ['pool', 'backends', 'bots', 'warm', 'concurrency', 'limit'],

@@ -771,6 +771,9 @@ export const zhHantSettings = {
       minimizeToTrayDesc:
         '最小化視窗或關閉主視窗時，將其隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。透過系統匣選單中的「結束 Hermes」或 Cmd+Q 結束。預設關閉，僅適用於此裝置。',
       minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
+      downloadsSaveDirectTitle: '儲存下載時不再詢問',
+      downloadsSaveDirectDesc:
+        '預覽面板中的下載會直接儲存到「下載」資料夾，不再彈出系統儲存對話框——無人值守的代理執行無法應答該對話框。不會覆蓋現有檔案，重複下載會另存為「名稱 (1)」。預設關閉，僅適用於此裝置。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',

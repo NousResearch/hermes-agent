@@ -395,6 +395,12 @@ declare global {
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
         onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
       }
+      /** Device-local: preview-pane downloads skip the OS save dialog (#135441). */
+      downloadSaveDirect?: {
+        get: () => Promise<boolean>
+        set: (on: boolean) => Promise<boolean>
+        onChanged: (callback: (enabled: boolean) => void) => () => void
+      }
       setDisableF12?: (blocked: boolean) => void
       setF12ShortcutActive?: (active: boolean) => void
       onF12Shortcut?: (

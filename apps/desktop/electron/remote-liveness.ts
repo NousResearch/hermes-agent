@@ -134,7 +134,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       // retire a healthy forward (#131765). A fresh socket makes the TCP
       // handshake itself the liveness test.
       await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS, freshSocket: true })
-      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS })    }
+    }
   }
 
   try {

@@ -115,7 +115,43 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
+    for generation in _hermes_generation_site_packages():
+        if not any(_same_path(generation, existing) for existing in result):
+            result.append(generation)
     return result
+
+
+def _hermes_generation_site_packages() -> list[Path]:
+    """Site-packages of EVERY dependency generation under the install, not just the
+    selected one (cached on ``local._hermes_generation_site_packages``).
+
+    Why it exists: ownership is otherwise proven by *identity with the generation
+    persisted in ``facts.json``*. When PM swaps generations, a live process still
+    carries the previous generation's PYTHONPATH -- which is no longer "the selected
+    one" and so SURVIVES sanitization, leaking into every child Python. Observed: a
+    superseded generation's site-packages passes through whole, as does the checkout's
+    canonical venv; inside a child of a different Python version the leak breaks its
+    boot. Nothing under ``<hermes_root>/installs/*/environments/*/venv`` or the
+    checkout venv is a user path -- provenance is the Hermes root itself, not the
+    selection of the moment.
+    """
+    local = _state()
+    if local._hermes_generation_site_packages is None:
+        from pm.environments import site_packages
+        result: list[Path] = []
+        from hermes_constants import get_default_hermes_root
+        for venv in sorted(Path(get_default_hermes_root())
+                           .glob("installs/*/environments/*/venv")):
+            sp = site_packages(venv)
+            if sp.is_dir():
+                result.append(sp)
+        repo_venv = Path(__file__).resolve().parents[2] / "venv"
+        if repo_venv.is_dir():
+            sp = site_packages(repo_venv)
+            if sp.is_dir():
+                result.append(sp)
+        local._hermes_generation_site_packages = result
+    return list(local._hermes_generation_site_packages)
 
 
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:

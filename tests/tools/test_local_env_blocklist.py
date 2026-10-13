@@ -656,6 +656,29 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     assert base["VIRTUAL_ENV"] == str(user_venv)
 
 
+def test_superseded_generation_site_packages_stays_hermes_owned(tmp_path, monkeypatch):
+    """Ownership survives a generation swap: a live process keeps carrying the
+    PYTHONPATH of the generation selected at ITS launch, which after a swap is no
+    longer the generation persisted in facts.json. Provenance -- the path lives under
+    ``<hermes_root>/installs`` -- not momentary selection, decides ownership."""
+    from pm.environments import site_packages
+
+    root = tmp_path / "hermes-root"
+    old_gen = root / "installs" / "gen-a" / "environments" / "env1" / "venv"
+    old_gen.mkdir(parents=True)
+    (old_gen / "pyvenv.cfg").write_text("version = 3.11\n", encoding="utf-8")
+    old_site = site_packages(old_gen)
+    old_site.mkdir(parents=True)
+    user_site = tmp_path / "user-libs" / "site-packages"
+    user_site.mkdir(parents=True)
+
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(local, "_hermes_generation_site_packages", None, raising=False)
+    env = {"PYTHONPATH": os.pathsep.join([str(old_site), str(user_site)])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == str(user_site)
+
+
 @pytest.mark.parametrize("existing,expected", [
     (["/usr/bin", "/bin"], ["/opt/hermes/bin", "/usr/bin", "/bin"]),
     (["/usr/bin", "/opt/hermes/bin"], ["/usr/bin", "/opt/hermes/bin"]),

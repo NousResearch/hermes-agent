@@ -770,6 +770,7 @@ _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
+_hermes_generation_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
 
 
 # --- Login-shell init files ---

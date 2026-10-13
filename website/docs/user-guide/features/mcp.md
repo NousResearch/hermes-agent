@@ -806,6 +806,27 @@ For stdio servers, Hermes does not blindly pass your full shell environment.
 
 Only explicitly configured `env` plus a safe baseline are passed through. This reduces accidental secret leakage.
 
+### Approval on untrusted servers
+
+With `trust: untrusted`, every call to a tool the server does not annotate as
+`readOnlyHint: true` asks for approval first. When a server leaves a read tool
+unannotated, or one write tool is safe to run unattended, name exactly that tool
+under `approval` instead of trusting the whole server:
+
+```yaml
+mcp_servers:
+  mail:
+    url: "https://mcp.example.com/mcp"
+    trust: untrusted
+    approval:
+      read_only_tools: [list_messages]
+      auto_approve_tools: [create_draft]
+```
+
+Every other write tool (`send_message`, `delete_message`, ...) still asks. Names
+must match exactly; globs and names the server did not report are ignored with a
+warning. See [Exact approval policy](../../reference/mcp-config-reference.md#exact-approval-policy).
+
 ### Config-level exposure control
 
 The new filtering support is also a security control:

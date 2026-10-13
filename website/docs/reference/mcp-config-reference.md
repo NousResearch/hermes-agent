@@ -69,6 +69,7 @@ mcp_servers:
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) A portable package can request `untrusted` for its own server in `plugin.json` (see [Portable Agent Plugins](../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages)); a `config.yaml` entry with the same name always wins |
+| `approval` | mapping | both | Exact per-tool policy of the profile whose `config.yaml` sets it (see [Exact approval policy](#exact-approval-policy)). `read_only_tools` applies at every trust level; `auto_approve_tools` only matters on an `untrusted` server. Not settable by plugin packages |
 
 ## Environment variable references
 
@@ -115,6 +116,40 @@ Any other `${...}` reference falls through to the env-var lookup above.
 | `exclude` | string or list | Blacklist server-native MCP tools. Same exact-name / glob semantics as `include` |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
+
+## Exact approval policy
+
+On a `trust: untrusted` server, two `approval` lists let you correct or relax the gate for single,
+audited tools without trusting the whole server:
+
+```yaml
+mcp_servers:
+  mail:
+    url: "https://mcp.example.com/mcp"
+    trust: untrusted
+    approval:
+      read_only_tools: [list_messages]   # server omits readOnlyHint, but the tool only reads
+      auto_approve_tools: [create_draft] # writes, but may run without asking
+```
+
+| Key | Meaning |
+|---|---|
+| `read_only_tools` | Treat these tools as `readOnlyHint: true`, at every trust level: no approval prompt on an `untrusted` server, and the call is transparently retried after a transport session expiry (on a `full` server too) |
+| `auto_approve_tools` | Run these write-capable tools without an approval prompt. No effect on a `full` server, which never prompts |
+
+Every other write-capable tool on the server (`send_message`, `delete_message`, ...) still asks.
+Both keys take a list of exact tool names as the server reports them (not the `mcp__server__tool`
+prefixed name). Anything else fails closed: a scalar string, a glob such as `create_*`, a name the
+server did not report at discovery, a misspelled key under `approval` or an `approval` that is not a
+mapping is ignored with a warning. The names are matched once per loaded
+config, so a tool that appears later through `tools/list_changed` is not approved until the config is
+reloaded; removing a name and reloading revokes it.
+
+Both lists are the policy of the profile whose `config.yaml` sets them, never a property of the
+connection. When multiplexed profiles share one connection, each profile's calls are judged by its own
+`trust` and `approval` alone: another profile's `read_only_tools` or `auto_approve_tools` never skips
+a prompt for you. The lists are re-read only when the config is reloaded ([`/reload-mcp`](#reloading-config)
+or a restart); a `tools/list_changed` refresh keeps using the names accepted at load time.
 
 ## Filtering semantics
 

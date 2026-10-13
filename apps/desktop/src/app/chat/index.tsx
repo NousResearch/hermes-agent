@@ -52,7 +52,7 @@ import {
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isMainWindow, isSecondaryWindow, isWatchWindow } from '@/store/windows'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -802,7 +802,9 @@ const ChatViewContent = memo(function ChatViewContent({
               onCancel={haltRun}
               onDismissError={onDismissError}
               onRestoreToMessage={onRestoreToMessage}
+              readOnly={isWatchWindow()}
               scrollProfile={modelOptionsProfile || activeGatewayProfile}
+              secondaryWindow={isSecondaryWindow()}
               sessionId={activeSessionId}
               sessionKey={threadKey}
             />

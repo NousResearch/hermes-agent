@@ -47,6 +47,9 @@ interface ThreadProps {
   sessionId?: string | null
   sessionKey?: string | null
   scrollProfile?: string
+  /** Shell-provided window flags (web-safe defaults = primary editable window). */
+  secondaryWindow?: boolean
+  readOnly?: boolean
 }
 
 // memo'd on purpose, and load-bearing for session-switch cost. ChatView
@@ -68,7 +71,9 @@ export const Thread = memo(function Thread({
   onRestoreToMessage,
   sessionId = null,
   scrollProfile,
-  sessionKey
+  sessionKey,
+  secondaryWindow = false,
+  readOnly = false
 }: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -153,10 +158,11 @@ export const Thread = memo(function Thread({
         <UserMessage
           onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
           onRequestRestoreConfirm={hasRestoreToMessage ? requestRestoreConfirm : undefined}
+          readOnly={readOnly}
         />
       )
     }),
-    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
+    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, readOnly, requestRestoreConfirm]
   )
 
   // Core's splash belongs to a fresh draft; a session that exists but has
@@ -190,6 +196,7 @@ export const Thread = memo(function Thread({
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
           scrollProfile={scrollProfile}
+          secondaryWindow={secondaryWindow}
           sessionId={sessionId}
           sessionKey={sessionKey}
           sessionLoading={loading === 'session'}

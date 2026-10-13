@@ -13,7 +13,7 @@ export interface PluginInstallRequest {
   /** Curated-catalog pick: install the agent half by catalog name so the
    *  backend pins the reviewed SHA and records sidecar provenance. */
   catalogName?: string
-  /** The catalog pin (display only — the backend resolves it itself). */
+  /** Reviewed catalog revision, also used for the locally installed Desktop half. */
   sha?: string
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */

@@ -32,6 +32,8 @@ import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
+vi.mock('@/contrib/runtime-loader', () => ({ discoverRuntimePlugins: vi.fn(async () => []) }))
+
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
@@ -195,7 +197,9 @@ describe('Unified package desktop half on a local backend', () => {
     installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'pkg' })
     vi.stubGlobal('hermesDesktop', { installDesktopPlugin, probePluginRepo, reconcileDesktopPlugins })
     renderFlow()
-    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/pkg' }))
+    act(() =>
+      openPluginInstallRequest({ repo: 'https://github.com/example/pkg', catalogName: 'pkg', sha: 'a'.repeat(40) })
+    )
     expect(await screen.findByText('This package includes')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     await waitFor(() =>
@@ -224,7 +228,12 @@ describe('Unified package desktop half on a local backend', () => {
     // the separate clone remains the only door for its desktop half.
     await installHybrid('remote')
 
-    expect(installDesktopPlugin).toHaveBeenCalledWith({ identifier: 'https://github.com/example/pkg', force: false })
+    expect(installDesktopPlugin).toHaveBeenCalledWith({
+      identifier: 'https://github.com/example/pkg',
+      force: false,
+      ref: 'a'.repeat(40),
+      catalogName: 'pkg'
+    })
     expect(reconcileDesktopPlugins).not.toHaveBeenCalled()
   })
 

@@ -80,6 +80,8 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "nebius-token-factory": HermesOverlay(extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
                                           base_url_override="https://api.tokenfactory.nebius.com/v1",
                                           base_url_env_var="NEBIUS_BASE_URL"),
+    "tokenrhythm": HermesOverlay(extra_env_vars=("TOKENRHYTHM_API_KEY",), base_url_override="https://tokenrhythm.studio/v1",
+                                 base_url_env_var="TOKENRHYTHM_BASE_URL"),
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
@@ -131,6 +133,7 @@ _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
+    "tokenrhythm": ("token-rhythm",),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
     # Local OpenAI-compatible servers route through the generic "custom" provider,
     # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
@@ -146,6 +149,7 @@ _LABEL_OVERRIDES: dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
+    "tokenrhythm": "TokenRhythm",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

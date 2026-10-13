@@ -641,6 +641,26 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _git_worktree_for_branch(repo_root: Path, branch_name: str) -> Optional[Path]:
+    """Return the worktree already holding a local branch, if any."""
+    result = _git(repo_root, "worktree", "list", "--porcelain", timeout=30)
+    if result.returncode != 0:
+        return None
+
+    branch_line = f"branch refs/heads/{branch_name}"
+    for entry in result.stdout.split("\n\n"):
+        lines = entry.splitlines()
+        if branch_line not in lines:
+            continue
+        worktree_line = next(
+            (line for line in lines if line.startswith("worktree ")),
+            None,
+        )
+        if worktree_line is not None:
+            return Path(worktree_line.removeprefix("worktree "))
+    return None
+
+
 def _git_abs_path(path: Path, flag: str) -> Optional[Path]:
     out = _kb._git_out(path, "rev-parse", "--path-format=absolute", flag)
     return Path(out).expanduser().resolve(strict=False) if out else None
@@ -694,6 +714,12 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
+        worktree = _git_worktree_for_branch(repo_root, branch_name)
+        if worktree is not None:
+            raise RuntimeError(
+                f"branch {branch_name} is already checked out at {worktree}; "
+                "release that card's worktree or set a different branch_name"
+            )
         args = ["worktree", "add", str(target), branch_name]
     else:
         args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]

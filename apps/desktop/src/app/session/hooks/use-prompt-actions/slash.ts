@@ -206,10 +206,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (
-      rawCommand: string,
-      options?: { hidden?: boolean; sessionId?: string; recordInput?: boolean; typed?: boolean }
-    ) => {
+    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -407,14 +404,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
-          // or after a reload.
-          await submitPromptText(message, {
-            sessionId,
-            storedSessionId,
-            displayText,
-            ...(options?.hidden && { displayKind: 'hidden' as const })
-          })
+          await submitPromptText(message, { sessionId, storedSessionId, displayText })
         }
 
         try {

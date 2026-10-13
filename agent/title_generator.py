@@ -19,6 +19,7 @@ from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
+from agent.title_placeholders import is_rejected_placeholder
 
 logger = logging.getLogger(__name__)
 
@@ -561,12 +562,21 @@ def generate_title(
 
 
 def _has_upgraded_title(session_db, session_id: str) -> bool:
-    """True when the session already carries an ``llm``/``user`` title (or the check fails)."""
+    """True when the session already carries a real ``llm``/``user`` title (or the check fails).
+
+    A ``llm`` title that is a §4-rejected STT placeholder is NOT a name: it reached the row as a
+    title only because it was the machine's fallback. Treating it as terminal strands the session
+    on that note forever, so the predicate is recomputed on every call and re-arms the lane —
+    nothing is persisted here. A manual ``/title`` is untouched unless it literally is a placeholder.
+    """
     try:
         source_fn = getattr(session_db, "get_session_title_source", None)
         if source_fn is not None:
-            return source_fn(session_id) not in (None, "derived")
-        return bool(session_db.get_session_title(session_id))
+            if source_fn(session_id) in (None, "derived"):
+                return False
+        elif not session_db.get_session_title(session_id):
+            return False
+        return not is_rejected_placeholder(session_db.get_session_title(session_id))
     except Exception:
         return True
 

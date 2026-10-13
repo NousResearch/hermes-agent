@@ -19,7 +19,7 @@ def _runner():
     runner._record_model_switch = AsyncMock(return_value=None)  # None = config write succeeded
     runner._model_switch_confirmation = AsyncMock(return_value="switched")
     runner._apply_reasoning_selection = (
-        lambda session_key, platform_key, value, persist_global=False:
+        lambda session_key, platform_key, value, persist_global=False, source=None:
         calls.setdefault("applied", (session_key, platform_key, value, persist_global)) and "effort set")
     return runner, calls
 

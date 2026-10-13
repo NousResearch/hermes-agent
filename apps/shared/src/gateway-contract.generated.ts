@@ -3155,6 +3155,11 @@ export interface ConnectionRequestPayload {
   timeout_seconds: number
   targets: ConnectionOperationTarget[]
   tool_call_id?: string | null
+  display?: ConnectionDisplay | null
+}
+/** ``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested. */
+export interface ConnectionDisplay {
+  suggested: string[]
 }
 /** ``tool_progress._normalize_todo_state``: the authoritative todo snapshot. */
 export interface TodoState {

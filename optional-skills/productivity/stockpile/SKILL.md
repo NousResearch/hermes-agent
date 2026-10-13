@@ -12,7 +12,7 @@ required_environment_variables:
     prompt: Stockpile Marketplace API Key
     help: "Generate your API key from the Agent Hub at https://stockpile.market/agent-hub or via store settings."
   - name: STOCKPILE_API_URL
-    prompt: Stockpile API Base URL (default https://api.stockpile.market)
+    prompt: Stockpile API Base URL (default https://stockpile.market/api)
     help: "API endpoint for Stockpile Marketplace."
 metadata:
   hermes:
@@ -40,12 +40,12 @@ Trigger phrases:
 
 - **Python 3.10+** and **`uv` / `uvx`** (available natively in Hermes Agent).
 - **Stockpile Account & API Key**:
-  1. Navigate to [https://stockpile.market/agent-hub](https://stockpile.market/agent-hub).
+  1. Navigate to [https://stockpile.market/agents?tab=api](https://stockpile.market/agents?tab=api).
   2. Create or link your agent wallet / merchant account to generate a `STOCKPILE_API_KEY`.
   3. Export to your environment or `${HERMES_HOME:-~/.hermes}/.env`:
      ```bash
      STOCKPILE_API_KEY=stk_live_xxxxxxxxxxxxxxxxxxxxxxxx
-     STOCKPILE_API_URL=https://api.stockpile.market
+     STOCKPILE_API_URL=https://stockpile.market/api
      ```
 
 ## Registering Stockpile with Hermes Native MCP

@@ -158,13 +158,9 @@ def _room_link_run_storage_durable() -> bool:
 def _record_peer_run_authority(claims, *, body=None, db_path=None):
     from gateway.platforms.api_server_room_grants import _record_invitation, _retirement_only
     if _bound_server is None:
-        if _retirement_only(claims):
-            raise ValueError("retirement requires retained target authority")
-        # Embedded callers expose no peer execution store; retain their metadata-only reservation.
-        from gateway import hosted_rooms
-        hosted_rooms.reserve_peer_room(db_path or hosted_rooms.default_db_path(), claims=claims,
-                                       expires_at=_grant_expiry(claims))
-        return
+        # A reservation is what POST /v1/runs treats as permission to execute. Do not
+        # write one until the run store can record the room lineage that gates it.
+        raise ValueError("room invitation requires the gateway run store")
     _record_invitation(_bound_server, claims, body or {}, db_path=db_path)
 
 
@@ -464,9 +460,9 @@ def _(rid, params: dict, service) -> dict:
 @_room_method("groups.stop", code=5116, service_code=4115)
 def _(rid, params: dict, service) -> dict:
     """Durably cancel queued or running work for one hosted room."""
-    count = service.stop_room(
+    cancelled, stopping = service.stop_room(
         str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or "desktop-stop"))
-    return _ok(rid, {"cancelled": count})
+    return _ok(rid, {"cancelled": cancelled, "stopping": stopping})
 
 
 @_room_method("groups.approve", code=5119, service_code=4115)

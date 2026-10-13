@@ -1660,6 +1660,7 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+  stopping: number
 }
 export interface GroupsApproveParams {
   profile?: string | null

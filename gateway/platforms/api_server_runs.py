@@ -375,7 +375,10 @@ def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
         except (AttributeError, TypeError):
             request._hermes_room_run_authority = authority
         scope = room_run_scope(claims)
-        self._run_idempotency_store.observe_room_authority(scope, authority, namespace=room_namespace(claims), claims=claims)
+        # A refused lineage must not fall through to reservation currency. observe()
+        # records the watermark only when this grant is allowed to admit.
+        request._hermes_room_lineage_rejected = not self._run_idempotency_store.observe_room_authority(
+            scope, authority, namespace=room_namespace(claims), claims=claims)
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -405,6 +408,8 @@ def _reserve_room_run(self, request, *args, **kwargs):
     from gateway.platforms.api_server_room_grants import _room_grant_claims
     with hosted_rooms._transaction(hosted_rooms.default_db_path(), immediate=True) as conn:
         def authorized():
+            if getattr(request, "_hermes_room_lineage_rejected", False):
+                return False
             try:
                 _room_grant_claims(self, request, permission=_room_permission_for(request), conn=conn)
                 return True

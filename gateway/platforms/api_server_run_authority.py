@@ -37,7 +37,12 @@ def initialize(conn):
         home_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL, origin_home TEXT NOT NULL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_namespaces (
         namespace_key TEXT PRIMARY KEY, authority_key TEXT NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS run_room_fenced_attempts (
+        authority_key TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+        run_id TEXT NOT NULL, status_json TEXT NOT NULL,
+        PRIMARY KEY(authority_key, idempotency_key))""")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempts ON run_idempotency(room_authority_key, room_authority_epoch)")
+    conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempt_identity ON run_idempotency(room_authority_key, idempotency_key)")
 
 
 def canonical(conn, authority):
@@ -156,12 +161,12 @@ def compact(conn, authority_key, *, now=None):
     if current is None:
         return False
     now = time.time() if now is None else now
-    rows = conn.execute("""SELECT scope,idempotency_key,status_json,stop_requested,
+    rows = conn.execute("""SELECT scope,idempotency_key,run_id,status_json,stop_requested,
         fingerprint,owner_pid,owner_started,updated_at,retention_until,acknowledged_at
         FROM run_idempotency WHERE room_authority_key=? AND (room_authority_epoch<? OR room_authority_epoch<=?)""",
         (authority_key, current[0], current[2])).fetchall()
     pruned = False
-    for scope, key, encoded, stopped, fingerprint, owner_pid, owner_started, updated, horizon, acknowledged in rows:
+    for scope, key, run_id, encoded, stopped, fingerprint, owner_pid, owner_started, updated, horizon, acknowledged in rows:
         try:
             status = json.loads(encoded)
         except (ValueError, TypeError):
@@ -174,6 +179,11 @@ def compact(conn, authority_key, *, now=None):
                       and fingerprint == "" and not owner_pid and not owner_started)
             if not absent and not terminal_observation_expired(updated, horizon, acknowledged, now):
                 continue
+            # The row's scope includes the retired epoch. Keep the generation key so a
+            # successor grant cannot reserve the same Idempotency-Key as a new run.
+            conn.execute("""INSERT OR IGNORE INTO run_room_fenced_attempts(
+                authority_key, idempotency_key, run_id, status_json) VALUES(?,?,?,?)""",
+                (authority_key, key, run_id, encoded))
             conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
             pruned = True
     return pruned

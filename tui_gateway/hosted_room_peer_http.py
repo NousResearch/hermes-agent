@@ -41,6 +41,9 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
+# A Stop body is a receipt only once the peer has left the runnable states. queued/running
+# means the generation is still going; storing it would suppress the next Stop.
+_STOP_RECEIPT_STATES = _TERMINAL_RUN_STATES | frozenset({"stopping"})
 _RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
@@ -419,7 +422,7 @@ class PeerRunsHTTPClient:
                 body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
                 headers={"Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                 room_grant=grant)
-            if not str(result.get("run_id") or "") or result.get("status") not in _KNOWN_RUN_STATES:
+            if not str(result.get("run_id") or "") or result.get("status") not in _STOP_RECEIPT_STATES:
                 raise PeerRunsHTTPError("peer returned no exact cancellation receipt", retryable=True, ambiguous=True)
         except PeerRunsHTTPError as exc:
             delay = self._next_poll_delay(backoff)

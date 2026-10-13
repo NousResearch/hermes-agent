@@ -307,6 +307,7 @@ class GroupsStopParams(RoomParams):
 
 class GroupsStopResult(Result):
     cancelled: int
+    stopping: int
 
 
 method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,

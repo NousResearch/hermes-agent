@@ -1,8 +1,13 @@
 """Target-authorized succession links homes without merging unrelated room origins."""
+import asyncio
+import time
+from unittest.mock import MagicMock
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.hosted_room_peer import decode_room_grant
+from gateway import hosted_rooms
+from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
 from gateway.platforms.api_server_run_authority import room_authority, room_run_scope
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from tests.gateway.test_api_server_room_cancellation import _adapter, _headers, _invitation
@@ -197,3 +202,181 @@ def test_legacy_watermark_migrates_without_guessing_opaque_receipt_identity(tmp_
         assert store.lookup('opaque-old', 'cancelled', '')[0] == 'reused'
     finally:
         store.close()
+
+
+def _member_claims(**changes):
+    claims = {
+        'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'home',
+        'authority_epoch': 1, 'member_id': 'member-1', 'target_install_id': 'install-1',
+        'target_profile': 'default'}
+    claims.update(changes)
+    return claims
+
+
+def test_successor_scope_replays_and_stops_the_original_generation(tmp_path):
+    """A new epoch is not a new Idempotency-Key. The live row stays the only run."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        created, record = store.reserve(
+            scope, 'room:task-1:1', 'fp-1', 'run-live', {'status': 'running'}, room_authority=authority)
+        assert created == 'created' and record['run_id'] == 'run-live'
+        successor = _member_claims(authority_epoch=2)
+        assert store.observe_room_authority(
+            room_run_scope(successor), room_authority(successor), claims=successor)
+        outcome, replayed = store.reserve(
+            room_run_scope(successor), 'room:task-1:1', 'fp-2', 'run-other', {'status': 'running'},
+            room_authority=room_authority(successor))
+        assert outcome == 'reused' and replayed['run_id'] == 'run-live'
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+        stopped, stopped_record = store.reserve(
+            room_run_scope(successor), 'room:task-1:1', 'fp-2', 'run-stop',
+            {'status': 'cancelled', 'admission_cancelled': True}, cancel_if_missing=True,
+            room_authority=room_authority(successor))
+        assert stopped == 'reused' and stopped_record['run_id'] == 'run-live'
+        assert store._conn.execute(
+            'SELECT run_id, stop_requested FROM run_idempotency').fetchone() == ('run-live', 1)
+    finally:
+        store.close()
+
+
+def test_moved_home_replays_the_predecessor_generation(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp-1', 'run-live', {'status': 'running'},
+            room_authority=authority)[0] == 'created'
+        moved = _member_claims(home_install_id='successor', authority_gateway_id='successor', authority_epoch=2)
+        assert store.observe_room_authority(
+            room_run_scope(moved), room_authority(moved), authority, 'home', claims=moved)
+        outcome, replayed = store.reserve(
+            room_run_scope(moved), 'room:task-1:1', 'fp-moved', 'run-other', {'status': 'running'},
+            room_authority=room_authority(moved))
+        assert outcome == 'reused' and replayed['run_id'] == 'run-live'
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+        unrelated = _member_claims(home_install_id='other-home', member_id='member-b')
+        assert not store.observe_room_authority(
+            room_run_scope(unrelated), room_authority(unrelated), claims=unrelated)
+    finally:
+        store.close()
+
+
+def test_compacted_absent_barrier_blocks_the_successor_key(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        claims = _member_claims()
+        scope, authority = room_run_scope(claims), room_authority(claims)
+        assert store.observe_room_authority(scope, authority, claims=claims)
+        assert store.reserve(
+            scope, 'room:task-1:1', '', 'barrier-run',
+            {'status': 'cancelled', 'admission_cancelled': True}, cancel_if_missing=True,
+            room_authority=authority)[0] == 'created'
+        successor = _member_claims(authority_epoch=2)
+        assert store.observe_room_authority(
+            room_run_scope(successor), room_authority(successor), claims=successor)
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 0
+        assert store._conn.execute('SELECT run_id FROM run_room_fenced_attempts').fetchone()[0] == 'barrier-run'
+        outcome, replayed = store.reserve(
+            room_run_scope(successor), 'room:task-1:1', 'fp-new', 'run-new', {'status': 'queued'},
+            room_authority=room_authority(successor))
+        assert outcome == 'reused' and replayed['run_id'] == 'barrier-run'
+        assert store.reserve(
+            scope, 'room:task-1:1', '', 'late', {'status': 'queued'},
+            room_authority=authority) == ('authority_retired', None)
+    finally:
+        store.close()
+
+
+def _finishing_agent():
+    agent = MagicMock()
+    agent.run_conversation.return_value = {'final_response': 'once', 'messages': []}
+    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+    return agent
+
+
+async def _await_runs(adapter):
+    tasks = tuple(adapter._active_run_tasks.values())
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks), 10)
+
+
+@pytest.mark.asyncio
+async def test_http_successor_replays_the_same_run(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path / 'runs.db')
+    create = MagicMock(return_value=_finishing_agent())
+    monkeypatch.setattr(adapter, '_create_agent', create)
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            grant, body = await _invitation(cli)
+            first = await cli.post('/v1/runs', headers=_headers(grant), json=body)
+            assert first.status == 202, await first.text()
+            run_id = (await first.json())['run_id']
+            await _await_runs(adapter)
+            invited = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'home',
+                'authority_epoch': 2, 'member_id': 'member-1'})
+            assert invited.status == 201, await invited.text()
+            grant2 = (await invited.json())['grant']
+            replay_body = {'input': body['input'], 'hosted_room_dispatch': {
+                **body['hosted_room_dispatch'], 'authority_epoch': 2}}
+            second = await cli.post('/v1/runs', headers={**_headers(grant2), 'Idempotency-Key': 'room:task-1:1'},
+                                    json=replay_body)
+            assert second.status == 202, await second.text()
+            payload = await second.json()
+            assert payload['run_id'] == run_id and payload['replayed'] is True
+            assert create.call_count == 1
+    finally:
+        adapter._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+async def test_current_reservation_cannot_run_a_rejected_home(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path / 'runs.db')
+    create = MagicMock(side_effect=AssertionError('executed'))
+    monkeypatch.setattr(adapter, '_create_agent', create)
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            _grant, body = await _invitation(cli)
+            refused = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'other-home', 'authority_gateway_id': 'home',
+                'authority_epoch': 1, 'member_id': 'member-b'})
+            assert refused.status == 400
+            dispatch = body['hosted_room_dispatch']
+            claims = {
+                'room_id': 'room-1', 'home_install_id': 'other-home', 'authority_gateway_id': 'home',
+                'authority_epoch': 1, 'member_id': 'member-b', 'target_profile': 'default'}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=claims, expires_at=time.time() + 3600)
+            assert hosted_rooms.peer_room_grant_is_current(hosted_rooms.default_db_path(), claims=claims)
+            grant = issue_room_grant(
+                adapter._room_grant_secret(), grant_id='other-home', room_id='room-1',
+                home_install_id='other-home', authority_gateway_id='home', authority_epoch=1,
+                member_id='member-b', target_install_id=dispatch['target_install_id'],
+                target_profile='default', execution_policy_digest=dispatch['execution_policy_digest'],
+                permissions=('dispatch', 'status', 'stop'))
+            other = {**dispatch, 'home_install_id': 'other-home', 'member_id': 'member-b', 'task_id': 'task-b'}
+            response = await cli.post(
+                '/v1/runs', headers={'Authorization': f'HermesRoom {grant}', 'Idempotency-Key': 'room:task-b:1'},
+                json={'input': body['input'], 'hosted_room_dispatch': other})
+            assert response.status == 409, await response.text()
+            assert (await response.json())['error']['code'] == 'run_history_retired'
+            assert not create.called
+    finally:
+        adapter._run_idempotency_store.close()
+
+
+def test_unbound_invitation_does_not_reserve_peer_room(monkeypatch):
+    import tui_gateway.methods_groups as groups
+    monkeypatch.setattr(groups, '_bound_server', None)
+
+    def reserved(*_args, **_kwargs):
+        raise AssertionError('reserved')
+
+    monkeypatch.setattr(hosted_rooms, 'reserve_peer_room', reserved)
+    with pytest.raises(ValueError, match='gateway run store'):
+        groups._record_peer_run_authority({'room_id': 'room-1'})

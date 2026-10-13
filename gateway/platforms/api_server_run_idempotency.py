@@ -146,6 +146,42 @@ class RunIdempotencyStore:
                 self._conn.rollback()
                 raise
 
+    def _lineage_attempt(self, room_authority, key):
+        """Find this generation under the canonical room authority, across epoch/home scopes.
+
+        Returns ``("row", scope, record_row)``, ``("fence", None, fenced_row)``, or ``(None, None, None)``.
+        ``record_row`` matches ``_SELECT_BY_KEY`` (fingerprint, run_id, status_json, owners, updated_at).
+        """
+        if room_authority is None:
+            return None, None, None
+        from gateway.platforms.api_server_run_authority import canonical
+        authority_key = canonical(self._conn, room_authority)[0]
+        found = self._conn.execute(
+            """SELECT scope, fingerprint, run_id, status_json, owner_pid, owner_started, updated_at
+               FROM run_idempotency WHERE room_authority_key=? AND idempotency_key=?""",
+            (authority_key, key)).fetchone()
+        if found is not None:
+            return "row", found[0], found[1:]
+        fenced = self._conn.execute(
+            """SELECT run_id, status_json FROM run_room_fenced_attempts
+               WHERE authority_key=? AND idempotency_key=?""",
+            (authority_key, key)).fetchone()
+        if fenced is not None:
+            return "fence", None, fenced
+        return None, None, None
+
+    def _replay_lineage(self, kind, lineage_scope, payload, key, *, cancel_if_missing):
+        """Replay or stop a generation already owned by this authority lineage."""
+        if kind == "fence":
+            return "reused", _record(payload[0], payload[1], 0, 0, time.time())
+        if cancel_if_missing:
+            self._conn.execute(
+                "UPDATE run_idempotency SET stop_requested=1 WHERE scope=? AND idempotency_key=?",
+                (lineage_scope, key))
+        # The successor grant's body hash differs because its authority fields changed.
+        # The idempotency key is still this generation: return the stored run.
+        return "reused", _record(*payload[1:])
+
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
                 cancel_if_missing: bool = False, room_authority=None, _authorize=None):
@@ -176,6 +212,12 @@ class RunIdempotencyStore:
             if _authorize is not None and not _authorize():
                 self._conn.commit()
                 return "authority_retired", None
+            kind, lineage_scope, payload = self._lineage_attempt(room_authority, key)
+            if kind is not None:
+                outcome, record = self._replay_lineage(
+                    kind, lineage_scope, payload, key, cancel_if_missing=cancel_if_missing)
+                self._conn.commit()
+                return outcome, record
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -202,9 +244,12 @@ class RunIdempotencyStore:
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             from gateway.platforms.api_server_run_authority import superseded
             retired = row is None and superseded(self._conn, room_authority)
+            lineage = None if row is not None or retired else self._lineage_attempt(room_authority, key)
             self._conn.commit()
         if retired:
             return "authority_retired", None
+        if row is None and lineage is not None and lineage[0] is not None:
+            return self._replay_lineage(lineage[0], lineage[1], lineage[2], key, cancel_if_missing=False)
         return ("missing", None) if row is None else _outcome(row, fingerprint)
 
     def accepts_room_authority(self, authority, previous=None, namespace=None, claims=None, previous_home=None):

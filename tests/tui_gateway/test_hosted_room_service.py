@@ -336,7 +336,8 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     )
     service.runtime = SimpleNamespace(cancel=cancel, wakeup=lambda: None)
 
-    assert service.stop_room("room-1", cancel_id="stop-1") == 1
+    # The snapshotted running task is still stopping when cancel returns, so it is not cancelled.
+    assert service.stop_room("room-1", cancel_id="stop-1") == (0, 1)
     assert calls == ["stop-1"]
 
 
@@ -796,7 +797,7 @@ def test_stop_fence_prevents_the_next_room_member_from_starting(
     )
     assert len(driver.list_tasks(db, room_id="room-1")) == 1
 
-    assert service.stop_room("room-1", cancel_id="stop-1") == 1
+    assert service.stop_room("room-1", cancel_id="stop-1")[0] == 1
     service.prepare_room(service.bindings()[0])
 
     tasks = driver.list_tasks(db, room_id="room-1")

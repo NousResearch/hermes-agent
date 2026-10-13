@@ -16367,10 +16367,15 @@
           "cancelled": {
             "title": "Cancelled",
             "type": "integer"
+          },
+          "stopping": {
+            "title": "Stopping",
+            "type": "integer"
           }
         },
         "required": [
-          "cancelled"
+          "cancelled",
+          "stopping"
         ],
         "title": "GroupsStopResult",
         "type": "object"

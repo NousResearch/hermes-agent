@@ -277,3 +277,192 @@ def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(tmp
     recovered = driver.get_task(db, identity)
     assert recovered["status"] == "indeterminate" and recovered["execution_generation"] == 1
     assert [params["execution_generation"] for method, params in rpc.calls if method == "submit"] == [1]
+
+
+def _crash_to_indeterminate(service, db, clock, now):
+    service.send(
+        room_id="room-1", event_id="user-1",
+        payload={"text": "@reviewer check this", "thread_id": "thread-1"})
+    queued = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    binding = service.bindings()[0]
+    crashed = driver.acquire_lease(
+        db, room_id="room-1", gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+        process_generation="crashed-home", ttl_seconds=1, clock=clock)
+    attempt = driver.start_task(
+        db, queued["identity"], crashed, expected_cancel_generation=0, clock=clock)
+    now[0] = 102.0
+    lease = service.runtime._ensure_lease(binding)
+    driver.recover_room(db, lease, clock=clock)
+    return queued, binding, lease, attempt
+
+
+def test_deferred_retry_fences_the_room_before_peer_io(tmp_path: Path):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _UnreachablePeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 30
+    service.runtime.indeterminate_defer_seconds = 5
+    queued, binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 108.0
+    service.runtime._run_room_once(binding)
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    successor = driver.TaskIdentity("room-1", "task-next", "thread-2", "turn-next")
+    driver.admit_task(
+        db, successor, payload={
+            "target_profile": "reviewer", "target_member_id": "member-peer",
+            "prompt": "Next turn.", "source_event_seq": 50}, clock=clock)
+    seen = []
+
+    def recover_dispatch(**kwargs):
+        current = driver.get_task(db, queued["identity"])
+        seen.append(current["status"])
+        with pytest.raises(driver.InvalidTaskTransitionError, match="prior task"):
+            driver.start_task(
+                db, successor, service.runtime._leases["room-1"],
+                expected_cancel_generation=0, clock=clock)
+        raise PeerRunsHTTPError(
+            "peer RoomLink endpoint is unreachable", retryable=True, not_admitted=True)
+
+    peer.recover_dispatch = recover_dispatch
+    with pytest.raises(PeerRunsHTTPError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    assert seen == ["indeterminate"]
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    assert driver.get_task(db, successor)["status"] == "queued"
+
+
+def test_recovered_peer_is_not_deferred_when_the_status_probe_fails(tmp_path, monkeypatch):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.runtime.indeterminate_defer_seconds = 5
+    service.runtime.turn_timeout_seconds = 30
+    queued, binding, lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+    monkeypatch.setattr(peer, "history", lambda **_: [])
+
+    def status(**_kwargs):
+        raise PeerRunsHTTPError("status timed out", retryable=True, ambiguous=True)
+
+    monkeypatch.setattr(peer, "status", status)
+    now[0] = 108.0
+    assert service.runtime._reconcile_indeterminate(binding, lease) is True
+    held = driver.get_task(db, queued["identity"])
+    assert held["status"] == "indeterminate"
+    assert held["execution_generation"] == 1
+    assert (held.get("result") or {}).get("reason") != "member_unavailable"
+
+
+@pytest.mark.parametrize("error_code", ["run_history_retired", "idempotency_key_conflict"])
+def test_refused_recovery_settles_instead_of_deferring(tmp_path: Path, error_code: str):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def recover_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer refused this generation", retryable=True, ambiguous=True, status_code=409,
+            error_code=error_code)
+
+    peer.recover_dispatch = recover_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.runtime.indeterminate_defer_seconds = 5
+    queued, binding, lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 108.0
+    assert service.runtime._reconcile_indeterminate(binding, lease) is False
+    failed = driver.get_task(db, queued["identity"])
+    assert failed["status"] == "failed"
+    assert failed["execution_generation"] == 1
+    assert failed["result"]["reason"] == error_code
+    assert failed["result"]["retryable"] is False
+
+
+@pytest.mark.parametrize("status_code", [404, 405])
+def test_missing_stop_route_releases_the_same_generation(tmp_path: Path, status_code: int):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def cancel_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer cannot cancel an uncertain admission", ambiguous=True, status_code=status_code)
+
+    peer.cancel_dispatch = cancel_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    released = service.runtime.cancel(queued["identity"], cancel_id="stop-1")
+    assert released["status"] == "deferred"
+    assert released["execution_generation"] == 1
+    assert released["result"] == {"reason": "peer_stop_unsupported", "retryable": False}
+
+
+def test_stop_room_reports_unacknowledged_rows_as_stopping(tmp_path: Path):
+    db = tmp_path / "state.db"
+    service = _peer_room(db, _RecoveringPeerClient())
+    service.send(
+        room_id="room-1", event_id="user-1",
+        payload={"text": "@reviewer check this", "thread_id": "thread-1"})
+
+    def cancel(identity, *, cancel_id):
+        task = driver.get_task(db, identity)
+        return {**task, "status": "stopping", "cancel_id": cancel_id}
+
+    service.runtime.cancel = cancel
+    assert service.stop_room("room-1", cancel_id="stop-1") == (0, 1)
+
+
+def test_running_waiter_completes_a_cancelled_peer_generation(tmp_path: Path):
+    db = _driver_room(tmp_path)
+    identity = _identity()
+    _admit(db, identity)
+    now = [time.time()]
+    rpc = FakeSessionRPC(auto_complete=False)
+    session_id = rpc.add_session(active=True, task_id=identity.task_id)
+
+    def info(**_kwargs):
+        return {
+            "active": False, "status": "cancelled", "task_id": identity.task_id,
+            "execution_generation": 1}
+
+    rpc.info = info
+    runtime = _runtime(
+        db, rpc, clock=lambda: now[0], lease_ttl_seconds=30,
+        active_poll_interval_seconds=0.05, turn_timeout_seconds=1830)
+    lease = driver.acquire_lease(
+        db, room_id=ROOM_ID, gateway_id=BINDING.gateway_id, authority_epoch=BINDING.authority_epoch,
+        process_generation=runtime.process_generation, ttl_seconds=30, clock=lambda: now[0])
+    attempt = driver.start_task(
+        db, identity, lease, expected_cancel_generation=0, clock=lambda: now[0])
+    started = time.monotonic()
+    assert runtime._wait_for_terminal(
+        BINDING, profile=PROFILE, session_id=session_id, attempt=attempt, transport=rpc,
+        deadline_monotonic=time.monotonic() + 30) is None
+    task = driver.get_task(db, identity)
+    assert task["status"] == "cancelled"
+    assert task["execution_generation"] == 1
+    assert time.monotonic() - started < 2

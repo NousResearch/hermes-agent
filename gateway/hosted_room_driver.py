@@ -98,6 +98,9 @@ _GENERATION_TRANSITIONS = {
     "reopen_deferred": (
         "deferred", "status='indeterminate', result_json=NULL, terminal_at=NULL, indeterminate_at=?, updated_at=?",
         "deferred task generation changed", "deferred task changed during reopen"),
+    "release_stop": (
+        "stopping", "status='deferred', result_json=?, terminal_at=?, updated_at=?",
+        "stopping task generation changed", "stopping task changed during release"),
     "requeue_deferred": (
         "deferred",
         f"{_REQUEUE_SET}, result_json=NULL, started_at=NULL, terminal_at=NULL, indeterminate_at=NULL, updated_at=?",
@@ -739,6 +742,18 @@ def reopen_deferred_task(
     return _generation_transition(
         db_path, identity, lease, "reopen_deferred", expected_execution_generation, expected_cancel_generation,
         now=now, set_params=(now, now))
+
+
+def release_unacknowledged_stop(
+    db_path: DbPath, identity: TaskIdentity, lease: DriverLease, *, expected_execution_generation: int,
+    expected_cancel_generation: int, clock: Clock) -> dict[str, Any]:
+    """Leave `stopping` when the peer has no stop route, without minting a new generation."""
+    _expected_generations(lease, identity, expected_execution_generation, expected_cancel_generation)
+    result_json = _canonical_json({"reason": "peer_stop_unsupported", "retryable": False})
+    now = _timestamp(clock)
+    return _generation_transition(
+        db_path, identity, lease, "release_stop", expected_execution_generation, expected_cancel_generation,
+        now=now, set_params=(result_json, now, now))
 
 
 def requeue_not_admitted_task(db_path: DbPath, attempt: TaskAttempt, *, clock: Clock) -> dict[str, Any]:

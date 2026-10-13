@@ -1189,3 +1189,24 @@ def test_old_target_cancels_known_receipt_but_never_admits_an_unknown_stop(peer_
     assert stopped["run_id"] == admitted["run_id"]
     assert FakePeer.runs[admitted["run_id"]]["status"] == "cancelled"
     assert FakePeer.idempotency == ["room:task-1:1"]
+
+
+@pytest.mark.parametrize("status", ["running", "queued", "waiting_for_approval"])
+def test_cancel_dispatch_does_not_store_a_live_run_as_the_receipt(status):
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client.prepare = lambda **_kwargs: {"session_id": "sess-1"}
+    client._request = lambda path, **_kwargs: {"run_id": "run-live", "status": status}
+    with pytest.raises(PeerRunsHTTPError, match="cancellation receipt") as caught:
+        client.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert caught.value.ambiguous and not caught.value.not_admitted
+    assert client._runs == {}
+
+
+@pytest.mark.parametrize("status", ["cancelled", "stopping", "interrupted", "completed", "failed"])
+def test_cancel_dispatch_remembers_a_terminal_stop_receipt(status):
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client.prepare = lambda **_kwargs: {"session_id": "sess-1"}
+    client._request = lambda path, **_kwargs: {"run_id": "run-stopped", "status": status}
+    stopped = client.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert stopped["run_id"] == "run-stopped"
+    assert client._runs[("task-1", 1)]["run_id"] == "run-stopped"

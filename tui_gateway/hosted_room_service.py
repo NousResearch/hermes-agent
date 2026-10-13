@@ -468,7 +468,8 @@ class HostedRoomService:
         return event
 
     def stop_room(
-        self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False,
+    ) -> tuple[int, int]:
         gateway_id, epoch = self._owned_authority(room_id)
         hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
@@ -487,7 +488,8 @@ class HostedRoomService:
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
-        return len(tasks)
+        # Rows still `stopping` have not been acknowledged. Callers must not report them as cancelled.
+        return len(tasks) - pending, pending
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""

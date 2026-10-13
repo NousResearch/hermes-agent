@@ -237,7 +237,7 @@ def test_fails_when_a_profile_directory_disappears(tmp_path):
 
 def _run(args):
     return subprocess.run([sys.executable, VERIFIER, *args],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, check=False)
 
 
 def test_cli_snapshot_then_verify_round_trip(tmp_path):

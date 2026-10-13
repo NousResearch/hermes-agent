@@ -88,7 +88,7 @@ async def _gateway_join_and_cancel(stream_task: asyncio.Task, join_timeout: floa
     """
     try:
         await asyncio.wait_for(stream_task, timeout=join_timeout)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         stream_task.cancel()
         try:
             await stream_task

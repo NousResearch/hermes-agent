@@ -334,7 +334,8 @@ function IdleView({
       </div>
 
       <div className="grid gap-3">
-        {groups.map((group, index) => (
+        {/* A rollback brings no new changes; the "improvements" fallback would claim some. */}
+        {(rollbackTag ? [] : groups).map((group, index) => (
           <div key={group.id}>
             <div className="flex items-center justify-between gap-2">
               <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
@@ -364,7 +365,7 @@ function IdleView({
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          {u.updateNow}
+          {rollbackTag ? channelCopy.rollbackAction(rollbackTag) : u.updateNow}
         </Button>
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}

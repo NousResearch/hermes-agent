@@ -15,5 +15,6 @@ export const jaUpdateChannel = {
   latestRelease: (v: string) => `最新の安定版リリース（${v}）を使用しています。`,
   rollbackTitle: (v: string) => `安定版リリース ${v} に戻す`,
   rollbackBody: (v: string) =>
-    `このビルドは安定版リリース ${v} より新しいです。インストールすると Hermes はそのリリースに戻ります。`
+    `このビルドは安定版リリース ${v} より新しいです。インストールすると Hermes はそのリリースに戻ります。`,
+  rollbackAction: (v: string) => `${v} に戻す`
 }

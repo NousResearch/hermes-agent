@@ -20,4 +20,6 @@ export interface UpdateChannelCopy {
   rollbackTitle: (version: string) => string
   /** Installing the older stable release moves the checkout back; says so plainly. */
   rollbackBody: (version: string) => string
+  /** Updates overlay install button for that rollback. */
+  rollbackAction: (version: string) => string
 }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { en } from '@/i18n/en'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as DesktopFs from '@/lib/desktop-fs'
 import { $freeTierStatus } from '@/store/free-tier'
@@ -147,6 +148,25 @@ describe('statusbar update channel vocabulary', () => {
 
     expect(version?.label).toBe('v0.21.6 (update)')
     expect(version?.title).toContain('v0.21.7 is available')
+  })
+
+  it('names a stable release older than the checkout as a rollback', () => {
+    act(() => {
+      $desktopVersion.set({ appVersion: '0.21.7', electronVersion: '37', hermesRoot: '/h', nodeVersion: '22', platform: 'linux' })
+      $updateStatus.set({
+        behind: -1,
+        channel: 'stable',
+        rollback: true,
+        sourceVersion: '0.21.7',
+        supported: true,
+        updateAvailable: true
+      })
+    })
+
+    const version = renderStatusbarItems().statusbarItems.find(item => item.id === 'version-client')
+
+    expect(version?.title).toContain(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(version?.title).not.toContain(en.shell.statusbar.update)
   })
 })
 

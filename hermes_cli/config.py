@@ -1180,8 +1180,6 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             return [config_load_issue(exc)]
 
     issues: list[ConfigIssue] = []
-    _validate_voice(config, issues)
-    _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
@@ -1207,8 +1205,10 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
-    _validate_web_backends(config, issues)
-    _validate_quoted_containers(config, issues)
+    from hermes_cli.config_provider_shadow import validate_shadowed_builtin_providers
+    for check in (_validate_voice, _validate_timezone, _validate_web_backends,
+                  _validate_quoted_containers, validate_shadowed_builtin_providers):
+        check(config, issues)
     return issues
 
 

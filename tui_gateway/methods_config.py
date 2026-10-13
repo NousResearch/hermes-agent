@@ -404,7 +404,7 @@ def _(rid, params: dict) -> dict:
                 # ``ready`` = this process's boot bootstrap has settled (a named profile has no
                 # record of its own; the launch record says whether the free tier is minted).
                 # Since one host backend serves every profile (#118246), the desktop's
-                # setup-profile probe lands here, and its kickoff requires ``ready``.
+                # named-profile probe lands here too.
                 launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **({"ready": True, "free_tier_account": launch.free_tier_account,

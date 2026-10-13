@@ -44,6 +44,7 @@ def _state_file() -> Path:
 def load_state() -> dict[str, Any]:
     base: dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
+        "last_run_llm_failure_reason": None,
         "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
     }
     path = _state_file()
@@ -732,6 +733,7 @@ def _write_run_report(
         "tool_call_counts": tc_counts, "archived": diff.removed, "consolidated": diff.consolidated, "pruned": diff.pruned,
         "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
+        "llm_failure_reason": llm_meta.get("failure_reason"),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
     _write_file(run_dir / "run.json", "run.json", payload)
@@ -895,7 +897,16 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)
-            final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+            llm_suffix = llm_meta.get('summary', 'no change')
+            if llm_meta.get("failure_reason"):
+                # A truncated/overflowed review turn used to read back as a completed pass —
+                # the loop's cut-off notice became the run summary and nothing recorded that
+                # the candidates were left unprocessed (#137967).
+                llm_suffix = (
+                    f"ended early ({llm_meta['failure_reason']}) — the skill candidates were NOT "
+                    "fully reviewed; this run's REPORT.md lists what remained"
+                )
+            final_summary = f"{prefix}{auto_summary}; llm: {llm_suffix}"
     except Exception as e:
         logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
         final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
@@ -969,6 +980,13 @@ def run_curator_review(
             llm_meta = _llm_meta("skipped (consolidation off)")
         elapsed = (datetime.now(UTC) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
+        # Record the verdict so `hermes curator status` can show that the last pass ended
+        # early (the run otherwise looks completed: last_run_at/run_count advance normally).
+        # Cleared on a healthy pass so the flag never goes stale (#137967).
+        if llm_meta.get("failure_reason"):
+            state2["last_run_llm_failure_reason"] = llm_meta["failure_reason"]
+        else:
+            state2.pop("last_run_llm_failure_reason", None)
         # Per-run report, best-effort; path recorded for `hermes curator status`.
         after_report = _safe_curated_report()
         try:
@@ -1141,6 +1159,14 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        # The loop stamps a structured verdict on every partial/failed envelope (truncation,
+        # context overflow, ...). A review whose turn was cut off near the model's window must
+        # surface that verdict instead of silently passing the cut-off notice off as the
+        # pass's final summary (#137967).
+        failure_reason = str(conv_result.get("failure_reason") or "").strip() if isinstance(conv_result, dict) else ""
+        if failure_reason:
+            result_meta["failure_reason"] = failure_reason
+            result_meta["error"] = result_meta.get("error") or f"review ended early ({failure_reason})"
         # Tool calls for the report; arguments truncated to 400 chars so a giant skill_manage create doesn't blow it up.
         fns = (tc.get("function") or {} for msg in getattr(review_agent, "_session_messages", []) or [] if isinstance(msg, dict)
                for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict))

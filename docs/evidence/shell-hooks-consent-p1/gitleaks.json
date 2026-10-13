@@ -1,0 +1,41 @@
+{
+  "returncode": 0,
+  "image": "sha256:62a863c9d522b45ef72c273b75ddc62ca98d9e8d597a26ba34927c229913358c",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "-v",
+    "/Users/farantes/.hermes/cache/scratch/p1-gitleaks-4jokmo1k:/scan:ro",
+    "sha256:62a863c9d522b45ef72c273b75ddc62ca98d9e8d597a26ba34927c229913358c",
+    "dir",
+    "/scan",
+    "--no-banner",
+    "--redact",
+    "--report-format",
+    "json",
+    "--report-path",
+    "/dev/stdout"
+  ],
+  "scanned_sha256": {
+    "agent/shell_hooks.py": "f30c89c749ff0b15ccc3d9745fc9ba5551eaef3bfb0799a7901e68f82fe36cbb",
+    "docs/evidence/shell-hooks-consent-p1/RESULTADO.md": "a77a98ef9322d991cc641b24e52c9b009ad70e0d7fd1921f42f41804912473ee",
+    "docs/evidence/shell-hooks-consent-p1/green-final.json": "523da5b2ed8b6d875ec9f3133ee504ef6b0bcf899f8a10ccff4e7ac9aa8b2c19",
+    "docs/evidence/shell-hooks-consent-p1/green-final.log": "aa0a8c7b221d11f4422248859a5cee15207253ca678b830b96d1b05ed0da829b",
+    "docs/evidence/shell-hooks-consent-p1/green-focal.json": "b2454dce3e4b9b50050d09c4de8f79dfeed3b17b2a86594bc83b7ff0d3205866",
+    "docs/evidence/shell-hooks-consent-p1/green-focal.log": "dd3875cf02a80faa8b3185268af8db6487754bedf60f38e3b93a8d6294c09ad9",
+    "docs/evidence/shell-hooks-consent-p1/negative-candidate.json": "e79476eb5c7874e325cf96ac72b0f0c9d099f5487768ff5a09325646f297cab1",
+    "docs/evidence/shell-hooks-consent-p1/negative-candidate.log": "74eab10f377476bbe902469de0f9cd138333631cef180699fa83aacef0a267fa",
+    "docs/evidence/shell-hooks-consent-p1/negative-consumer.json": "4aa1baaa0ce68d95bc87e3ba7ecb6d6c2ffec1258889b7b29448df231d36b168",
+    "docs/evidence/shell-hooks-consent-p1/negative-consumer.log": "a417b4b1ffbf11caa1d2a597134fd339c7e2cc7c524f2c4f81e6748f6e1f0cbd",
+    "docs/evidence/shell-hooks-consent-p1/red-candidate.json": "adb91656b46e1d235d6410cbc5a4537e90b85d288ec911c35975ddd60fbdd95e",
+    "docs/evidence/shell-hooks-consent-p1/red-candidate.log": "d5566c1f3e108ecfdc4b0ec0f98a8a2eb1748772aa0855b524a06001d32a7ddf",
+    "docs/evidence/shell-hooks-consent-p1/run_proof.py": "353187ba147d7540c8ed2272dd700aeab01b89d77859a4ccbca9ba844643f15c",
+    "tests/agent/test_shell_hooks_reload_consent.py": "a38ff6b3cba6389430c5d27e5072385d5ee18597900976931e421f5934b28f1f",
+    "tests/tui_gateway/test_profile_shell_hooks.py": "258bc8c05f961346bbcfcf5ad8050379a71f14dae44b222497e5aed22715371b"
+  },
+  "stdout": "",
+  "stderr_sha256": "016f257cd09e77af1ff3622659c661358e7fc79c7524bff84d132fe5b0090ccf"
+}

@@ -216,6 +216,23 @@ def re_register_config_hooks() -> None:
     profile's ledger need not be cleared (#60036 / #64178 / #92682).
     """
     from hermes_cli.config import load_config
+    from hermes_cli.plugins import get_plugin_manager
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_SAFE_MODE"):
+        return
+    manager, home_key = get_plugin_manager(), _home_key()
+    # Unload removed the live callbacks, not their ownership ledger. Restore the
+    # already-consented generation before config/consent I/O can fail or decline.
+    with manager._discovery_lock, _registered_lock:
+        previous = _registered.get(manager, {}).get(home_key, {})
+        updates = {}
+        for key, callback in previous.items():
+            event = key[0]
+            current = updates.setdefault(event, list(manager._hooks.get(event, [])))
+            if callback not in current:
+                current.append(callback)
+        manager._hooks.update(updates)
     register_from_config(load_config())
 
 

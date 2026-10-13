@@ -89,6 +89,30 @@ def test_agent_build_arms_only_consented_profile_policy(tmp_path, monkeypatch):
                             **valid, 'plugin_denied': True,
                         }) == 'plugin-denied'
                         assert beta_manager._hooks['pre_tool_call'] == beta_callbacks
+                    # A new consumer must not disarm V4 when a second command lacks
+                    # consent, including after the real force-loader clears callbacks.
+                    marker = home / 'unapproved-ran'
+                    extra = home / 'unapproved.py'
+                    extra.write_text(f'from pathlib import Path\nPath({str(marker)!r}).touch()\n')
+                    cfg['hooks_auto_accept'] = False
+                    cfg['hooks']['pre_tool_call'].append({
+                        'command': quote_command([sys.executable, str(extra)]),
+                        'matcher': 'write_file', 'fail_closed': True,
+                    })
+                    (home / 'config.yaml').write_text(yaml.safe_dump(cfg), encoding='utf-8')
+                    for force in [False, True]:
+                        if force:
+                            alpha_manager.discover_and_load(force=True)
+                        rebuilt = server._make_agent(label, label, context_cwd_is_launch_artifact=False)
+                        rebuilt.close()
+                        assert plugins.get_pre_tool_call_block_message('write_file', {
+                            'Padrao': 'v4', 'Parar': 'complete',
+                        }) is None
+                        assert plugins.get_pre_tool_call_block_message('write_file', {
+                            'Padrao': 'v3', 'Parar': 'complete',
+                        }) == 'v4-denied'
+                        assert not marker.exists()
+                        assert beta_manager._hooks['pre_tool_call'] == beta_callbacks
                 agent.close()
             finally:
                 reset_hermes_home_override(token)

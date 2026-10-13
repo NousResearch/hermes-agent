@@ -1,0 +1,24 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /opt/test-venv/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 3 test files (~53 tests) under ['tests/agent/test_shell_hooks.py', 'tests/tui_gateway/test_profile_shell_hooks.py', 'tests/agent/test_shell_hooks_reload_consent.py']; running with -j 2
+[  1.9% |     1/~53 | ✓3 | ✗0] ✓ tests/agent/test_shell_hooks_reload_consent.py (3✓, 2.1s)
+[ 98.1% |    52/~53 | ✓62 | ✗ 0] ✓ tests/agent/test_shell_hooks.py (59✓ 2s, 5.3s)
+[100.0% |    53/~53 | ✓63 | ✗ 0] ✓ tests/tui_gateway/test_profile_shell_hooks.py (1✓, 4.6s)
+
+=== Summary: 3 files, 63 tests passed, 0 failed, 2 skipped (100% complete) in 6.7s (2 workers) ===
+
+  note: windows_only tests (in 1 file) were SKIPPED on this host (linux); they run on the tests-os CI lane (windows-latest).
+  Durations cached to test_durations.json (3 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   3
+  Total subprocess CPU-wall: 12.1s  (runner wall: 6.7s, parallelism: 2x)
+  P50: 4.60s  P90: 5.33s  P95: 5.33s  P99: 5.33s  Max: 5.33s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      5.33s  tests/agent/test_shell_hooks.py
+      4.60s  tests/tui_gateway/test_profile_shell_hooks.py
+      2.14s  tests/agent/test_shell_hooks_reload_consent.py

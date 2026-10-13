@@ -1,0 +1,95 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /opt/test-venv/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 1 test files (~1 tests) under ['tests/agent/test_shell_hooks_reload_consent.py']; running with -j 2
+[100.0% |     1/~1 | ✓1 | ✗2] ✗ tests/agent/test_shell_hooks_reload_consent.py (1✓ 2✗, 1.9s)
+
+  ╔╍ Failed: tests/agent/test_shell_hooks_reload_consent.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+  ║ cachedir: .pytest_cache
+  ║ rootdir: /repo
+  ║ configfile: pyproject.toml
+  ║ plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+  ║ asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+  ║ collecting ... collected 3 items
+  ║ 
+  ║ tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[declined] FAILED [ 33%]
+  ║ tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[approved] PASSED [ 66%]
+  ║ tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[error] FAILED [100%]
+  ║ 
+  ║ =================================== FAILURES ===================================
+  ║ _ test_force_reload_preserves_approved_policy_with_unapproved_addition[declined] _
+  ║ tests/agent/test_shell_hooks_reload_consent.py:92: in test_force_reload_preserves_approved_policy_with_unapproved_addition
+  ║     assert actual == 'approved-old', (
+  ║ E   AssertionError: ('force reload disarmed the approved policy', None, [])
+  ║ E   assert None == 'approved-old'
+  ║ ------------------------------ Captured log call -------------------------------
+  ║ WARNING  agent.shell_hooks:shell_hooks.py:167 shell hook for pre_tool_call (/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-p9jfu7uh/pytest-of-root/pytest-0/test_force_reload_preserves_ap0/additional-new.py) not allowlisted — skipped. Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.
+  ║ WARNING  agent.shell_hooks:shell_hooks.py:178 shell hook replacement declined — retaining the previous generation
+  ║ _ test_force_reload_preserves_approved_policy_with_unapproved_addition[error] __
+  ║ tests/agent/test_shell_hooks_reload_consent.py:92: in test_force_reload_preserves_approved_policy_with_unapproved_addition
+  ║     assert actual == 'approved-old', (
+  ║ E   AssertionError: ('force reload disarmed the approved policy', None, [])
+  ║ E   assert None == 'approved-old'
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[declined]
+  ║ FAILED tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[error]
+  ║ ========================= 2 failed, 1 passed in 1.58s ==========================
+  ║
+  ║  Repro: python -m pytest tests/agent/test_shell_hooks_reload_consent.py -v --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 1 files, 1 tests passed, 2 failed (100% complete) in 1.9s (2 workers) ===
+
+=== Per-file subprocess time distribution ===
+  Files:   1
+  Total subprocess CPU-wall: 1.9s  (runner wall: 1.9s, parallelism: 2x)
+  P50: 1.93s  P90: 1.93s  P95: 1.93s  P99: 1.93s  Max: 1.93s
+  <1s: 0 files (0%)  <2s: 1 files (100%)
+  Top 10 slowest:
+      1.93s  tests/agent/test_shell_hooks_reload_consent.py
+
+=== Failure output ===
+
+--- tests/agent/test_shell_hooks_reload_consent.py ---
+/opt/test-venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:207: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /repo
+configfile: pyproject.toml
+plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+collecting ... collected 3 items
+
+tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[declined] FAILED [ 33%]
+tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[approved] PASSED [ 66%]
+tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[error] FAILED [100%]
+
+=================================== FAILURES ===================================
+_ test_force_reload_preserves_approved_policy_with_unapproved_addition[declined] _
+tests/agent/test_shell_hooks_reload_consent.py:92: in test_force_reload_preserves_approved_policy_with_unapproved_addition
+    assert actual == 'approved-old', (
+E   AssertionError: ('force reload disarmed the approved policy', None, [])
+E   assert None == 'approved-old'
+------------------------------ Captured log call -------------------------------
+WARNING  agent.shell_hooks:shell_hooks.py:167 shell hook for pre_tool_call (/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-p9jfu7uh/pytest-of-root/pytest-0/test_force_reload_preserves_ap0/additional-new.py) not allowlisted — skipped. Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.
+WARNING  agent.shell_hooks:shell_hooks.py:178 shell hook replacement declined — retaining the previous generation
+_ test_force_reload_preserves_approved_policy_with_unapproved_addition[error] __
+tests/agent/test_shell_hooks_reload_consent.py:92: in test_force_reload_preserves_approved_policy_with_unapproved_addition
+    assert actual == 'approved-old', (
+E   AssertionError: ('force reload disarmed the approved policy', None, [])
+E   assert None == 'approved-old'
+=========================== short test summary info ============================
+FAILED tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[declined]
+FAILED tests/agent/test_shell_hooks_reload_consent.py::test_force_reload_preserves_approved_policy_with_unapproved_addition[error]
+========================= 2 failed, 1 passed in 1.58s ==========================
+
+=== 1 file with test failures (2 tests failed) ===
+  tests/agent/test_shell_hooks_reload_consent.py  (2 tests failed)

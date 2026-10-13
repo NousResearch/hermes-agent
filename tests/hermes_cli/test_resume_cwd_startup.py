@@ -138,6 +138,60 @@ def test_default_cli_resume_restores_saved_cwd(launch_resumed_cli, preload):
     )
 
 
+@pytest.mark.parametrize("preload", [False, True], ids=["late", "early"])
+def test_default_resume_already_in_saved_cwd_retargets_tools(launch_resumed_cli, monkeypatch, preload):
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    launch, saved, target = launch_resumed_cli
+    monkeypatch.chdir(saved)
+    monkeypatch.setenv("TERMINAL_CWD", str(target))
+
+    launch([], preload=preload, direct=True)
+
+    assert Path.cwd().resolve() == saved.resolve()
+    assert Path(os.environ["TERMINAL_CWD"]).resolve() == saved.resolve()
+    assert resolve_agent_cwd().resolve() == saved.resolve()
+
+
+@pytest.mark.parametrize("preload", [False, True], ids=["late", "early"])
+@pytest.mark.parametrize("terminal_cwd", [None, "", "   "], ids=["absent", "empty", "whitespace"])
+def test_default_resume_already_in_saved_cwd_preserves_unconfigured_tools(
+    launch_resumed_cli, monkeypatch, preload, terminal_cwd,
+):
+    from agent.runtime_cwd import resolve_context_cwd
+
+    launch, saved, _ = launch_resumed_cli
+    monkeypatch.chdir(saved)
+    if terminal_cwd is None:
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    else:
+        monkeypatch.setenv("TERMINAL_CWD", terminal_cwd)
+
+    launch([], preload=preload, direct=True)
+
+    assert Path.cwd().resolve() == saved.resolve()
+    assert os.environ.get("TERMINAL_CWD") == terminal_cwd
+    assert resolve_context_cwd() is None
+
+
+@pytest.mark.parametrize("preload", [False, True], ids=["late", "early"])
+@pytest.mark.parametrize("direct", [False, True], ids=["cmd-chat", "cli-main"])
+@pytest.mark.parametrize("terminal_cwd", ["", "   "], ids=["empty", "whitespace"])
+def test_startup_no_restore_preserves_blank_terminal_cwd(
+    launch_resumed_cli, monkeypatch, preload, direct, terminal_cwd,
+):
+    from agent.runtime_cwd import resolve_context_cwd
+
+    launch, _, target = launch_resumed_cli
+    monkeypatch.setenv("TERMINAL_CWD", terminal_cwd)
+
+    launch(["--no-restore-cwd"], preload=preload, direct=direct)
+
+    assert Path.cwd().resolve() == target.resolve()
+    assert os.environ["TERMINAL_CWD"] == terminal_cwd
+    assert resolve_context_cwd() is None
+
+
 @pytest.mark.parametrize("command", ["resume", "sessions"])
 @pytest.mark.parametrize("override", ["in", "no-restore"])
 def test_mid_chat_resume_restores_cwd_after_launch_override(launch_resumed_cli, override, command):
@@ -155,3 +209,23 @@ def test_mid_chat_resume_restores_cwd_after_launch_override(launch_resumed_cli, 
     assert (Path.cwd().resolve(), Path(os.environ["TERMINAL_CWD"]).resolve()) == (
         saved.resolve(), saved.resolve(),
     )
+
+
+@pytest.mark.parametrize("command", ["resume", "sessions"])
+def test_mid_chat_resume_same_directory_retargets_tools(launch_resumed_cli, monkeypatch, command):
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    launch, saved, target = launch_resumed_cli
+    cli_obj = launch(["--no-restore-cwd"])
+    cli_obj._session_db.create_session("other-session", source="cli", cwd=str(target))
+    cli_obj._session_db.append_message("other-session", "user", content="Same-directory history.")
+    cli_obj.resume_display = "minimal"
+    monkeypatch.setenv("TERMINAL_CWD", str(saved))
+
+    cli_obj.process_command(f"/{command} other-session")
+
+    assert cli_obj.session_id == "other-session"
+    assert cli_obj.conversation_history[0]["content"] == "Same-directory history."
+    assert Path.cwd().resolve() == target.resolve()
+    assert Path(os.environ["TERMINAL_CWD"]).resolve() == target.resolve()
+    assert resolve_agent_cwd().resolve() == target.resolve()

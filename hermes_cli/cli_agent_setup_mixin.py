@@ -555,9 +555,9 @@ class CLIAgentSetupMixin:
         """Restore cwd / yolo / model from the resumed session's metadata."""
         if restore_cwd:
             self._restore_session_cwd(session_meta, quiet=quiet)
-        elif "TERMINAL_CWD" in os.environ:
+        elif os.environ.get("TERMINAL_CWD", "").strip():
             # Keep inherited tool cwd aligned with the explicit launch directory;
-            # unset stays unset so remote backends retain their own defaults.
+            # absent/blank stays unchanged so remote defaults are not replaced.
             os.environ["TERMINAL_CWD"] = os.getcwd()
         self._restore_session_yolo(session_meta, quiet=quiet)
         self._restore_session_model(session_meta, quiet=quiet)

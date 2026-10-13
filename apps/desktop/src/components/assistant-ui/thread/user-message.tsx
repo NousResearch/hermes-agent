@@ -10,7 +10,6 @@ import {
 } from '@/components/assistant-ui/thread/content'
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
-import { SetupLearnedNote, splitSetupLearned } from '@/components/assistant-ui/thread/setup-learned'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -320,8 +319,7 @@ export const UserMessage: FC<{
   const copy = t.assistant.thread
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
-  const fullText = messageContentText(content)
-  const [messageText, setupLearned] = splitSetupLearned(fullText)
+  const messageText = messageContentText(content)
   const threadRunning = useAuiState(s => s.thread.isRunning)
 
   const latestUserId = useAuiState(s => {
@@ -483,14 +481,11 @@ export const UserMessage: FC<{
           // it. No negative margin: -mt-* pulls the row up into the sticky box,
           // where the sticky-prompt clip hides its top even at rest. Image refs
           // render as thumbnails, file refs as chips; no border.
-          <>
-            {attachmentRefs.length > 0 && !chipOnlyTurn && (
-              <div className="mb-2 flex flex-wrap gap-1">
-                <DirectiveContent text={attachmentRefs.join(' ')} />
-              </div>
-            )}
-            {setupLearned && <SetupLearnedNote text={setupLearned} />}
-          </>
+          attachmentRefs.length > 0 && !chipOnlyTurn ? (
+            <div className="mb-2 flex flex-wrap gap-1">
+              <DirectiveContent text={attachmentRefs.join(' ')} />
+            </div>
+          ) : null
         }
         messageId={messageId}
       >
@@ -581,7 +576,7 @@ export const UserMessage: FC<{
                     Restore. Its fill masks the last line's tail while shown. */}
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
                   <UserBubbleActions
-                    fullText={fullText}
+                    fullText={messageText}
                     messageId={messageId}
                     onCancel={onCancel}
                     onRequestRestoreConfirm={onRequestRestoreConfirm}

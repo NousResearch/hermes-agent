@@ -286,6 +286,32 @@ class TestTurnRoutingLifecycle:
         assert ctx.message.endswith("attached context")
         assert ctx.persist_user_message == "inspect @diff\n\nattached context"
 
+    def test_deferred_reference_uses_authored_body_after_timestamp_cleanup(self):
+        from gateway.run_turn_runner import TurnRunner
+
+        seen = []
+        source = SessionSource(platform=Platform.LOCAL, chat_id="chat", user_id="user")
+        authored = "inspect @file:notes.txt"
+        ctx = TurnContext(
+            source=source, session_key="session",
+            message="[2026-04-13T17:02:06+0200] " + authored,
+            context_reference_message=authored,
+            persist_user_message=authored,
+        )
+        runner = SimpleNamespace(
+            _delivery_adapter_for=lambda _source: None,
+            _expand_inbound_context_references=lambda *_args, **_kwargs: _expand(),
+        )
+
+        async def _expand():
+            seen.append(authored)
+            return "inspect [attached notes]"
+
+        assert TurnRunner(runner, ctx)._prepare_context_references_for_realized_route({"model": "m"})
+        assert seen == [authored]
+        assert ctx.message == "[2026-04-13T17:02:06+0200] inspect [attached notes]"
+        assert ctx.persist_user_message == "inspect [attached notes]"
+
     def test_fallback_cleanup_uses_realized_route_and_preserves_true_fallback_eviction(self, monkeypatch):
         """A successful A→B route is reusable; a successful in-turn B→C fallback is not."""
         from gateway.run import GatewayRunner

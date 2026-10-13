@@ -2,9 +2,22 @@
 
 import pytest
 
-from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+from hermes_cli.middleware import (
+    apply_turn_route_middleware, normalize_turn_route_selection,
+    public_turn_route, turn_route_credentials_usable,
+)
 from hermes_cli.plugins import PluginManager, invoke_plugin_command
 from tests.hermes_cli.test_plugins import _make_plugin_dir
+
+
+def test_turn_route_selection_normalizes_provider_precedence_and_credentials():
+    current = {"model": "alpha", "runtime": {"provider": "openrouter", "requested_provider": "openrouter"}}
+    assert normalize_turn_route_selection(current, {
+        "model": "beta", "runtime": {"provider": "custom", "requested_provider": "custom:local"},
+    }) == ("beta", "custom:local")
+    assert not turn_route_credentials_usable({"provider": "openrouter", "api_key": "", "credential_pool": None})
+    assert turn_route_credentials_usable({"provider": "openrouter", "credential_pool": object()})
+    assert turn_route_credentials_usable({"provider": "custom", "api_key": ""})
 
 
 @pytest.mark.parametrize("parameter_name", ["session_id", "session_key", "platform"])

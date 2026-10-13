@@ -1692,8 +1692,12 @@ class TurnRunner:
         """
         ctx = self._ctx
         reference_message = ctx.context_reference_message
+        deferred_reference = reference_message is not None
         if reference_message is None:
             reference_message = ctx.message
+        elif isinstance(ctx.persist_user_message, str):
+            # Timestamp cleanup strips display prefixes from the durable authored body.
+            reference_message = ctx.persist_user_message
         if not isinstance(reference_message, str) or "@" not in reference_message:
             return True
 
@@ -1708,9 +1712,7 @@ class TurnRunner:
         if expanded_message is None:
             ctx.context_reference_blocked = True
             return False
-        if ctx.context_reference_message is None:
-            ctx.message = expanded_message
-        elif ctx.message == original_message:
+        if not deferred_reference:
             ctx.message = expanded_message
         elif isinstance(ctx.message, str) and ctx.message.endswith(original_message):
             ctx.message = ctx.message[:-len(original_message)] + expanded_message
@@ -1727,12 +1729,7 @@ class TurnRunner:
         if isinstance(persisted, str) and original_message and expanded_message != original_message:
             if persisted == original_message:
                 ctx.persist_user_message = expanded_message
-            elif ctx.context_reference_message is None and expanded_message.startswith(original_message):
-                # Timestamp/Discord attribution may prefix ctx.message but is absent
-                # from the clean durable row; preserve only the attached suffix.
-                ctx.persist_user_message = persisted + expanded_message[len(original_message):]
             elif persisted.endswith(original_message):
-                # Deferred expansion keeps the raw body as the durable-row suffix.
                 ctx.persist_user_message = persisted[:-len(original_message)] + expanded_message
         return True
 

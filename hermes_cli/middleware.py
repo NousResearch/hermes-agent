@@ -152,6 +152,35 @@ def apply_turn_route_middleware(route: Dict[str, Any], **context: Any) -> Reques
     )
 
 
+def normalize_turn_route_selection(current: Dict[str, Any], payload: Any) -> tuple[str, str] | None:
+    """Resolve the public model/provider fields once for every turn-routing host."""
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("model")
+    nested = payload.get("runtime")
+    nested = nested if isinstance(nested, dict) else {}
+    current_runtime = current.get("runtime") or {}
+    current_requested = current_runtime.get("requested_provider") or current_runtime.get("provider")
+    current_canonical = current_runtime.get("provider")
+    top_requested = payload.get("requested_provider")
+    nested_requested = nested.get("requested_provider")
+    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
+    canonical = payload.get("provider") or nested.get("provider")
+    provider = requested if requested and requested != current_requested else (
+        canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested)
+    )
+    if isinstance(model, str) and model.strip() and isinstance(provider, str) and provider.strip():
+        return model.strip(), provider.strip()
+    return None
+
+
+def turn_route_credentials_usable(runtime: Dict[str, Any]) -> bool:
+    """Reject an OpenRouter route when resolution found neither a key nor a pool."""
+    if runtime.get("provider") != "openrouter":
+        return True
+    return bool(runtime.get("api_key") or runtime.get("credential_pool"))
+
+
 def apply_tool_request_middleware(
     tool_name: str, args: dict[str, Any], **context: Any
 ) -> RequestMiddlewareResult:

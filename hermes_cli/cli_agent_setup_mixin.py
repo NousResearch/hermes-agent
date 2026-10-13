@@ -30,16 +30,8 @@ def _compression_root(session_db, session_id):
     """Walk parent links created by compression rotation back to the conversation's first row.
 
     Branches and other parent links are new conversations and stop the walk. Fails open."""
-    seen = {session_id}
     try:
-        while True:
-            parent_id = (session_db.get_session(session_id) or {}).get("parent_session_id")
-            if not parent_id or parent_id in seen:
-                return session_id
-            if (session_db.get_session(parent_id) or {}).get("end_reason") != "compression":
-                return session_id
-            seen.add(parent_id)
-            session_id = parent_id
+        return session_db._session_turn_lease_key(session_id)
     except Exception as exc:
         # Deliberate fail-open: routing identity degrades to the raw session row; the turn
         # must still run. Traceback at debug keeps DB faults diagnosable without noise.
@@ -616,7 +608,10 @@ class CLIAgentSetupMixin:
         from tools.process_registry_notifications import TimelineNotification
         if not getattr(self, "_skip_turn_routing", False) and not isinstance(user_message, TimelineNotification):
             try:
-                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                from hermes_cli.middleware import (
+                    apply_turn_route_middleware, normalize_turn_route_selection,
+                    public_turn_route, turn_route_credentials_usable,
+                )
                 cli_session_id = getattr(self, "session_id", None)
                 result = apply_turn_route_middleware(
                     public_turn_route(route["model"], runtime),
@@ -635,32 +630,26 @@ class CLIAgentSetupMixin:
                 # An unchanged route is still a decision; observers need its reason.
                 if not result.changed:
                     route["middleware_trace"] = list(result.trace or [])
-                elif isinstance(result.payload, dict):
-                    selected_model = result.payload.get("model")
-                    selected_runtime = result.payload.get("runtime")
-                    selected_runtime = selected_runtime if isinstance(selected_runtime, dict) else {}
+                elif (selection := normalize_turn_route_selection(route, result.payload)):
+                    selected_model, selected_provider = selection
                     current_requested = runtime.get("requested_provider") or runtime.get("provider")
-                    current_canonical = runtime.get("provider")
-                    top_requested = result.payload.get("requested_provider")
-                    nested_requested = selected_runtime.get("requested_provider")
-                    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
-                    canonical = result.payload.get("provider") or selected_runtime.get("provider")
-                    selected_provider = requested if requested and requested != current_requested else (canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested))
-                    if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
-                        selected_model = selected_model.strip()
-                        selected_provider = selected_provider.strip()
-                        if selected_provider != current_requested or selected_model != self.model:
-                            from hermes_cli.runtime_provider import resolve_runtime_provider
-                            resolver_kwargs = {"requested": selected_provider, "target_model": selected_model}
-                            if selected_provider == current_requested and (
-                                getattr(self, "_explicit_api_key", None) or getattr(self, "_explicit_base_url", None)
-                            ):
-                                # Model-only routing must retain invocation-level credential authority.
-                                resolver_kwargs.update(
-                                    explicit_api_key=getattr(self, "_explicit_api_key", None),
-                                    explicit_base_url=getattr(self, "_explicit_base_url", None),
-                                )
-                            resolved = resolve_runtime_provider(**resolver_kwargs)
+                    if selected_provider != current_requested or selected_model != self.model:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        resolver_kwargs = {"requested": selected_provider, "target_model": selected_model}
+                        if selected_provider == current_requested or selected_provider == "custom":
+                            # Preserve the active invocation/session endpoint for model-only choices.
+                            resolver_kwargs.update(
+                                explicit_api_key=getattr(self, "_explicit_api_key", None) or runtime.get("api_key"),
+                                explicit_base_url=getattr(self, "_explicit_base_url", None) or runtime.get("base_url"),
+                            )
+                        resolved = resolve_runtime_provider(**resolver_kwargs)
+                        if not turn_route_credentials_usable(resolved):
+                            logger.warning("Turn-route selected OpenRouter without credentials; using the configured route")
+                            resolved = None
+                        if resolved is None:
+                            selected_model = self.model
+                            selected_provider = current_requested
+                        else:
                             runtime = {
                                 "api_key": resolved.get("api_key"), "base_url": resolved.get("base_url"),
                                 "provider": resolved.get("provider", selected_provider),
@@ -669,10 +658,10 @@ class CLIAgentSetupMixin:
                                 "command": resolved.get("command"), "args": list(resolved.get("args") or []),
                                 "credential_pool": resolved.get("credential_pool"),
                             }
-                        runtime["requested_provider"] = selected_provider
-                        route["model"] = selected_model
-                        route["runtime"] = runtime
-                        route["middleware_trace"] = result.trace
+                    runtime["requested_provider"] = selected_provider
+                    route["model"] = selected_model
+                    route["runtime"] = runtime
+                    route["middleware_trace"] = result.trace
                 if result.changed and "middleware_trace" not in route:
                     # A rejected route falls back like a failed middleware; say so instead of silently.
                     logger.warning("Turn-route middleware returned an unusable route; using the configured route")

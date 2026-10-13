@@ -58,7 +58,10 @@ class GatewayTurnRoutingMixin:
         }
         if not internal:
             try:
-                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                from hermes_cli.middleware import (
+                    apply_turn_route_middleware, normalize_turn_route_selection,
+                    public_turn_route, turn_route_credentials_usable,
+                )
 
                 result = apply_turn_route_middleware(
                     public_turn_route(route["model"], runtime),
@@ -74,49 +77,52 @@ class GatewayTurnRoutingMixin:
                 # An unchanged route is still a decision; observers need its reason.
                 if not result.changed:
                     route["middleware_trace"] = list(result.trace or [])
-                elif isinstance(result.payload, dict):
-                    selected_model = result.payload.get("model")
-                    public_runtime = result.payload.get("runtime")
-                    public_runtime = public_runtime if isinstance(public_runtime, dict) else {}
+                elif (selection := normalize_turn_route_selection(route, result.payload)):
+                    selected_model, selected_provider = selection
                     current_requested = runtime.get("requested_provider") or runtime.get("provider")
-                    current_canonical = runtime.get("provider")
-                    top_requested = result.payload.get("requested_provider")
-                    nested_requested = public_runtime.get("requested_provider")
-                    requested = (
-                        nested_requested
-                        if nested_requested and nested_requested != current_requested
-                        else (top_requested or nested_requested)
-                    )
-                    canonical = result.payload.get("provider") or public_runtime.get("provider")
-                    selected_provider = (
-                        requested
-                        if requested and requested != current_requested
-                        else (
-                            canonical
-                            if canonical and canonical != current_canonical
-                            else (requested or canonical or current_requested)
-                        )
-                    )
-                    if (
-                        isinstance(selected_model, str)
-                        and selected_model.strip()
-                        and isinstance(selected_provider, str)
-                        and selected_provider.strip()
-                    ):
-                        selected_model = selected_model.strip()
-                        selected_provider = selected_provider.strip()
-                        if selected_provider != current_requested or selected_model != model:
-                            from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                    if selected_provider != current_requested or selected_model != model:
+                        if selected_provider == current_requested:
+                            # Resolve target-model settings while retaining this session's endpoint and auth.
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
 
-                            runtime, base_request_overrides = _project_runtime_agent_kwargs(
-                                _resolve_runtime_agent_kwargs_for_provider(
-                                    selected_provider, target_model=selected_model
-                                )
+                            target = resolve_runtime_provider(
+                                requested=selected_provider, target_model=selected_model,
+                                explicit_api_key=runtime.get("api_key"), explicit_base_url=runtime.get("base_url"),
                             )
-                        runtime["requested_provider"] = selected_provider
-                        route["model"] = selected_model
-                        route["runtime"] = runtime
-                        route["middleware_trace"] = result.trace
+                            if not turn_route_credentials_usable(target):
+                                raise RuntimeError("Turn-route selected OpenRouter without credentials")
+                            target_runtime, base_request_overrides = _project_runtime_agent_kwargs(target)
+                            target_runtime.update({
+                                "api_key": runtime.get("api_key"), "base_url": runtime.get("base_url"),
+                                "provider": runtime.get("provider"), "requested_provider": selected_provider,
+                                "credential_pool": runtime.get("credential_pool"),
+                            })
+                            runtime = target_runtime
+                        else:
+                            if selected_provider == "custom" and runtime.get("base_url"):
+                                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                                target = resolve_runtime_provider(
+                                    requested=selected_provider, target_model=selected_model,
+                                    explicit_api_key=runtime.get("api_key"), explicit_base_url=runtime.get("base_url"),
+                                )
+                                if not turn_route_credentials_usable(target):
+                                    raise RuntimeError("Turn-route selected OpenRouter without credentials")
+                                runtime, base_request_overrides = _project_runtime_agent_kwargs(target)
+                            else:
+                                from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+
+                                runtime, base_request_overrides = _project_runtime_agent_kwargs(
+                                    _resolve_runtime_agent_kwargs_for_provider(
+                                        selected_provider, target_model=selected_model
+                                    )
+                                )
+                            if not turn_route_credentials_usable(runtime):
+                                raise RuntimeError("Turn-route selected OpenRouter without credentials")
+                    runtime["requested_provider"] = selected_provider
+                    route["model"] = selected_model
+                    route["runtime"] = runtime
+                    route["middleware_trace"] = result.trace
                 if result.changed and "middleware_trace" not in route:
                     # A rejected route falls back like a failed middleware; say so instead of silently.
                     logger.warning("Turn-route middleware returned an unusable route; using the configured route")

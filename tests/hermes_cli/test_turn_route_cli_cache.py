@@ -686,6 +686,15 @@ def test_new_conversation_gets_independent_route_identity_and_resume_follows_lin
         assert child != parent
         assert _cli_route_key(shell) == f"cli:{parent}"
 
+        db.create_session(
+            "branch-from-root", source="cli", parent_session_id=parent,
+            model_config={"_branched_from": parent},
+        )
+        shell.session_id = "branch-from-root"
+        _reset_cli_route_identity(shell)
+        assert _cli_route_key(shell) == "cli:branch-from-root"
+        shell.session_id = child
+
         # Resuming the child later follows the lineage root.
         _reset_cli_route_identity(shell)
         assert _cli_route_key(shell) == f"cli:{parent}"

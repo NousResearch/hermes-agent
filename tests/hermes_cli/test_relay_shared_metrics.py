@@ -1312,63 +1312,41 @@ def test_package_builder_buckets_values_that_drifted_out_of_the_catalog(tmp_path
     assert store._create_package() is None
 
 
-def test_package_builder_fails_closed_on_enums_without_a_fallback_bucket(tmp_path, monkeypatch):
-    """Value drift on an enum with no ``custom``/``other`` bucket is tamper evidence, not catalog
-    drift — those enums are code constants — so the row keeps failing closed."""
-    from hermes_cli.observability import shared_metrics_catalog as catalog_module
-    from hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
-
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset({"browserpaw"}))
-    store.record_counter(
-        EXTENSION_INSTALL_METRIC,
-        {"kind": "plugin", "name": "browserpaw", "outcome": "success", "source": "catalog"},
-        _resource(),
+def test_package_builder_settles_rows_an_earlier_build_stored_with_retired_values(tmp_path):
+    """A built-in toolset or tool an earlier build shipped (Spotify, Home Assistant) is no longer in
+    the contract: rows holding it re-bucket (merged with their siblings) or, when the field has no
+    bucket, stay out, and the rest of the period still exports instead of wedging every package."""
+    from hermes_cli.observability.shared_metrics_contract import (
+        TOOL_ENABLED_UNUSED_METRIC, TOOL_UNAVAILABLE_METRIC,
     )
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
-            (
-                json.dumps({
-                    "kind": "plugin", "name": "browserpaw", "outcome": "must-not-be-exported",
-                    "source": "catalog",
-                }),
-                EXTENSION_INSTALL_METRIC,
-            ),
-        )
-    monkeypatch.setattr(catalog_module, "plugin_catalog_names", lambda: frozenset())
 
-    with pytest.raises(ValueError, match="Unsupported dimensions"):
-        store.create_and_export_package()
-
-    assert list(outbox_directory.glob("*.json")) == []
-
-
-def test_package_builder_fails_closed_on_identifier_drift(tmp_path):
-    """A known shape whose identifier field no longer round-trips through the identifier
-    normalizer cannot be re-bucketed and keeps failing closed (must-not-be-exported)."""
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
     store = SharedMetricsStore(database_path, outbox_directory)
     store.record_model_call(_dimensions(), _resource())
+    for dims in ({"toolset": "file", "used": "yes"}, {"toolset": "terminal", "used": "yes"}):
+        store.record_counter(TOOL_ENABLED_UNUSED_METRIC, dims, _resource())
+    store.record_counter(TOOL_UNAVAILABLE_METRIC, {**_dimensions(), "tool_name": "read_file"}, _resource())
+    retired = {
+        '{"toolset":"file","used":"yes"}': {"toolset": "retired-toolset-a", "used": "yes"},
+        '{"toolset":"terminal","used":"yes"}': {"toolset": "retired-toolset-b", "used": "yes"},
+    }
     with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
-            (
-                json.dumps({
-                    "model": _dimensions()["model"],
-                    "provider": "p" * (PROVIDER_IDENTIFIER_MAX_LENGTH + 1),
-                }),
-                MODEL_ROUTE_METRIC,
-            ),
-        )
+        for old, dims in retired.items():
+            connection.execute("UPDATE counter_aggregates SET dimensions_json = ? WHERE dimensions_json = ?",
+                               (json.dumps(dims, separators=(",", ":")), old))
+        connection.execute("UPDATE counter_aggregates SET dimensions_json = ? WHERE metric_name = ?",
+                           (json.dumps({**_dimensions(), "tool_name": "retired_tool"}), TOOL_UNAVAILABLE_METRIC))
 
-    with pytest.raises(ValueError, match="Unsupported dimensions"):
-        store.create_and_export_package()
+    [package_path] = store.create_and_export_package()
 
-    assert list(outbox_directory.glob("*.json")) == []
+    text = package_path.read_text(encoding="utf-8")
+    assert "retired" not in text
+    metrics = [(m["name"], m["dimensions"], m["value"]) for m in json.loads(text)["metrics"]]
+    assert (TOOL_ENABLED_UNUSED_METRIC, {"toolset": "custom", "used": "yes"}, 2) in metrics
+    assert [m for m in metrics if m[0] == TOOL_UNAVAILABLE_METRIC] == []
+    assert (MODEL_ROUTE_METRIC, _dimensions(), 1) in metrics
+    assert store._create_package() is None
 
 
 def test_retention_prunes_only_expired_exported_history(tmp_path):

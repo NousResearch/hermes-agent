@@ -648,13 +648,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     @staticmethod
     def _access_denied_error(path: str) -> ReadResult:
-        """Error for a path whose stat failed with EACCES/EPERM: the entry may
-        well exist, the shell just cannot see it."""
+        """Error for a path the shell cannot see into: stat denied with
+        EACCES/EPERM, or a regular file that exists but denies the read —
+        in both cases the entry may well exist."""
         return ReadResult(error=(
             f"Permission denied: cannot access '{path}'. The file may exist but is "
-            "not accessible (a parent directory denies search permission, or a "
-            "sandbox blocks the read). Fix the permissions or read it with the "
-            "terminal tool."))
+            "not accessible (a parent directory denies search permission, or the "
+            "file denies read, or a sandbox blocks the read). Fix the permissions "
+            "or read it with the terminal tool."))
 
     @staticmethod
     def _access_vs_missing_branch(arg: str) -> str:
@@ -662,24 +663,29 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         an absent one. ``[ -e ]``/``[ -L ]`` are stats that merely go FALSE on
         EACCES/EPERM, so without this the probe cannot tell a locked file from a
         missing one (#138090). ``ls -d`` stays a metadata-only probe and reports
-        the errno on stderr; the quoted case patterns keep ``*`` a wildcard while
-        skipping the first letter, so "Permission denied"/"permission denied"
-        and "Operation not permitted" all match across GNU/BSD/busybox spellings."""
+        the errno on stderr; the case patterns keep the leading ``*`` a wildcard
+        while skipping the errno's first letter ("Permission denied"/"permission
+        denied", "Operation not permitted" across GNU/BSD/busybox spellings) but
+        are anchored at the END of the message — ``ls`` always ends with the
+        strerror text, so a path merely NAMED "…permission denied…" cannot match."""
         return (f'err="$(ls -d -- {arg} 2>&1)"; '
-                f'case "$err" in *"ermission denied"*|*"peration not permitted"*) '
+                f'case "$err" in *"ermission denied"|*"peration not permitted") '
                 f'echo {ACCESS_DENIED_SENTINEL};; '
                 f'*) echo {MISSING_SENTINEL};; esac')
 
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
         ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
-        ``"access_denied"`` (stat itself failed with EACCES/EPERM — the path may
-        exist but the shell cannot see it), ``"env_unavailable"``, or the named
-        working-directory error when the exec wrapper itself failed
-        (``_env_unavailable_error`` surfaces it verbatim).
+        ``"access_denied"`` (the shell cannot see into the path — stat itself
+        failed with EACCES/EPERM, or the regular file exists but denies the read),
+        ``"env_unavailable"``, or the named working-directory error when the exec
+        wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
-        is a stat (symlinks followed) so it answers without touching content. A dangling
+        is a stat (symlinks followed) so it answers without touching content, and
+        ``[ -r ]`` guards the redirect: an unreadable-but-present regular file
+        would otherwise fail ``wc -c <`` with stderr silenced and read as EMPTY
+        (#138090). A dangling
         symlink is ``not_regular``, never ``missing``: the entry exists, and a writer
         told the path is free would follow the link and create its target."""
         arg = self._escape_shell_arg(path)
@@ -687,7 +693,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"if [ -f {arg} ] && [ -r {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"elif [ -f {arg} ]; then echo {ACCESS_DENIED_SENTINEL}; "
             f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else {self._access_vs_missing_branch(arg)}; fi")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
@@ -1054,8 +1061,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         segments each closed by a ``sentinel`` line — byte size, base64 of the first
         1000 bytes, the ``sed | cut`` page, ``wc -l``, whether the last byte is a
         newline, then the base64 and page pipeline statuses. Probes run only inside
-        ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
-        reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` and a
+        ``[ -f ] && [ -r ]`` (stat-not-open, like ``_probe_regular_file``,
+        with the read guard so an unreadable file reads as denied, not empty) so a
+        FIFO/device never reaches ``head``/``sed``. A missing path echoes
+        ``MISSING_SENTINEL`` and a
         stat denied with EACCES/EPERM echoes ``ACCESS_DENIED_SENTINEL`` (a compound
         command only reports its last status). Every stage silences stderr: the local
         backend merges stderr into stdout and a stray diagnostic would land inside a
@@ -1063,7 +1072,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         arg = self._escape_shell_arg(path)
         mark = f"echo {sentinel}"
         return (
-            f"if [ -f {arg} ]; then "
+            f"if [ -f {arg} ] && [ -r {arg} ]; then "
             f"wc -c < {arg} 2>/dev/null; {mark}; "
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
@@ -1071,6 +1080,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
+            f"elif [ -f {arg} ]; then echo {ACCESS_DENIED_SENTINEL}; "
             f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else {self._access_vs_missing_branch(arg)}; fi")
 

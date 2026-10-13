@@ -1,6 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 import { map, type MapStore } from 'nanostores'
 
+import { gatewaySocketFactory } from '@/api/ws-bridge-socket'
 import type { HermesApiRequest } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -41,7 +42,9 @@ export class HermesGateway extends JsonRpcGatewayClient {
       // The channel already answered -32601; note the missing registry in devtools.
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: gatewaySocketFactory
+
     })
   }
 }

@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from hermes_cli import plugin_hosted_rooms as facade_mod
 from hermes_cli.plugin_hosted_rooms import (
@@ -341,6 +340,17 @@ def test_malformed_update_objects_never_raise(running_service, update):
     assert _user_events(running_service) == []
 
 
+@pytest.mark.parametrize("binding", [None, object(), SimpleNamespace(room_id="relay-room")],
+                         ids=["none", "object", "lookalike"])
+def test_malformed_bindings_never_raise_or_write(running_service, binding):
+    _grant(facade_mod.CAPABILITY_ID)
+
+    result = _submit(HostedRoomFacade(PLUGIN_ID), binding, _update())
+
+    assert (result.status, result.reason) == ("rejected", "invalid_binding")
+    assert _user_events(running_service) == []
+
+
 def test_binding_with_no_authorized_senders_is_refused():
     with pytest.raises(ValueError, match="sender"):
         _binding(sender_ids=frozenset())
@@ -366,7 +376,7 @@ def test_bot_authored_publication_echo_is_refused(running_service):
 def test_facade_public_verbs_are_exactly_the_reviewed_set():
     """New surface (another post/send path) needs its own review; publication is the one gated verb."""
     public = {name for name in dir(HostedRoomFacade) if not name.startswith("_")}
-    assert public == {"describe", "submit_telegram_update", "outcomes", "stop", "publish_outcome"}
+    assert public == {"describe", "submit_telegram_update", "outcomes", "publish_outcome"}
 
 
 def test_unsettled_member_reply_is_not_surfaced_as_an_outcome(running_service, monkeypatch):
@@ -388,36 +398,6 @@ def test_unsettled_member_reply_is_not_surfaced_as_an_outcome(running_service, m
     page = facade.outcomes(_binding())
     assert page.outcomes == ()
     assert page.cursor < settled["seq"] - 1
-
-
-# -- cancellation ----------------------------------------------------------------------------
-
-
-def test_stop_cancels_active_room_work_and_reports_a_cancelled_outcome(idle_service):
-    _grant(facade_mod.CAPABILITY_ID)
-    facade = HostedRoomFacade(PLUGIN_ID)
-    accepted = _submit(facade, _binding(), _update())
-    assert accepted.status == "accepted"
-    assert len(driver.list_tasks(idle_service.db_path, room_id="relay-room")) == 1
-
-    stopped = facade.stop(_binding(), cancel_id="kill-1")
-
-    assert (stopped.status, stopped.tasks) == ("stopped", 1)
-    idle_service.prepare_room(idle_service.bindings()[0])
-    [task] = driver.list_tasks(idle_service.db_path, room_id="relay-room")
-    assert task["status"] == "cancelled"
-    [outcome] = facade.outcomes(_binding()).outcomes
-    assert (outcome.status, outcome.text, outcome.profile) == ("cancelled", None, "agent-tester")
-    assert outcome.source_event_id == accepted.event_id
-
-
-def test_stop_is_disabled_when_the_capability_is_not_granted(idle_service):
-    idle_service.send(room_id="relay-room", event_id="desk-1",
-                      payload={"text": "@tester go", "thread_id": "desk"})
-    _grant()
-    stopped = HostedRoomFacade(PLUGIN_ID).stop(_binding(), cancel_id="kill-1")
-    assert (stopped.status, stopped.reason, stopped.tasks) == ("disabled", "capability_not_granted", 0)
-    assert driver.list_tasks(idle_service.db_path, room_id="relay-room")[0]["status"] == "queued"
 
 
 def test_caller_cancellation_mid_submit_leaves_at_most_one_event(idle_service, monkeypatch):
@@ -481,4 +461,3 @@ def test_disabled_facade_returns_results_instead_of_raising_into_telegram_dispat
 
     assert _submit(facade, _binding(), _update()).status == "disabled"
     assert facade.outcomes(_binding()).outcomes == ()
-    assert facade.stop(_binding(), cancel_id="x").status == "disabled"

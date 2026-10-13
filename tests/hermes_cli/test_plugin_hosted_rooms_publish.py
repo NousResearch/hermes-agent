@@ -386,6 +386,22 @@ def test_caller_cancelled_mid_send_never_reposts(running_service, monkeypatch):
     assert healthy.calls == []
 
 
+def test_uncertain_delivery_is_never_evicted_within_the_process(monkeypatch):
+    monkeypatch.setattr(facade_mod, "_LEDGER_MAX", 1)
+    uncertain = ("relay-room", 1, "agent-tester")
+    assert facade_mod._ledger_claim(uncertain) is None
+    facade_mod._ledger_settle(uncertain, None)
+
+    for seq in range(2, 6):
+        key = ("relay-room", seq, "agent-tester")
+        assert facade_mod._ledger_claim(key) is None
+        facade_mod._ledger_settle(key, facade_mod.PublicationResult("published", message_id=str(seq)))
+
+    duplicate = facade_mod._ledger_claim(uncertain)
+    assert duplicate is not None
+    assert (duplicate.status, duplicate.reason) == ("duplicate", "delivery_uncertain")
+
+
 def test_unexpected_internal_error_is_a_result_not_a_raise(running_service, adapter, monkeypatch):
     facade, outcome = _ready(*BOTH)
 

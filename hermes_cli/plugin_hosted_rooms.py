@@ -118,12 +118,6 @@ class OutcomePage:
     cursor: int
 
 
-@dataclass(frozen=True)
-class StopResult:
-    status: Literal["stopped", "disabled", "rejected", "failed"]
-    reason: str = ""
-    tasks: int = 0
-
 
 @dataclass(frozen=True)
 class PublicationResult:
@@ -227,8 +221,10 @@ def _ledger_claim(key: tuple) -> Optional[PublicationResult]:
                 return PublicationResult("duplicate", "delivery_uncertain")
             return PublicationResult("duplicate", "", value)
         _ledger[key] = _IN_FLIGHT
-        # Evict the oldest settled entries only; a live claim is never dropped.
-        for old in [k for k, v in _ledger.items() if v is not _IN_FLIGHT][:max(0, len(_ledger) - _LEDGER_MAX)]:
+        # Evict only confirmed deliveries. Live and uncertain claims are retained for the process
+        # lifetime: either may already reach Telegram and therefore must never become sendable again.
+        evictable = [k for k, v in _ledger.items() if v is not _IN_FLIGHT and v is not _UNCERTAIN]
+        for old in evictable[:max(0, len(_ledger) - _LEDGER_MAX)]:
             del _ledger[old]
     return None
 
@@ -404,10 +400,15 @@ class HostedRoomFacade:
         service, reason = self._gate()
         if service is None:
             return IngressResult("disabled", reason)
+        if not isinstance(binding, TelegramRoomBinding):
+            return IngressResult("rejected", "invalid_binding")
         try:
             event = _event_from_update(update, binding)
         except _Rejected as exc:
             return IngressResult("rejected", exc.reason)
+        except Exception:
+            logger.warning("hosted_rooms update validation failed for plugin %s", self._plugin_id, exc_info=True)
+            return IngressResult("failed", "internal_error")
         event_id = f"tg:{event.chat_id}:{event.message_id}"
         try:
             row = service.send(
@@ -476,21 +477,6 @@ class HostedRoomFacade:
         if pending:
             cursor = min(int(row["seq"]) for row in pending.values()) - 1
         return OutcomePage(True, "", tuple(outcomes), cursor)
-
-    # -- cancellation -------------------------------------------------------------------------
-
-    def stop(self, binding: TelegramRoomBinding, *, cancel_id: str) -> StopResult:
-        """Kill switch: fence the room and cancel its queued/running turns."""
-        service, reason = self._gate()
-        if service is None:
-            return StopResult("disabled", reason)
-        try:
-            return StopResult("stopped", "", int(service.stop_room(binding.room_id, cancel_id=cancel_id)))
-        except Exception as exc:
-            if (code := _error_reason(exc)) is not None:
-                return StopResult("rejected", code)
-            logger.warning("hosted_rooms stop failed for plugin %s", self._plugin_id, exc_info=True)
-            return StopResult("failed", "internal_error")
 
     # -- publication --------------------------------------------------------------------------
 

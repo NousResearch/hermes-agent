@@ -657,7 +657,6 @@ async def on_update(update, context):   # registered via ctx.register_platform_h
     # IngressResult(status, reason, event_id, seq, event); result.ok for accepted/duplicate
 
 page = ctx.hosted_rooms.outcomes(binding, since_seq=cursor)   # OutcomePage(enabled, reason, outcomes, cursor)
-ctx.hosted_rooms.stop(binding, cancel_id="kill-1")            # StopResult(status, reason, tasks)
 ```
 
 **Version discovery.** `FACADE_VERSION` (currently `1`) changes only when the
@@ -678,7 +677,7 @@ message id with different text returns `rejected/event_conflict`. `status` is
 one of `accepted`, `duplicate`, `disabled`, `rejected`, or `failed`, and
 `reason` is one of `capability_not_granted`, `hosted_rooms_unavailable`,
 `incompatible_gateway`, `edit_not_admitted`, `unsupported_message`,
-`invalid_coordinates`, `not_group_chat`, `forwarded`, `sender_chat`, `via_bot`,
+`invalid_binding`, `invalid_coordinates`, `not_group_chat`, `forwarded`, `sender_chat`, `via_bot`,
 `bot_sender`, `chat_mismatch`, `topic_mismatch`, `sender_not_allowed`,
 `room_not_found`, `event_conflict`, `not_room_authority`, `invalid_event`, or
 `internal_error`.
@@ -690,8 +689,6 @@ roster, plus `source_event_id` (the `tg:` event that started the round). `text`
 is set only on a settled reply. A member message whose turn has not settled
 yet is never returned, and the returned `cursor` stops just before it.
 
-**Cancellation.** `stop()` fences the room and cancels its queued or running
-turns. Cancelled turns then come back from `outcomes()` as `cancelled`.
 Cancelling the `submit_telegram_update` await does not undo an append that has
 already started; retrying the same update afterwards returns `duplicate`.
 
@@ -718,7 +715,8 @@ and `text_too_long` (over `MAX_PUBLICATION_CHARS`, 4000). Failed reasons are
 outcome returns `duplicate` with the first `message_id`, or `duplicate` with
 reason `in_flight` while the first send is still running. A failed send
 releases the claim so a retry can publish. A send whose caller was cancelled
-may already have reached Telegram, so it is never repeated: later calls return
+may already have reached Telegram, so it is retained and never repeated for the
+gateway process lifetime: later calls return
 `duplicate` with reason `delivery_uncertain`. The duplicate ledger lives only in the
 gateway process and a restart forgets it, so a relay must persist its own
 `outcomes()` cursor.

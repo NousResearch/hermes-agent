@@ -188,7 +188,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
     ],
     "gemini": [
-        "gemini-4-argon", "gemini-3.8-flash", "gemini-3.7-flash",
+        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
@@ -297,7 +298,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-4-argon", "google/gemini-3.8-flash", "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",

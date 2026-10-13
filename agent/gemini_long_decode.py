@@ -6,7 +6,8 @@ Gemini 4 caps each request (32,768 tokens unary, 65,536 streamed) but lets ``max
 that token (never the partial output) until any other finish reason. Each hop re-reads the prompt plus
 everything generated so far, so per-hop ``promptTokenCount`` grows: usage is summed for billing (what
 the google-genai SDK reports and Google bills) while the first hop's prompt is kept as the context size,
-because compaction fed the summed prompt would fire far too early.
+because compaction fed the summed prompt would fire far too early. A dropped stream resumes from its
+last checkpoint token rather than restarting (Google bills a dropped stream up to that checkpoint).
 Docs: https://ai.google.dev/gemini-api/docs/generate-content/long-decode
 """
 
@@ -61,18 +62,21 @@ def merge_hop_responses(hops: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def split_stream_continuation(event: dict[str, Any], hop_usage: list[dict[str, Any]]) -> tuple[dict[str, Any], Optional[str]]:
-    """``(event to translate, token)`` for one SSE event of a possibly multi-hop stream.
+    """``(event to translate, token to resend with if the stream ends here)`` for one SSE event.
 
     A CONTINUATION finish is not the end: its finish reason and (per-stream cumulative) usage are
     held back in ``hop_usage`` and the token returned for the next hop. The real final event gets
-    the usage summed over every hop. Mid-stream checkpoint tokens are ignored: a dropped stream is
-    retried from the start by the caller, which is always valid (resuming is a cost optimisation).
+    the usage summed over every hop. A token on an event with no finish is a mid-stream checkpoint
+    (every ~5K tokens past 32K): it commits that event and everything before it, so the caller resumes
+    a dropped stream by resending the request with it; a drop with no clean checkpoint restarts.
     """
     token = continuation_token(event)
     if token:
         hop_usage.append(event.get("usageMetadata") or {})
         cand = {k: v for k, v in _candidate(event).items() if k not in ("finishReason", "continuationToken")}
         return {k: v for k, v in event.items() if k != "usageMetadata"} | {"candidates": [cand]}, token
-    if hop_usage and _candidate(event).get("finishReason"):
+    cand = _candidate(event)
+    if hop_usage and cand.get("finishReason"):
         return {**event, "usageMetadata": merge_hop_usage([*hop_usage, event.get("usageMetadata") or {}])}, None
-    return event, None
+    checkpoint = None if cand.get("finishReason") else cand.get("continuationToken")
+    return event, checkpoint if isinstance(checkpoint, str) and checkpoint else None

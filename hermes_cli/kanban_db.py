@@ -559,69 +559,6 @@ def _board_path(
     return board_dir(slug) / leaf
 
 
-def kanban_db_path(board: Optional[str] = None) -> Path:
-    """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
-
-
-def board_for_db_path(path: "str | os.PathLike[str] | None") -> Optional[str]:
-    """Board slug whose canonical store is ``path`` — the inverse of
-    :func:`kanban_db_path`. ``None`` when ``path`` is not a board store in the
-    canonical layout: a copied, relative or in-memory store carries no board
-    identity, and callers must not attribute one to it."""
-    if not path:
-        return None
-    try:
-        candidate = Path(path).expanduser().resolve()
-        home_store = (kanban_home() / "kanban.db").resolve()
-    except (OSError, RuntimeError):
-        return None
-    if candidate == home_store:
-        return DEFAULT_BOARD
-    try:
-        rel = candidate.relative_to(boards_root().resolve())
-    except (OSError, RuntimeError, ValueError):
-        return None
-    parts = rel.parts
-    if len(parts) != 2 or parts[1] != "kanban.db":
-        return None
-    try:
-        return _normalize_board_slug(parts[0])
-    except ValueError:
-        return None
-
-
-def _board_for_connection(conn: sqlite3.Connection, declared: Optional[str] = None) -> Optional[str]:
-    """Board whose store ``conn`` opened, preferring it over ``declared``.
-
-    ``HERMES_KANBAN_DB`` pins the store and outranks the board slug in
-    :func:`_board_path`, so the store — not the board the caller named or the
-    session sits on — is the only reliable answer to "which board is this row
-    about to land on".
-    """
-    try:
-        rows = conn.execute("PRAGMA database_list").fetchall()
-    except sqlite3.Error:
-        return declared
-    for row in rows:
-        if row[1] == "main":
-            return board_for_db_path(row[2]) or declared
-    return declared
-
-
-def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
-
-
-def attachments_root(board: Optional[str] = None) -> Path:
-    """Per-board attachments root (``HERMES_KANBAN_ATTACHMENTS_ROOT`` wins). Workers
-    read attachments by absolute path, so remote terminal backends must mount it."""
-    return _board_path("HERMES_KANBAN_ATTACHMENTS_ROOT", board, ("kanban", "attachments"), "attachments")
-
-
 def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     """Return the per-task attachment directory ``<root>/<task_id>/``."""
     return attachments_root(board=board) / task_id
@@ -4258,13 +4195,18 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
+    _board_for_connection,
     _default_board_display_name,
     _dir_holds_board,
+    attachments_root,
+    board_for_db_path,
     board_metadata_path,
     create_board,
+    kanban_db_path,
     list_boards,
     read_board_metadata,
     remove_board,
+    workspaces_root,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

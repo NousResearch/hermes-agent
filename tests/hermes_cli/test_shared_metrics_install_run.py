@@ -177,7 +177,9 @@ def test_receipt_is_recorded_only_on_a_day_the_sender_can_ever_send(marks, monke
     from hermes_cli.observability.shared_metrics_sender import CONSENT_GATE_SQL, reconcile_send_consent
     from hermes_cli.sqlite_util import write_txn
 
-    t0 = datetime(2026, 10, 6, tzinfo=UTC)
+    # Anchored to the real date: the receipt-age cutoff (_stale) reads the real clock, so a fixed
+    # date here expires the receipt once it is more than MAX_RECEIPT_AGE_SECONDS in the past.
+    t0 = datetime.combine(datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC) - timedelta(days=1)
     clock = {"now": t0 + timedelta(hours=9)}
     monkeypatch.setattr(store_module, "_utc_now", lambda: clock["now"])
     monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",

@@ -107,11 +107,15 @@ def record_response_usage(
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
     total_tokens = canonical_usage.total_tokens
+    # Gemini long decode sums every hop's re-sent prefix into prompt_tokens (billing, session totals);
+    # the context actually in the window is the first hop's prompt: compaction and the meter read that.
+    _initial_prompt = getattr(response.usage, "initial_prompt_tokens", None)
+    context_prompt_tokens = _initial_prompt if isinstance(_initial_prompt, int) and _initial_prompt > 0 else None
     # Canonical token + cache buckets for context engines; legacy keys stay for back-compat.
     usage_dict = {
-        "prompt_tokens": prompt_tokens,
+        "prompt_tokens": context_prompt_tokens or prompt_tokens,
         "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
+        "total_tokens": (context_prompt_tokens + completion_tokens) if context_prompt_tokens else total_tokens,
         "input_tokens": canonical_usage.input_tokens,
         "output_tokens": canonical_usage.output_tokens,
         "cache_read_tokens": canonical_usage.cache_read_tokens,
@@ -130,21 +134,21 @@ def record_response_usage(
     # prompt_tokens with replayed thinking. Display-only; compression math uses real usage.
     # The provider just priced this request exactly: if the delta since the previous anchor
     # introduced images, the residual is their real per-image cost (learned before re-anchoring).
-    calibrate_from_usage(agent, messages, aggregator_usage.prompt_tokens)
+    calibrate_from_usage(agent, messages, context_prompt_tokens or aggregator_usage.prompt_tokens)
     _new_anchor = capture_usage_anchor(
-        aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
+        context_prompt_tokens or aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
     )
     if _new_anchor is not None:
         set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
     _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
     if _loop_mod()._should_rearm_compression_budget(
         compression_attempts, completed_compaction_pending=_completed_compaction_pending,
-        prompt_tokens=prompt_tokens, threshold_tokens=_compression_threshold,
+        prompt_tokens=usage_dict["prompt_tokens"], threshold_tokens=_compression_threshold,
     ):
         logger.info(
             "Compression budget rearmed after provider-confirmed "
             "recovery: prompt=%s < threshold=%s (attempts were %s/%s)",
-            f"{prompt_tokens:,}",
+            f"{usage_dict['prompt_tokens']:,}",
             f"{_compression_threshold:,}",
             compression_attempts,
             max_compression_attempts,
@@ -158,7 +162,7 @@ def record_response_usage(
     agent._last_turn_usage = dict(usage_dict)
     # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
     # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
-    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
+    agent._last_prompt_size_tokens = int(context_prompt_tokens or aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):

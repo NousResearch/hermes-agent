@@ -21,6 +21,33 @@ The security model has eight layers:
 7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
+## Local action receipts
+
+Action receipts are optional, profile-scoped evidence about tool calls observed by
+the local Hermes process. Enable them explicitly:
+
+```yaml
+observability:
+  action_receipts:
+    enabled: true
+    max_rows: 100000     # optional
+    max_age_days: 90     # optional
+    max_size_mb: 512     # optional live-data bound
+```
+
+The ledger is disabled by default and stored at
+`$HERMES_HOME/action_receipts.db` with owner-only permissions. Arguments and
+outputs are represented by redacted summaries and process-keyed hashes; they are
+not stored verbatim.
+
+A receipt is not an authority grant, a durable effect settlement, or proof of
+exactly-once execution. Its absence does not prove that an effect did not happen.
+A timeout or cancellation may be effect-indeterminate when an external system
+continues after Hermes stops observing it. The local hash chain detects bounded
+internal inconsistency, but a writer that controls the database can rewrite a
+valid chain or truncate its tail. These controls harden local evidence; only OS
+permissions and isolation provide a security boundary.
+
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.

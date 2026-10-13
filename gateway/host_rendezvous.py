@@ -308,8 +308,10 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
 
     token = read_token(record.role)
     headers = {"X-Hermes-Token": token, "Authorization": f"Bearer {token}"} if token else {}
+    from hermes_cli.url_utils import format_url_host
+
     request = urllib.request.Request(
-        f"http://{host}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
+        f"http://{format_url_host(host)}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:

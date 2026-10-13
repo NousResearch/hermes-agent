@@ -1,8 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
-import { jaAuxTasks } from './ja_aux_tasks'
-import { jaLocalModels } from './ja_local_models'
 import { jaPluginSettings } from './ja_plugins'
 import { jaUpdateChannel } from './ja_update_channel'
 import { settingsRiskCopyJa } from './settings-risk-copy'
@@ -1084,10 +1082,8 @@ export const jaSettings: NonNullable<TranslationOverrides['settings']> = {
     inheritMainEffort: '継承 · メインモデルの推論強度',
     inheritsFrom: task => `${task} を継承`,
     followTask: task => `${task} に従う`,
-    providerDefault: '(プロバイダーのデフォルト)',
-    tasks: jaAuxTasks
+    providerDefault: '(プロバイダーのデフォルト)'
   },
-  localModels: jaLocalModels,
   providers: {
     connectAccount: 'アカウントを接続',
     haveApiKey: 'API キーをお持ちですか？',

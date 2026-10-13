@@ -1,16 +1,17 @@
 import { billingRiskJa as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
-import { jaSettings } from './ja-settings'
+import { jaAuxTasks } from './ja_aux_tasks'
+import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaProjects } from './ja_projects'
+import { jaSettings } from './ja_settings'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { ja as permissionModelCopy } from './permission-model-copy'
 
 export const jaOverrides = {
-  settings: jaSettings,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -2980,6 +2981,11 @@ export const jaOverrides = {
       signIn: 'サインイン',
       notNow: '今はしない'
     }
+  },
+  settings: {
+    ...jaSettings,
+    model: { ...jaSettings.model, tasks: jaAuxTasks },
+    localModels: jaLocalModels
   },
   billingRisk: billingRiskCopy,
   permissionModel: permissionModelCopy

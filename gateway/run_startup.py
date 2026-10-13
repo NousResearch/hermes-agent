@@ -622,6 +622,7 @@ class GatewayStartupMixin:
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            event._hermes_startup_resume = True
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

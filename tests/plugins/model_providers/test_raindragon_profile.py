@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture
 def raindragon_profile():
-    import model_tools  # noqa: F401 -- triggers plugin discovery
+    import model_tools  # triggers plugin discovery
     import providers
 
     profile = providers.get_provider_profile("raindragon")
@@ -32,7 +32,7 @@ class TestRainDragonProfile:
 
     @pytest.mark.parametrize("alias", ["raindragon-ai"])
     def test_aliases_resolve(self, alias):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         assert providers.get_provider_profile(alias).name == "raindragon"

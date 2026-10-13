@@ -1,9 +1,68 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { createRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PaneTab, PaneTabLabel } from './pane-tab'
+import { PaneTab, PaneTabLabel, PaneTabStrip } from './pane-tab'
 
 afterEach(cleanup)
+
+describe('PaneTabStrip wheel scrolling', () => {
+  // jsdom has no layout, so give the tablist an overflowing geometry by hand.
+  const renderStrip = ({ clientWidth = 300, scrollWidth = 900 } = {}) => {
+    const listRef = createRef<HTMLDivElement>()
+    render(
+      <PaneTabStrip listRef={listRef}>
+        <PaneTab>
+          <PaneTabLabel>tab</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const list = screen.getByRole('tablist')
+    Object.defineProperty(list, 'clientWidth', { configurable: true, value: clientWidth })
+    Object.defineProperty(list, 'scrollWidth', { configurable: true, value: scrollWidth })
+
+    return { list, listRef }
+  }
+
+  const wheel = (el: HTMLElement, init: WheelEventInit) => {
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...init })
+    el.dispatchEvent(event)
+
+    return event
+  }
+
+  it('a plain vertical wheel scrolls an overflowing strip sideways — no Shift needed', () => {
+    const { list, listRef } = renderStrip()
+    // The scroller still reaches the caller's ref (useActiveTabVisible reads it).
+    expect(listRef.current).toBe(list)
+
+    const down = wheel(list, { deltaY: 120 })
+    expect(list.scrollLeft).toBe(120)
+    expect(down.defaultPrevented).toBe(true)
+
+    wheel(list, { deltaY: -40 })
+    expect(list.scrollLeft).toBe(80)
+  })
+
+  it('leaves horizontal wheels, Ctrl/⌘ zoom and a fitting strip to the browser', () => {
+    const { list } = renderStrip()
+
+    for (const init of [
+      { deltaX: 120, deltaY: 10 },
+      { ctrlKey: true, deltaY: 120 },
+      { deltaY: 120, metaKey: true }
+    ]) {
+      expect(wheel(list, init).defaultPrevented).toBe(false)
+    }
+
+    expect(list.scrollLeft).toBe(0)
+
+    Object.defineProperty(list, 'clientWidth', { configurable: true, value: 900 })
+    expect(wheel(list, { deltaY: 120 }).defaultPrevented).toBe(false)
+    expect(list.scrollLeft).toBe(0)
+  })
+})
 
 describe('PaneTab close gestures', () => {
   it('middle-click closes — pointer events only, no auxclick', () => {

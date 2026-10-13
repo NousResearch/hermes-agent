@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { refreshProjectTree } from '@/store/projects'
+import { openProjectCreate, refreshProjectTree } from '@/store/projects'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
@@ -43,6 +43,7 @@ vi.mock('@/i18n', () => ({
           moveNoProjects: 'No other projects',
           movedTo: (name: string) => `Moved to ${name}`,
           moveToProject: 'Move to project',
+          newButton: 'New project',
           noColor: 'No color'
         },
         row: {
@@ -81,6 +82,7 @@ vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() 
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
+  openProjectCreate: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
   projectRootCwd: vi.fn(() => ''),
   refreshProjectTree: vi.fn(() => Promise.resolve())
@@ -395,5 +397,27 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  // Moving a chat somewhere that does not exist yet was a dead end: the submenu
+  // listed only existing projects. Creating one from here has to carry the
+  // session along, so the dialog's create IS the move.
+  it('offers "New project" in the move submenu, armed with the session', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+
+    // Offered even with no other project to move into (the tree here is empty).
+    const create = await screen.findByRole('menuitem', { name: 'New project' })
+    fireEvent.click(create)
+
+    await waitFor(() => expect(openProjectCreate).toHaveBeenCalledWith({ profile: undefined, sessionId: 's1' }))
   })
 })

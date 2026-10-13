@@ -1390,11 +1390,15 @@ export interface ProjectDialogState {
   mode: 'add-folder' | 'create' | 'rename'
   projectId?: string
   name?: string
+  /** Set when the dialog was opened from a session's "Move to project"
+   *  submenu: the created project immediately becomes where that session
+   *  lives, instead of just being created and entered. */
+  moveSession?: { profile?: null | string; sessionId: string }
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+export function openProjectCreate(moveSession?: ProjectDialogState['moveSession']): void {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
@@ -1404,7 +1408,7 @@ export function openProjectCreate(): void {
     return
   }
 
-  $projectDialog.set({ mode: 'create' })
+  $projectDialog.set({ mode: 'create', ...(moveSession ? { moveSession } : {}) })
 }
 
 /** Clear the armed "New project" drag placement — on dialog close, so a later

@@ -37,6 +37,7 @@ import {
   $projectTree,
   applyRenamedSessionTitle,
   moveSessionToProject,
+  openProjectCreate,
   projectIdForCwd,
   projectRootCwd,
   refreshProjectTree
@@ -225,25 +226,40 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
     void refreshProjectTree()
   }, [])
 
-  if (targets.length === 0) {
-    return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
-  }
+  // The way out of a sidebar where nothing fits: create the project here, and
+  // the dialog hands the session over to it once it exists. Listed last, and
+  // present even with no other projects to move into.
+  const createProjectItem = renderActionItem(kit, {
+    icon: 'new-folder',
+    key: 'new-project',
+    label: p.newButton,
+    onSelect: () => {
+      triggerHaptic('selection')
+      openProjectCreate({ profile, sessionId })
+    }
+  })
 
   return (
     <>
-      {targets.map(node => (
-        <kit.Item
-          key={node.id}
-          onSelect={() => {
-            triggerHaptic('selection')
-            moveSessionToProject(sessionId, node.id, profile)
-              .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
-              .catch(err => notifyError(err, p.moveFailed))
-          }}
-        >
-          {node.label}
-        </kit.Item>
-      ))}
+      {targets.length === 0 ? (
+        <kit.Item disabled>{p.moveNoProjects}</kit.Item>
+      ) : (
+        targets.map(node => (
+          <kit.Item
+            key={node.id}
+            onSelect={() => {
+              triggerHaptic('selection')
+              moveSessionToProject(sessionId, node.id, profile)
+                .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(node.label) }))
+                .catch(err => notifyError(err, p.moveFailed))
+            }}
+          >
+            {node.label}
+          </kit.Item>
+        ))
+      )}
+      <kit.Separator />
+      {createProjectItem}
     </>
   )
 }

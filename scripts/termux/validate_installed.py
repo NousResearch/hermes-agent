@@ -126,6 +126,13 @@ def main() -> None:
             str(python), str(root / "app/scripts/termux/build_wheels.py"),
             "--import-modules", *natives,
         ], env, home)
+        # The MCP client ships in the payload (tools/mcp_tool.py probes this
+        # exact module path); without it configured HTTP MCP servers silently
+        # register no tools.
+        run([
+            str(python), "-c",
+            "import mcp.client.streamable_http; print('MCP_SDK_IMPORT_OK')",
+        ], env, home)
         node = root / "tools/node" / prefix.relative_to("/") / "bin/node"
         run([str(node), "--version"], env, home)
         run([str(node), str(root / "tools/npm/lib/node_modules/npm/bin/npm-cli.js"), "--version"], env, home)

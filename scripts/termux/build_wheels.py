@@ -334,6 +334,10 @@ def import_native_modules(build_set: list[str]) -> None:
     modules = {
         "ruamel-yaml-clib": "_ruamel_yaml", "cffi": "_cffi_backend",
         "pillow": "PIL._imaging", "pyyaml": "yaml._yaml", "firecrawl-anydoc": "anydoc",
+        # rpds-py is the distribution name; the importable package is "rpds"
+        # (the naive dash-to-underscore rule would probe a nonexistent
+        # "rpds_py" and fail the gate).
+        "rpds-py": "rpds",
         # import pillow_heif alone never fails on a dead link: its
         # __init__ swallows the _pillow_heif ImportError into a
         # DeferredError that only fires on first use. Import the C

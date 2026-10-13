@@ -1,25 +1,29 @@
 name: hermes-aac
 title: Hermes AAC
 repo: https://github.com/TREE-Ind/hermes-aac
-sha: 0b1494ca967362a8692bda78100e12ba7a7a96af
+sha: 45d855ff2d8f448e1f98b62870aa72c3a02ea013
 subdir: ""
 description: Communication boards, explicit speech, switch scanning and reviewed AI proposals for Hermes Desktop.
 maintainer: TREE-Ind
 tier: community
 category: desktop
-version: "0.1.0"
+version: "0.1.1"
 requires_hermes: ">=0.21.7"
 readme: true
 onboarding: false
 platforms: [windows]
 screenshots:
-  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/cockpit-1366.png
-  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/studio-1366.png
-  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/0b1494ca967362a8692bda78100e12ba7a7a96af/evidence/focus-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/cockpit-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/studio-1366.png
+  - https://raw.githubusercontent.com/TREE-Ind/hermes-aac/45d855ff2d8f448e1f98b62870aa72c3a02ea013/evidence/focus-1366.png
 known_issues:
   - Experimental, nonclinical AAC; requires Hermes Desktop and configured services for optional AI and speech.
   - Screenshots are actual React renders with mocked SDK/native boundaries, not live provider proof.
-  - Saved phrases and approved boards persist locally in plaintext; Stop cannot cancel provider synthesis.
+  - Saved phrases and approved boards persist locally in plaintext; full config is read-only through SDK.
+  - Speech is submission acknowledgement only; backend-owned audio may play on a remote gateway host.
+  - No speech Stop, request-scoped cancellation, completion or later playback error tracking; Stop scanning remains independent.
+  - No voice catalog or model/provider/settings writes; configure in Hermes Settings.
+  - Explicit expression tags require a current ElevenLabs v3 config snapshot, not an atomic guarantee or provider attestation.
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -20,6 +20,9 @@ _GITHUB_ORIGIN = re.compile(
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
 )
 _SHA = re.compile(r"[0-9a-f]{40}")
+# A read-only probe answers in milliseconds, except a lookup of an object this checkout does not
+# have: that walks the whole (multi-pack) object store instead of the release's ancestry.
+_PROBE_TIMEOUT_SECONDS = 10
 
 
 def source_repository(git_cmd=None, cwd=None) -> str:
@@ -96,6 +99,26 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     return target
 
 
+def _probe(git_cmd, cwd, *args):
+    """``git <args>`` in ``cwd``, or None when git did not answer at all.
+
+    A probe git never answered proves nothing and must not decide an update (issue #137646): the
+    bound kills a lookup of a commit this checkout never fetched — seconds of CPU in a large
+    partial clone, no network — and a git that is not there answers nothing either. None is an
+    unknown relation, never a claim about one.
+    """
+    from hermes_cli.source_check import source_git_env
+
+    try:
+        return subprocess.run(
+            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=_PROBE_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
+            env=source_git_env(), check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("git %s did not answer: %s", " ".join(args), exc)
+        return None
+
+
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
 
@@ -105,19 +128,28 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     from hermes_cli.source_check import _github_compare, source_git_env
 
     def run(*args):
+        """HEAD is a local file read every later step needs: a checkout that cannot report it
+        fails the update rather than guessing, so this one is not allowed to go unanswered."""
         return subprocess.run(
             [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False)
+            errors="replace", timeout=_PROBE_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
+            env=source_git_env(), check=False)
 
     head = run("rev-parse", "HEAD").stdout.strip()
     if not _SHA.fullmatch(head):
         return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
+    # Whether HEAD *contains* the release is the question that may go unanswered: the release
+    # commit need not be in this object store, and no bound makes the local probe answer then.
+    # An unknown relation falls through to the comparison API below, as a shallow checkout's
+    # does — rather than reporting an unresolvable channel and refusing the update.
+    ancestry = _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
+    if ancestry is not None and ancestry.returncode == 0:
         return head
     # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+    if ancestry is not None and ancestry.returncode == 1:
+        shallow = _probe(git_cmd, cwd, "rev-parse", "--is-shallow-repository")
+        if shallow is not None and shallow.stdout.strip() == "false":
+            return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
     return None if status in ("behind", "diverged") else head
 
@@ -199,21 +231,18 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
         if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
             raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
     if git_cmd is not None:
-        from hermes_cli.source_check import source_git_env
-
-        result = subprocess.run(
-            [*git_cmd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"], cwd=cwd,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            stdin=subprocess.DEVNULL, env=source_git_env(),
-            check=False,
-        )
+        result = _probe(git_cmd, cwd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
         # The target need not exist locally before the updater's fetch. When it
         # does, any descendants prove that this pinned build would roll us back.
-        if result.returncode == 0 and result.stdout.strip():
+        # A probe that never answered (that same absent commit, killed at the bound)
+        # proves nothing either, and must not refuse the retirement instead.
+        if result is not None and result.returncode == 0 and result.stdout.strip():
             raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
         if terminal["head"]["sequence"] > request["sequence"]:
             # Shallow checkouts may lack the qualified commit, even when HEAD is
             # today's stable build. Read it with the protocol's full digest checks.
+            from hermes_cli.source_check import source_git_env
+
             current_manifest = _resolve_channel(terminal["name"], request["repository"]).manifest
             if current_manifest is None:
                 raise ValueError("Source retirement cannot verify the current destination build")

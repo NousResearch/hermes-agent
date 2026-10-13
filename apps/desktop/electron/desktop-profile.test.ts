@@ -7,11 +7,56 @@ import { test } from 'vitest'
 
 import {
   createDesktopProfilePreferences,
+  DESKTOP_PROFILE_NAME_RE,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch,
   resolveDesktopWindowRoute
 } from './desktop-profile'
+import { migrateActiveProfileIfMissing } from './profile-migration'
 import { WindowConnectionRouteRegistry } from './window-connection-route'
+
+test.each(['selected', 'default', null])('remembering %s survives boot re-scoring of a migrated preference', name => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-migration-'))
+  const target = path.join(root, 'active-profile.json')
+  const home = path.join(root, 'home')
+  const profilesRoot = path.join(home, 'profiles')
+  const defaultRoute = { connectionId: 'remote-work', profile: 'work' }
+
+  try {
+    fs.mkdirSync(path.join(profilesRoot, 'heuristic'), { recursive: true })
+    // Default now wins over the old heuristic; without an explicit choice,
+    // the real boot migration repairs this record to { profile: null }.
+    fs.writeFileSync(path.join(home, 'state.db'), Buffer.alloc(100_000))
+    fs.writeFileSync(target, JSON.stringify({ profile: 'heuristic', _migrated: true, defaultRoute, theme: 'dark' }))
+
+    const preferences = createDesktopProfilePreferences(target)
+    preferences.remember(name)
+    const remembered = fs.readFileSync(target, 'utf8')
+
+    const migrated = migrateActiveProfileIfMissing(target, {
+      legacyActivePath: path.join(home, 'active_profile'),
+      hermesHome: home,
+      profilesRoot,
+      existsSync: fs.existsSync,
+      readFileSync: fs.readFileSync,
+      statSync: fs.statSync,
+      readdirSync: dir => fs.readdirSync(dir, { withFileTypes: true }),
+      isHermesProcess: () => false,
+      now: Date.now,
+      writeJson: (file, payload) => fs.writeFileSync(file, JSON.stringify(payload)),
+      isValidProfileName: profile => profile !== 'default' && DESKTOP_PROFILE_NAME_RE.test(profile)
+    })
+
+    const restarted = createDesktopProfilePreferences(target)
+    assert.equal(restarted.readActive(), name)
+    assert.deepEqual(restarted.getDefault(), defaultRoute)
+    assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).theme, 'dark')
+    assert.equal(migrated, false)
+    assert.equal(fs.readFileSync(target, 'utf8'), remembered)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('failed authoritative writes leave the previous default and listeners untouched', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-profile-write-'))

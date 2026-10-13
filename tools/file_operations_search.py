@@ -363,7 +363,7 @@ class SearchMixin:
         ``merge_stderr`` mirrors the shell path's stderr handling: merged for content
         search (diagnostics feed the error message), discarded (``2>/dev/null``) for
         file lists and probes."""
-        from tools.environments.local import _kill_process_group_posix, _make_run_env
+        from tools.environments.local import _kill_process_group_posix, _make_run_env, _record_process_group
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
@@ -373,6 +373,9 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # rg can exit between poll() and the group kill below; record its group now, as the
+        # terminal spawn does, so the kill does not depend on getpgid() of an exited child.
+        _record_process_group(proc)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

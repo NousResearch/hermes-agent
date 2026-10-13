@@ -375,10 +375,14 @@ def _is_copilot_provider(agent: Any) -> bool:
 
 
 def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
-    """Detect a Copilot 400 that is really a STALE / DEGRADED credential (status 400 AND an
-    integrator/model-not-supported marker, so a wrong model name never triggers the
-    single-shot re-exchange). Caller enforces scoping/guard."""
+    """Detect a Copilot rejection that is really a STALE / DEGRADED credential: a 400 AND an
+    integrator/model-not-supported marker (a wrong model name never triggers the single-shot
+    re-exchange), or a 403 whose body is a bare ``forbidden`` — GitHub revoked the exchanged JWT
+    before its stored ``expires_at`` while the raw token still exchanges cleanly (#135645);
+    billing-worded 403s are quota exhaustion, not credentials. Caller enforces scoping/guard."""
     lowered = (error_message or "").lower()
+    if status_code == 403 or "error code: 403" in lowered:
+        return "forbidden" in lowered and not _copilot_error_is_billing(lowered)
     if status_code != 400 and "error code: 400" not in lowered:
         return False
     return any(marker in lowered for marker in (
@@ -387,6 +391,13 @@ def _is_stale_copilot_credential_error(status_code: Optional[int], error_message
         "model_not_supported",
         "the requested model is not supported",
     ))
+
+
+def _copilot_error_is_billing(lowered_error_message: str) -> bool:
+    """Billing/quota wording in a Copilot error body: those 403s are credit exhaustion, so a
+    re-exchange cannot fix them."""
+    from agent.error_classifier import _BILLING_PATTERNS
+    return any(pattern in lowered_error_message for pattern in _BILLING_PATTERNS)
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:

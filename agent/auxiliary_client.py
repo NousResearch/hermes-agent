@@ -33,6 +33,10 @@ from agent.error_classifier import (
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent.auxiliary_copilot_recovery import (
+    is_stale_copilot_jwt_error as _is_stale_copilot_jwt_error,
+    refresh_copilot_credentials as _refresh_copilot_credentials,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -3656,7 +3660,9 @@ _POOL_PROVIDER_BY_HOST = (
     ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
-    ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
+    # Bare ``githubcopilot.com`` (like _POOL_PROVIDER_BY_HOST) so Business/Enterprise subdomains
+    # such as api.business.githubcopilot.com also resolve to the refresh path (#104792, #135645).
+    ("githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
     # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
     # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
@@ -3825,16 +3831,6 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
 
 def _creds_have_api_key(creds: dict[str, Any]) -> bool:
     return bool(str(creds.get("api_key", "") or "").strip())
-
-
-def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
-    raw_token, _source = resolve_copilot_token()
-    if not str(raw_token or "").strip():
-        return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
-    exchange_copilot_token(raw_token)
-    return True
 
 
 def _refresh_codex_credentials() -> bool:
@@ -7774,7 +7770,8 @@ def _ladder_credential_rungs(
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
     auth_refresh_provider = _auth_refresh_provider_for_route(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
-    if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
+    if ((_is_auth_error(first_err) or _is_stale_copilot_jwt_error(first_err, auth_refresh_provider))
+            and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})

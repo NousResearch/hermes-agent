@@ -309,7 +309,8 @@ def settle_unrecovered_error(
         from agent.fallback_cooldown import _mark_entitlement_rejected_model
         _mark_entitlement_rejected_model(agent, api_error)
         # Copilot self-heal BEFORE fallback: a stale credential yields a 400
-        # ``model_not_available_for_integrator`` / ``model_not_supported``, not a 401.
+        # ``model_not_available_for_integrator`` / ``model_not_supported``, or a bare 403
+        # ``forbidden`` when GitHub revoked the exchanged JWT early (#135645) — not a 401.
         # Fresh token + client rebuild, one retry, SAME provider.
         if (
             _is_copilot_provider(agent)
@@ -322,7 +323,7 @@ def settle_unrecovered_error(
             if agent._try_recover_stale_copilot_credential():
                 agent._buffer_vprint(
                     "🔐 Copilot credential re-exchanged after "
-                    "model_not_available 400. Retrying request..."
+                    f"stale-credential {status_code}. Retrying request..."
                 )
                 retry_count = 0
                 return _verdict("continue")

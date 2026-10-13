@@ -404,6 +404,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
             [npm, "install", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
             env=env, creationflags=windows_hide_flags(),
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=500, detail="Installing WhatsApp bridge dependencies timed out.") from exc

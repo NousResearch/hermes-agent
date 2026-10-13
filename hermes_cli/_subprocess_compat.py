@@ -615,6 +615,7 @@ def posix_is_zombie(pid: int) -> bool:
             r = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(pid)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
             )
             return r.returncode == 0 and r.stdout.strip().startswith("Z")
         except Exception:

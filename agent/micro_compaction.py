@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.compaction_events import publish_micro
+from agent.context_compressor_telemetry import _safe_int
 from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
@@ -349,7 +350,6 @@ class MicroCompactionMixin:
     ) -> None:
         """Emit one content-free JSON log line for a micro-compaction pass.
         ``tokens_delta`` < 0 means the pass shrank the transcript; ``*_total`` fields accumulate."""
-        _safe_int = _cc()._safe_int
         try:
             delta = tokens_after - tokens_before if tokens_before is not None and tokens_after is not None else None
             self._micro_compact_tokens_saved_total -= delta or 0

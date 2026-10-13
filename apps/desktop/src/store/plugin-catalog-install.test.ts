@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
+import { lookupPluginCatalogEntry, PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
 
 import { $agentPlugins } from './agent-plugins'
 import { $notifications } from './notifications'
@@ -58,20 +58,27 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     expect(toasts[0]?.message).toContain(fragment)
   })
 
-  it('resolves against the live catalog feed by default and rejects unknown names', async () => {
+  it('falls back to the live catalog feed on a backend without the lookup, and rejects unknown names', async () => {
     const feed = JSON.stringify([
       { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }
     ])
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(feed, { status: 200 }))
 
-    await requestPluginCatalogInstallFromDeepLink('weather-evil')
+    const lookup = (name: string) =>
+      lookupPluginCatalogEntry(name, {
+        request: async () => {
+          throw new Error('method not found')
+        }
+      })
+
+    await requestPluginCatalogInstallFromDeepLink('weather-evil', lookup)
 
     expect(fetchSpy).toHaveBeenCalledWith(PLUGIN_CATALOG_URL, expect.anything())
     expect($pluginInstallRequest.get()).toBeNull()
     expect($notifications.get()[0]?.message).toContain('\u201Cweather-evil\u201D is not in the Hermes plugin catalog')
 
-    await requestPluginCatalogInstallFromDeepLink('weather')
+    await requestPluginCatalogInstallFromDeepLink('weather', lookup)
 
     expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', repo: 'https://github.com/x/weather' })
   })

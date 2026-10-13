@@ -15,6 +15,7 @@ from tools.skills_tool import (
     _parse_tags,
     _get_category_from_path,
     _find_all_skills,
+    _serve_plugin_skill,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -851,6 +852,42 @@ Do the legacy thing.
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
 
+    def test_missing_command_prerequisite_marks_setup_needed(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "cli-gated",
+                frontmatter_extra="prerequisites:\n  commands: [hermes-no-such-binary-xyz]\n",
+            )
+            raw = skill_view("cli-gated")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == ["hermes-no-such-binary-xyz"]
+        assert result["missing_required_commands"] == ["hermes-no-such-binary-xyz"]
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert "command hermes-no-such-binary-xyz" in result["setup_note"]
+
+    def test_present_command_prerequisite_stays_available(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_tool_setup.shutil.which", lambda _name: "/usr/bin/mock-cli"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "cli-ready",
+                frontmatter_extra="prerequisites:\n  commands: [mock-cli]\n",
+            )
+            raw = skill_view("cli-ready")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["required_commands"] == ["mock-cli"]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+
 
 class TestSkillViewCollisionDetection:
     """Regression tests for skill_view name collision handling.
@@ -1134,3 +1171,152 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _serve_plugin_skill — readiness parity with the local skill path
+# ---------------------------------------------------------------------------
+
+
+def _write_plugin_skill(root, name: str, frontmatter_extra: str = "") -> Path:
+    """Minimal plugin-provided SKILL.md fixture (no plugin registry needed)."""
+    skill_dir = Path(root) / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        f"""\
+---
+name: {name}
+description: Description for {name}.
+{frontmatter_extra}---
+
+# {name}
+
+Step 1: Do the thing.
+"""
+    )
+    return skill_md
+
+
+class TestPluginSkillPrerequisites:
+    """The plugin-skill path used to hardcode ``readiness_status: available``
+    with no prerequisite fields at all, while the identical local skill
+    reported ``setup_needed``."""
+
+    @staticmethod
+    def _serve(skill_md: Path, namespace: str = "demo-plugin") -> dict:
+        """Call _serve_plugin_skill directly with a synthetic skill record.
+
+        The plugin registry is stubbed (no plugin is installed for these
+        fixtures), which is fine — _serve_plugin_skill takes the already
+        resolved SKILL.md path.
+        """
+        with patch(
+            "hermes_cli.plugins._get_disabled_plugins", return_value=set()
+        ), patch("hermes_cli.plugins.get_plugin_manager") as pm:
+            pm.return_value.list_plugin_skills.return_value = []
+            raw = _serve_plugin_skill(skill_md, namespace, skill_md.parent.name)
+        return json.loads(raw)
+
+    def test_missing_command_prerequisite_marks_setup_needed(self, tmp_path):
+        skill_md = _write_plugin_skill(
+            tmp_path,
+            "readiness-demo",
+            "prerequisites:\n  commands: [hermes-no-such-binary-xyz]\n",
+        )
+        result = self._serve(skill_md)
+
+        assert result["success"] is True
+        assert result["required_commands"] == ["hermes-no-such-binary-xyz"]
+        assert result["missing_required_commands"] == ["hermes-no-such-binary-xyz"]
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert "command hermes-no-such-binary-xyz" in result["setup_note"]
+
+    def test_present_command_prerequisite_stays_available(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skills_tool_setup.shutil.which", lambda _name: "/usr/bin/mock-cli"
+        )
+        skill_md = _write_plugin_skill(
+            tmp_path, "readiness-ready", "prerequisites:\n  commands: [mock-cli]\n"
+        )
+        result = self._serve(skill_md)
+
+        assert result["success"] is True
+        assert result["required_commands"] == ["mock-cli"]
+        assert result["missing_required_commands"] == []
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert "setup_note" not in result
+
+    def test_missing_env_var_prerequisite_marks_setup_needed(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PLUGIN_ONLY_MISSING_KEY_XYZ", raising=False)
+        skill_md = _write_plugin_skill(
+            tmp_path,
+            "readiness-env",
+            "prerequisites:\n  env_vars: [PLUGIN_ONLY_MISSING_KEY_XYZ]\n",
+        )
+        result = self._serve(skill_md)
+
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert result["missing_required_environment_variables"] == [
+            "PLUGIN_ONLY_MISSING_KEY_XYZ"
+        ]
+        assert "env $PLUGIN_ONLY_MISSING_KEY_XYZ" in result["setup_note"]
+
+    def test_missing_credential_file_prerequisite_marks_setup_needed(self, tmp_path):
+        skill_md = _write_plugin_skill(
+            tmp_path,
+            "readiness-cred",
+            "required_credential_files: [no-such-cred-file-xyz.json]\n",
+        )
+        result = self._serve(skill_md)
+
+        assert result["setup_needed"] is True
+        assert result["readiness_status"] == "setup_needed"
+        assert result["missing_credential_files"] == ["no-such-cred-file-xyz.json"]
+        assert "file no-such-cred-file-xyz.json" in result["setup_note"]
+
+    def test_no_prerequisites_reports_available_with_empty_fields(self, tmp_path):
+        skill_md = _write_plugin_skill(tmp_path, "readiness-none")
+        result = self._serve(skill_md)
+
+        assert result["success"] is True
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert result["required_commands"] == []
+        assert result["missing_required_commands"] == []
+        assert result["missing_required_environment_variables"] == []
+        assert result["missing_credential_files"] == []
+
+    def test_readiness_parity_with_local_skill_path(self, tmp_path, monkeypatch):
+        """Same declared prerequisites ⇒ same readiness verdict on both paths.
+
+        This is the invariant the bug violated: the plugin path ignored the
+        prerequisites the local path honoured.
+        """
+        monkeypatch.delenv("PARITY_MISSING_KEY_XYZ", raising=False)
+        extra = (
+            "prerequisites:\n"
+            "  env_vars: [PARITY_MISSING_KEY_XYZ]\n"
+            "  commands: [hermes-no-such-binary-xyz]\n"
+        )
+        skill_md = _write_plugin_skill(tmp_path / "plugin", "parity-demo", extra)
+        plugin = self._serve(skill_md)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "local"):
+            _make_skill(tmp_path / "local", "parity-demo", frontmatter_extra=extra)
+            local = json.loads(skill_view("parity-demo"))
+
+        for field in (
+            "required_commands",
+            "missing_required_commands",
+            "missing_required_environment_variables",
+            "setup_needed",
+            "readiness_status",
+        ):
+            assert plugin[field] == local[field], field
+
+        assert plugin["setup_needed"] is True
+        assert plugin["readiness_status"] == "setup_needed"

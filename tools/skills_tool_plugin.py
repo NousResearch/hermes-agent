@@ -8,7 +8,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
 
-from tools.skills_tool_setup import SkillReadinessStatus
+from tools.skills_tool_setup import (
+    SkillReadinessStatus, _build_setup_note, _collect_declared_prerequisites)
 
 logger = logging.getLogger("tools.skills_tool")
 
@@ -123,7 +124,13 @@ def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args
 def _serve_plugin_skill(
     skill_md: Path, namespace: str, bare: str, file_path: str | None = None, *,
     preprocess: bool = True, session_id: str | None = None) -> str:
-    """Read a plugin-provided skill, apply guards, return JSON."""
+    """Read a plugin-provided skill, apply guards, return JSON.
+
+    Reports the same readiness contract as the local skill path (declared env vars,
+    credential files and ``prerequisites.commands``) via the shared
+    :func:`_collect_declared_prerequisites` helper — the plugin path used to return
+    ``readiness_status: available`` unconditionally, with no prerequisite fields at all.
+    """
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
     from tools import skills_tool as _st
     if namespace in _get_disabled_plugins():
@@ -153,12 +160,36 @@ def _serve_plugin_skill(
     rendered_content = content if not preprocess else _preprocess_skill(
         content, skill_md.parent, session_id, "Could not preprocess plugin skill %s:%s",
         namespace, bare)
-    return _json({
+    # Declared prerequisites — evaluated by the same shared helper the local skill path uses,
+    # so a plugin skill no longer reports ``available`` unconditionally while its local twin
+    # reports ``setup_needed``. Reporting only: the plugin path never captures secrets.
+    prereqs = _collect_declared_prerequisites(parsed_frontmatter, skill_name=qualified_name)
+    setup_needed = bool(prereqs["setup_needed"])
+    missing_required_commands = prereqs["missing_required_commands"]
+    missing_env_vars = prereqs["missing_required_environment_variables"]
+    missing_cred_files = prereqs["missing_credential_files"]
+    result: dict[str, Any] = {
         "success": True, "name": qualified_name, "content": banner + rendered_content,
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
-        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
+        "required_environment_variables": prereqs["required_environment_variables"],
+        "required_commands": prereqs["required_commands"],
+        "missing_required_environment_variables": missing_env_vars,
+        "missing_credential_files": missing_cred_files,
+        "missing_required_commands": missing_required_commands,
+        "setup_needed": setup_needed,
+        "readiness_status": (SkillReadinessStatus.SETUP_NEEDED if setup_needed
+                             else SkillReadinessStatus.AVAILABLE).value,
+        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)}
+    if setup_needed:
+        missing_items = ([f"env ${n}" for n in missing_env_vars]
+                         + [f"command {c}" for c in missing_required_commands]
+                         + [f"file {p}" for p in missing_cred_files])
+        setup_help = next((e["help"] for e in prereqs["required_environment_variables"]
+                           if e.get("help")), None)
+        if setup_note := _build_setup_note(SkillReadinessStatus.SETUP_NEEDED, missing_items, setup_help):
+            result["setup_note"] = setup_note
+    return _json(result)
 
 
 def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:

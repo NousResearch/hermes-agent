@@ -1,9 +1,11 @@
-"""Skill readiness: required env vars, secret capture, and setup notes. Split out of
-``tools.skills_tool`` (names re-imported there); module state (``_secret_capture_callback``,
-``load_env``) stays there and is read lazily at call time so origin-module patches are honored."""
+"""Skill readiness: required env vars, credential files, declared commands, secret capture,
+and setup notes. Split out of ``tools.skills_tool`` (names re-imported there); module state
+(``_secret_capture_callback``, ``load_env``) stays there and is read lazily at call time so
+origin-module patches are honored."""
 
 import logging
 import re
+import shutil
 from enum import Enum
 from typing import Any, Dict, List
 
@@ -78,6 +80,92 @@ def _get_required_environment_variables(frontmatter: dict[str, Any]) -> list[dic
             normalized["optional"] = True
         required[env_name] = normalized
     return list(required.values())
+
+
+def _get_required_commands(frontmatter: dict[str, Any]) -> list[str]:
+    """Declared CLI prerequisites (``prerequisites.commands``), deduped, order-preserving.
+
+    ``prerequisites.commands`` is the documented key (CONTRIBUTING.md "Skill setup metadata"
+    and the ``tools/skills_tool.py`` module docstring). "Advisory" governs DISCOVERY — a
+    missing binary never hides the skill — but the declaration is still honoured at load
+    time: it is reported as ``required_commands`` / ``missing_required_commands``, and a
+    binary that does not resolve on PATH marks the skill ``setup_needed`` exactly like a
+    missing required env var or credential file.
+    """
+    prereqs = frontmatter.get("prerequisites")
+    declared = (prereqs.get("commands") if isinstance(prereqs, dict) else None) or []
+    if isinstance(declared, str):
+        declared = [declared]
+    elif not isinstance(declared, list):
+        declared = []
+    required: list[str] = []
+    seen: set[str] = set()
+    for command in declared:
+        name = str(command).strip()
+        if name and name not in seen:
+            seen.add(name)
+            required.append(name)
+    return required
+
+
+def _collect_declared_prerequisites(
+    frontmatter: dict[str, Any], skill_name: str | None = None) -> dict[str, Any]:
+    """Evaluate a skill's declared prerequisites — the readiness contract — in one place.
+
+    Shared by both serve paths (the local ``skill_view`` readiness block and
+    ``_serve_plugin_skill``) so a plugin skill and an identical local skill can no longer
+    disagree: the plugin path used to return ``available`` unconditionally with no
+    prerequisite fields at all.
+
+    Reads the documented ``prerequisites`` block (``env_vars`` plus the ``commands`` key),
+    the ``required_environment_variables`` / ``setup.collect_secrets`` forms, and
+    ``required_credential_files``.
+
+    Non-interactive by construction: it never captures secrets, so it is safe on every
+    surface (including the gateway, where no secret-entry UI exists). The local path drives
+    the interactive capture step itself and recomputes the still-missing env vars afterwards.
+
+    Returns the readiness payload fields plus one internal key:
+
+    ``required_environment_variables`` / ``required_commands``
+        Normalized declarations (env entries are dicts with ``name`` / ``prompt``).
+    ``missing_required_environment_variables`` / ``missing_credential_files`` /
+    ``missing_required_commands``
+        Declared prerequisites with no value / no host file / no PATH entry.
+    ``setup_needed``
+        True when any of the above is missing.
+    ``_missing_env_entries`` (internal)
+        The env entries behind ``missing_required_environment_variables``, used by the local
+        path to drive interactive secret capture.
+    """
+    from tools import skills_tool as _st  # load_env stays on the facade, read lazily
+    required_env_vars = _get_required_environment_variables(frontmatter)
+    required_commands = _get_required_commands(frontmatter)
+    missing_required_commands = [c for c in required_commands if shutil.which(c) is None]
+    env_snapshot = _st.load_env()
+    missing_env_entries = [
+        entry for entry in required_env_vars
+        if not entry.get("optional") and not _is_env_var_persisted(entry["name"], env_snapshot)]
+    # Credential files for remote sandboxes: files present on the host are registered for
+    # mounting (Modal, Docker); missing ones are part of the setup_needed verdict.
+    required_cred_files_raw = frontmatter.get("required_credential_files", [])
+    required_cred_files_raw = required_cred_files_raw if isinstance(required_cred_files_raw, list) else []
+    missing_cred_files: list = []
+    if required_cred_files_raw:
+        try:
+            from tools.credential_files import register_credential_files
+            missing_cred_files = register_credential_files(required_cred_files_raw)
+        except Exception:
+            logger.debug("Could not register credential files for skill %s",
+                         skill_name or frontmatter.get("name", "?"), exc_info=True)
+    return {
+        "required_environment_variables": required_env_vars,
+        "required_commands": required_commands,
+        "missing_required_environment_variables": [e["name"] for e in missing_env_entries],
+        "missing_credential_files": missing_cred_files,
+        "missing_required_commands": missing_required_commands,
+        "setup_needed": bool(missing_env_entries or missing_required_commands or missing_cred_files),
+        "_missing_env_entries": missing_env_entries}
 
 
 def _capture_result(missing_names, setup_skipped=False, gateway_setup_hint=None):

@@ -10,6 +10,7 @@ import {
   setWorkspaceScope,
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
+import type { ChatMessage } from '@/lib/chat-messages'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -25,10 +26,12 @@ import {
   setUnlistedSessionOwnerRows
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
+  $draftSessionIds,
   $focusedWorkspaceCwd,
   $sessionStates,
   $sessionTiles,
@@ -1886,5 +1889,64 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     rekeySessionTile('tip-old', 'tip-old')
 
     expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
+  })
+})
+
+describe('$draftSessionIds', () => {
+  afterEach(() => {
+    clearAllSessionStates()
+    setSessions([])
+    $removedSessionIds.set(new Set())
+  })
+
+  // The #137768 ghost row: archiving evicts the row from $sessions, so the
+  // `!row` branch read "no backend row yet" and re-admitted the archived but
+  // still-open session into the draft bucket on the next recomputation.
+  it('does not claim an archived-but-still-open session whose row left the list', () => {
+    $sessionStates.set({
+      'runtime-archived': { busy: false, messages: [] as ChatMessage[], storedSessionId: 'archived-1' } as ClientSessionState
+    })
+    setSessions([]) // the archive's dropListedSession already evicted the row
+    tombstoneSessions(['archived-1'])
+
+    expect($draftSessionIds.get()).not.toContain('archived-1')
+  })
+
+  it('keeps the claim suppressed after the tombstone membership is pruned', () => {
+    $sessionStates.set({
+      'runtime-archived': { busy: false, messages: [] as ChatMessage[], storedSessionId: 'archived-2' } as ClientSessionState
+    })
+    tombstoneSessions(['archived-2'])
+    $removedSessionIds.set(new Set()) // the projects.tree prune once the server snapshot caught up
+
+    expect($draftSessionIds.get()).not.toContain('archived-2')
+  })
+
+  it('re-admits the session when the archive rolls back (failed RPC untombstones)', () => {
+    $sessionStates.set({
+      'runtime-rolled-back': { busy: false, messages: [] as ChatMessage[], storedSessionId: 'rolled-back-1' } as ClientSessionState
+    })
+    tombstoneSessions(['rolled-back-1'])
+    untombstoneSessions(['rolled-back-1'])
+
+    expect($draftSessionIds.get()).toContain('rolled-back-1')
+  })
+
+  it('still drafts an unlisted session the removal lifecycle never touched (the ⌘T tab)', () => {
+    $sessionStates.set({
+      'runtime-fresh': { busy: false, messages: [] as ChatMessage[], storedSessionId: 'fresh-tab-1' } as ClientSessionState
+    })
+    setSessions([])
+
+    expect($draftSessionIds.get()).toContain('fresh-tab-1')
+  })
+
+  it('still drafts a listed row whose message_count is 0', () => {
+    $sessionStates.set({
+      'runtime-zero': { busy: false, messages: [] as ChatMessage[], storedSessionId: 'zero-1' } as ClientSessionState
+    })
+    setSessions([{ id: 'zero-1', message_count: 0 } as never])
+
+    expect($draftSessionIds.get()).toContain('zero-1')
   })
 })

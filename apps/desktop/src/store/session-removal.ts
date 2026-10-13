@@ -113,6 +113,22 @@ export function sessionRemovalIntersected(
   return snapshot.get(target) !== tombstoneGenerations.get(target) && lastRemovalEdge.get(target) === true
 }
 
+/** True when the id's last removal-lifecycle edge was toward removal: the user
+ *  archived/deleted it and no release edge (failed RPC, explicit unarchive)
+ *  has followed. The draft projection consults this so an archived-but-open
+ *  session whose row left `$sessions` is not promoted into the draft bucket
+ *  (#137768). Membership cannot serve there — `$removedSessionIds` is pruned
+ *  once the server snapshot catches up, while this answer survives the prune. */
+export function sessionRemovalArmed(id: null | string | undefined): boolean {
+  const target = id?.trim()
+
+  if (!target) {
+    return false
+  }
+
+  return lastRemovalEdge.get(target) === true
+}
+
 /** Every id the row answers to, for tombstone matching: the live id, the
  *  lineage root, and every intermediate lineage segment. dropTombstoned used
  *  to match only the tip + root, so a tombstone armed on one name let a page

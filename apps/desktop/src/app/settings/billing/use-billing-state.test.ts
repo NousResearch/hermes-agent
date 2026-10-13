@@ -634,6 +634,72 @@ describe('derivePlanTiers (plans grid)', () => {
     })
   })
 
+  it('keeps every tier an upgrade when the stand-in free tier is not the lowest order (#137544)', () => {
+    // NAS does not guarantee the $0 tier carries the lowest tier_order: with
+    // is_current parked on Free and Plus/Super sorting below it, the plain order
+    // comparison labeled those PAID tiers "Downgrade". Without an active
+    // subscription no tier can sit below the stand-in — all choices, not downgrades.
+    const view = deriveBillingView(
+      okBilling(todayBillingState),
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: null,
+        tiers: [
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 'plus',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$100',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '110',
+            name: 'Super',
+            tier_id: 'super',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$0',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 'free',
+            tier_order: 2
+          },
+          {
+            dollars_per_month_display: '$200',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '220',
+            name: 'Ultra',
+            tier_id: 'ultra',
+            tier_order: 3
+          }
+        ]
+      })
+    )
+
+    const byName = Object.fromEntries(view.tiers.map(tier => [tier.name, tier]))
+
+    // The is_current stand-in still renders as the current plan (grid sorts by order).
+    expect(byName.Free.state).toBe('current')
+    expect('action' in byName.Free).toBe(false)
+    // Plus/Super sort BELOW Free — previously "Downgrade", now plain upgrades.
+    expect(byName.Plus.state).toBe('upgrade')
+    expect(byName.Super.state).toBe('upgrade')
+    expect(byName.Ultra.state).toBe('upgrade')
+    expect(view.tiers.some(tier => tier.state === 'downgrade')).toBe(false)
+    expect(byName.Plus).toMatchObject({ action: { label: 'Choose ↗' } })
+  })
+
   it('still lists a tier whose name has no art mapping (text-only card, no layout break)', () => {
     const view = deriveBillingView(
       okBilling(todayBillingState),

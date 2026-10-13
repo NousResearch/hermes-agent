@@ -403,6 +403,9 @@ jobs:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
+          # Metadata-only job: required_results.py lives in scripts/ci and
+          # reads the NEEDS context, not the working tree (#137940).
+          sparse-checkout: scripts/ci
       - name: Evaluate job results
         id: evaluate
         # Shared with the stable orchestrator (scripts/ci/required_results.py
@@ -435,6 +438,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          # Metadata-only job: timings_report.py lives in scripts/ci and
+          # consumes the GitHub API plus the restored baseline (#137940).
+          sparse-checkout: scripts/ci
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'

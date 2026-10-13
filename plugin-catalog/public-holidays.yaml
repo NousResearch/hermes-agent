@@ -1,0 +1,21 @@
+name: public-holidays
+repo: https://github.com/Akloenx123/hermes-public-holidays
+sha: d73f177b13c368c5c2445f6595f4008ed6c79a78
+description: "Public holidays for 200+ countries and their regions, plus workday checks, workday counts and deadline math (N working days after a date), computed in code instead of by the model. Disclosure — sends HTTPS GET requests to date.nager.at (Nager.Date, free, no key) carrying only a country code and a year; no redirects, 10 s timeout, responses cached in memory only. No credentials, no files written, no shell commands, no hooks, no background processes, no telemetry."
+maintainer: Akloenx123
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Akloenx123/hermes-public-holidays#readme
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+  - holidays_list
+  - workday_check
+  - workdays_count
+  - workdays_add
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

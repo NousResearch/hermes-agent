@@ -1,0 +1,17 @@
+name: netmind-provider
+title: NetMind
+repo: https://github.com/NetMind-AI/netmind-hermes-provider
+sha: 00ab432e251fc04b983382a7b339f54d96e4b29d
+description: "NetMind OpenAI-compatible model provider with a bundled model catalog. Disclosure — registers one model provider at import and nothing else (no tools, hooks, commands or threads); chat requests go to https://api.netmind.ai/inference-api/v1 through Hermes' own client with NETMIND_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no files and starts no processes."
+maintainer: NetMind-AI
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+docs_url: https://github.com/NetMind-AI/netmind-hermes-provider#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - NETMIND_API_KEY

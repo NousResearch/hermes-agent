@@ -44,6 +44,23 @@ def is_forwarded(key: str) -> bool:
     return key in FORWARDED_UV_SETTINGS or key.startswith("UV_INDEX_")
 
 
+# Settings that redirect WHERE packages resolve from (index URLs, find-links,
+# resolution strategy, index credentials). These are what no_config isolation
+# must strip from the child: re-resolving the official-index runtime lockfile
+# against a mirror is exactly what trips `uv sync --locked` (#124418/#125071).
+# Transport knobs (UV_NATIVE_TLS, UV_INSECURE_HOST, UV_HTTP_TIMEOUT) are NOT
+# index redirects — corporate networks need them to reach the pinned URLs at
+# all, so they survive no_config isolation.
+INDEX_REDIRECT_SETTINGS = frozenset({
+    "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_NO_INDEX",
+    "UV_FIND_LINKS", "UV_INDEX_STRATEGY", "UV_KEYRING_PROVIDER",
+})
+
+
+def is_index_redirect(key: str) -> bool:
+    return key in INDEX_REDIRECT_SETTINGS or key.startswith("UV_INDEX_")
+
+
 def pip_config_candidates(env: Mapping[str, str]) -> list[Path]:
     """pip's config files, lowest precedence first, as ``pip._internal.configuration`` ranks them.
 

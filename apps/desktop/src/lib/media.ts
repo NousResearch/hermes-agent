@@ -3,7 +3,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
-import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
@@ -79,6 +79,24 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+/**
+ * Escape only the URL-structural characters in a filesystem path so the
+ * WHATWG parser (and Node's `fileURLToPath` in the main process) keeps the
+ * whole path: a raw `#`/`?` is parsed as fragment/query and truncates the
+ * path, and a raw `%` that isn't a valid hex escape makes decoding throw.
+ * Spaces, unicode, Windows drive letters and a leading `~/` stay literal for
+ * the main process to expand (#84361).
+ */
+export function pathToLocalFileUrl(path: string): string {
+  if (/^file:/i.test(path)) {
+    return path
+  }
+
+  const escaped = path.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')
+
+  return `file://${escaped}`
+}
+
 export function isInlineMediaSrc(path: string): boolean {
   return /^(?:https?|data):/i.test(path)
 }
@@ -100,7 +118,13 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // Keep the native reader and its configured size cap; the backend preview
   // endpoint has a separate fixed limit.
   if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
-    return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+    const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+    if (isReadFileErrorResult(dataUrl)) {
+      throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
+    }
+
+    return dataUrl
   }
 
   // A tile can belong to a different gateway than the foreground. Pin both
@@ -123,7 +147,13 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
     return mediaExternalUrl(path)
   }
 
-  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+
+  if (isReadFileErrorResult(dataUrl)) {
+    throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
+  }
+
+  return dataUrl
 }
 
 export interface MediaImageDimensions {
@@ -233,7 +263,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  return /^file:/i.test(path) ? path : pathToLocalFileUrl(path)
 }
 
 // Remote gateway audio/video is proxied by the Electron main process. OAuth
@@ -302,6 +332,30 @@ export function isRemoteGateway(): boolean {
 // narrower and rejects non-images plus images outside its media roots.
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
+}
+
+/** Retry an inline remote image through the gateway's authenticated proxy
+ * (#74564). A client on a restricted network cannot reach the image CDN
+ * directly, but the gateway that GENERATED the image can; ask it to fetch the
+ * bytes and hand them back as a data URL. Returns '' when the gateway rejects
+ * or cannot fetch the URL (unknown host, not an image, too large) — the caller
+ * keeps the failed direct src so the row still renders its fallback. */
+export async function gatewayImageProxyDataUrl(url: string, owner?: OwnerScope): Promise<string> {
+  if (!/^https?:/i.test(url)) {
+    return ''
+  }
+
+  try {
+    const result = await hermesApi<string | { dataUrl?: string }>({
+      path: `/api/media/proxy?url=${encodeURIComponent(url)}`,
+      ...(owner?.connectionId ? { connectionId: owner.connectionId } : {}),
+      ...(owner?.profile ? { profile: owner.profile } : {})
+    })
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
+  } catch {
+    return ''
+  }
 }
 
 export interface GatewayFileSaveResult {

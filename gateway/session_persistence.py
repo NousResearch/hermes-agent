@@ -390,7 +390,7 @@ class SessionPersistenceMixin:
             "a crashed gateway", key, entry.session_id, row["end_reason"])
         return "prune"
 
-    def _entries_as_dicts(self) -> Dict[str, Any]:
+    def _entries_as_dicts(self) -> dict[str, Any]:
         """Serializable snapshot of ``_entries``. Lock held."""
         return {key: entry.to_dict() for key, entry in self._entries.items()}
 
@@ -434,12 +434,12 @@ class SessionPersistenceMixin:
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
 
-    def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
+    def _snapshot_routing_locked(self) -> tuple[dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
         self._reconcile_recovered_routing_locked()
         return self._entries_as_dicts(), self._next_routing_generation_locked()
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(self, data: dict[str, Any], generation: int) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
@@ -477,7 +477,7 @@ class SessionPersistenceMixin:
                 for key in [k for k, (rev, _) in fast_persisted.items() if rev <= generation]:
                     del fast_persisted[key]
 
-    def _save_sessions_json(self, data: Dict[str, Any]) -> None:
+    def _save_sessions_json(self, data: dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""
         atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data}, mode=0o600)
 
@@ -488,7 +488,7 @@ class SessionPersistenceMixin:
         self._persist_routing_data(data, generation)
 
     def _save_entry(
-        self, session_key: str, *, entry_data: Optional[Dict[str, Any]] = None,
+        self, session_key: str, *, entry_data: Optional[dict[str, Any]] = None,
         lock_held: bool = False) -> None:
         """Persist ONE routing entry via UPSERT — the per-turn fast path (a full rewrite fsyncs a
         multi-MB sessions.json). The key -> session_id mapping never changes here: structural

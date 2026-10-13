@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import anon_auth, anon_sign_in, free_tier_bootstrap
 from hermes_cli.auth import _load_auth_store
 
-from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal  # noqa: F401
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal
 
 
 @pytest.fixture
@@ -198,7 +198,7 @@ class TestBootstrapRecord:
         nas.create_response = httpx.Response(
             429, json={"error": "temporarily_unavailable"}, headers={"Retry-After": "30"})
         record = free_tier_bootstrap.run_bootstrap(announce=False)
-        assert record.has_identity is False and record.free_tier is False
+        assert record.has_identity is False and record.free_tier_account is False
         assert record.failure["error_code"] == anon_auth.ANON_RATE_LIMITED
         assert record.failure["retryable"] is True and 28 <= record.failure["retry_after"] <= 30
         assert record.failure_fields() == {
@@ -207,7 +207,7 @@ class TestBootstrapRecord:
 
     def test_a_clean_boot_carries_no_failure_block(self, nas):
         record = free_tier_bootstrap.run_bootstrap(announce=False)
-        assert record.free_tier is True and record.failure_fields() == {}
+        assert record.free_tier_account is True and record.failure_fields() == {}
 
     def test_the_background_loop_retries_a_transient_failure_until_it_settles(self, nas, monkeypatch):
         nas.raise_transport = httpx.ConnectTimeout("no route")
@@ -223,7 +223,7 @@ class TestBootstrapRecord:
         monkeypatch.setattr(free_tier_bootstrap, "_sleep", _sleep)
         free_tier_bootstrap._bootstrap_then_retry()
         record = free_tier_bootstrap.current_record()
-        assert record.has_identity is True and record.free_tier is True
+        assert record.has_identity is True and record.free_tier_account is True
         assert slept == [int(w) for w in anon_auth._MINT_RETRY_LADDER[:2]]
         assert nas.creates() == 3
 
@@ -278,7 +278,7 @@ class TestBootstrapRecord:
         free_tier_bootstrap.run_bootstrap(announce=False)
         nas.raise_transport = None
         record = free_tier_bootstrap.retry_bootstrap_mint(force=True, announce=False)
-        assert record.free_tier is True and record.failure_fields() == {}
+        assert record.free_tier_account is True and record.failure_fields() == {}
         assert free_tier_bootstrap.current_record() is record
 
 

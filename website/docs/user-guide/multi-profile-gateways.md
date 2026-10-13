@@ -210,6 +210,9 @@ Parking does not delete the profile, its sessions, or its scheduled jobs.
 Without a running host it removes the marker and follows the normal start
 path; start the host from the default profile if prompted. `restart` unserves
 and serves the profile without writing a parked marker, re-reading its config.
+On a **parked** profile with no live per-profile gateway, `restart` behaves as
+`start`: it removes the marker and hot-serves the profile (a gateway started
+with `--force` beside the marker keeps its own restart instead).
 These operations do not terminate work already dispatched by a cron tick.
 
 The host also rescans every 30 seconds: adding the marker by hand unserves the
@@ -421,17 +424,15 @@ no API server is enabled); it serves three kinds of profile-prefixed paths:
   adapter instance built without a port; the default listener forwards
   `/p/<profile>/<the adapter's usual path>` to it. See
   [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
-- **WhatsApp (bridge) and Relay are shared ingress owned by the default profile.**
-  The multiplexer never starts them for a secondary: `WHATSAPP_ENABLED=true` in
-  `profiles/work/.env` does nothing on its own. Enable and configure them on the
-  default profile (their inbound is routed to profiles via `profile_routes`), or
-  disable them in the secondary. The gateway logs one INFO line per skipped
-  secondary platform, and if **no** profile runs it a WARNING says the platform
-  is not being served; `hermes gateway status --profile work` shows
-  `whatsapp: not served under multiplex (shared ingress owned by default)`.
-  The one exception is a profile that opted out with `gateway.standalone:
-  true` — it runs its own WhatsApp bridge and relay in its own gateway, as any
-  standalone gateway does.
+- **WhatsApp (bridge) runs per paired profile.** Pair each secondary with
+  `hermes -p work whatsapp`. Each profile uses its own session and bridge port;
+  an unpaired profile is skipped with `whatsapp_unpaired` and a pairing remedy.
+  See [WhatsApp multi-profile setup](messaging/whatsapp.md#multiple-profiles).
+- **Relay remains shared ingress owned by the default profile.** Enable and
+  configure Relay on the default profile, then route inbound to profiles via
+  `profile_routes`. A secondary-only Relay configuration is reported as not served.
+  A profile that opted out with `gateway.standalone: true` runs its own relay
+  in its own gateway, as any standalone gateway does.
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.
@@ -566,7 +567,7 @@ parent conversation.
 
 #### 5. One PID/lock and one status surface
 
-There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
+There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status --full` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
 `hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
 
@@ -663,6 +664,7 @@ profile and never shares with the default or any sibling:
 |---|---|---|
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
+| Slash-command gating (`allow_admin_from`, `user_allowed_commands`, `group_allow_admin_from`; see [Slash commands](../reference/slash-commands.md)) | The profile whose bot received the message — a secondary's own platform `extra` block governs its bots, not the default profile's | Fail closed: a served profile whose config the multiplexer has not loaded is gated with an **empty** admin list and no user-enabled commands, so only the always-allowed floor (`/help`, `/whoami`) runs — never the default profile's open policy |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |
@@ -675,7 +677,7 @@ profile and never shares with the default or any sibling:
 | Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
 | Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
-| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, skill-sync push, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
+| Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
 | Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
 | RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |

@@ -141,6 +141,30 @@ describe('MessagingView profile scope', () => {
   })
 })
 
+describe('MessagingView status filter', () => {
+  const rowNames = (container: HTMLElement) =>
+    [...container.querySelectorAll('ul > li > button')].map(row => row.querySelector('.truncate')?.textContent)
+
+  it('offers a tab only for tones some platform is in, and narrows the list to that tone', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({ enabled: true, id: 'discord', name: 'Discord', state: 'connected' }),
+        platform({ enabled: true, id: 'slack', name: 'Slack', state: 'retrying' }),
+        platform({ id: 'teams', name: 'Microsoft Teams' })
+      ]
+    })
+
+    const { container } = await renderMessaging()
+
+    await waitFor(() => expect(rowNames(container)).toHaveLength(3))
+    expect(screen.queryByRole('button', { name: 'Errors' })).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Needs attention' })[0])
+
+    expect(rowNames(container)).toEqual(['Slack'])
+  })
+})
+
 describe('MessagingView enable switch', () => {
   it('labels the enable switch with the platform state', async () => {
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true })] })
@@ -429,6 +453,72 @@ describe('MessagingView restart banner', () => {
     })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restart now' })).toBeNull())
     expect(runGatewayRestart).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('MessagingView allowlist editor', () => {
+  const allowlist = (patch: Record<string, unknown> = {}) => ({
+    advanced: false,
+    description: 'Allowed users',
+    is_list: true,
+    is_password: false,
+    is_set: true,
+    key: 'TEAMS_ALLOWED_USERS',
+    prompt: 'Allowed users',
+    redacted_value: '«redacted:111...222»',
+    required: false,
+    url: null,
+    value: '111,222',
+    ...patch
+  })
+
+  const entries = () =>
+    screen.getAllByRole('textbox').filter(el => /^Allowed users \d+$/.test(el.getAttribute('aria-label') || ''))
+
+  async function save() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/ }))
+    })
+  }
+
+  it('shows each saved ID in its own visible box and saves add/remove edits as one list', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [allowlist()] })] })
+    await renderMessaging()
+
+    await screen.findByLabelText('Allowed users 1')
+    expect(entries().map(el => [(el as HTMLInputElement).type, (el as HTMLInputElement).value])).toEqual([
+      ['text', '111'],
+      ['text', '222']
+    ])
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
+    fireEvent.click(screen.getByRole('button', { name: /Add another/ }))
+    // A pasted comma list splits into one box per entry.
+    fireEvent.change(entries()[1], { target: { value: '333, 444' } })
+    expect(entries().map(el => (el as HTMLInputElement).value)).toEqual(['222', '333', '444'])
+
+    await save()
+    expect(updateMessagingPlatform).toHaveBeenCalledWith(
+      'teams',
+      { env: { TEAMS_ALLOWED_USERS: '222,333,444' } },
+      'default'
+    )
+  })
+
+  it('clears a saved allowlist when every entry is removed', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ env_vars: [allowlist({ redacted_value: '«redacted:111»', value: '111' })] })]
+    })
+    await renderMessaging()
+
+    await screen.findByLabelText('Allowed users 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await save()
+    expect(updateMessagingPlatform).toHaveBeenCalledWith(
+      'teams',
+      { clear_env: ['TEAMS_ALLOWED_USERS'], env: {} },
+      'default'
+    )
   })
 })
 

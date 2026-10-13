@@ -1,10 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
+import { SETTING_IDS } from '@/app/settings/settings-manifest'
+import { settingsSearchTargetQuery } from '@/app/settings/settings-search'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -25,9 +28,9 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
@@ -46,6 +49,7 @@ import {
   dismissDiscontinuedNotice,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
+  sourceUpdateChannel,
   type UpdateApplyState
 } from '@/store/updates'
 
@@ -219,7 +223,24 @@ function IdleView({
     )
   }
 
-  const details = version ? <VersionDetails version={version} /> : null
+  // The channel is chosen in Settings (with its confirm step); here it is named, with a way there.
+  const changeChannel = (
+    <button
+      className="text-primary underline-offset-2 hover:underline"
+      onClick={() => {
+        setUpdateOverlayOpen(false)
+        window.location.hash = `#${SETTINGS_ROUTE}?${settingsSearchTargetQuery({ view: 'about', setting: SETTING_IDS.about.updates })}`
+      }}
+      type="button"
+    >
+      {t.settings.about.channel.change}
+    </button>
+  )
+
+  // Only where Settings shows a selector: a custom branch or an older runtime gets the label alone.
+  const details = version ? (
+    <VersionDetails channelAction={sourceUpdateChannel(status) ? changeChannel : undefined} version={version} />
+  ) : null
 
   // App-installer check-unknown (OS checker unavailable): NOT "no updates"
   // and NOT a generic error — the OS also installs updates automatically on
@@ -286,14 +307,22 @@ function IdleView({
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler. On a release-feed channel (stable), name the
   // release tag instead of commit vocabulary.
-  const { title, body } = resolveUpdateCopy({
-    target,
-    shownItems,
-    channel: status?.channel === 'stable' ? 'stable' : 'main',
-    latestTag: status?.latestTag ?? null,
-    mechanism: status?.mechanism,
-    copy: u
-  })
+  // A stable release this checkout already contains is a move back, never "a new update".
+  const rollbackTag = rollbackRelease(status)
+  const channelCopy = t.settings.about.channel
+
+  const { title, body } = rollbackTag
+    ? { title: channelCopy.rollbackTitle(rollbackTag), body: channelCopy.rollbackBody(rollbackTag) }
+    : resolveUpdateCopy({
+        target,
+        shownItems,
+        channel: status?.channel === 'stable' ? 'stable' : 'main',
+        latestTag: status?.latestTag ?? null,
+        mechanism: status?.mechanism,
+        copy: u
+      })
+
+  const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -305,9 +334,23 @@ function IdleView({
       </div>
 
       <div className="grid gap-3">
-        {groups.map(group => (
+        {/* A rollback brings no new changes; the "improvements" fallback would claim some. */}
+        {(rollbackTag ? [] : groups).map((group, index) => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
+              {index === 0 && commits.length > 0 && (
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="-my-1 size-5 shrink-0 text-muted-foreground/70 hover:text-foreground"
+                  iconClassName="size-3"
+                  label={u.copyFullLog}
+                  side="left"
+                  text={handleCopyFullLog}
+                />
+              )}
+            </div>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
@@ -322,7 +365,7 @@ function IdleView({
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          {u.updateNow}
+          {rollbackTag ? channelCopy.rollbackAction(rollbackTag) : u.updateNow}
         </Button>
         <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}

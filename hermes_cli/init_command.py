@@ -79,9 +79,48 @@ def build_init_prompt(cwd: str, existing_file: str | None = None, extra: str = "
     return "\n".join(parts)
 
 
-def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "") -> str:
-    """Convenience wrapper used by the dispatch surfaces."""
-    resolved = os.path.abspath(cwd or os.getcwd())
+def _resolve_session_cwd(session_key: str | None) -> str:
+    """The session's ACTIVE directory — where /init should scan and write.
+
+    Ladder: the terminal tool's per-session cwd record (seeded when a surface attaches a
+    workspace to the session — desktop project picker, ``project_create``/``project_switch``,
+    gateway ``terminal.cwd`` — and updated after every completed command, so it tracks
+    ``cd``), then ``agent.runtime_cwd.resolve_agent_cwd()`` (session-pinned cwd →
+    ``TERMINAL_CWD`` → process cwd). A bare ``os.getcwd()`` is only right for a CLI launched
+    inside a project: on the desktop app it is the home directory, so /init scanned and
+    updated the HOME's AGENTS.md instead of the workspace attached to the session.
+
+    ``session_key`` is the surface's own key (multi-session hosts must pass it); an empty
+    string reads the single-session CLI's ``"default"`` record, and ``None`` falls back to
+    the ambient ``HERMES_SESSION_KEY``.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        from tools.terminal_tool import get_session_cwd
+
+        key = session_key if session_key is not None else get_session_env("HERMES_SESSION_KEY", "")
+        recorded = get_session_cwd(key)
+        if recorded and os.path.isdir(recorded):
+            return recorded
+    except Exception:
+        pass
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        return str(resolve_agent_cwd())
+    except Exception:
+        return os.getcwd()
+
+
+def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "",
+                              session_key: str | None = None) -> str:
+    """Convenience wrapper used by the dispatch surfaces.
+
+    An explicit ``cwd`` wins while it still exists; a stale one (deleted project, removed
+    worktree) falls through to :func:`_resolve_session_cwd` — the guard lives here so every
+    dispatch surface shares it rather than each one validating its own record.
+    """
+    resolved = os.path.abspath(cwd if cwd and os.path.isdir(cwd) else _resolve_session_cwd(session_key))
     existing: str | None = None
     agents_path = os.path.join(resolved, "AGENTS.md")
     try:

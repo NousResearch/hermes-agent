@@ -116,13 +116,13 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
             f"VALUE = {generation!r}\n", encoding="utf-8")
         record.write_text(json.dumps({"packages": {"venv": {"environment": str(selected)}}}), encoding="utf-8")
         result = subprocess.run(argv, cwd=tmp_path, env=dict(os.environ),
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout.strip() == json.dumps([generation, argv[1:]])
     # A broken selected generation must fail, never silently reuse the old CLI.
     record.write_text(json.dumps({"packages": {"venv": {"environment": str(record.parent / 'missing')}}}), encoding="utf-8")
     result = subprocess.run(argv, cwd=tmp_path, env=dict(os.environ),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0
     assert "dependency environment" in result.stderr
     assert "old-generation" not in result.stdout

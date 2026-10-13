@@ -1120,7 +1120,7 @@ class TestResolveYbresRefsConcurrency:
 class TestMediaResolveMiddlewareRouting:
     """Branch-routing tests for MediaResolveMiddleware.handle()."""
 
-    def _make_resolved_ctx(self, *, chat_type: str, reply_to: str = None,
+    def _make_resolved_ctx(self, *, chat_type: str, reply_to: str | None = None,
                             quote_media_refs=None, raw_text: str = "hello"):
         adapter = make_adapter()
         ctx = make_ctx(

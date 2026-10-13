@@ -8,15 +8,24 @@ export {
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
+  finalizeInterruptedMessages,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
-export { branchGroupForUser, preserveLocalAssistantErrors, spliceOlderPreservedRows } from './reconciliation'
 export {
+  branchGroupForUser,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  spliceOlderPreservedRows
+} from './reconciliation'
+export {
+  QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,
   sealOpenToolParts,

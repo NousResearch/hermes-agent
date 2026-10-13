@@ -32,18 +32,10 @@ name: Install & Update E2E
 # between. A hardcoded list would stop covering the newest release the day
 # after it ships, and would pin an "oldest" that nobody still runs.
 #
-# Triggers:
-#   * every 12 hours, so upstream drift (a new uv, a Node bump, a PyPI change)
-#     surfaces on a schedule rather than in someone's review cycle;
-#   * manually, where you can pick the route (a preset or specific legs) and how many
-#     releases to sample;
-#   * pull_request, path-filtered to the install/update surface, runs ONLY the
-#     `pr` route (generate-e2e-matrix.mjs PR_SUBSET): installer-script ->
-#     hermes-update on linux (newest release -> PR, and PR -> NEXT), windows
-#     (PR -> NEXT) and macos (newest release -> PR), sampling just the newest tag.
-#     Four legs in parallel keep a PR's wall clock near one leg (~15 min);
-#     the full matrix multiplies that, so it stays on the clock and releases.
-#     A red scheduled run is reported by install-e2e-red.yml.
+# Triggers: release builds only. The stable-release gate calls it
+# (workflow_call, route=all), and a maintainer can dispatch it by hand to pick
+# the route (a preset or specific legs) and how many releases to sample. It
+# never runs on pull requests, pushes to main, or a schedule.
 
 on:
   workflow_dispatch:
@@ -116,51 +108,13 @@ on:
         required: false
         type: string
         default: ''
-  schedule:
-    # Every 12 hours, off the hour to avoid the top-of-hour runner crunch.
-    - cron: '20 7,19 * * *'
-  pull_request:
-    # The install/update surface: derived from 60 days of commits whose subject
-    # names update/install/pm/bootstrap/relaunch. Keep it to code a real
-    # install or `hermes update` executes; hermes_cli/main.py and friends are
-    # deliberately absent (they change daily and are covered by e2e-upgrade).
-    paths:
-      - 'scripts/install*'
-      - 'scripts/desktop-update/**'
-      - 'setup-hermes.*'
-      - 'hermes_bootstrap.py'
-      - 'pm/**'
-      - 'hermes_cli/update*'
-      - 'hermes_cli/*update*'
-      - 'hermes_cli/pm*'
-      - 'hermes_cli/*install*'
-      - 'hermes_cli/_early_recovery.py'
-      - 'hermes_cli/_launchers.py'
-      - 'hermes_cli/managed_uv.py'
-      - 'hermes_cli/venv_sync.py'
-      - 'hermes_cli/relaunch.py'
-      - 'hermes_cli/gateway.py'
-      - 'gateway/status.py'
-      - 'apps/bootstrap-installer/**'
-      - 'apps/desktop/electron/*update*'
-      - 'apps/desktop/electron/updater/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tests/install/**'
-      - 'scripts/sandbox/generate-e2e-matrix.mjs'
-      - 'scripts/sandbox/pick-release-tags.sh'
-      - 'scripts/ci/setup_toolchain.py'
-      - '.github/actions/setup-pm/**'
-      - '.github/workflows/install-e2e*.yml'
 
 permissions:
   contents: read
 
 # A workflow_call run (stable release) is never cancelled: its group uses
 # github.run_id so a parent rerun cannot kill this child mid-flight. The
-# scheduled/manual runs keep ref-scoped collapse.
+# manual runs keep ref-scoped collapse.
 concurrency:
   group: install-e2e-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
@@ -177,7 +131,7 @@ jobs:
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
       # tags -- they are the whole input, and the default shallow checkout
       # has none.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           filter: blob:none
           fetch-tags: true
@@ -197,7 +151,7 @@ jobs:
           # stable release the candidate tag itself is the newest release
           # tag, and sampling it as an OLD version would produce a no-change
           # update leg — the candidate must never update from itself.
-          TAG_COUNT: ${{ github.event_name == 'pull_request' && '1' || inputs.tag-count || 2 }}
+          TAG_COUNT: ${{ inputs.tag-count || 2 }}
           INSTALL_REF: ${{ inputs.install-ref }}
           EXCLUDE_REF: ${{ inputs.exclude-ref }}
           RELEASE_MODE: ${{ inputs.release }}
@@ -242,15 +196,14 @@ jobs:
       windows-legs: ${{ steps.gen.outputs.windows-legs }}
       macos-legs: ${{ steps.gen.outputs.macos-legs }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
           sparse-checkout-cone-mode: false
       - id: gen
         env:
           # Free text on dispatch, so it reaches the script as data, never as script.
-          # Scheduled runs have no inputs: the default route. PRs run the pr subset.
-          ROUTE: ${{ github.event_name == 'pull_request' && 'pr' || inputs.route || 'all' }}
+          ROUTE: ${{ inputs.route || 'all' }}
         run: |
           set -euo pipefail
           matrices="$(node scripts/sandbox/generate-e2e-matrix.mjs \
@@ -268,8 +221,7 @@ jobs:
 
   bundle-inputs:
     name: Validate pinned bundle transitions
-    # Bundled legs need dispatch-only manifests; a PR never runs them.
-    if: github.event_name != 'pull_request'
+    # Bundled legs need dispatch-only manifests.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -278,7 +230,7 @@ jobs:
       windows-arch: ${{ steps.inputs.outputs.windows-arch }}
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - id: inputs
         env:
           BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
@@ -386,7 +338,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: tests/install/e2e-assets/playback.html
           sparse-checkout-cone-mode: false
@@ -455,7 +407,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: |
             scripts/sandbox/generate-e2e-matrix.mjs

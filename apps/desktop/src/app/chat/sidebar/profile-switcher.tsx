@@ -34,10 +34,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -79,6 +77,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
@@ -87,12 +86,7 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import {
-  $profileDotStateByScope,
-  type ProfileDotState,
-  type ProfileDotSummary,
-  profileDotSummaryFor
-} from '@/store/profile-dot-state'
+import { $profileDotStateByScope, type ProfileDotSummary, profileDotSummaryFor } from '@/store/profile-dot-state'
 import {
   $profileRemoteOverrides,
   openRemoteOverrideDialog,
@@ -105,8 +99,10 @@ import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { sessionDotClassName } from '../session-status-dot'
 
 import { ConnectionGlyph } from './connection-glyph'
+import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
@@ -124,13 +120,11 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 
 // #91710: a profile that finished (or blocked, or is still working) while
 // another was selected carries an indicator on its rail square and dropdown
-// row. The colors mirror the session status dot's palette — amber for "needs
-// your answer", accent for running, success green for unread — so a profile's
-// loudest state reads the same as its sessions' dots in the sidebar below.
-const PROFILE_STATUS_DOT_CLASS: Record<ProfileDotState, string> = {
-  'needs-input': 'bg-amber-500',
-  working: 'bg-(--ui-accent)',
-  unread: 'bg-(--ui-success)'
+// row. It paints the session status dot's own class for the same state, so a
+// profile's loudest state reads the same as its sessions' dots below. The
+// `profile-status-dot` slot lets tests (and tours) find it.
+function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
+  return <span aria-hidden="true" className={sessionDotClassName(summary.state)} data-slot="profile-status-dot" />
 }
 
 /** The a11y/tooltip text for one square's summary — every non-zero count,
@@ -161,18 +155,6 @@ function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSumm
 function useProfileStatus(profile: null | string, connectionId: null | string | undefined): ProfileDotSummary | null {
   return useStoreSelector($profileDotStateByScope, byScope =>
     profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
-  )
-}
-
-/** The dot a square/dropdown row paints for a summary. `status-dot` slot so
- *  tests (and tours) can find it without duplicating the class string. */
-function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn('size-1.5 rounded-full', PROFILE_STATUS_DOT_CLASS[summary.state])}
-      data-slot="profile-status-dot"
-    />
   )
 }
 
@@ -594,11 +576,14 @@ export function ProfileRail() {
             activeKey={isAll ? null : activeKey}
             colors={colors}
             connectionId={namedProfileConnectionId}
+            homeConnectionId={activeConnectionId}
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            // Fleet drops the home pill, so the menu is the active default's
+            // only door; every at-rest group already lists its own (#106017, #131632).
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>
@@ -879,13 +864,15 @@ function ImportProfileButton({ label }: { label: string }) {
   )
 }
 
-// The condensed rail: every named profile in one compact menu. The trigger
-// shows the active profile (tinted initial + name); on default/all scope it
-// falls back to the placeholder since the left toggle pill carries that state.
+// The condensed rail: the active gateway's profiles in one compact menu. The
+// trigger shows the active profile (tinted initial, or home for the default);
+// on all scope — or on a default the left toggle pill carries — it falls back
+// to the placeholder.
 function ProfileDropdown({
   activeKey,
   colors,
   connectionId,
+  homeConnectionId,
   onCreate,
   onImport,
   onSelect,
@@ -896,6 +883,8 @@ function ProfileDropdown({
   activeKey: null | string
   colors: Record<string, string>
   connectionId: null | string
+  /** The default row's route, like the home pill's: the active connection. */
+  homeConnectionId: null | string
   onCreate: () => void
   onImport: () => void
   onSelect: (name: string) => void
@@ -927,7 +916,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -953,8 +942,9 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
-              connectionId={connectionId}
+              connectionId={profile.is_default ? homeConnectionId : connectionId}
               hideStatus={profile.name === value}
+              isDefault={profile.is_default}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -962,43 +952,22 @@ function ProfileDropdown({
           ))}
         </DropdownMenuRadioGroup>
         {restGroups.map(group => (
-          <div data-connection-id={group.connectionId} data-slot="profile-dropdown-gateway" key={group.connectionId}>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
-              <ConnectionGlyph connection={group} />
-              <span className="truncate">{group.label}</span>
-              {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
-            </DropdownMenuLabel>
-            {[group.defaultAgent, ...group.named].map(agent => {
-              const localDefault = agent.connectionKind === 'local' && agent.isDefault
-              const label = localDefault ? p.fleet.localDevice : p.fleet.onGateway(agent.profile, group.label)
-
-              return (
-                <ProfileLaunchContextMenu
-                  connectionId={agent.connectionId}
-                  key={agent.profile}
-                  label={label}
-                  profile={agent.profile}
-                >
-                  <DropdownMenuItem aria-label={label} className="min-w-0" onSelect={() => onSelectRest(agent)}>
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {localDefault ? (
-                        <Codicon aria-hidden="true" name="device-desktop" size="0.875rem" />
-                      ) : (
-                        <ProfileGlyph
-                          aria-hidden="true"
-                          color={resolveProfileColor(agent.profile, colors)}
-                          isDefault={agent.isDefault}
-                          name={agent.profile}
-                        />
-                      )}
-                      <span className="truncate">{agent.profile}</span>
-                    </span>
-                  </DropdownMenuItem>
-                </ProfileLaunchContextMenu>
-              )
-            })}
-          </div>
+          <FleetGatewayMenuGroup
+            group={group}
+            key={group.connectionId}
+            onSelect={onSelectRest}
+            slot="profile-dropdown-gateway"
+            wrapRow={(row, agent, label) => (
+              <ProfileLaunchContextMenu
+                connectionId={agent.connectionId}
+                key={agent.profile}
+                label={label}
+                profile={agent.profile}
+              >
+                {row}
+              </ProfileLaunchContextMenu>
+            )}
+          />
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1011,6 +980,7 @@ function ProfileDropdownItem({
   color,
   connectionId,
   hideStatus,
+  isDefault,
   label,
   name
 }: {
@@ -1019,12 +989,13 @@ function ProfileDropdownItem({
   /** The dropdown's own selected row: its sessions are on screen in the
    *  sidebar, so its rollup is suppressed like the active square (#91710). */
   hideStatus?: boolean
+  isDefault: boolean
   label: string
   name: string
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
   const summary = useProfileStatus(name, connectionId)
   const statusText = summary && !hideStatus ? profileStatusLabel(p, summary) : null
 
@@ -1038,7 +1009,7 @@ function ProfileDropdownItem({
         value={name}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+          <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
           <span className="truncate">{label}</span>
           {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>
@@ -1142,11 +1113,7 @@ function ProfilePill({
         type="button"
         variant="ghost"
       >
-        {pending ? (
-          <Loader2 aria-hidden="true" className="size-3 animate-spin" />
-        ) : (
-          <Codicon name={glyph} size="0.875rem" />
-        )}
+        {pending ? <Loader2 className="animate-spin" /> : <Codicon name={glyph} size="0.875rem" />}
         {summary && !active && (
           <span className="absolute -right-0.5 -top-0.5">
             <ProfileStatusDot summary={summary} />
@@ -1465,7 +1432,7 @@ function ProfileSquare({
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
   // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   // The square carries its profile's session rollup — but never when active:
   // the workspace is homed there and the sidebar below already shows that

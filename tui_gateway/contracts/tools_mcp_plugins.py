@@ -267,7 +267,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
+    fullLabel: str
     meta: str
     body: str
     style: str
@@ -644,6 +644,7 @@ class PluginServerState(WireEnum):
     no_interactive_session = "no_interactive_session"
     version_too_old = "version_too_old"
     missing_app = "missing_app"
+    unsupported_gpu = "unsupported_gpu"
     unknown = "unknown"
 
 
@@ -699,7 +700,8 @@ class PluginLiveNow(Result):
 
 class PluginActivation(Result):
     """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
-    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
+    language-pack layers), ``gateway_transforms`` / ``hooks`` (hook
     names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
@@ -770,3 +772,36 @@ class PluginsManageResult(Result):
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
        doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
            "or remove a user install.")
+
+
+class PluginCatalogLookupStatus(WireEnum):
+    found = "found"
+    invalid_name = "invalid_name"
+    unknown = "unknown"
+    unavailable = "unavailable"
+
+
+class PluginCatalogLookupParams(ProfileParams):
+    name: str
+
+
+class PluginCatalogLookupEntry(Result):
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+
+    name: str
+    repo: str
+    sha: str
+    subdir: str
+
+
+class PluginCatalogLookupResult(Result):
+    """``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;
+    ``unavailable`` means neither the live catalog nor the in-tree fallback could be read."""
+
+    status: PluginCatalogLookupStatus
+    entry: PluginCatalogLookupEntry | None = None
+
+
+method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
+       doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
+           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")

@@ -20,7 +20,7 @@ import pytest
 
 
 def _jwt(email: str) -> str:
-    b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()  # noqa: E731
+    b64 = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
     return f"{b64(b'{}')}.{b64(json.dumps({'email': email}).encode())}.sig"
 
 

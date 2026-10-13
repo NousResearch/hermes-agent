@@ -30,10 +30,10 @@ def is_post_swap_child() -> bool:
 
 
 def write_handoff(payload: dict[str, Any]) -> Path:
-    """Persist the post-swap payload under HERMES_HOME; returns its path."""
-    from hermes_constants import get_hermes_home
+    """Persist the post-swap payload beside the receipts (the ROOT home); returns its path."""
+    from hermes_constants import get_default_hermes_root
 
-    directory = get_hermes_home() / "logs" / "update_receipts"
+    directory = get_default_hermes_root() / "logs" / "update_receipts"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"post_swap_{os.getpid()}.json"
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")

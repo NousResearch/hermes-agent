@@ -29,6 +29,7 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "session.save": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
+    "slash.refine": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
     "slash.retry": "idle-gated"}
 
@@ -81,7 +82,7 @@ def _check_output(argv: list[str], **kwargs: Any) -> str:
     """Stripped stdout of a short subprocess, or ``""`` on any failure."""
     with contextlib.suppress(Exception):
         return subprocess.check_output(
-            argv, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+            argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
             timeout=2, **kwargs).strip()
     return ""
 
@@ -253,6 +254,17 @@ class HostSupervisor:
         self.start()
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
+
+    def has_pending_turn(self, sid: str) -> bool:
+        """True when a host completion callback is still registered for ``sid``.
+
+        Read by the serving process to tell "the host still owes this session a
+        terminal frame" from "nothing will ever call back for it". Entries are
+        added in :meth:`submit_turn` and removed by ``turn.end``/``turn.error``
+        handling or :meth:`_fail_pending_turns`, all under ``self._lock``.
+        """
+        with self._lock:
+            return any(s == sid for s, _cb in self._pending_turns.values())
 
     def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""

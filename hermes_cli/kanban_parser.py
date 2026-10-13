@@ -25,18 +25,15 @@ class _KanbanArgumentParser(argparse.ArgumentParser):
     def parse_known_args(self, args=None, namespace=None):
         if not self._intermixed:
             return super().parse_known_args(args, namespace)
-        if args is not None and "--" in args and args.index("--") == len(args) - 1:
-            args = args[:-1]
-        # Protect the delimiter across argparse's two passes: its first pass
-        # can consume a leading '--' while positionals are suppressed.
+        # Standard parsing preserves literal tokens after '--'. Optional text
+        # may already have been consumed before an intervening option, leaving
+        # the delimiter and its entire literal tail in extras instead.
         if args is not None and "--" in args:
-            text = next(action for action in self._actions if action.dest == "text")
-            original_nargs = text.nargs
-            text.nargs = "+"
-            try:
-                return super().parse_known_args(args, namespace)
-            finally:
-                text.nargs = original_nargs
+            parsed, extras = super().parse_known_args(args, namespace)
+            if extras and extras[0] == "--":
+                parsed.text.extend(extras[1:])
+                extras = []
+            return parsed, extras
         self._intermixed = False
         try:
             return self.parse_known_intermixed_args(args, namespace)

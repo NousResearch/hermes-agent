@@ -887,6 +887,13 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Archive provenance (see kanban_db.SCHEMA_SQL); additive for legacy DBs so
+    # an existing archived row is read/show-able but not auto-unarchived
+    # (unarchive_task refuses NULL archived_from_status as metadata-missing).
+    ("archived_from_status", "archived_from_status TEXT"),
+    ("archived_at", "archived_at INTEGER"),
+    ("archive_reason", "archive_reason TEXT"),
+    ("archived_by", "archived_by TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

@@ -356,9 +356,29 @@ _SPECS = [
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
+        _arg("--reason", nargs="+",
+             help="Required audit-trail reason (recorded on the task row and the 'archived' event). "
+                  "Not needed with --rm."),
+        _json_flag(help="Emit one JSON object (or a list, for multiple ids) on stdout"),
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
-    ], help="Archive one or more tasks"),
+    ], help="Archive one or more done/blocked tasks (irreversible-looking, but see `unarchive`)",
+         description=(
+        "Hides a task from the default board/dispatcher without deleting it. Only 'done' and "
+        "'blocked' cards may be archived; any other status, or any recursive descendant that "
+        "is not itself done/archived, is refused. `--reason` is required and is preserved on the "
+        "row so `unarchive` can restore it later without depending on event retention."
+    )),
+    _cmd("unarchive", [
+        _TASK_IDS,
+        _arg("--reason", nargs="+", required=True,
+             help="Required audit-trail reason (recorded on the 'unarchived' event)"),
+        _json_flag(help="Emit one JSON object (or a list, for multiple ids) on stdout"),
+    ], help="Restore one or more archived tasks to their pre-archive status", description=(
+        "Restores EXACTLY to the status recorded at archive time (done stays done, blocked stays "
+        "blocked). A legacy archived row with no recorded pre-archive status is refused rather "
+        "than guessed."
+    )),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [
         _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),

@@ -194,6 +194,25 @@ def terminal_run_status(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     }
     if not finished and result.get("turn_exit_reason"):
         fields["turn_exit_reason"] = str(result["turn_exit_reason"])
+    if interrupted:
+        # Always put a human-readable reason on cancelled runs so clients never show
+        # bare "Run interrupted" / empty content. Prefer final_response, then error, then exit reason.
+        from agent.interrupt_control import format_interrupt_user_text, is_bare_interrupt_text
+
+        reason_text = None
+        for key in ("final_response", "error"):
+            val = result.get(key)
+            if isinstance(val, str) and val.strip() and not is_bare_interrupt_text(val):
+                reason_text = val.strip()
+                break
+        if reason_text is None:
+            reason_text = format_interrupt_user_text(
+                turn_exit_reason=result.get("turn_exit_reason"),
+            )
+        fields["error"] = reason_text
+        # Some clients only read content/output on assistant.completed; keep them aligned.
+        if not fields.get("content"):
+            fields.setdefault("interrupt_reason", reason_text)
     if result.get("pending_steer"):
         # Undelivered steer text rides on every terminal event/status for client replay.
         fields["pending_steer"] = result["pending_steer"]

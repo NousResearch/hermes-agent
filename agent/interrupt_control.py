@@ -23,6 +23,23 @@ _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
 
+# Bare transcript placeholder used only when no reason can be reconstructed (legacy).
+# User-facing surfaces must never show this alone — always prefer format_interrupt_user_text().
+BARE_INTERRUPT_PLACEHOLDER = "Operation interrupted."
+INTERRUPT_USER_PREFIX = "Operation interrupted:"
+
+# Machine exit-reason → short human phrase for the user-visible interrupt line.
+_EXIT_REASON_USER_PHRASES = (
+    ("interrupted_by_user", "stopped by user"),
+    ("interrupted_by_system(", None),  # special-cased below
+    ("client_gone", "client disconnected"),
+    ("ws_orphan_reap", "websocket session reaped (orphan)"),
+    ("background_review_superseded", "background review superseded"),
+    ("gateway_shutdown", "gateway shutdown"),
+    ("sse_client_disconnected", "SSE client disconnected"),
+    ("session_ended", "session ended"),
+)
+
 
 def interrupt_issuer(agent) -> Optional[str]:
     """Slug of the system producer behind the pending interrupt, or ``None`` for a human stop."""
@@ -30,6 +47,125 @@ def interrupt_issuer(agent) -> Optional[str]:
     if not reason or reason in USER_INTERRUPT_REASONS:
         return None
     return str(reason).strip().replace(" ", "_")
+
+
+def is_bare_interrupt_text(text) -> bool:
+    """True when ``text`` is empty or the legacy bare placeholder with no reason."""
+    if text is None:
+        return True
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Exact bare forms only — reasoned lines start with "Operation interrupted: …".
+    return stripped in {BARE_INTERRUPT_PLACEHOLDER, "Operation interrupted", "Operation interrupted…"}
+
+
+def humanize_turn_exit_reason(turn_exit_reason) -> Optional[str]:
+    """Map a machine ``turn_exit_reason`` to a short human phrase, or None if unknown/empty."""
+    if not turn_exit_reason:
+        return None
+    reason = str(turn_exit_reason).strip()
+    if not reason:
+        return None
+    if reason.startswith("interrupted_by_system(") and reason.endswith(")"):
+        issuer = reason[len("interrupted_by_system("):-1].strip() or "system"
+        return f"system stop ({issuer.replace('_', ' ')})"
+    if reason.startswith("interrupted_during_api_call(") and reason.endswith(")"):
+        detail = reason[len("interrupted_during_api_call("):-1].strip()
+        return f"interrupted during API call ({detail})" if detail else "interrupted during API call"
+    for prefix, phrase in _EXIT_REASON_USER_PHRASES:
+        if reason == prefix or reason.startswith(prefix):
+            return phrase if phrase is not None else reason.replace("_", " ")
+    # Keep readable machine codes (snake_case → spaces) rather than dropping them.
+    if reason.isidentifier() or "_" in reason:
+        return reason.replace("_", " ")
+    return reason
+
+
+def format_interrupt_user_text(
+    *,
+    final_response=None,
+    turn_exit_reason=None,
+    tool_reason=None,
+    interrupt_message=None,
+    session_id=None,
+) -> str:
+    """Always return a user-visible interrupt line with a reason (never bare placeholder).
+
+    Preference order:
+    1. Existing reasoned ``final_response`` (``Operation interrupted: …`` or other non-bare prose)
+    2. Trusted ``tool_reason`` from ``interrupt()``
+    3. Humanized ``turn_exit_reason``
+    4. Note that a follow-up message was queued (without echoing the full user text)
+    5. Unknown + session-id pointer into agent.log
+    """
+    if isinstance(final_response, str):
+        existing = final_response.strip()
+        if existing and not is_bare_interrupt_text(existing):
+            # Already reasoned mid-loop diagnostics keep their wording.
+            if existing.startswith(INTERRUPT_USER_PREFIX) or existing.startswith("Operation interrupted"):
+                return existing
+            # Non-interrupt partial answer already present — keep it; surfaces still flag interrupted.
+            return existing
+
+    parts: list[str] = []
+    if tool_reason:
+        tr = str(tool_reason).strip()
+        if tr:
+            if tr in USER_INTERRUPT_REASONS:
+                parts.append(tr)
+            else:
+                parts.append(f"system stop ({tr.replace('_', ' ')})")
+
+    human_exit = humanize_turn_exit_reason(turn_exit_reason)
+    if human_exit:
+        # Avoid "stopped by user" twice when tool_reason already said the same class of stop.
+        if not (
+            parts
+            and human_exit == "stopped by user"
+            and str(tool_reason or "") in USER_INTERRUPT_REASONS
+        ):
+            if human_exit not in parts:
+                parts.append(human_exit)
+
+    if interrupt_message and not parts:
+        # Presence of a queued follow-up only — never paste the user's next message as the reason.
+        parts.append("stopped for a new user message")
+
+    if not parts:
+        sid = str(session_id or "").strip()
+        if sid:
+            parts.append(f"unknown cause — check agent.log for session {sid}")
+        else:
+            parts.append("unknown cause — check agent.log")
+
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in parts:
+        key = p.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+
+    body = "; ".join(unique)
+    if not body.endswith("."):
+        body = body + "."
+    return f"{INTERRUPT_USER_PREFIX} {body}"
+
+
+def ensure_interrupt_final_response(agent, final_response, turn_exit_reason=None):
+    """Fill bare/empty interrupt ``final_response`` from agent interrupt state + exit reason."""
+    return format_interrupt_user_text(
+        final_response=final_response,
+        turn_exit_reason=turn_exit_reason,
+        tool_reason=getattr(agent, "_tool_interrupt_reason", None),
+        interrupt_message=getattr(agent, "_interrupt_message", None),
+        session_id=getattr(agent, "session_id", None),
+    )
 
 
 def interrupt_skip_wording(agent) -> str:

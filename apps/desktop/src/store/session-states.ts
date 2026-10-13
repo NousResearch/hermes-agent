@@ -489,6 +489,10 @@ function settleEndedLiveTurn(runtimeId: string) {
 // this window, so Retry cannot run the prompt twice.
 const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
 const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
+// Interrupted settles that never got a reasoned message.complete still must not go blank.
+// Non-retryable: Stop / system cancel is intentional, not a connection failure (#131205 family).
+const INTERRUPTED_EMPTY_SURFACE: ErrorSurface = { code: 'interrupted', layer: 'runtime', retryable: false }
+const INTERRUPTED_EMPTY_ERROR = 'Operation interrupted: turn stopped with no reply.'
 
 function turnHasReply(messages: ChatMessage[]): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -537,14 +541,56 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
   ]
 }
 
+/** Interrupted turn with no user-visible text and no message.complete reason yet. */
+function withInterruptedEmptyNotice(messages: ChatMessage[]): ChatMessage[] {
+  const last = messages.findLast(message => !message.hidden)
+
+  if (last?.role === 'assistant') {
+    return messages.map(message =>
+      message === last
+        ? {
+            ...message,
+            error: INTERRUPTED_EMPTY_ERROR,
+            errorSurface: INTERRUPTED_EMPTY_SURFACE,
+            interrupted: true
+          }
+        : message
+    )
+  }
+
+  const occurredAt = Date.now() / 1000
+
+  return [
+    ...messages,
+    {
+      completedAt: occurredAt,
+      error: INTERRUPTED_EMPTY_ERROR,
+      errorSurface: INTERRUPTED_EMPTY_SURFACE,
+      id: `assistant-interrupted-empty-${Date.now()}`,
+      interrupted: true,
+      parts: [],
+      pending: false,
+      role: 'assistant',
+      timestamp: occurredAt
+    }
+  ]
+}
+
 /** Stamp the retry card on an ended turn that has no reply, never an intentional
- *  interruption. A newer turn is either live (skipped) or has its own reply. */
+ *  interruption as a *retryable connection* failure. Interrupted empty turns still
+ *  get a non-retryable stop notice so the chat is never blank. */
 function markTurnWithoutReply(runtimeId: string) {
-  writeSessionState(runtimeId, state =>
-    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
-      ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
-  )
+  writeSessionState(runtimeId, state => {
+    if (isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)) {
+      return state
+    }
+
+    if (state.interrupted) {
+      return { ...state, messages: withInterruptedEmptyNotice(state.messages) }
+    }
+
+    return { ...state, messages: withNoReplyNotice(state.messages) }
+  })
 }
 
 async function recoverEndedLiveTurn(runtimeId: string) {

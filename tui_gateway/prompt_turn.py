@@ -326,12 +326,30 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
         raw = turn_error_text(result.get("error"), error_surface)
     # "Operation interrupted: waiting for model response (…)" is cancellation
     # metadata, not assistant prose (gateway/run.py and ACP suppress it too).
-    # "Operation interrupted: waiting for model response (…)" is cancellation metadata, not assistant prose.
     # gateway/run.py and the ACP adapter already suppress this sentinel; without this the desktop paints it
     # as the agent's reply whenever a stop/steer lands mid-request (#7921).
     if status == "interrupted" and isinstance(raw, str) and raw.strip().startswith(
             INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         raw = ""
+    # Interrupted turns keep a reasoned final line (never silence / bare placeholder).
+    # Fill after stripping the mid-request waiting sentinel so that path still gets a reason.
+    if status == "interrupted":
+        from agent.interrupt_control import (
+            ensure_interrupt_final_response,
+            is_bare_interrupt_text,
+        )
+
+        if is_bare_interrupt_text(raw if isinstance(raw, str) else None):
+            agent_stub = type("A", (), {
+                "_tool_interrupt_reason": None,
+                "_interrupt_message": result.get("interrupt_message"),
+                "session_id": result.get("session_id"),
+            })()
+            raw = ensure_interrupt_final_response(
+                agent_stub,
+                result.get("error") or raw,
+                turn_exit_reason=result.get("turn_exit_reason"),
+            )
     lr = result.get("last_reasoning")
     last_reasoning = lr.strip() if isinstance(lr, str) and lr.strip() else None
     return raw, status, last_reasoning
@@ -995,12 +1013,19 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             payload["partial"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
+    elif status == "interrupted":
+        # Always carry a reason on interrupted completes for clients that only read error/text.
+        reason = str(error_value or raw or "Operation interrupted: unknown cause.")
+        payload["error"] = reason
+        if not (isinstance(raw, str) and raw.strip()):
+            payload["text"] = reason
+            raw = reason
     if st.terminal_callback is not None:
         st.receipt_attempted = True
         st.terminal_callback({
             "status": {"interrupted": "cancelled", "error": "failed"}.get(status, "settled"),
             "text": raw if isinstance(raw, str) else str(raw),
-            **({"error": str(error_value or raw)} if status == "error" else {})})
+            **({"error": str(error_value or raw)} if status in {"error", "interrupted"} else {})})
         st.receipt_committed = True
     if st.receipt_committed:
         _retire_turn_marker(session, st.marker_key)

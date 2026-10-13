@@ -1,0 +1,37 @@
+name: hermes-lang-el
+repo: https://github.com/axiom-agent-ai/hermes-lang-el
+sha: caa5a0d4e350ed4e6a056b1e3ebcde5e22a04775
+description: >-
+  Complete Greek (Ελληνικά) language pack for the Hermes Desktop app. Translates
+  5,062 of 5,065 desktop UI strings (settings, composer, sidebar, command center,
+  skills, messaging, profiles, cron, onboarding, boot, updates, every dialog and
+  toast) plus the 102 most visible core CLI slash-command descriptions. Three
+  keys are deliberately not shipped: two array-valued composer placeholder
+  lists the YAML pack format cannot express, and intro.custom, whose string
+  override over an array-returning function breaks the empty-chat intro screen.
+  All three fall back to English per key. Ships as locales/el.desktop.yaml +
+  locales/el.yaml with provides_locales: [el] and requires_hermes >=0.21.6; the
+  gateway serves the pack over i18n.catalog and the switcher lists Ελληνικά by
+  endonym. Technical terms (plugin, skill, gateway, provider, webhook, OAuth,
+  token, MCP, hook, middleware, cron, worktree, SDK, …) stay in English per the
+  Hermes desktop convention; function strings use positional {0}/{1}
+  placeholders; a consistent glossary covers Cancel/Save/Delete/Settings and the
+  other frequent terms. Validated with `hermes plugins validate --install-deps`:
+  all checks pass, 5,062/5,062 keys match the English desktop catalog. TUI and
+  the remaining ~3,300 core CLI strings are not covered yet. Disclosure — no
+  network calls beyond the gateway's own i18n.catalog delivery, no reads outside
+  the plugin's data, no shell commands, no background processes, no stored
+  credentials; the pack is pure translation data plus a no-op Desktop entrypoint
+  with no self-updating code.
+maintainer: axiom-agent-ai
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/axiom-agent-ai/hermes-lang-el#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

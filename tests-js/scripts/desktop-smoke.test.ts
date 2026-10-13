@@ -148,6 +148,42 @@ test.runIf(process.platform === 'linux')('origin proof finds the live child list
   } finally { child.kill(); await new Promise<void>((resolve): void => { child.once('exit', (): void => resolve()) }) }
 })
 
+test.runIf(process.platform === 'linux' || process.platform === 'darwin')('a shared host listener is proven by its Hermes home ledger', async (): Promise<void> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-host-root-'))
+  const home = path.join(root, 'profiles', 'work')
+  const spawnedAt = Date.now() / 1000
+  fs.mkdirSync(home, { recursive: true })
+  const child = spawn(process.execPath, ['-e', 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>console.log(s.address().port))'], { stdio: ['ignore', 'pipe', 'pipe'] })
+
+  try {
+    const port = await new Promise<number>((resolve, reject): void => {
+      child.once('error', reject)
+      child.stdout.once('data', (data: Buffer): void => resolve(Number(data.toString().trim())))
+    })
+    const record = { pid: child.pid, purpose: 'serve', host: '127.0.0.1', port, create_time: spawnedAt }
+    const ledger = path.join(root, 'spawn-ledger.json')
+
+    // The product stores one ledger at the machine root, above a profile home.
+    fs.writeFileSync(path.join(home, 'spawn-ledger.json'), JSON.stringify([record]))
+    expect((): void => { localBackendProcess(port, child.pid!, home) }).toThrow('found 0')
+    fs.rmSync(path.join(home, 'spawn-ledger.json'))
+
+    // A stale record cannot identify a new process that reused the PID.
+    fs.writeFileSync(ledger, JSON.stringify([{ ...record, create_time: spawnedAt - 3600 }]))
+    expect((): void => { localBackendProcess(port, child.pid!, home) }).toThrow('found 0')
+    fs.writeFileSync(ledger, JSON.stringify([record]))
+
+    const backend = localBackendProcess(port, child.pid!, home)
+    expect(backend.pid).toBe(child.pid)
+    expect(backend.ownership).toBe('host-ledger')
+    expect((): void => { assertBackendOrigin(backend, home, 'source', { appReportedRoot: home }) }).toThrow('source tree')
+  } finally {
+    child.kill()
+    await new Promise<void>((resolve): void => { child.once('exit', (): void => resolve()) })
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a backend bound to the tree by environment needs no root in argv', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 
@@ -199,6 +235,7 @@ test('a platform that cannot read the backend environment proves ownership by th
       parentPid: 1,
       executable: path.join(home, 'python.exe'),
       command: `"${path.join(home, 'python.exe')}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0`,
+      ownership: 'child' as const,
     }
 
     // Control row: with nothing readable and no report from the app, this is still a
@@ -218,6 +255,12 @@ test('a platform that cannot read the backend environment proves ownership by th
     expect((): void => {
       assertBackendOrigin({ ...backend, cwd: other, pythonPath: other }, root, 'source', { appReportedRoot: root })
     }).toThrow('source tree')
+    expect((): void => {
+      assertBackendOrigin({ ...backend, ownership: 'host-ledger' }, root, 'source', { appReportedRoot: root })
+    }).toThrow('source tree')
+    expect((): void => {
+      assertBackendOrigin({ ...backend, ownership: undefined }, root, 'source', { appReportedRoot: root })
+    }).toThrow('source tree')
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -231,7 +274,7 @@ test('OLD update-window source provenance carries its verified app identity to t
     fs.mkdirSync(other, { recursive: true })
 
     const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'),
-      command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
+      command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0`, ownership: 'child' as const }
 
     expect((): void => {
       assertUpdateWindowBackendOrigin(backend, { hermesRoot: root }, root, 'source')

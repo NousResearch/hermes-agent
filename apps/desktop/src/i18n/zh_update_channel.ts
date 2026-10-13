@@ -11,5 +11,8 @@ export const zhUpdateChannel = {
   detailsLabel: '渠道',
   branch: (b: string) => `分支：${b}`,
   change: '更改',
-  latestRelease: (v: string) => `你正在使用最新的稳定版发布（${v}）。`
+  latestRelease: (v: string) => `你正在使用最新的稳定版发布（${v}）。`,
+  rollbackTitle: (v: string) => `回退到稳定版 ${v}`,
+  rollbackBody: (v: string) => `当前构建比稳定版 ${v} 更新。安装后 Hermes 将回退到该版本。`,
+  rollbackAction: (v: string) => `回退到 ${v}`
 }

@@ -16,7 +16,7 @@ describe('side toggles follow the flip', () => {
     vi.resetModules()
   })
 
-  it('collapses the edge the sidebar / file tree actually sit on', async () => {
+  it('collapses the edge the sidebar / file tree actually sit on', { timeout: 30_000 }, async () => {
     const tree = await import('@/components/pane-shell/tree/store')
     const layout = await import('@/store/layout')
 

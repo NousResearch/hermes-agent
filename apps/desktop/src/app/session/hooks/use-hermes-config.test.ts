@@ -10,6 +10,7 @@ import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $currentServiceTier,
   $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
@@ -18,6 +19,7 @@ import {
   setCurrentReasoningEffort,
   setDefaultReasoningEffort
 } from '@/store/session'
+import { $showToolActivity, setShowToolActivityFromConfig } from '@/store/tool-activity'
 
 import { deferred } from '../../../test/deferred'
 
@@ -37,6 +39,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
     setShowReasoningFromConfig(undefined)
+    setShowToolActivityFromConfig(undefined)
     setCurrentCwd('')
     setCurrentFastMode(false)
     setCurrentModelSource('')
@@ -63,6 +66,22 @@ describe('useHermesConfig refreshHermesConfig', () => {
       await result.current.refreshHermesConfig()
     })
     expect($showReasoning.get()).toBe(true)
+  })
+
+  it('mirrors display.tool_progress independently of show_reasoning', async () => {
+    mockConfig({ display: { show_reasoning: false, tool_progress: 'off' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(false)
+
+    mockConfig({ display: { show_reasoning: false } })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(true)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the
@@ -184,7 +203,8 @@ describe('useHermesConfig refreshHermesConfig', () => {
       refreshC = result.current.refreshHermesConfig(true)
     })
 
-    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'normal' } })
+    // A raw OpenAI tier word the composer cannot send (create would 4002) seeds Standard.
+    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'flex' } })
     await act(async () => {
       await refreshC
     })
@@ -195,17 +215,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
-  })
-
-  it('loads the profile terminal font for already-mounted terminal surfaces', async () => {
-    mockConfig({ terminal: { font_family: 'MesloLGS NF' } })
-    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
-
-    await act(async () => {
-      await result.current.refreshHermesConfig()
-    })
-
-    expect($terminalFontFamily.get()).toBe('MesloLGS NF')
+    expect($currentServiceTier.get()).toBe('normal')
   })
 
   it('does not let an older profile response restore its terminal font', async () => {

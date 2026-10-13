@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
+def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Connect every portable MCP server ``activation`` defers, under the caller's profile scope.
+    ``portable`` is the manager's portable server configs, read together with ``activation``.
 
     Returns ``[{name, connected, tools, error?}]``, one row per server; a server that fails to
     connect is reported, never retried. Never raises."""
@@ -26,11 +27,9 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not names:
         return []
     try:
-        from hermes_cli.plugins import get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config
         from tools.mcp_tool_discovery import register_mcp_servers
         configured = _load_mcp_config()
-        portable = get_plugin_manager().get_portable_mcp_servers()
     except Exception as exc:
         logger.warning("plugin MCP activation could not read server config: %s", exc)
         return [{"name": n, "connected": False, "tools": [], "error": str(exc)} for n in names]
@@ -48,7 +47,7 @@ def connect_plugin_mcp(activation: Dict[str, Any]) -> List[Dict[str, Any]]:
         except Exception as exc:
             rows.append({"name": name, "connected": False, "tools": [], "error": str(exc)})
             continue
-        row: Dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
+        row: dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
         if not tools:
             row["error"] = _server_error(name) or "the server did not connect"
         rows.append(row)
@@ -73,7 +72,7 @@ def _server_error(name: str) -> Optional[str]:
     return None
 
 
-def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
+def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
     """``[{name, description}]`` for the skills ``plugin_key`` registered (qualified ``<ns>:<skill>``)."""
     try:
         from hermes_cli.plugins import get_plugin_manager
@@ -84,13 +83,14 @@ def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
             for qualified, entry in sorted(skills.items()) if entry.get("plugin_key") == plugin_key]
 
 
-def live_notice(activation: Dict[str, Any]) -> str:
-    """The note an open chat gets on its next turn: connected MCP servers with their tools, skills,
-    and what waits for the next session. Empty when nothing became usable."""
-    live = activation.get("live_now") or {}
-    servers, skills = live.get("mcp_servers") or [], live.get("skills") or []
+def live_notice(activation: dict[str, Any]) -> str:
+    """The note an open chat gets on its next turn: connected MCP servers with their tools and what
+    waits for the next session. Empty without servers. The plugin's skills are not listed here: every
+    turn announces any skill the chat's system prompt does not list (``agent/skills_index_delta.py``),
+    whichever way it arrived."""
+    servers = (activation.get("live_now") or {}).get("mcp_servers") or []
     deferred = activation.get("deferred") or {}
-    if not servers and not skills:
+    if not servers:
         return ""
     lines = [f"[plugin installed: {activation.get('name') or activation.get('key')}]"]
     connected = [s for s in servers if s.get("connected")]
@@ -103,10 +103,6 @@ def live_notice(activation: Dict[str, Any]) -> str:
                 lines.extend(f"    {line}" for line in listing.splitlines())
     for server in (s for s in servers if not s.get("connected")):
         lines.append(f"- {server['name']}: not connected ({server.get('error') or 'unknown error'})")
-    if skills:
-        lines.append("Skills now available; load one with skill_view:")
-        lines.extend(f"- {s['name']}: {s['description']}" if s.get("description") else f"- {s['name']}"
-                     for s in skills)
     later = [f"{len(deferred['tools'])} Python tools" if deferred.get("tools") else "",
              f"{len(deferred['prompt'])} prompt sections" if deferred.get("prompt") else ""]
     if any(later):
@@ -114,7 +110,7 @@ def live_notice(activation: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _tool_listing(names: List[str]) -> str:
+def _tool_listing(names: list[str]) -> str:
     """``name: first sentence`` per tool."""
     try:
         from tools.registry import registry

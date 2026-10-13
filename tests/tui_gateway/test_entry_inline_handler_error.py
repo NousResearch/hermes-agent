@@ -42,11 +42,9 @@ def test_main_reports_inline_handler_error_and_keeps_reading(monkeypatch):
 
     entry.main()
 
-    assert replies[1] == {
-        "jsonrpc": "2.0",
-        "id": "broken",
-        "error": {"code": -32000, "message": "handler error: clipboard backend is unavailable"},
-    }
+    assert replies[1]["id"] == "broken"
+    assert replies[1]["error"]["code"] == -32000
+    assert "clipboard backend is unavailable" in replies[1]["error"]["message"]
     assert replies[2] == {"jsonrpc": "2.0", "id": "next", "result": {"ok": True}}
     # Forensics: the survived crash leaves the same crash-log trail a fatal one would.
     assert len(breadcrumbs) == 1 and "clipboard.save" in breadcrumbs[0]

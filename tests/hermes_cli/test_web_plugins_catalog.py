@@ -1,12 +1,10 @@
-"""Dashboard plugin-catalog surface: GET /api/dashboard/plugins/catalog merges installed state (via the
-install-metadata ``catalog`` record) and the install endpoint has NO kill-list bypass."""
+"""Dashboard plugin-catalog surface: GET /api/dashboard/plugins/catalog merges installed state via the
+installer-owned install-metadata ``catalog`` record; the install endpoint has no kill-list bypass."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import plugin_catalog as pc_cat
 

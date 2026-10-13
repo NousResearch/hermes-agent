@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # In-flight stage-2 upgrade threads. They bill their aux usage to the session from a daemon thread,
 # so a process that reads the ledger right before exit (``-z --usage-file``) must be able to join
 # them (bounded) instead of racing the write (#112848).
-_UPGRADE_THREADS: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
+_UPGRADE_THREADS: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
 
 
 def wait_for_title_upgrades(timeout: float = 10.0) -> None:
@@ -180,8 +180,10 @@ def _model_title_upgrade_enabled() -> bool:
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
-    A ``custom`` main route (llama.cpp, Ollama, vLLM, LM Studio…) whose ``auxiliary.title_generation``
-    is not pinned elsewhere shares one local server between the streaming main request and the
+    A self-hosted main route (``_is_self_hosted_provider``: custom, lmstudio, local and their aliases)
+    whose ``auxiliary.title_generation`` is not pinned elsewhere (a pin naming the same custom route —
+    ``custom:<name>``, bare ``<name>`` or its display name — is not "elsewhere", #120558)
+    shares one local server between the streaming main request and the
     concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
     title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
     persisted as a genuine assistant row and replayed, and the model adopts the format (#117296).
@@ -189,18 +191,49 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     Hosted providers multiplex requests independently and keep the turn-start timing.
     """
     provider = str((main_runtime or {}).get("provider") or "").strip().lower()
-    if provider != "custom":
+    if not _is_self_hosted_provider(provider):
         return False
     try:
         cfg = _title_config()
+        pinned_provider = str(cfg.get("provider") or "").strip().lower()
+        main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
+        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
+                pinned_provider, provider, main_base_url):
+            return False
     except Exception:
         return True
-    pinned_provider = str(cfg.get("provider") or "").strip().lower()
     pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
-    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
-    if pinned_provider and pinned_provider not in ("", "auto", "custom"):
-        return False
     return not pinned_base_url or pinned_base_url == main_base_url
+
+
+def _is_self_hosted_provider(provider: str) -> bool:
+    """``custom``, a named ``custom:<name>`` route, LM Studio or ``local`` (vllm/llama.cpp): one local server per route.
+
+    Normalised here so the main route and the title pin resolve aliases (``ollama``, ``lm-studio``…) the same way.
+    """
+    from hermes_cli.providers import normalize_provider
+    provider = normalize_provider(provider)
+    return provider in ("custom", "lmstudio", "local") or provider.startswith("custom:")
+
+
+def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str, main_base_url: str) -> bool:
+    """A title pin that can land on the turn's own self-hosted server (only its ``base_url`` can prove otherwise).
+
+    Hosted pins (``openrouter``…) multiplex and never share the slot. A pin to ``custom``/``lmstudio``/``local``/any
+    ``custom:<name>`` is assumed to share until the caller compares ``base_url``, and a bare ``<name>`` /
+    display-name pin is the same endpoint when it aliases the main ``custom:<name>`` route
+    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
+    configured custom entry serving ``main_base_url`` (a keyed ``providers:`` entry's display name does not
+    alias its ``custom:<key>`` id).
+    """
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_cli.providers import custom_provider_aliases, resolve_custom_provider
+    if _is_self_hosted_provider(pinned_provider):
+        return True
+    if custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider):
+        return True
+    pdef = resolve_custom_provider(pinned_provider, get_compatible_custom_providers(load_config_readonly()))
+    return bool(pdef and main_base_url and pdef.base_url.strip().rstrip("/") == main_base_url)
 
 
 def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
@@ -233,6 +266,29 @@ def _strip_one_wrapper(text: str) -> str:
         # Prefer trailing prose; otherwise the wrapper body is all we have.
         return (text[end + len(close_tag):].strip() or text[len(open_tag):end].strip()).strip()
     return text
+
+
+# Matches an ``@file:``/``@folder:`` context reference the way the canonical
+# ``agent.context_references`` reference pattern does: an unquoted ``\S+``
+# value, or a backtick/double/single-quoted value (a space-bearing path is
+# written backtick-quoted). Kept local so the titler doesn't import the
+# context-reference machinery (circularity / startup cost) just to detect the
+# attachment-only shape (#92068).
+_QUOTED = r"(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')"
+# Mirrors the canonical agent.context_references value shape: a quoted
+# (space-bearing) path may carry a ``:start[-end]`` line-range suffix, and a
+# bare path swallows its own range via ``\S+``.
+_CONTEXT_REFERENCE_TOKEN_RE = re.compile(
+    rf"(?<![\w/])@(?:file|folder):(?:{_QUOTED}(?::\d+(?:-\d+)?)?|\S+)"
+)
+
+
+def _attachment_only_opener(message: str) -> bool:
+    """True when nothing but context references (and their expansion footer)
+    remain — a manual-attach opener with no typed request and no paste
+    preview has no topic of its own to title (#92068)."""
+    residual = _CONTEXT_REFERENCE_TOKEN_RE.sub("", _CONTEXT_FOOTER_RE.sub("", message))
+    return not residual.strip()
 
 
 def _summarize_user_message(user_message: str) -> str:
@@ -277,11 +333,19 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
 def is_titleable_user_message(user_message: str) -> bool:
     """False for machine-authored openers and turns that reduce to nothing once scaffolding is stripped."""
     return (isinstance(user_message, str) and bool(user_message.strip()) and not user_message.lstrip().startswith(_MACHINE_PREFIXES)
-            and bool(_summarize_user_message(user_message).strip()))
+            and bool(_summarize_user_message(user_message).strip())
+            # An attachment-only opener (manual attach, no paste preview) is a
+            # file drop, not a request: deriving its "title" from the message
+            # names the session after the truncated file path (#92068).
+            and not _attachment_only_opener(user_message))
 
 
 def derive_title(user_message: str, title_preview: str | None = None) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
+    # Attachment-only opener, no paste preview: a file drop has no topic —
+    # refuse rather than name the session after the truncated path (#92068).
+    if not title_preview and _attachment_only_opener(user_message):
+        return None
     line = " ".join(_first_line(build_title_input(user_message, title_preview)).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
@@ -408,7 +472,7 @@ def generate_title(
     user_message: str,
     timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
 ) -> Optional[str]:
@@ -429,7 +493,12 @@ def generate_title(
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
     user_snippet = build_title_input(user_message, title_preview)
-    if not user_snippet.strip():
+    if not user_snippet.strip() or (
+        # An attachment-only opener (manual attach, no paste preview) reaches
+        # here via auto_title_session, which lacks the instant-title guard:
+        # refuse it rather than titling the session after the file path (#92068).
+        not title_preview and _attachment_only_opener(user_snippet)
+    ):
         return None
     language = _title_language()
     # str.replace, not str.format: the prompt embeds literal JSON braces.
@@ -537,6 +606,18 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
+def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:
+    """Title a delegate run ``Subagent: <goal's first line>`` at ``derived`` authority. No model call:
+    runs fan out in bulk, and the prefix alone is what tells them apart from conversations wherever
+    ``sessions.show_subagents`` lists them (#97202). Collisions get ``#N``. Never raises."""
+    try:
+        derived = derive_title(goal) if is_titleable_user_message(goal) else None
+        return _persist_session_title(session_db, session_id, f"Subagent: {derived}", source="derived") if derived else None
+    except Exception:
+        logger.debug("Subagent title failed for %s", session_id, exc_info=True)
+        return None
+
+
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
     title_preview: str | None = None,
@@ -563,7 +644,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
@@ -658,7 +739,7 @@ def maybe_auto_title(
     user_message: str,
     conversation_history: Optional[list] = None,
     failure_callback: Optional[FailureCallback] = None,
-    main_runtime: dict = None,
+    main_runtime: dict | None = None,
     title_callback: Optional[TitleCallback] = None,
     runtime_validator: Optional[RuntimeValidator] = None,
     title_preview: str | None = None,
@@ -713,7 +794,7 @@ def maybe_auto_title(
         kwargs=upgrade_kwargs,
     )
     if title_upgrade_must_wait_for_turn(main_runtime):
-        logger.debug("Auto-title upgrade deferred past the turn: shares the custom endpoint with the main request")
+        logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")
         return upgrade
     start_title_upgrade(upgrade)
     return upgrade

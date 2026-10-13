@@ -20,7 +20,7 @@ logger = logging.getLogger("agent.lsp.servers")
 
 # LSP languageId for ``textDocument/didOpen``, as language → extensions.  A few
 # servers (typescript-language-server, vue-language-server) refuse wrong IDs.
-_EXTS_BY_LANGUAGE: Dict[str, Sequence[str]] = {
+_EXTS_BY_LANGUAGE: dict[str, Sequence[str]] = {
     "python": (".py", ".pyi"),
     "typescript": (".ts", ".mts", ".cts"),
     "typescriptreact": (".tsx",),
@@ -45,7 +45,7 @@ _EXTS_BY_LANGUAGE: Dict[str, Sequence[str]] = {
     "dockerfile": (".dockerfile",),
     "powershell": (".ps1", ".psm1", ".psd1"),
 }
-LANGUAGE_BY_EXT: Dict[str, str] = {ext: lang for lang, exts in _EXTS_BY_LANGUAGE.items() for ext in exts}
+LANGUAGE_BY_EXT: dict[str, str] = {ext: lang for lang, exts in _EXTS_BY_LANGUAGE.items() for ext in exts}
 
 _SpawnFn = Callable[[str, "ServerContext"], Optional["SpawnSpec"]]
 _RootFn = Callable[[str, str], Optional[str]]
@@ -54,11 +54,11 @@ _RootFn = Callable[[str, str], Optional[str]]
 @dataclass
 class SpawnSpec:
     """Result of resolving a server for a file (``None`` means skip)."""
-    command: List[str]
+    command: list[str]
     workspace_root: str
     cwd: str
-    env: Dict[str, str] = field(default_factory=dict)
-    initialization_options: Dict[str, Any] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    initialization_options: dict[str, Any] = field(default_factory=dict)
     seed_diagnostics_on_first_push: bool = False
 
 
@@ -67,7 +67,7 @@ class ServerDef:
     """One language server: ``resolve_root(file, ws)`` → per-server root or ``None`` to skip;
     ``build_spawn(root, ctx)`` → :class:`SpawnSpec` or ``None`` when the binary can't be found."""
     server_id: str
-    extensions: Tuple[str, ...]
+    extensions: tuple[str, ...]
     resolve_root: _RootFn
     build_spawn: _SpawnFn
     seed_first_push: bool = False
@@ -87,9 +87,12 @@ class ServerContext:
     """User policy passed into :meth:`ServerDef.build_spawn` (install strategy, overrides)."""
     workspace_root: str
     install_strategy: str = "auto"  # "auto" | "manual" | "off"
-    binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
-    env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    binary_overrides: dict[str, list[str]] = field(default_factory=dict)
+    env_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    init_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Whether the server may load code the project ships (see workspace.is_trusted_workspace).
+    # Defaults closed: a context built without a trust decision must never run the repo's code.
+    trusted: bool = False
 
 
 # ---- helpers ----
@@ -139,20 +142,26 @@ def _find_binary(ctx: ServerContext, server_id: str, which: Sequence[str], insta
     return bin_path
 
 
-def _make_spec(root: str, ctx: ServerContext, server_id: str, command: List[str],
-               base_init: Optional[Dict[str, Any]] = None, seed: bool = False) -> SpawnSpec:
+def _make_spec(root: str, ctx: ServerContext, server_id: str, command: list[str],
+               base_init: Optional[dict[str, Any]] = None, seed: bool = False) -> SpawnSpec:
+    from pm import env_for
+
     init = ctx.init_overrides.get(server_id, {}) if base_init is None else {**base_init, **ctx.init_overrides.get(server_id, {})}
-    return SpawnSpec(command, root, root, env=ctx.env_overrides.get(server_id, {}),
+    env = env_for("node")
+    env.update(ctx.env_overrides.get(server_id, {}))
+    return SpawnSpec(command, root, root, env=env,
                      initialization_options=init, seed_diagnostics_on_first_push=seed)
 
 
 def _simple_spawn(server_id: str, which: Sequence[str], args: Sequence[str] = (),
-                  install_pkg: Optional[str] = None, base_init: Optional[Dict[str, Any]] = None,
-                  seed: bool = False) -> _SpawnFn:
-    """Build a spawn function for the common single-binary server shape."""
+                  install_pkg: Optional[str] = None, base_init: Optional[dict[str, Any]] = None,
+                  seed: bool = False, untrusted_init: Optional[dict[str, Any]] = None) -> _SpawnFn:
+    """Build a spawn function for the common single-binary server shape; ``untrusted_init`` replaces
+    ``base_init`` in an untrusted workspace (the server's own switch for not loading project code)."""
     def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         bin_path = _find_binary(ctx, server_id, which, install_pkg)
-        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args], base_init, seed)
+        init = base_init if ctx.trusted or untrusted_init is None else untrusted_init
+        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args], init, seed)
     return build
 
 
@@ -169,15 +178,25 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
         if os.path.exists(sibling):
             bin_path = sibling
-    # Point pyright at the project venv; its default "python on PATH" rarely is.
-    py = _detect_python(root)
+    # Point pyright at the project venv; its default "python on PATH" rarely is.  Pyright executes
+    # this interpreter, so a checkout's own venv is only used when the workspace is trusted.
+    py = _detect_python(root if ctx.trusted else None)
     return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
 
 
-def _detect_python(root: str) -> Optional[str]:
-    venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), os.path.join(root, ".venv"), os.path.join(root, "venv")) if v]
+def _detect_python(root: Optional[str]) -> Optional[str]:
+    # Pyright needs the project's dependencies, not Hermes's runtime packages.  ``VIRTUAL_ENV`` is the
+    # operator's own environment; ``root`` (the project's .venv/venv) is None for an untrusted workspace.
+    project = (os.path.join(root, ".venv"), os.path.join(root, "venv")) if root else ()
+    venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), *project) if v]
     paths = (os.path.join(v, sub) for v in venvs for sub in ("bin/python", "bin/python3", "Scripts/python.exe"))
-    return next((p for p in paths if os.path.exists(p)), None)
+    project_python = next((p for p in paths if os.path.exists(p)), None)
+    if project_python is not None:
+        return project_python
+    from pm import installed_package
+
+    installed = installed_package("python")
+    return str(installed.binary) if installed is not None and installed.binary is not None else None
 
 
 _warned_once: set = set()
@@ -216,11 +235,12 @@ _VUE_TSDK_MSG = (
 )
 
 
-def _node_modules_trees(bin_path: str, root: str) -> List[str]:
-    """``node_modules`` trees that may hold the Vue server and its TypeScript SDK:
-    the launcher's own tree (symlinks resolved), Hermes staging, then the project's."""
+def _node_modules_trees(bin_path: str, root: Optional[str]) -> list[str]:
+    """``node_modules`` trees that may hold a server and its TypeScript SDK: the launcher's own tree
+    (symlinks resolved), Hermes staging, then the project's (``root`` None: Hermes's trees only, for
+    TypeScript's SDK pin in an untrusted workspace, whose own JavaScript must not load)."""
     from agent.lsp.install import hermes_lsp_bin_dir
-    trees = [str(hermes_lsp_bin_dir().parent / "node_modules"), os.path.join(root, "node_modules")]
+    trees = [str(hermes_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
     real = os.path.realpath(bin_path)
     marker = f"{os.sep}node_modules{os.sep}"
     if (idx := real.rfind(marker)) >= 0:
@@ -233,7 +253,7 @@ def _vue_server_major(trees: Sequence[str]) -> int:
     import json
     for tree in trees:
         try:
-            with open(os.path.join(tree, "@vue", "language-server", "package.json"), encoding="utf-8") as fh:
+            with open(os.path.join(tree, "@vue", "language-server", "package.json"), encoding="utf-8-sig") as fh:
                 return int(str(json.load(fh).get("version", "")).split(".")[0])
         except (OSError, ValueError):
             continue
@@ -261,6 +281,29 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         return None
     return _make_spec(root, ctx, "vue-language-server", [bin_path, "--stdio"],
                       {"typescript": {"tsdk": tsdk}, "vue": {"hybridMode": False}})
+
+
+_TS_UNTRUSTED_MSG = (
+    "typescript-language-server: no TypeScript SDK next to the server, and this workspace is untrusted so its "
+    "own node_modules/typescript is not loaded — diagnostics are skipped. Reinstall: hermes lsp install "
+    "typescript-language-server, or list the workspace under lsp.trusted_workspaces."
+)
+
+
+def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """typescript-language-server loads the workspace's own ``node_modules/typescript`` unless
+    ``tsserver.path`` names another, so an untrusted workspace is pinned to Hermes's copy."""
+    bin_path = _find_binary(ctx, "typescript", ("typescript-language-server",), "typescript-language-server")
+    if bin_path is None:
+        return None
+    base: dict[str, Any] = {}
+    if not ctx.trusted:
+        sdk = _typescript_sdk_dir(_node_modules_trees(bin_path, None))
+        if sdk is None:
+            _warn_once("ts-untrusted", _TS_UNTRUSTED_MSG)
+            return None
+        base = {"tsserver": {"path": sdk}}
+    return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
 
 
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
@@ -326,6 +369,26 @@ def hermes_lsp_session_dir() -> str:
     return d
 
 
+# ---- workspace trust ----
+
+# The only servers that start in an untrusted workspace (``workspace.is_trusted_workspace``): with the
+# settings Hermes passes they run nothing the checkout ships.  Everything else waits for trust, because
+# it evaluates project build files on start or on save (cargo check / build.rs / proc-macros, Gradle,
+# mix.exs, build.zig, stack/cabal, Lua ``runtime.plugin``, terraform providers, prisma.config.ts, Vue's
+# tsconfig ``vueCompilerOptions.plugins``, which @vue/language-core require()s from the project, ...),
+# and so do user-declared ``lsp.servers`` entries, whose behaviour Hermes cannot vouch for.
+UNTRUSTED_SAFE_SERVERS = frozenset({
+    "pyright",                  # interpreter pinned to the operator's own (_spawn_pyright)
+    "typescript",               # tsserver pinned to Hermes's SDK; plugins then resolve beside it (_spawn_typescript)
+    "svelte-language-server",   # isTrusted: false — no svelte.config.js, no project svelte/prettier
+    "bash-language-server",     # parses scripts; diagnostics from shellcheck on PATH
+    "yaml-language-server",     # validates against JSON schemas (may fetch them); no project code
+    "dockerfile-ls",            # parses the Dockerfile; never builds it
+    "intelephense",             # static PHP indexer; never runs php or composer
+    "clangd",                   # no --query-driver, so it never runs a project compiler
+})
+
+
 # ---- the registry ----
 
 _JS_MARKERS = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json", "tsconfig.json"]
@@ -333,32 +396,33 @@ _DENO_EXCLUDES = ["deno.json", "deno.jsonc"]
 _root_typescript = _markers_root(_JS_MARKERS, _DENO_EXCLUDES)
 
 
-def _server(server_id: str, extensions: Tuple[str, ...], description: str, *,
+def _server(server_id: str, extensions: tuple[str, ...], description: str, *,
             markers: Optional[Sequence[str]] = None, excludes: Sequence[str] = (),
             resolve_root: Optional[_RootFn] = None, build_spawn: Optional[_SpawnFn] = None,
             which: Sequence[str] = (), args: Sequence[str] = (), install_pkg: Optional[str] = None,
-            base_init: Optional[Dict[str, Any]] = None, seed: bool = False,
-            multi_root: bool = False) -> ServerDef:
+            base_init: Optional[dict[str, Any]] = None, seed: bool = False,
+            untrusted_init: Optional[dict[str, Any]] = None, multi_root: bool = False) -> ServerDef:
     """Registry entry factory: defaults to marker-based root + single-binary spawn."""
     return ServerDef(
         server_id, extensions,
         resolve_root or _markers_root(markers, excludes),
-        build_spawn or _simple_spawn(server_id, which or (server_id,), args, install_pkg, base_init, seed),
+        build_spawn or _simple_spawn(server_id, which or (server_id,), args, install_pkg, base_init, seed, untrusted_init),
         seed_first_push=seed, description=description, multi_root=multi_root,
     )
 
 
-SERVERS: List[ServerDef] = [
+SERVERS: list[ServerDef] = [
     _server("pyright", (".py", ".pyi"), "Python — Microsoft pyright",
             markers=["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"],
             build_spawn=_spawn_pyright, multi_root=True),
     _server("typescript", (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"),
             "JavaScript/TypeScript — typescript-language-server", resolve_root=_root_typescript,
-            which=("typescript-language-server",), args=("--stdio",), install_pkg="typescript-language-server", seed=True),
+            build_spawn=_spawn_typescript, seed=True),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_vue),
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,
-            which=("svelteserver", "svelte-language-server"), args=("--stdio",), install_pkg="svelte-language-server"),
+            which=("svelteserver", "svelte-language-server"), args=("--stdio",), install_pkg="svelte-language-server",
+            untrusted_init={"isTrusted": False}),
     _server("astro-language-server", (".astro",), "Astro — @astrojs/language-server", resolve_root=_root_typescript,
             which=("astro-ls", "astro-language-server"), args=("--stdio",), install_pkg="@astrojs/language-server"),
     _server("gopls", (".go",), "Go — gopls", markers=["go.work", "go.mod", "go.sum"], install_pkg="gopls"),
@@ -434,14 +498,14 @@ def _custom_spawn(server_id: str, command: Sequence[str]) -> _SpawnFn:
     return build
 
 
-def custom_servers(servers_cfg: Any) -> List[ServerDef]:
+def custom_servers(servers_cfg: Any) -> list[ServerDef]:
     """``lsp.servers`` entries that declare ``extensions`` and name no built-in server are user-declared
     servers (issue #100257).  They go AHEAD of the built-ins so a custom entry can claim an extension;
     malformed entries are logged and skipped so one typo never disables the rest of the subsystem."""
     if not isinstance(servers_cfg, dict):
         return []
     builtin = {s.server_id for s in SERVERS}
-    out: List[ServerDef] = []
+    out: list[ServerDef] = []
     for server_id, cfg in servers_cfg.items():
         if server_id in builtin or not isinstance(cfg, dict) or "extensions" not in cfg:
             continue
@@ -460,5 +524,14 @@ def custom_servers(servers_cfg: Any) -> List[ServerDef]:
     return out
 
 
-__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "custom_servers", "find_server_for_file",
-           "language_id_for", "LANGUAGE_BY_EXT"]
+__all__ = [
+    "LANGUAGE_BY_EXT",
+    "SERVERS",
+    "UNTRUSTED_SAFE_SERVERS",
+    "ServerContext",
+    "ServerDef",
+    "SpawnSpec",
+    "custom_servers",
+    "find_server_for_file",
+    "language_id_for",
+]

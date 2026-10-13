@@ -25,11 +25,11 @@ from agent.anthropic_credentials import (
 pytestmark = pytest.mark.allow_macos_keychain
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsFromKeychain:
     """Bug 4: macOS Keychain support for Claude Code >=2.1.114.
 
-    ``macos_only``: the reader is gated on ``platform.system() == "Darwin"``
+    ``platforms("macos")``: the reader is gated on ``platform.system() == "Darwin"``
     and shells out to the ``security`` CLI. Faking Darwin on Linux selected
     the branch but proved nothing about the host it exists for; on the real
     macOS runner only ``subprocess.run`` is mocked (via the
@@ -57,7 +57,7 @@ class TestReadClaudeCodeCredentialsFromKeychain:
 
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""
 
@@ -128,7 +128,7 @@ class TestReadClaudeCodeCredentialsPriority:
         assert creds is None
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsDesync:
     """Reconciliation when Keychain and JSON file disagree.
 
@@ -402,7 +402,7 @@ class TestFindClaudeCodeKeychainItem:
     """``_find_claude_code_keychain_item`` parses one ``find-generic-password -g`` call. ``security``
     prints plain-ASCII attributes quoted but UNescaped, anything else as ``0x<HEX>  "<echo>"``."""
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     @pytest.mark.parametrize(
         "acct_line, expected_account",
         [
@@ -424,7 +424,7 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
     """The #98334 write mirror shells out to ``security``; ``subprocess.run`` is mocked so no
     real Keychain is touched."""
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_no_write_when_no_entry_exists(self, monkeypatch):
         """Never create a Keychain item the user has not."""
         monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: None)
@@ -435,7 +435,7 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
 
         run.assert_not_called()
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_only_the_item_holding_the_spent_pair_is_updated(self, monkeypatch):
         """A different pair in the Keychain is another login or a rotation Claude Code already made;
         overwriting it would be the bug in the other direction."""

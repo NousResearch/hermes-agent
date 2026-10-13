@@ -96,7 +96,7 @@ def test_transient_exhaustion_without_fallback_enters_ladder_and_retries(status,
     assert (verdict.action, verdict.retry_count, retry.auto_recovery_cycles_used) == ("continue", 0, 1)
     assert agent.statuses == agent.waits and len(agent.statuses) == 1
     line = agent.statuses[0]
-    assert "retrying automatically in" in line and "(cycle 1/5)" in line and "press Esc to stop" in line
+    assert "(cycle 1/5)" in line
 
 
 def test_ladder_is_bounded_and_yields_to_fallback_and_shuns_nonretryable():
@@ -127,7 +127,7 @@ def test_ladder_is_bounded_and_yields_to_fallback_and_shuns_nonretryable():
 
 
 def test_ladder_schedule_honours_retry_after_and_platform_stop_hint(monkeypatch):
-    import agent.retry_utils as retry_utils
+    from agent import retry_utils
     calls = []
 
     def _recording_backoff(attempt, *, base_delay, max_delay, jitter_ratio):

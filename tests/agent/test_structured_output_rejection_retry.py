@@ -18,6 +18,12 @@ its Anthropic translation, with a hard 400:
     model reject the OBJECT-form ``response_format.json_schema`` by shape --
     ``422 ... body.response_format.json_schema: str type expected`` -- instead
     of naming the feature, so the error never mentions an unsupported option.
+  * An OpenCode Zen/Go relay endpoint that lacks the field answers with an
+    OPAQUE 400 whose entire body is the model id (``{"model": "<id>"}``) -- no
+    ``error`` object, no message, no param. The relay pins a conversation to
+    one upstream endpoint, and only some of its endpoints accept the field, so
+    the same relay 400s for one conversation's auxiliary calls (titles,
+    compression) while its main-turn requests on the same route succeed.
 
 Callers tolerate an unconstrained reply: the title prompt demands bare JSON
 and ``_extract_title_text`` has a loose-JSON fallback. The fix is reactive,
@@ -26,6 +32,7 @@ field, retry once without it. These tests lock in that behaviour for both
 sync and async paths.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -36,6 +43,7 @@ from agent.auxiliary_client import (
     _is_structured_output_rejection,
     _without_structured_output_format,
 )
+from agent.auxiliary_structured_output import is_capability_rejection
 
 
 _TITLE_RESPONSE_FORMAT = {
@@ -51,6 +59,20 @@ _TITLE_RESPONSE_FORMAT = {
         },
     },
 }
+
+
+def _model_only_400(base_url: str = "https://opencode.ai/zen/go/v1", body=None):
+    """Fake of the relay's opaque 400: the body is the model id and nothing else.
+
+    Mirrors the SDK's ``APIStatusError`` shape (``status_code``, the parsed ``body``, the originating
+    ``request``) -- the three things ``_is_structured_output_rejection`` reads.
+    """
+    payload = {"model": "some-model"} if body is None else body
+    exc = RuntimeError("Error code: 400 - " + str(payload))
+    exc.status_code = 400
+    exc.body = payload
+    exc.request = SimpleNamespace(url=f"{base_url}/chat/completions")
+    return exc
 
 
 class TestIsStructuredOutputRejection:
@@ -101,6 +123,31 @@ class TestIsStructuredOutputRejection:
         exc = RuntimeError("output_config: Extra inputs are not permitted")
         exc.status_code = 500
         assert _is_structured_output_rejection(exc) is False
+
+    def test_matches_the_relay_model_only_400(self):
+        """Opaque body, no field named: the relay host plus the wire shape are the only signal."""
+        assert _is_structured_output_rejection(_model_only_400()) is True
+
+    def test_model_only_400_from_another_host_is_not_a_rejection(self):
+        """The same opaque body from an unrelated host must not silently downgrade the schema."""
+        exc = _model_only_400("https://api.example.com/v1")
+        assert _is_structured_output_rejection(exc) is False
+
+    def test_model_only_body_on_a_non_400_is_not_a_rejection(self):
+        exc = _model_only_400()
+        exc.status_code = 500
+        assert _is_structured_output_rejection(exc) is False
+
+    def test_relay_400_carrying_an_error_object_is_not_a_rejection(self):
+        """The relay's other 400s (unsupported model, unparsable body) name their own error."""
+        exc = _model_only_400(body={"error": {"type": "ModelError", "message": "Model is not supported"}})
+        assert _is_structured_output_rejection(exc) is False
+
+    def test_the_relay_rejection_is_not_memoised_against_the_route(self):
+        """Only the conversation's pinned endpoint lacks the field; the relay's other endpoints on the
+        same route do support it, so remembering the route as incapable would strip the field everywhere."""
+        assert _is_structured_output_rejection(_model_only_400()) is True
+        assert is_capability_rejection(_model_only_400()) is False
 
 
 class TestWithoutStructuredOutputFormat:
@@ -194,6 +241,34 @@ class TestCallLlmStructuredOutputRetry:
         assert "response_format" not in retry_eb
         assert "response_format" not in retry_kwargs
         assert retry_kwargs["model"] == first_kwargs["model"]
+
+    def test_retries_once_on_the_relay_model_only_400(self):
+        """Auxiliary calls ride the conversation's pinned relay endpoint, so the opaque 400 documented in
+        the module docstring must take the same one-shot retry as any other rejection."""
+        client = self._setup(_model_only_400())
+        client.base_url = "https://opencode.ai/zen/go/v1"
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("opencode-go", "some-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "some-model")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"response_format": dict(_TITLE_RESPONSE_FORMAT)},
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+        first_eb = client.chat.completions.create.call_args_list[0].kwargs.get("extra_body") or {}
+        retry_eb = client.chat.completions.create.call_args_list[1].kwargs.get("extra_body") or {}
+        assert "response_format" in first_eb
+        assert "response_format" not in retry_eb
 
     def test_unrelated_400_does_not_strip_response_format(self):
         """Unrelated 400s must not silently downgrade the schema contract."""

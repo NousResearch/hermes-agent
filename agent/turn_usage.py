@@ -111,14 +111,17 @@ def record_response_usage(
     # the context actually in the window is the first hop's prompt: compaction and the meter read that.
     _initial_prompt = getattr(response.usage, "initial_prompt_tokens", None)
     context_prompt_tokens = _initial_prompt if isinstance(_initial_prompt, int) and _initial_prompt > 0 else None
+    # The canonical buckets follow the same split, so engines reading them never see cache_read > prompt.
+    _initial_cached = getattr(response.usage, "initial_cached_tokens", 0) if context_prompt_tokens else None
+    context_cache_read = _initial_cached if isinstance(_initial_cached, int) else None
     # Canonical token + cache buckets for context engines; legacy keys stay for back-compat.
     usage_dict = {
         "prompt_tokens": context_prompt_tokens or prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": (context_prompt_tokens + completion_tokens) if context_prompt_tokens else total_tokens,
-        "input_tokens": canonical_usage.input_tokens,
+        "input_tokens": (context_prompt_tokens - context_cache_read) if context_cache_read is not None else canonical_usage.input_tokens,
         "output_tokens": canonical_usage.output_tokens,
-        "cache_read_tokens": canonical_usage.cache_read_tokens,
+        "cache_read_tokens": canonical_usage.cache_read_tokens if context_cache_read is None else context_cache_read,
         "cache_write_tokens": canonical_usage.cache_write_tokens,
         "reasoning_tokens": canonical_usage.reasoning_tokens,
     }

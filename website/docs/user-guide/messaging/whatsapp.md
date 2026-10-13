@@ -205,6 +205,21 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---
 
+## One number, many profiles
+
+With [multiplexing](../multi-profile-gateways.md#alternative-one-gateway-for-all-profiles-multiplexing) on, **Channels → WhatsApp** edits the WhatsApp rows of `gateway.profile_routes` on the host (default) profile. The bridge stays on that profile. A secondary profile does not start a second bridge.
+
+- One group routes to one profile. A profile can own several groups.
+- A chat that matches no route stays on the default profile.
+- **Add route** lists chats the bridge has already received that are not routed yet. The count on the button is how many of those chats are waiting. **Refresh chats**, at the bottom of that dialog, reloads the list after a new message.
+- The table shows the WhatsApp group subject, or the contact name when one is known. The numeric id is a tooltip. The text of the last message is not used as the name.
+- Saving writes the route table. It does not restart the gateway. A new route applies the next time that process starts.
+- The target list shows how many WhatsApp chats already route to each profile, including rows you have not saved yet.
+
+The same rows can be written by hand. See [Routing shared-bot chats to profiles](../multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes).
+
+---
+
 ## Session Persistence
 
 The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:

@@ -134,8 +134,6 @@ export const en: Translations = {
       multiplexOn: "Multiplex routing is on (gateway.multiplex_profiles).",
       ingressOwnedByHost:
         "WhatsApp ingress is owned by the host profile; enabling WhatsApp on a secondary profile does not start a second bridge.",
-      colName: "Name",
-      colChatId: "Chat id",
       colChat: "Chat",
       colKind: "Kind",
       colProfile: "Profile",
@@ -152,15 +150,15 @@ export const en: Translations = {
       remove: "Remove route",
       modalAddTitle: "Add WhatsApp route",
       modalEditTitle: "Edit WhatsApp route",
-      fieldName: "Name",
-      fieldChatId: "Chat id",
-      fieldChatIdHint: "Groups must end with @g.us. DMs may use a phone number or user JID.",
       fieldProfile: "Target profile",
       fieldProfileCountHint:
         "The number is how many WhatsApp chats already route to that profile.",
       fieldChat: "Chat",
       fieldChatEmpty:
-        "No unassigned chats yet. The bridge adds a chat here after it receives a message.",
+        "No unassigned chats yet. After a new message arrives, use Refresh chats.",
+      refreshChats: "Refresh chats",
+      refreshingChats: "Refreshing…",
+      refreshChatsFailed: "Could not refresh WhatsApp chats.",
       modalApply: "Apply",
     },
   },

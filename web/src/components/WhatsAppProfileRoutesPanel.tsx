@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Plus, Save, Trash2, X } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -47,6 +47,7 @@ export function WhatsAppProfileRoutesPanel({
   const [seenChats, setSeenChats] = useState<WhatsAppSeenChatView[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [refreshingChats, setRefreshingChats] = useState(false);
   const [modal, setModal] = useState<RouteModalState | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftChatId, setDraftChatId] = useState("");
@@ -106,12 +107,33 @@ export function WhatsAppProfileRoutesPanel({
   }, []);
   const modalRef = useModalBehavior({ open: modal !== null, onClose: closeModal });
 
+  const refreshSeenChats = useCallback(async () => {
+    setRefreshingChats(true);
+    try {
+      const seen = await api.getWhatsAppSeenChats();
+      const next = seen.chats ?? [];
+      setSeenChats(next);
+      const open = unassignedWhatsAppChats(next, routes);
+      setDraftChatId((current) =>
+        open.some((chat) => chat.chat_id === current) ? current : (open[0]?.chat_id ?? ""),
+      );
+    } catch (e) {
+      showToast(
+        copy?.refreshChatsFailed ?? `Could not refresh WhatsApp chats: ${errorMessage(e)}`,
+        "error",
+      );
+    } finally {
+      setRefreshingChats(false);
+    }
+  }, [copy?.refreshChatsFailed, routes, showToast]);
+
   const openAdd = () => {
     setDraftName("");
     setDraftChatId(unassignedChats[0]?.chat_id ?? "");
     setDraftProfile(profileNames[0] ?? "");
     setFieldErrors({});
     setModal({ mode: "add" });
+    void refreshSeenChats();
   };
 
   const openEdit = (index: number) => {
@@ -310,7 +332,9 @@ export function WhatsAppProfileRoutesPanel({
               onClick={openAdd}
               disabled={profileNames.length === 0}
             >
-              {copy?.addRoute ?? "Add route"}
+              {unassignedChats.length > 0
+                ? `${copy?.addRoute ?? "Add route"} (${unassignedChats.length})`
+                : (copy?.addRoute ?? "Add route")}
             </Button>
             <Button
               size="sm"
@@ -377,7 +401,7 @@ export function WhatsAppProfileRoutesPanel({
                 ) : unassignedChats.length === 0 ? (
                   <p id="wa-route-chat" className="text-xs text-muted-foreground">
                     {copy?.fieldChatEmpty ??
-                      "No unassigned chats yet. The bridge adds a chat here after it receives a message."}
+                      "No unassigned chats yet. After a new message arrives, use Refresh chats."}
                   </p>
                 ) : (
                   <Select
@@ -433,18 +457,34 @@ export function WhatsAppProfileRoutesPanel({
                   <span className="text-xs text-destructive">{fieldErrors.profile}</span>
                 )}
               </div>
-              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
-                <Button ghost size="sm" onClick={closeModal}>
-                  {t.common.cancel}
-                </Button>
-                <Button
-                  size="sm"
-                  className="uppercase"
-                  onClick={applyModal}
-                  disabled={modal.mode === "add" && unassignedChats.length === 0}
-                >
-                  {copy?.modalApply ?? "Apply"}
-                </Button>
+              <div className="flex flex-col gap-2 pt-1">
+                {modal.mode === "add" && (
+                  <Button
+                    outlined
+                    size="sm"
+                    className="w-full"
+                    onClick={() => void refreshSeenChats()}
+                    disabled={refreshingChats}
+                    prefix={refreshingChats ? <Spinner /> : <RefreshCw className="h-4 w-4" />}
+                  >
+                    {refreshingChats
+                      ? (copy?.refreshingChats ?? "Refreshing…")
+                      : (copy?.refreshChats ?? "Refresh chats")}
+                  </Button>
+                )}
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                  <Button ghost size="sm" onClick={closeModal}>
+                    {t.common.cancel}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="uppercase"
+                    onClick={applyModal}
+                    disabled={modal.mode === "add" && unassignedChats.length === 0}
+                  >
+                    {copy?.modalApply ?? "Apply"}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

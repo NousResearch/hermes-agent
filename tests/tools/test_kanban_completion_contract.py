@@ -32,7 +32,7 @@ def worker_board(tmp_path, monkeypatch):
 
 
 def test_sanitized_handoff_metadata_explicitly_allows_caller_keys(worker_board):
-    from tools import kanban_tools  # noqa: F401
+    from tools import kanban_tools
     from tools.registry import invalidate_check_fn_cache, registry
     from tools.schema_sanitizer import sanitize_tool_schemas
 
@@ -53,7 +53,7 @@ def test_sanitized_handoff_metadata_explicitly_allows_caller_keys(worker_board):
 def test_registry_completion_persists_nested_caller_metadata(worker_board):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools  # noqa: F401
+    from tools import kanban_tools
     from tools.registry import registry
 
     metadata = {

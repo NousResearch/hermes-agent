@@ -531,11 +531,12 @@ Hermes checks the age of **its own** dependencies when it locks them: the checko
 `[tool.uv] exclude-newer = "3 days"` keeps any release younger than three days out of `uv.lock`,
 so a hijacked upload has time to be caught upstream before it reaches users. Users install from
 that vetted lock; their machines never re-check dates. **The check does not apply to your
-plugin's dependencies.** When Hermes resolves your plugin into its environment, the packages
-Hermes itself locks stay at their locked versions and everything else follows your
-requirements, so a plugin can floor on a release published yesterday and install today. The
-plugin's author, not Hermes, is responsible for what that pulls in. A plugin that requires a
-different version of a package Hermes itself locks fails to install until Hermes's lock moves.
+plugin's dependencies.** When Hermes resolves your plugin into its environment, Hermes's exact
+pins stay put, other packages Hermes uses may move within the ranges Hermes declares, and
+everything else follows your requirements, so a plugin can floor on a release published
+yesterday and install today. The plugin's author, not Hermes, is responsible for what that pulls
+in. A plugin that requires a different version of a package Hermes pins exactly fails to install
+until Hermes's pin moves.
 
 Set your own policy and hold yourself to it. Strongly recommended:
 

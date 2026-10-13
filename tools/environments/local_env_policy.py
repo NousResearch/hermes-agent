@@ -4,6 +4,7 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
+import re
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -283,6 +284,57 @@ def _is_hermes_internal_secret(key: str) -> bool:
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
+
+
+# The AMBIENT environment of agent-driven children (terminal, background, PTY,
+# execute_code) is deny-by-default for secrets. The declared-names blocklist above cannot see a
+# user's own `.env` keys (EXAMPLE_SERVICE_TOKEN, DB_PASSWORD, ...) or secrets a container runtime
+# injected, and those are one prompt injection away from `env | curl`. Dropped unless the name is
+# registered for passthrough; caller/operator-supplied `env` / `extra_env` values are not ambient.
+_SECRET_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_?KEY|KEY|KEYS|TOKEN|TOKENS|SECRET|SECRETS|PASSWORD|PASSWD|PASS|PASSPHRASE|"
+    r"CREDENTIAL|CREDENTIALS|CREDS|AUTH|COOKIE|COOKIES|DSN|BEARER|PRIVATE|SIGNING|WEBHOOK|WEBHOOK_URL)(?:_|$)"
+    r"|(?:APIKEY|TOKEN|SECRET|PASSWORD|PASSWD)$",
+    re.IGNORECASE)
+# Never secret-shaped and never dropped for dotenv provenance: a `.env` that sets PATH or LANG
+# must not leave the child without a usable shell.
+_CORE_SHELL_ENV = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "TERM", "COLORTERM", "LANG",
+    "LANGUAGE", "TZ", "TMPDIR", "TMP", "TEMP", "HOSTNAME", "SHLVL", "SSH_TTY",
+})
+
+
+def _is_core_shell_env(name: str) -> bool:
+    """Core shell vars plus the HERMES_SESSION_* routing context the session bridge forwards
+    (identifiers, never credentials: HERMES_SESSION_KEY is a session key, not an API key)."""
+    upper = name.upper()
+    return upper in _CORE_SHELL_ENV or upper.startswith(("LC_", "HERMES_SESSION_"))
+
+
+def _is_secret_shaped_env_name(name: str) -> bool:
+    """True when *name* looks like a credential (token-boundary match, so KEYBOARD_LAYOUT and
+    TOKENIZERS_PARALLELISM stay visible)."""
+    return not _is_core_shell_env(name) and bool(_SECRET_NAME_RE.search(name))
+
+
+def _ambient_secret_names() -> frozenset:
+    """Upper-cased names any dotenv file or external secret source supplied to this process."""
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    return frozenset(n.upper() for n in (*launch_dotenv_keys(), *managed_dotenv_keys(), *source_supplied_names()))
+
+
+def _managed_env_names() -> frozenset:
+    """Upper-cased names the administrator-managed ``.env`` supplied. Policy for every profile: the
+    launch process applies them last, so a profile's own scope must never override them in a child."""
+    from hermes_cli.env_loader import managed_dotenv_keys
+    return frozenset(n.upper() for n in managed_dotenv_keys())
+
+
+def _is_ambient_secret(name: str, supplied: frozenset) -> bool:
+    """Deny-by-default predicate for an AMBIENT env entry of an agent-driven child."""
+    if _is_core_shell_env(name):
+        return False
+    return name.upper() in supplied or _is_secret_shaped_env_name(name)
 
 
 # Authorization gates: the env names platform adapters read to decide WHO may talk to the

@@ -518,6 +518,49 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+_ANSI_C_ESCAPE = re.compile(
+    r'\\(x[0-9A-Fa-f]{1,2}|[0-7]{1,3}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|c.|[abefnrtv\\\'"?])')
+_ANSI_C_SIMPLE = {'a': ' ', 'b': ' ', 'e': ' ', 'f': ' ', 'n': ' ', 'r': ' ', 't': ' ', 'v': ' ',
+                  '\\': '\\', "'": "'", '"': '"', '?': '?'}
+
+
+def _decode_ansi_c_escape(match: "re.Match") -> str:
+    """Decode one escape inside an ANSI-C ``$'...'`` body. Control results fold to a space so a
+    decoded ``\\n`` cannot fabricate a command separator the author did not write; printable bytes
+    (the obfuscation that hides ``rm``/``shutdown`` in hex or octal) are revealed."""
+    tok = match.group(1)
+    head = tok[0]
+    try:
+        if head == 'x':
+            code = int(tok[1:], 16)
+        elif head in 'uU':
+            code = int(tok[1:], 16)
+        elif head in _ANSI_C_SIMPLE:
+            return _ANSI_C_SIMPLE[head]
+        elif head == 'c':  # control char \cX
+            return ' '
+        else:  # octal \NNN
+            code = int(tok, 8)
+    except ValueError:
+        return ' '
+    if code < 0x20 or code == 0x7f:
+        return ' '
+    try:
+        return chr(code)
+    except ValueError:
+        return ' '
+
+
+def _decode_ansi_c_quotes(command: str) -> str:
+    r"""Decode bash ANSI-C quoting (``$'...'``) so a command spelled in hex/octal escapes is seen
+    as the command it runs: ``$'\x72\x6d' -rf /`` -> ``rm -rf /`` (#132191). The ``$'`` / ``'``
+    wrappers are removed, matching how bash substitutes the decoded literal."""
+    if "$'" not in command:
+        return command
+    return re.sub(r"\$'((?:[^'\\]|\\.)*)'",
+                  lambda m: _ANSI_C_ESCAPE.sub(_decode_ansi_c_escape, m.group(1)), command)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -527,6 +570,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # precede the generic escape strip below, whose [^\n] class skips newlines and would leave the
     # backslash wedged between tokens, defeating the structured rm/mkfs/dd patterns incl. the HARDLINE floor.
     command = re.sub(r'\\\r?\n', '', command)
+    # Decode ANSI-C $'...' BEFORE the generic backslash strip, which would turn `\x72` into the
+    # literal `x72` instead of `r` and leave the obfuscation intact (#132191).
+    command = _decode_ansi_c_quotes(command)
     # Fold absolute user/Hermes home prefixes to ~/ and ~/.hermes/ so the static patterns catch /home/alice/.bashrc
     # and C:\Users\alice\.bashrc. Resolved at detection time (not import time) so it tracks HOME/HERMES_HOME set
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
@@ -1427,6 +1473,28 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
+_BRACE_GROUP_RE = re.compile(r'\{([^{}]*,[^{}]*)\}')
+
+
+def _expand_detection_braces(command: str, max_rounds: int = 5) -> str:
+    """Flatten simple single-level comma-brace groups to space-separated items for detection only:
+    ``{rm,-rf,/}`` -> ``rm -rf /``. Not full bash brace expansion (no cross-product); enough to
+    expose command words hidden in a brace list. Returns the command UNCHANGED when nothing
+    expanded, so brace-free commands add no variant and keep their exact spacing (the global-flag
+    scan distinguishes one space from a run). Bounded rounds cap pathological nesting."""
+    if '{' not in command or ',' not in command:
+        return command
+    out, changed = command, False
+    for _ in range(max_rounds):
+        expanded = _BRACE_GROUP_RE.sub(lambda m: ' ' + m.group(1).replace(',', ' ') + ' ', out)
+        if expanded == out:
+            break
+        out, changed = expanded, True
+    if not changed:
+        return command
+    return re.sub(r'[^\S\n]+', ' ', out).strip()
+
+
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
@@ -1472,6 +1540,17 @@ def _command_detection_variants(command: str):
     marked = _mark_command_starts(grep_safe)
     if marked != grep_safe and fresh(marked):
         yield marked
+    # Brace expansion: `{rm,-rf,/}` runs as `rm -rf /`, but a single brace word never presents the
+    # literal token sequence the _CMDPOS rules anchor on (#132191). Add a variant with simple
+    # comma-brace groups flattened to their space-separated items, then mark command starts so a
+    # flattened command word sits at a position the floor can see. Bounded (single level, capped
+    # rounds); _CMDPOS anchoring keeps argument-position braces (`echo {a,b}`) from false-positiving.
+    braced = _expand_detection_braces(grep_safe)
+    if fresh(braced):
+        yield braced
+        braced_marked = _mark_command_starts(braced)
+        if braced_marked != braced and fresh(braced_marked):
+            yield braced_marked
     # Every variant above tracks quotes on NORMALIZED text, where `\"` has already become `"`. That
     # flips quote parity, so in `cat "f\"n.txt"; rm -rf /` the `; rm` start sat "inside" a phantom
     # quote, no start was marked, and the hardline floor let it through. Mark starts on the RAW

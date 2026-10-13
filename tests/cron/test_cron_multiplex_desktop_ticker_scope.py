@@ -267,6 +267,10 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
         (home / "config.yaml").write_text("model: test-model\n", encoding="utf-8")
     (launch / ".env").write_text("LAUNCH_ONLY_SECRET=launch-secret\n", encoding="utf-8")
     (routed / ".env").write_text("ROUTED_ONLY_SECRET=routed-secret\n", encoding="utf-8")
+    # Each profile's script reaches its own .env secret only when declared for passthrough.
+    for home, name in ((launch, "LAUNCH_ONLY_SECRET"), (routed, "ROUTED_ONLY_SECRET")):
+        (home / "config.yaml").write_text(f"model: test-model\nterminal:\n  env_passthrough: [{name}]\n",
+                                          encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("LAUNCH_ONLY_SECRET", "launch-secret")
     monkeypatch.delenv("ROUTED_ONLY_SECRET", raising=False)

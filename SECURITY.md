@@ -113,6 +113,30 @@ content from surfaces the operator does not control — the open web,
 inbound email, multi-user channels, untrusted MCP servers — and for
 production or shared deployments.
 
+#### Secret-store isolation (Linux)
+
+Independently of the posture, on Linux Hermes Agent starts every
+agent-driven child process it spawns itself (local-backend terminal
+commands, background processes, the code-execution child and cron job
+scripts) under a Landlock ruleset
+(`security.terminal_secret_isolation`, default `auto`). The kernel
+denies those processes the credential stores of every Hermes home
+(`.env`, `auth.json`, token and OAuth directories), makes
+`config.yaml`, `hooks/` and `plugins/` read-only, and prevents
+creating, removing or renaming entries in the directories that hold
+those files. This matters wherever the agent's shell shares a
+filesystem with its own credentials: the default local backend and
+Hermes Agent's own Docker image.
+
+What this confines: reads and modifications of those paths by
+agent-driven child processes. What this does **not** confine: the
+agent process and everything in it (plugins, hooks, skills, in-process
+tools such as the file tools), MCP subprocesses, and any other host
+state. It narrows the local and Docker postures; it does not make the
+local backend a sandbox. It is unavailable on macOS and Windows. On
+Linux without Landlock, `auto` (the default) runs commands unprotected
+and logs a warning, while `require` refuses to run them.
+
 Operators running the default local backend with untrusted input
 surfaces, or running a terminal-backend sandbox and expecting it to
 contain code paths that don't go through the shell, are operating
@@ -123,9 +147,11 @@ outside the supported security posture.
 Hermes Agent filters the environment it passes to its lower-trust
 in-process components: shell subprocesses, MCP subprocesses,
 cron job scripts, and the code-execution child. Credentials like
-provider API keys and gateway tokens are stripped by default;
-variables explicitly declared by the operator or by a loaded
-skill are passed through.
+provider API keys and gateway tokens are stripped by default. Shell
+subprocesses and cron job scripts additionally lose any value a
+`.env` file or external secret source supplied and any
+secret-shaped variable name. Variables explicitly declared by the
+operator or by a loaded skill are passed through.
 
 This reduces casual exfiltration. It is not containment. Any
 component running inside the agent process (skills, plugins, hook
@@ -161,7 +187,10 @@ anything shipped in-tree. The boundary for third-party plugins is
 operator review before install — the same rule as skills (§2.4),
 called out separately because plugins are architecturally heavier
 and often ship their own background services, network listeners,
-and dependencies.
+and dependencies. The file tools refuse writes into `hooks/` and
+`plugins/`, and on Linux secret-store isolation (§2.2) makes them
+read-only for the agent's shell, so the agent cannot place code there
+on the operator's behalf.
 
 A malicious or buggy plugin is not a vulnerability in Hermes Agent
 itself. Bugs in Hermes Agent's plugin-install or plugin-discovery
@@ -229,7 +258,9 @@ authorization model, but the rules below apply uniformly.
 
 - Escape from a declared OS-level isolation posture (§2.2): an
   attacker-controlled code path reaching state that the posture
-  claimed to confine.
+  claimed to confine. This includes an agent-driven child process
+  reading or modifying a path that secret-store isolation denies
+  while it is active.
 - Unauthorized external-surface access: a caller outside the
   configured authorization set (allowlist, or OS-level equivalent
   for local-IPC surfaces) dispatching work, receiving output, or
@@ -269,7 +300,8 @@ private-disclosure channel and don't receive advisories.
 - **Consequences of a chosen isolation posture.** Reports that a
   code path operating within its posture's scope can do what that
   posture permits are not vulnerabilities. Examples: shell or file
-  tools reaching host state under the local backend; code-execution
+  tools reaching host state under the local backend (other than the
+  paths secret-store isolation denies); code-execution
   or MCP subprocesses reaching host state under terminal-backend
   isolation that only sandboxes shell; reports whose preconditions
   require pre-existing write access to operator-owned configuration
@@ -308,6 +340,12 @@ that:
   does this by default.
 - Keep credentials in the operator credential file with tight
   permissions, never in the main config, never in version control.
+  Prefer it over passing secrets as process or container environment:
+  the environment of another process running as the same user stays
+  readable from the agent's shell.
+- On Linux, set `security.terminal_secret_isolation` to `require`
+  and check that Landlock is available where Hermes runs (a
+  container's seccomp profile must allow it).
   Under OpenShell, use the Provider store rather than an on-disk
   credential file.
 - Do not expose the gateway or API to the public internet without

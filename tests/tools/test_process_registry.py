@@ -28,7 +28,7 @@ def registry():
 
 
 @pytest.fixture(autouse=True)
-def _reset_systemd_scope_cache():
+def _reset_systemd_scope_cache(monkeypatch):
     """Reset the cached ``systemd-run --user --scope`` availability flag
     before each test so a probe run on a real systemd host (where
     ``INVOCATION_ID`` is set) doesn't leak into tests that mock
@@ -36,10 +36,9 @@ def _reset_systemd_scope_cache():
     cache themselves."""
     import tools.process_registry as _pr
 
-    original = _pr._SYSTEMD_SCOPE_AVAILABLE
-    _pr._SYSTEMD_SCOPE_AVAILABLE = False
-    yield
-    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+    monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
+    # These tests pin the shell argv, not the Linux Landlock helper wrapping it.
+    monkeypatch.setattr(_pr, "wrap_argv", list)
 
 
 def _make_session(

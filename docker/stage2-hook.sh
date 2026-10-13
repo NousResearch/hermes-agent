@@ -673,7 +673,10 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
         :
     else
-        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        # Created under umask 077 so the refresh tokens are 0600 from the first byte (#126950):
+        # no 0644 window, and a failing chmod below can no longer leave them world-readable.
+        # Root redirect on purpose: an as_hermes command line would expose the value in argv.
+        (umask 077 && printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json")
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/auth.json"
     fi

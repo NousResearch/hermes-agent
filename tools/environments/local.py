@@ -22,10 +22,12 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _ambient_secret_names, _is_ambient_secret, _managed_env_names,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
     strip_profile_gate_env)
+from tools.environments.secret_isolation import wrap_argv
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -241,18 +243,22 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
+    plugin_strip: frozenset = frozenset(), ambient: bool = False) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
     context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
-    scope-resolved (UnscopedSecretError under multiplex)."""
+    scope-resolved (UnscopedSecretError under multiplex). ``ambient`` marks *items* as the
+    inherited process env (not caller/operator-supplied): there every dotenv/secret-source
+    supplied or secret-shaped name is dropped unless registered for passthrough."""
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
     registered = _registered_adapter_secret_env()
+    supplied = _ambient_secret_names() if ambient else frozenset()
+    managed = _managed_env_names()
     for key, value in items.items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
@@ -267,7 +273,11 @@ def _filter_secret_env(
         passthrough = is_env_passthrough(key)
         if _is_provider_env_blocklisted(key, registered) and not (passthrough or first_party):
             continue
-        if passthrough and not first_party:
+        if ambient and not (passthrough or first_party) and _is_ambient_secret(key, supplied):
+            continue
+        # An administrator-managed value already holds its precedence in *items*; resolving it from
+        # the bound profile scope would let the profile's own .env override policy (#107695).
+        if passthrough and not first_party and key.upper() not in managed:
             value = resolve_passthrough_value(key, value)
         if value is not None:
             out[key] = value
@@ -286,12 +296,12 @@ def _finalize_child_env(env: dict) -> dict:
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
-    """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
+    """Filter each ``(items, unwrap_force, ambient)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
     out: dict[str, str] = {}
-    for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+    for items, unwrap_force, ambient in parts:
+        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip, ambient=ambient)
     # Declared names the bound profile scope holds but the process env never did (a routed
     # profile's own .env / sources) — the filter above can only see names already present.
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
@@ -310,7 +320,7 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
-    return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
+    return _scrubbed_env([(base_env or {}, False, True), (extra_env or {}, True, False)],
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
@@ -736,7 +746,7 @@ def _make_run_env(env: dict) -> dict:
     (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
     and the served profile's declared passthrough names are what the child sees."""
     run_env = _scrubbed_env(
-        [(dict(strip_launch_profile_env(os.environ.copy()) | env), True)],
+        [(strip_launch_profile_env(os.environ.copy()), True, True), (env, True, False)],
         frozenset(),
         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)),
     )
@@ -1064,7 +1074,7 @@ class LocalEnvironment(BaseEnvironment):
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        args = wrap_argv([bash, *(["-l"] if login else []), "-c", cmd_string])
         self._recover_cwd()
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",

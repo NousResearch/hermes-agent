@@ -50,7 +50,7 @@ from pathlib import Path
 def test_nemotron_super_reasoning_floor_matches_existing_super_family():
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
 
-    assert floor("nvidia/nemotron-3.5-super-120b-a12b") == floor("nvidia/nemotron-3-super-120b-a12b") is not None
+    assert floor("nvidia/nemotron-3.5-super-vl-120b-a12b") == floor("nvidia/nemotron-3-super-120b-a12b") is not None
 
 
 def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():

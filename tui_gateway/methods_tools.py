@@ -101,8 +101,8 @@ def _tools_mod(module: str):
     return importlib.import_module(module)
 
 
-_stripped = lambda v: bool(str(v or "").strip())  # noqa: E731 — required-param predicates
-_nonempty = lambda v: not (v is None or str(v) == "")  # noqa: E731
+_stripped = lambda v: bool(str(v or "").strip())
+_nonempty = lambda v: not (v is None or str(v) == "")
 _NAME = (("name", _stripped),)
 _NAME_SESSION = (("name", _stripped), ("session_id", _stripped))
 
@@ -140,7 +140,7 @@ def _mcp_config_server_or_error(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, busy_message(cmd))
+        return _err(rid, 4009, busy_message(cmd, bool(session.get("_manual_compress_active"))))
     return None
 
 
@@ -199,7 +199,7 @@ def _capture_run_kwargs(timeout: int) -> dict:
 
 
 def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fail_code: int,
-                   shell: bool = False, env: "dict | None" = None) -> dict:
+                   shell: bool = False, env: dict | None = None) -> dict:
     """Run ``cmd`` captured (see ``_capture_run_kwargs``) and hand the CompletedProcess to
     ``on_result``; TimeoutExpired → ``timeout_err`` (code, message), other errors → ``fail_code``."""
     try:
@@ -305,7 +305,8 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
-def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "") -> None:
+def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
+                           plugin_note: tuple[str, str] | None = None) -> None:
     """Rebuild live sessions' cached tool snapshots from the registry and push session.info (agents
     never re-read the registry). The MCP pool is process-global, so refreshing only the requester
     would leave sibling sessions on stale tools until /new — and a request without a resolvable
@@ -314,8 +315,9 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
     (config or a just-installed plugin) is in the session's ``tool_call`` scope.
 
     ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
-    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``note``: queued
-    for each session's next turn on the one-shot turn-note channel (``agent/turn_context.py``)."""
+    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:
+    ``(plugin_key, text)`` queued once per session for its next tool result or turn
+    (``agent/plugin_live_notes.py``)."""
     from hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
@@ -326,23 +328,23 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
         agent = sess["agent"]
         try:
             with _session_profile_runtime_scope(sess):
-                enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
+                enabled = _carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
-        if note:
-            prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
-            agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+        if plugin_note:
+            _tools_mod("agent.plugin_live_notes").queue_plugin_notice(agent, *plugin_note)
         _emit("session.info", sid, _session_info(agent, sess))
 
 
-def refresh_plugin_sessions(home, note: str) -> None:
+def refresh_plugin_sessions(home, plugin_key: str, note: str) -> None:
     """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
-    behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
-    turn. Called by ``hermes_cli.plugins_activation_live``."""
-    _refresh_live_sessions(home, preserve_prefix=True, note=note)
+    behind tool_search, so the model-facing tool array is unchanged) and queue ``note``, replacing an
+    older one for ``plugin_key``, for their next tool result or turn. Called by
+    ``hermes_cli.plugins_activation.load_and_go_live``."""
+    _refresh_live_sessions(home, preserve_prefix=True, plugin_note=(plugin_key, note) if note else None)
 
 
 @_rpc("reload.mcp", 5015)
@@ -492,7 +494,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.get_skill_commands().items()):
+    for k, info in sorted(sc.get_interactive_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -645,7 +647,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
     """
     try:
         with _session_home_scope(session):
-            return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+            return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
     except Exception:
         return None
 
@@ -718,12 +720,12 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.get_skill_commands(), f"/{name}"
+        cmds, key = sc.get_interactive_skill_commands(), f"/{name}".lower()
         if key in cmds:
             # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
             # first token matched above; consume any further leading skill tokens from `arg`,
             # then build one invocation that loads every skill over the remaining instruction.
-            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg, interactive=True)
             if extra_keys:
                 stacked = sc.build_stacked_skill_invocation_message(
                     [key, *extra_keys], user_instruction,
@@ -868,13 +870,6 @@ def _cmd_retry(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": content})
 
 
-def _tui_model_friction(signal, session, turns=1):
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
-    record_model_friction(
-        signal, session_id=session.get("session_key"), agent=session.get("agent"),
-        hermes_home=session.get("profile_home"), turns=turns)
-
-
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
@@ -1004,6 +999,8 @@ def _cmd_compress(rid, params, session, name, arg):
     try:
         output = _compress_live_with_feedback(sid, session, session["agent"], arg, snapshot_kwargs=True)
         return _exec_out(rid, output)
+    except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
+        return _err(rid, 4009, str(exc))
     except Exception as exc:
         _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
@@ -1230,7 +1227,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, busy_message("rollback restore"))
+        return _err(rid, 4009, busy_message("rollback restore", bool(session.get("_manual_compress_active"))))
 
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
@@ -1285,11 +1282,15 @@ def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
 
 
 @method("browser.manage")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
-    if action == "status":
+    if action in {"status", "use"}:
+        from tools.browser_use_cli import is_browser_use_cli_mode, set_browser_use_mode
+        if action == "use":
+            set_browser_use_mode(params.get("enabled", True) is not False)
         url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url})
+        return _ok(rid, {"connected": bool(url), "url": url, "browser_use": is_browser_use_cli_mode()})
     if action == "disconnect":
         return _browser_disconnect(rid)
     if action == "connect":
@@ -1342,7 +1343,7 @@ def _(rid, params: dict) -> dict:
     session = None
     if sid:
         session, err = _sess_nowait(params, rid)
-        if err:
+        if err or (err := _busy_error(rid, session, "tools")):  # the reset bumps history_version mid-turn
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
@@ -1465,9 +1466,9 @@ def _skills_install(rid, params, query):
             self.lines.append(" ".join(str(a) for a in args))
 
     captured = _Capture()
-    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
-        query, skip_confirm=True, console=captured)
-    installed = verdict is True
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=captured)
+    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    installed = verdict is True or (verdict is None and bool(bundled(query)))  # an active built-in is no failure
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
         # the "Multiple skills named" candidate table, or the fetch failure.
@@ -1609,8 +1610,7 @@ def _(rid, params: dict) -> dict:
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
-    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    _tools_mod("tui_gateway.mcp_rpc_helpers").record_mcp_add(entry, server_config, saved_ok)
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
@@ -1741,54 +1741,6 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
-def _plugin_server_rows(
-    plugin_dir: Path | None, key: str, *, portable: bool,
-    catalog_titles: dict[str, str] | None = None,
-) -> list[dict]:
-    if not portable or plugin_dir is None:
-        return []
-    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
-    namespace = package.manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
-    declared = namespace.get("servers", {})
-    if not isinstance(declared, dict):
-        return []
-    server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
-    liveness = _tools_mod("tools.mcp_liveness")
-    core = _tools_mod("tools.mcp_tool_common")._core
-    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
-    # The server sentence's app name: the curated catalog title when the package is a catalog
-    # install, else the manifest name, else the server slug the declaration carries — a raw
-    # slug reads like an error code (#119975). *catalog_titles* is pre-resolved by the caller
-    # (one live-catalog resolution per listing): a per-plugin ``get_live_catalog_entry`` would
-    # re-resolve the whole catalog once per installed plugin.
-    display_name = str(package.manifest.get("name") or "") or None
-    sidecar = _tools_mod("hermes_cli.plugins_cmd_catalog").catalog_install_record(plugin_dir)
-    if sidecar:
-        title = (catalog_titles or {}).get(str(sidecar.get("catalog_name") or ""))
-        if title:
-            display_name = title
-    rows = []
-    for name in sorted(declared):
-        internal_name = server_name_for(key, name)
-        connection_key = resolve_key(internal_name)
-        server = core._servers.get(connection_key)
-        connected = server is not None and (server.session is not None or server._is_recycled_stdio())
-        if connected:
-            rows.append({"name": name, "state": "connected", "sentence": ""})
-            continue
-        decl = _tools_mod("hermes_platform.declaration").lookup(internal_name)
-        status = liveness.status(internal_name)
-        if decl is None or status is None:
-            rows.append({"name": name, "state": "unknown", "sentence": ""})
-            continue
-        rows.append({
-            "name": name,
-            "state": status.state,
-            "sentence": liveness.describe(decl, status.availability, status.state, display_name),
-        })
-    return rows
-
-
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
@@ -1943,7 +1895,7 @@ def _plugins_settings(rid, params):
     if not key or not isinstance(values, dict):
         return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
     pc = _tools_mod("hermes_cli.plugins_cmd")
-    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    found = pc._find_plugin_entry(key)
     if found is None:
         return _err(rid, 4020, f"plugin '{key}' not found")
     _name, _version, _desc, _source, plugin_dir, canonical = found
@@ -1961,7 +1913,13 @@ def _plugins_onboarding(rid, params):
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
+def _plugins_presence(rid, params):
+    """Named catalog plugins this OS runs, in the order asked, each with its app state and disclosure."""
+    return _ok(rid, {"presence": _tools_mod("hermes_cli.plugin_catalog_presence").presence_for(params.get("names") or [])})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
+                    "toggle": _plugins_toggle, "install": _plugins_install,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 

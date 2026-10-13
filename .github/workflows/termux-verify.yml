@@ -6,12 +6,14 @@ on:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   pull_request:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   workflow_dispatch:

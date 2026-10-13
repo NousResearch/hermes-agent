@@ -560,7 +560,7 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     never parks the card as a bare ``blocked``, the run is tagged
     ``infrastructure`` and the guard spaces the retries. A control spawn
     failure on the same card still counts."""
-    import tools.process_registry as process_registry
+    from tools import process_registry
 
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
@@ -1606,13 +1606,13 @@ def test_resolve_hermes_argv_module_actually_runs():
     import subprocess
     from hermes_cli import kanban_db_dispatch as kbd
     import shutil
-    import unittest.mock as mock
+    from unittest import mock
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"

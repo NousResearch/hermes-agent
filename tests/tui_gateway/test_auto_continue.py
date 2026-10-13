@@ -368,7 +368,7 @@ def schedule_env(monkeypatch, marker_home):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     submitted: list = []
     monkeypatch.setattr(
         server,

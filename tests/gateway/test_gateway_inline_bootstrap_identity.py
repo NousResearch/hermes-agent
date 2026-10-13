@@ -27,7 +27,7 @@ _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
 
 
 def _forms(argv: list[str]) -> dict[str, list[str]]:
-    return {
+    forms = {
         "store-launcher": _launchers.runtime_command(ROOT, argv, python=Path(PY)),
         "launcher-script": [PY, "-I", "-c", _SCRIPT, *argv],
         "cmd-launcher": [PY, "-I", "-c", f"import base64; exec(base64.b64decode('{base64.b64encode(_SCRIPT.encode()).decode()}'))", *argv],
@@ -35,6 +35,11 @@ def _forms(argv: list[str]) -> dict[str, list[str]]:
             Path(PY), ROOT, [str(ROOT / "hermes_cli" / "main.py"), *argv], ["/old/python", "-m", "hermes_cli.main", *argv],
             "hermes_cli.main"),
     }
+    # A launch through a published launcher that synced dependencies first re-enters it via exec().
+    for name in ("launcher-script", "cmd-launcher"):
+        forms[f"venv-reentry-{name}"] = venv_sync.relaunch_command(
+            Path(PY), ROOT, ["-c", *argv], ["/old/python", *forms[name][1:]], None)
+    return forms
 
 
 @pytest.mark.parametrize("join", _JOINS)

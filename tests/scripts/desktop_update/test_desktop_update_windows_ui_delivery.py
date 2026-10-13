@@ -54,6 +54,7 @@ def _server(tmp_path: Path, *, failed: bool = False):
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                check=False,
             )
             process.wait(timeout=15)
 

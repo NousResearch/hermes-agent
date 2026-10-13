@@ -34,6 +34,7 @@ def _rehash(root, cwd):
     return subprocess.run(
         [sys.executable, str(Path(payload.__file__)), "rehash", str(root)],
         cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=60,
+        check=False,
     )
 
 

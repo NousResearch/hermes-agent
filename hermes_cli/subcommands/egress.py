@@ -17,7 +17,7 @@ def build_egress_parser(subparsers) -> None:
     from hermes_cli import proxy_cli as _proxy_cli
     _proxy_cli.register_cli(egress_parser)
 
-    def _dispatch_egress(args):  # noqa: ANN001
+    def _dispatch_egress(args):
         # dest='egress_command' stays disjoint from ``hermes proxy`` (dest='proxy_command').
         sub = getattr(args, "egress_command", None)
         if sub is not None and hasattr(args, "func") and args.func is not _dispatch_egress:

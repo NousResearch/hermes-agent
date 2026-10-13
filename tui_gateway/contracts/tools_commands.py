@@ -451,7 +451,7 @@ class CronJobRow(_Open):
     last_run_at: str | None = None
     last_status: str | None = None
     last_delivery_error: str | None = None
-    last_delivery_unverified: bool | None = None
+    last_delivery_unverified: list[str] | None = None  # unconfirmed ``platform:chat_id[:thread_id]`` targets
     last_fire_error: str | None = None
     last_error: str | None = None
     enabled: bool = True
@@ -514,11 +514,14 @@ class BrowserAction(WireEnum):
     status = "status"
     connect = "connect"
     disconnect = "disconnect"
+    use = "use"
 
 
 class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
+    # ``use`` only: True selects Browser Use mode (browser_exec), False the built-in browser tools.
+    enabled: bool | None = None
     session_id: str | None = None
     profile: str | None = None
 
@@ -527,7 +530,10 @@ class BrowserManageResult(Result):
     connected: bool
     url: str | None = None
     messages: list[str] | None = None
+    # ``status`` / ``use``: whether new agents for this profile get browser_exec.
+    browser_use: bool | None = None
 
 
 method("browser.manage", params=BrowserManageParams, result=BrowserManageResult,
-       doc="Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.")
+       doc="Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode "
+           "(``use``, applies to new sessions); ``messages`` narrate a connect.")

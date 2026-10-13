@@ -80,7 +80,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         import cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
-        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
+        from tools import terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path

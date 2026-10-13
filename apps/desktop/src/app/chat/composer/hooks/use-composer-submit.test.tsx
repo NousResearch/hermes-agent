@@ -543,11 +543,15 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
   }
 
+  // SAFETY: the clarify lock path reads only `request` from the gateway.
+  const setGateway = (request: ReturnType<typeof vi.fn>) => $gateway.set({ request } as never)
+
   afterEach(() => {
     cleanup()
     respond.mockClear()
     resetServerRequestsForTests()
     $clarifyRequests.set({})
+    $gateway.set(null)
     vi.restoreAllMocks()
   })
 
@@ -585,32 +589,89 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
-  it('skips the question and still sends the typed message on an idle session', async () => {
+  it('answers the question with the typed text and does not send it on an idle session', async () => {
     parkClarify('runtime-session')
-    const { hook, onSubmit } = renderSubmitHook({ text: 'actually do this instead' })
+    const request = vi.fn(async () => ({ status: 'ok', remaining: [] }))
+    setGateway(request)
+    const { hook, onSubmit, onSteer } = renderSubmitHook({ text: 'actually do this instead' })
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({}))
     await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
+      expect(request).toHaveBeenCalledWith('clarify.lock', {
+        answer: 'actually do this instead',
+        question_id: 'q0',
+        request_id: 'req-runtime-session'
+      })
     )
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
-    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
-  it('skips the question before steering a busy turn', async () => {
-    parkClarify('runtime-session')
-    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'change course' })
+  it('answers one question per submit while a busy turn waits, matching a choice label', async () => {
+    const request = vi.fn(async () => ({ status: 'ok', remaining: ['q1'] }))
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-two', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-two',
+        questions: [
+          { choices: ['Staging', 'Prod'], multiSelect: false, qid: 'q0', question: 'where?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
+        ],
+        sessionId: 'runtime-session'
+      }
+    })
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'prod' })
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(respond).toHaveBeenCalledWith({})
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('clarify.lock', { answer: 'Prod', question_id: 'q0', request_id: 'req-two' })
+    )
+    expect(onSteer).not.toHaveBeenCalled()
+    expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({ q0: 'Prod' })
+    expect(hasOpenServerRequest('req-two')).toBe(true)
+  })
+
+  it('brings the card back when an earlier lock fails after the last answer cleared it', async () => {
+    let failFirst: (error: Error) => void = () => {}
+
+    const request = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)))
+      .mockResolvedValue({ status: 'ok', remaining: [] })
+
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-pair', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-pair',
+        questions: ['q0', 'q1'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
+        sessionId: 'runtime-session'
+      }
+    })
+
+    for (const text of ['first', 'second']) {
+      const { hook } = renderSubmitHook({ busy: true, text })
+      act(() => hook.result.current.submitDraft())
+    }
+
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
+    await act(async () => failFirst(new Error('socket closed')))
+
+    await waitFor(() => expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({}))
+    // The second answer waits on the first, so it never reaches the server without it.
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(hasOpenServerRequest('req-pair')).toBe(true)
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {

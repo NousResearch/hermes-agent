@@ -62,6 +62,24 @@ def test_lifespan_warmup_is_synchronous(monkeypatch):
         )
 
 
+def test_lifespan_enters_and_exits_as_an_async_context_manager(monkeypatch):
+    """FastAPI gets ``_lifespan`` as an async context manager, never a bare async generator
+    (Starlette's deprecated path), and entering it runs the desktop's first-install check."""
+    from hermes_cli import anon_auth, install_state
+
+    probed: list[bool] = []
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(web_server_mod, "_eager_reconcile_own_session_db", lambda: None)
+    monkeypatch.setattr(anon_auth, "on_local_desktop_backend", lambda: True)
+    monkeypatch.setattr(install_state, "probe", lambda: probed.append(True))
+
+    async def _run() -> None:
+        async with web_server_mod._lifespan(web_server_mod.app):
+            assert probed == [True]
+
+    asyncio.run(_run())
+
+
 def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):
     from fastapi.testclient import TestClient
     from tui_gateway import methods_groups

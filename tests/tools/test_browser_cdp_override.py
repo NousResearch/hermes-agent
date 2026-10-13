@@ -22,6 +22,7 @@ class TestResolveCdpOverride:
         ("http://cdp.example/slot/one/cdp?tok=synthetic", "http://cdp.example/slot/one/cdp/json/version?tok=synthetic"),
         ("http://cdp.example/slot/one/cdp/?tok=synthetic", "http://cdp.example/slot/one/cdp/json/version?tok=synthetic"),
         ("http://cdp.example/json/version?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
+        ("http://cdp.example/json/version/?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
         ("http://cdp.example?tok=synthetic", "http://cdp.example/json/version?tok=synthetic"),
     ))
     def test_discovery_appends_json_version_to_the_path_and_keeps_the_query(self, raw, version_url):
@@ -35,6 +36,13 @@ class TestResolveCdpOverride:
             assert _resolve_cdp_override(raw) == WS_URL
 
         mock_get.assert_called_once_with(version_url, timeout=10)
+
+    def test_malformed_discovery_url_falls_back_to_the_raw_endpoint(self):
+        raw = "http://[::1:9222"
+        with patch("requests.get") as get, patch("tools.browser_tool.logger.warning") as warning:
+            assert bt_cdp._resolve_cdp_override(raw) == raw
+        get.assert_not_called()
+        warning.assert_called_once()
 
     def test_keeps_full_devtools_websocket_url(self):
         from tools.browser_tool_cdp import _resolve_cdp_override

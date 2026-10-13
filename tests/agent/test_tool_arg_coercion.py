@@ -318,6 +318,21 @@ class TestCoerceToolArgsNested:
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
             assert coerce_tool_args("test_tool", {"count": "5"}) == {"count": "5"}
 
+    def test_sanitized_keys_behind_a_ref_map_back_to_wire_names(self):
+        # Providers reject keys like "first name"; the sanitizer renames them in $defs too.
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"Person": {"type": "object", "properties": {"first name": {"type": "string"}}}},
+                "properties": {"person": {"$ref": "#/$defs/Person"}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"person": {"first_name": "Ada"}})
+            assert result == {"person": {"first name": "Ada"}}
+
     def test_array_item_referenced_via_defs_is_parsed(self):
         schema = {
             "name": "test_tool",

@@ -8,11 +8,10 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
-import re
 from typing import Any, Dict
-from urllib.parse import unquote
 
 from tools.registry import registry
+from tools.schema_sanitizer import resolve_local_schema_ref
 
 # Logger name kept as "model_tools": these messages were always emitted under
 # that name and log-based tooling filters on it.
@@ -42,7 +41,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
-        prop_schema = _resolve_local_schema_ref(prop_schema, parameters)
+        prop_schema = resolve_local_schema_ref(prop_schema, parameters)
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))
 
@@ -88,60 +87,6 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     return args
 
 
-# RFC 6901: an array index is "0" or a number without leading zeros; "~" escapes only "~0" and "~1".
-_POINTER_INDEX = re.compile(r"0|[1-9][0-9]*")
-_BAD_POINTER_ESCAPE = re.compile(r"~(?![01])")
-
-
-def _resolve_local_schema_ref(
-    schema: Any,
-    root_schema: Any,
-    seen_refs: set[str] | None = None,
-) -> Any:
-    """Resolve document-local JSON Pointers for coercion decisions; leave remote,
-    malformed or dangling refs as they are."""
-    if not isinstance(schema, dict) or not isinstance(root_schema, dict):
-        return schema
-
-    ref = schema.get("$ref")
-    if not isinstance(ref, str) or not ref.startswith("#"):
-        return schema
-    # A $ref is a URI reference: percent-decode the fragment, then read it as a JSON Pointer.
-    pointer = unquote(ref[1:])
-    if pointer and not pointer.startswith("/"):
-        return schema  # a plain-name anchor such as "#Address", not a pointer
-    tokens = pointer.split("/")[1:]
-
-    seen = seen_refs or set()
-    if ref in seen:
-        return schema
-
-    target: Any = root_schema
-    for raw_token in tokens:
-        if _BAD_POINTER_ESCAPE.search(raw_token):
-            return schema
-        token = raw_token.replace("~1", "/").replace("~0", "~")
-        if isinstance(target, dict) and token in target:
-            target = target[token]
-        elif isinstance(target, list) and _POINTER_INDEX.fullmatch(token) and int(token) < len(target):
-            # Path refs can pass through arrays, e.g. zod-to-json-schema's "#/properties/a/anyOf/0".
-            target = target[int(token)]
-        else:
-            return schema
-    if not isinstance(target, dict):
-        return schema
-
-    resolved = _resolve_local_schema_ref(target, root_schema, seen | {ref})
-    siblings = {key: value for key, value in schema.items() if key != "$ref"}
-    if not siblings or not isinstance(resolved, dict):
-        return resolved
-
-    combined = dict(resolved)
-    for key, value in siblings.items():
-        combined.setdefault(key, value)
-    return combined
-
-
 def _schema_accepts_kind(
     schema: Any,
     kind: str,
@@ -157,7 +102,7 @@ def _schema_accepts_kind(
     seen_schema_ids = seen_schema_ids | {id(schema)}
     if root_schema is None:
         root_schema = schema
-    schema = _resolve_local_schema_ref(schema, root_schema)
+    schema = resolve_local_schema_ref(schema, root_schema)
     t = schema.get("type")
     if t == kind or (isinstance(t, list) and kind in t):
         return True
@@ -182,7 +127,7 @@ def _normalize_json_strings_for_schema(
         return value
     if root_schema is None:
         root_schema = schema
-    schema = _resolve_local_schema_ref(schema, root_schema)
+    schema = resolve_local_schema_ref(schema, root_schema)
 
     if isinstance(value, str):
         trimmed = value.strip()

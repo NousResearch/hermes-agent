@@ -3723,7 +3723,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             delivered.append(str(msg.message_id))
         await self._retrigger_typing(chat_id, metadata)
         return SendResult(
-            success=True, message_id=delivered[0] if delivered else None,
+            success=True, message_id=delivered[0] if delivered else None, continuation_message_ids=tuple(delivered[1:]),
             raw_response={
                 "message_ids": list(delivered), "requested_thread_id": requested_thread_id, "thread_fallback": used_thread_fallback})
 

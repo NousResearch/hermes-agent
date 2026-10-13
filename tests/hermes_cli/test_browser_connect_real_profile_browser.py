@@ -39,7 +39,7 @@ def test_unsupported_value_fails_closed(value):
     with _cfg(value), patch.object(bc, "detect_default_chromium", return_value="chrome") as det:
         browser, err = bc.resolve_real_profile_browser()
     assert browser is None and err is not None
-    assert "browser.real_profile_browser" in err and repr(value) in err and "chrome" in err
+    assert "browser.real_profile_browser" in err and repr(value) in err and "brave-origin" in err
     det.assert_not_called()
 
 

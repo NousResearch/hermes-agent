@@ -86,7 +86,8 @@ function collapseCompressionLineages(sessions: readonly SessionInfo[]): readonly
   return sessions.filter(session => winners.has(session))
 }
 
-const sessionKey = (session: SessionInfo, id = session.id) => {
+/** Connection- and profile-qualified row key: the same id can exist on two backends or profiles. */
+export const sessionKey = (session: SessionInfo, id = session.id) => {
   const connection = session.connection_id?.trim()
 
   return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`

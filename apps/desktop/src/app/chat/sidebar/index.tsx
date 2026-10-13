@@ -26,7 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
+import { flattenSessionsWithBranches, sessionKey } from '@/lib/session-branch-tree'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -204,12 +204,6 @@ const NON_SESSION_LOAD_STEP = 10
 // the grouped view. Long enough that the flat list — the thing actually on
 // screen — has the connection to itself first.
 const PROJECT_TREE_WARM_MS = 2_000
-
-const sessionTreeIdentity = (session: SessionInfo, id = session.id): string => {
-  const connection = session.connection_id?.trim()
-
-  return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`
-}
 
 // A row's `tier` is the one mode it belongs to (Simple keeps the setup rows,
 // Advanced adds the readouts); the list filters once, nothing is passed down.
@@ -739,10 +733,10 @@ export function ChatSidebar({
     const ids = new Set<string>()
 
     for (const session of pinnedSessions) {
-      ids.add(sessionTreeIdentity(session))
+      ids.add(sessionKey(session))
 
       for (const id of session._lineage_ids ?? []) {
-        ids.add(sessionTreeIdentity(session, id))
+        ids.add(sessionKey(session, id))
       }
     }
 
@@ -761,9 +755,9 @@ export function ChatSidebar({
 
   const isInPinnedTree = useCallback(
     (session: SessionInfo) =>
-      pinnedTreeIdentitySet.has(sessionTreeIdentity(session)) ||
+      pinnedTreeIdentitySet.has(sessionKey(session)) ||
       (session._lineage_root_id != null &&
-        pinnedTreeIdentitySet.has(sessionTreeIdentity(session, session._lineage_root_id))),
+        pinnedTreeIdentitySet.has(sessionKey(session, session._lineage_root_id))),
     [pinnedTreeIdentitySet]
   )
 

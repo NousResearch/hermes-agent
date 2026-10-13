@@ -1,5 +1,6 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { sessionKey } from '@/lib/session-branch-tree'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -91,12 +92,6 @@ function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
  */
 function pageWindow(sessions: SessionInfo[], limit: number): SessionInfo[] {
   const roots = sessions.filter(session => !session.spawned_by_session_id)
-
-  const sessionKey = (session: SessionInfo, id: string) => {
-    const connection = session.connection_id?.trim()
-
-    return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`
-  }
 
   if (roots.length <= limit) {
     return sessions

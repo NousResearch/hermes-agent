@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from weakref import WeakKeyDictionary
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
 from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
@@ -48,12 +49,12 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
-# (home, event, matcher, command) wired in this process: matcher in the key (one script may register
-# per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
-_registered: Set[Tuple[str, str, Optional[str], str]] = set()
+# Track exact config-owned callbacks per manager/home, not just commands seen by this process.
+# Weak manager keys allow discarded managers to be collected; policy changes include timeout/fail_closed.
+_HookKey = Tuple[str, Optional[str], str, int, bool]
+_registered: WeakKeyDictionary[Any, Dict[str, Dict[_HookKey, Callable]]] = WeakKeyDictionary()
 _registered_lock = threading.Lock()
-# Non-POSIX fallback for allowlist read-modify-write. Must be separate from _registered_lock, which
-# register_from_config already holds when it triggers _record_approval (Lock is non-reentrant).
+# Non-POSIX fallback for allowlist read-modify-write; independent of callback publication.
 _allowlist_write_lock = threading.Lock()
 
 
@@ -139,8 +140,11 @@ class ShellHookSpec(_ToolMatcherMixin):
 # --- Public API ---
 
 def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = False) -> List[ShellHookSpec]:
-    """Register every configured shell hook (idempotent); returns the newly wired specs. Skipped
-    entries (unknown, malformed, not allowlisted, already registered) are logged only."""
+    """Reconcile this manager/home's shell callbacks; return newly wired specs.
+
+    Consent is resolved before publishing. A declined replacement retains the previous generation;
+    first registration still skips unapproved entries. Empty config removes only our callbacks.
+    """
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
@@ -149,30 +153,54 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
         return []
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
     specs = _parse_hooks_block(cfg.get("hooks"))
-    if not specs:
-        return []
     from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
     manager, home_key, registered = get_plugin_manager(), _home_key(), []
-    # Idempotence + allowlist read under the lock; TTY prompt outside it; mutation re-takes the lock and re-checks.
+    approved: Dict[_HookKey, ShellHookSpec] = {}
+    declined = False
+    # Never hold the publication lock while prompting or touching the consent store. An exception
+    # leaves the old generation intact, including when an earlier entry was already approved.
     for spec in specs:
-        key = (home_key, spec.event, spec.matcher, spec.command)
-        with _registered_lock:
-            if key in _registered:
-                continue
-            already_allowlisted = _is_allowlisted(spec.event, spec.command)
-        if not already_allowlisted and not _prompt_and_record(spec.event, spec.command, accept_hooks=effective_accept):
+        key = (spec.event, spec.matcher, spec.command, spec.timeout, spec.fail_closed)
+        if not _is_allowlisted(spec.event, spec.command) and not _prompt_and_record(
+            spec.event, spec.command, accept_hooks=effective_accept,
+        ):
             logger.warning("shell hook for %s (%s) not allowlisted — skipped. Use --accept-hooks / "
                            "HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.",
                            spec.event, spec.command)
+            declined = True
             continue
-        with _registered_lock:
-            if key in _registered:
-                continue
-            manager._hooks.setdefault(spec.event, []).append(_make_callback(spec))
-            _registered.add(key)
-            registered.append(spec)
-            logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
-                        spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
+        approved.setdefault(key, spec)
+    # Same lock order as force reload (which re-enters registration). No callback runs here.
+    with manager._discovery_lock, _registered_lock:
+        homes = _registered.setdefault(manager, {})
+        previous = homes.get(home_key, {})
+        if declined and previous:
+            logger.warning("shell hook replacement declined — retaining the previous generation")
+            return []
+        replacement: Dict[_HookKey, Callable] = {}
+        for key, spec in approved.items():
+            callback = previous.get(key)
+            if callback is None or callback not in manager._hooks.get(spec.event, []):
+                callback = _make_callback(spec)
+                registered.append(spec)
+            replacement[key] = callback
+        if list(previous) == list(replacement) and previous == replacement:
+            return []
+        owned = {id(cb) for cb in previous.values()}
+        updates = {}
+        for event in dict.fromkeys(key[0] for key in (*previous, *replacement)):
+            current = manager._hooks.get(event, [])
+            # Replace lists, never mutate a list an in-flight dispatcher is already iterating.
+            # Retain foreign callbacks and their order, inserting at our first former slot.
+            position = next((i for i, cb in enumerate(current) if id(cb) in owned), len(current))
+            foreign = [cb for cb in current if id(cb) not in owned]
+            callbacks = [cb for key, cb in replacement.items() if key[0] == event]
+            updates[event] = foreign[:position] + callbacks + foreign[position:]
+        manager._hooks.update(updates)
+        homes[home_key] = replacement
+    for spec in registered:
+        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
+                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
     return registered
 
 
@@ -182,26 +210,17 @@ def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
 
 
 def re_register_config_hooks() -> None:
-    """Re-register after a plugin force-reload cleared the manager's hooks; only this home's keys
-    are cleared (profile A's reload never drops B), never re-prompts.
+    """Restore config callbacks dropped by plugin force reload, using persisted consent.
 
-    ``PluginManager.discover_and_load(force=True)`` unloads via the ownership ledger and clears the
-    manager's ``_hooks`` dict, which silently drops shell hooks that were registered from ``config.yaml`` at
-    startup (they are config-owned, not plugin-owned, so the ledger cannot restore them). Clear the
-    idempotence set and re-run ``register_from_config()`` so hooks are wired again (#60036 / PR #60267;
-    tracking #64178 — salvaged from PR #64188).
-    Only the idempotence keys for the *current* Hermes home are cleared — ``discover_and_load(force=True)``
-    only unloads the manager scoped to that one home, so clearing every home's keys would make a
-    force-reload in profile A drop profile B's still-live registration from the ledger and duplicate it on
-    B's next registration call (#92682 review).
+    Registration checks actual manager membership before reusing a callback, so another manager or
+    profile's ledger need not be cleared (#60036 / #64178 / #92682).
     """
-    _forget_home_registrations(_registered, _registered_lock)
     from hermes_cli.config import load_config
     register_from_config(load_config())
 
 
 def reset_for_tests() -> None:
-    """Test-only: clear the idempotence set."""
+    """Test-only: clear the config callback ownership ledger."""
     with _registered_lock:
         _registered.clear()
 

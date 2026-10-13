@@ -1,0 +1,35 @@
+{
+  "base": "db72e58229639b80d68a53cdc1d081f6511457f5",
+  "image": "sha256:72f85bad31968f2c90fd869e5e23bfcf2160e57dd8610515a1ff8921d2421975",
+  "base_source": true,
+  "source_sha256": {
+    "agent/shell_hooks.py": "e24d28ec2888c845fba5adeece757848c8534162f8ad6ca055a5954dccdd8c97",
+    "tests/agent/test_shell_hooks.py": "ca987f7b7388b92adea6bc53b894c050d29edad05096bbbf05c6ecb82c2adad2",
+    "tests/tui_gateway/test_profile_shell_hooks.py": "c897e295dcd6a734495490c4977a1c6be8fef852bbf52214aac522cc8fb802cd"
+  },
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "2g",
+    "-e",
+    "HOME=/scratch/home",
+    "-e",
+    "TMP=/scratch/tmp",
+    "-e",
+    "TEMP=/scratch/tmp",
+    "-v",
+    "/var/folders/5z/md0bcc1x1w1gyrh_4byk_d840000gp/T/v4-proof-f7570zxj/snapshot.tar:/snapshot.tar:ro",
+    "sha256:72f85bad31968f2c90fd869e5e23bfcf2160e57dd8610515a1ff8921d2421975",
+    "sh",
+    "-c",
+    "mkdir -p /scratch/home /scratch/tmp && tar xf /snapshot.tar -C /repo && git init -q && git add agent tests scripts && bash scripts/run_tests.sh -j 2 --file-retries 0 --file-timeout 120 tests/agent/test_shell_hooks.py tests/tui_gateway/test_profile_shell_hooks.py -v --tb=short"
+  ],
+  "returncode": 1,
+  "log_sha256": "fb3c79bbaef08238ca75cf3c2b791469ce7fcabecf9507ebd96bedb4a10b38f9"
+}

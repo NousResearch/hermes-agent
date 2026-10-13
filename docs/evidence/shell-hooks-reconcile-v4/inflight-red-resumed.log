@@ -1,0 +1,80 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /opt/test-venv/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 1 test files (~51 tests) under ['tests/agent/test_shell_hooks.py']; running with -j 28
+[100.0% |    51/~51 | ✓0 | ✗1] ✗ tests/agent/test_shell_hooks.py (1✗, 0.9s)
+
+  ╔╍ Failed: tests/agent/test_shell_hooks.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ /opt/test-venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:207: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+  ║ The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+  ║ 
+  ║   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+  ║ ============================= test session starts ==============================
+  ║ platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+  ║ cachedir: .pytest_cache
+  ║ rootdir: /repo
+  ║ configfile: pyproject.toml
+  ║ plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+  ║ asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+  ║ collecting ... collected 61 items / 60 deselected / 1 selected
+  ║ 
+  ║ tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight] FAILED [100%]
+  ║ 
+  ║ =================================== FAILURES ===================================
+  ║ ________ test_config_reconciliation_preserves_policy_snapshot[inflight] ________
+  ║ tests/agent/test_shell_hooks.py:534: in test_config_reconciliation_preserves_policy_snapshot
+  ║     assert block(version) is None
+  ║ E   AssertionError: assert 'v3' is None
+  ║ E    +  where 'v3' = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffffb32222a0>('v4')
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight]
+  ║ ======================= 1 failed, 60 deselected in 0.68s =======================
+  ║
+  ║  Repro: python -m pytest tests/agent/test_shell_hooks.py -k test_config_reconciliation_preserves_policy_snapshot and inflight -v --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 1 files, 0 tests passed, 1 failed (100% complete) in 0.9s (28 workers) ===
+
+  note: windows_only tests (in 1 file) were SKIPPED on this host (linux); they run on the tests-os CI lane (windows-latest).
+
+=== Per-file subprocess time distribution ===
+  Files:   1
+  Total subprocess CPU-wall: 0.9s  (runner wall: 0.9s, parallelism: 28x)
+  P50: 0.93s  P90: 0.93s  P95: 0.93s  P99: 0.93s  Max: 0.93s
+  <1s: 1 files (100%)  <2s: 1 files (100%)
+  Top 10 slowest:
+      0.93s  tests/agent/test_shell_hooks.py
+
+=== Failure output ===
+
+--- tests/agent/test_shell_hooks.py ---
+/opt/test-venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:207: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /repo
+configfile: pyproject.toml
+plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+collecting ... collected 61 items / 60 deselected / 1 selected
+
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight] FAILED [100%]
+
+=================================== FAILURES ===================================
+________ test_config_reconciliation_preserves_policy_snapshot[inflight] ________
+tests/agent/test_shell_hooks.py:534: in test_config_reconciliation_preserves_policy_snapshot
+    assert block(version) is None
+E   AssertionError: assert 'v3' is None
+E    +  where 'v3' = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffffb32222a0>('v4')
+=========================== short test summary info ============================
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight]
+======================= 1 failed, 60 deselected in 0.68s =======================
+
+=== 1 file with test failures (1 test failed) ===
+  tests/agent/test_shell_hooks.py  (1 test failed)

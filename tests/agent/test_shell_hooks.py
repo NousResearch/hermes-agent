@@ -393,6 +393,159 @@ class TestIdempotentRegistration:
         assert len(mgr._hooks.get("pre_tool_call", [])) == 2
 
 
+# ── Config ownership / atomic replacement ─────────────────────────────────
+
+
+@pytest.mark.parametrize("change", [
+    "command", "empty", "absent", "timeout", "fail_closed", "matchers",
+    "declined", "approval_error", "new_manager", "reload", "inflight",
+])
+def test_config_reconciliation_preserves_policy_snapshot(tmp_path, monkeypatch, change):
+    """One manager sees one approved generation; unrelated owners and in-flight lists survive."""
+    import contextvars
+    import os
+    import shlex
+    import subprocess
+    import sys
+    import threading
+
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "alpha"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "os-home")
+    monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    calls = tmp_path / "calls.jsonl"
+    quote = subprocess.list2cmdline if os.name == "nt" else shlex.join
+
+    def config(version, **options):
+        script = tmp_path / f"{version}.py"
+        script.write_text(
+            "import json, sys, time\nfrom pathlib import Path\n"
+            f"p = json.load(sys.stdin); v = {version!r}\n"
+            f"with Path({str(calls)!r}).open('a') as f: f.write(json.dumps(v) + '\\n')\n"
+            "if p['tool_input'].get('slow'): time.sleep(2)\n"
+            "if p['tool_input'].get('invalid'): print('not-json')\n"
+            "elif p['tool_input'].get('version') != v: print(json.dumps({'decision':'block', 'reason':v}))\n"
+            "else: print('{}')\n", encoding="utf-8",
+        )
+        return {"hooks": {"pre_tool_call": [{
+            "command": quote([sys.executable, str(script)]), "matcher": "write_file",
+            "fail_closed": True, **options,
+        }]}}
+
+    def block(version, **extra):
+        return plugins.get_pre_tool_call_block_message(
+            "write_file", {"version": version, **extra}, tool_call_id="paused" if extra.get("pause") else "current",
+        )
+
+    cfg = config("v3", fail_closed=change != "fail_closed")
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        shell_hooks.register_from_config(cfg, accept_hooks=True)
+        manager = plugins.get_plugin_manager()
+        old_callback = manager._hooks["pre_tool_call"][0]
+        entered, release = threading.Event(), threading.Event()
+        plugin_calls = []
+
+        def plugin(**kwargs):
+            plugin_calls.append(kwargs["args"])
+            if kwargs["args"].get("pause"):
+                entered.set()
+                assert release.wait(5), "test did not release in-flight call"
+
+        manager._hooks["pre_tool_call"].insert(0, plugin)
+        token = set_hermes_home_override(tmp_path / "beta")
+        try:
+            shell_hooks.register_from_config(config("beta"), accept_hooks=True)
+            other = plugins.get_plugin_manager()
+            other_callbacks = list(other._hooks["pre_tool_call"])
+        finally:
+            reset_hermes_home_override(token)
+
+        replacement = config("v4")
+        if change in {"timeout", "fail_closed", "matchers", "reload", "new_manager"}:
+            replacement = config("v3", timeout=1 if change == "timeout" else 60)
+        if change == "matchers":
+            replacement["hooks"]["pre_tool_call"].append({
+                **replacement["hooks"]["pre_tool_call"][0], "matcher": "read_file",
+            })
+        if change == "empty":
+            replacement = {"hooks": {}}
+        if change == "absent":
+            replacement = {}
+        if change == "approval_error":
+            def fail_approval(*args, **kwargs):
+                raise OSError("approval storage unavailable")
+            monkeypatch.setattr(shell_hooks, "_prompt_and_record", fail_approval)
+        if change == "new_manager":
+            manager = plugins.PluginManager()
+            monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+        if change == "reload":
+            import yaml
+            home = tmp_path / "alpha"
+            (home / "config.yaml").write_text(yaml.safe_dump(replacement), encoding="utf-8")
+            manager._hooks.clear()  # the same clear performed by plugin force reload
+            shell_hooks.re_register_config_hooks()
+        pending, errors = [], []
+        thread = None
+        if change == "inflight":
+            def invoke():
+                try:
+                    pending.append(block("v4", pause=True))
+                except BaseException as exc:
+                    errors.append(exc)
+            thread = threading.Thread(target=contextvars.copy_context().run, args=(invoke,), daemon=True)
+            thread.start()
+            assert entered.wait(5)
+        try:
+            if change == "approval_error":
+                with pytest.raises(OSError, match="approval storage"):
+                    shell_hooks.register_from_config(replacement)
+            else:
+                shell_hooks.register_from_config(replacement, accept_hooks=change != "declined")
+            current = list(manager._hooks.get("pre_tool_call", []))
+            if change not in {"reload", "new_manager"}:
+                assert plugin in current
+            assert other._hooks["pre_tool_call"] == other_callbacks
+            if change in {"declined", "approval_error"}:
+                assert current == [plugin, old_callback]
+                assert block("v4") == "v3", "refused replacement must not disarm the old policy"
+                return
+            assert shell_hooks.register_from_config(replacement) == []
+            assert manager._hooks.get("pre_tool_call", []) == current
+            if change in {"empty", "absent"}:
+                assert current == [plugin]
+                assert block("v4") is None
+                assert not calls.exists(), "removed shell callback executed"
+            elif change == "timeout":
+                message = block("v3", slow=True)
+                assert message is not None and "timed out after 1s" in message
+            elif change == "fail_closed":
+                message = block("v3", invalid=True)
+                assert message is not None and "failed closed" in message
+            elif change == "matchers":
+                assert len(current) == 3
+                assert plugins.get_pre_tool_call_block_message("read_file", {"version": "wrong"}) == "v3"
+                assert block("wrong") == "v3"
+            else:
+                version = "v3" if change in {"reload", "new_manager"} else "v4"
+                assert block(version) is None
+                assert block("wrong") == version
+                expected_count = 1 if change in {"reload", "new_manager"} else 2
+                assert len(current) == expected_count
+                assert calls.read_text().splitlines() == [json.dumps(version)] * 2
+        finally:
+            release.set()
+            if thread is not None:
+                thread.join(5)
+                assert not thread.is_alive() and not errors
+                assert pending == ["v3"], "in-flight dispatch must finish its old policy snapshot"
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
+
 # ── Allowlist concurrency ─────────────────────────────────────────────────
 
 

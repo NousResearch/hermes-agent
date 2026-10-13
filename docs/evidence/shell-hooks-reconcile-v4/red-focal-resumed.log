@@ -1,0 +1,357 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /opt/test-venv/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~52 tests) under ['tests/agent/test_shell_hooks.py', 'tests/tui_gateway/test_profile_shell_hooks.py']; running with -j 2
+[  1.9% |     1/~52 | ✓0 | ✗1] ✗ tests/tui_gateway/test_profile_shell_hooks.py (1✗, 2.5s)
+
+  ╔╍ Failed: tests/tui_gateway/test_profile_shell_hooks.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ INFO     tools.registry:registry.py:380 check_fn check_browser_press_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_browser_scroll_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_browser_snapshot_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_browser_type_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_browser_vision_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_computer_use_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_cronjob_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn <lambda> returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.registry:registry.py:380 check_fn check_tts_requirements returned False; dependent tools will be unavailable this turn
+  ║ WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+  ║ WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+  ║ WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+  ║ WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+  ║ INFO     tools.registry:registry.py:380 check_fn check_vision_requirements returned False; dependent tools will be unavailable this turn
+  ║ INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+  ║ INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+  ║ INFO     run_agent:client_lifecycle.py:201 OpenAI client closed (agent_close, shared=True, tcp_force_closed=0) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+  ║ INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+  ║ INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+  ║ INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+  ║ INFO     agent.shell_hooks:shell_hooks.py:542 shell hook auto-approved via --accept-hooks / env / config: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard-v4.py
+  ║ INFO     agent.shell_hooks:shell_hooks.py:174 shell hook registered: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard-v4.py (matcher=write_file, timeout=60s, fail_closed=True)
+  ║ INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+  ║ INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+  ║ INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+  ║ INFO     run_agent:client_lifecycle.py:201 OpenAI client closed (agent_close, shared=True, tcp_force_closed=0) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/tui_gateway/test_profile_shell_hooks.py::test_agent_build_arms_only_consented_profile_policy
+  ║ ============================== 1 failed in 2.07s ===============================
+  ║
+  ║  Repro: python -m pytest tests/tui_gateway/test_profile_shell_hooks.py -v --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+[100.0% |    52/~52 | ✓52 | ✗ 8] ✗ tests/agent/test_shell_hooks.py (52✓ 7✗ 2s, 5.0s)
+
+  ╔╍ Failed: tests/agent/test_shell_hooks.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ E       ]
+  ║ ________ test_config_reconciliation_preserves_policy_snapshot[timeout] _________
+  ║ tests/agent/test_shell_hooks.py:524: in test_config_reconciliation_preserves_policy_snapshot
+  ║     assert message is not None and "timed out after 1s" in message
+  ║ E   assert (None is not None)
+  ║ ______ test_config_reconciliation_preserves_policy_snapshot[fail_closed] _______
+  ║ tests/agent/test_shell_hooks.py:527: in test_config_reconciliation_preserves_policy_snapshot
+  ║     assert message is not None and "failed closed" in message
+  ║ E   assert (None is not None)
+  ║ ------------------------------ Captured log call -------------------------------
+  ║ WARNING  agent.shell_hooks:shell_hooks.py:476 shell hook stdout was not valid JSON (event=pre_tool_call): not-json
+  ║ ______ test_config_reconciliation_preserves_policy_snapshot[new_manager] _______
+  ║ tests/agent/test_shell_hooks.py:535: in test_config_reconciliation_preserves_policy_snapshot
+  ║     assert block("wrong") == version
+  ║ E   AssertionError: assert None == 'v3'
+  ║ E    +  where None = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffff9496e7a0>('wrong')
+  ║ ________ test_config_reconciliation_preserves_policy_snapshot[inflight] ________
+  ║ tests/agent/test_shell_hooks.py:534: in test_config_reconciliation_preserves_policy_snapshot
+  ║     assert block(version) is None
+  ║ E   AssertionError: assert 'v3' is None
+  ║ E    +  where 'v3' = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffff91f6c860>('v4')
+  ║ =========================== short test summary info ============================
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[command]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[empty]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[absent]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[timeout]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[fail_closed]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[new_manager]
+  ║ FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight]
+  ║ =================== 7 failed, 52 passed, 2 skipped in 4.73s ====================
+  ║
+  ║  Repro: python -m pytest tests/agent/test_shell_hooks.py -v --tb=short
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 2 files, 52 tests passed, 8 failed, 2 skipped (100% complete) in 5.0s (2 workers) ===
+
+  note: windows_only tests (in 1 file) were SKIPPED on this host (linux); they run on the tests-os CI lane (windows-latest).
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 7.5s  (runner wall: 5.0s, parallelism: 2x)
+  P50: 5.01s  P90: 5.01s  P95: 5.01s  P99: 5.01s  Max: 5.01s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      5.01s  tests/agent/test_shell_hooks.py
+      2.45s  tests/tui_gateway/test_profile_shell_hooks.py
+
+=== Failure output ===
+
+--- tests/tui_gateway/test_profile_shell_hooks.py ---
+/opt/test-venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:207: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /repo
+configfile: pyproject.toml
+plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+collecting ... collected 1 item
+
+tests/tui_gateway/test_profile_shell_hooks.py::test_agent_build_arms_only_consented_profile_policy FAILED [100%]
+
+=================================== FAILURES ===================================
+_____________ test_agent_build_arms_only_consented_profile_policy ______________
+tests/tui_gateway/test_profile_shell_hooks.py:83: in test_agent_build_arms_only_consented_profile_policy
+    assert len(alpha_manager._hooks['pre_tool_call']) == 2
+E   assert 3 == 2
+E    +  where 3 = len([<function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard.py] at 0xffff99761760>, <function test_agent_build_arms_only_consented_profile_policy.<locals>.plugin at 0xffff93ff4b80>, <function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard-v4.py] at 0xffff9ab31b20>])
+------------------------------ Captured log call -------------------------------
+WARNING  agent.bedrock_adapter:bedrock_adapter.py:35 boto3 lazy install did not complete: Feature 'provider.bedrock' unavailable: lazy installs disabled (security.allow_lazy_installs=false). To enable manually: uv pip install 'boto3==1.42.89'  (or: pip install 'boto3==1.42.89').
+INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     tools.registry:registry.py:380 check_fn check_browser_back_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn _browser_cdp_check returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_click_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn _browser_dialog_check returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn is_browser_use_cli_mode returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_navigate_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_press_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_scroll_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_snapshot_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_type_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_vision_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_computer_use_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_cronjob_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn <lambda> returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_tts_requirements returned False; dependent tools will be unavailable this turn
+WARNING  agent.auxiliary_unavailable:auxiliary_unavailable.py:158 Auxiliary Nous client unavailable: Nous Portal runtime credentials unavailable: Hermes is not logged into Nous Portal. Run `hermes model` to re-authenticate. (code: nous_auth_missing)
+WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+INFO     tools.registry:registry.py:380 check_fn check_vision_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+WARNING  agent.model_metadata:model_metadata.py:309 Could not determine context length for model 'fixture-model' (base_url=http://127.0.0.1:18019/v1) — falling back to 256,000 tokens. Set model.context_length in config.yaml to override.
+INFO     run_agent:client_lifecycle.py:201 OpenAI client closed (agent_close, shared=True, tcp_force_closed=0) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     hermes_cli.mem_trim:mem_trim.py:179 memory trim: reason=agent close malloc_trim=1 rss_kib=140796->138236 rss_anon_kib=121056->118496 threads=4 duration_ms=34.4
+INFO     agent.shell_hooks:shell_hooks.py:542 shell hook auto-approved via --accept-hooks / env / config: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/beta/guard.py
+INFO     agent.shell_hooks:shell_hooks.py:174 shell hook registered: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/beta/guard.py (matcher=write_file, timeout=60s, fail_closed=True)
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'browser-browser-use' registered browser provider: browser-use
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'browser-browserbase' registered browser provider: browserbase
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'browser-firecrawl' registered browser provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'deepinfra' registered image_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'fal' registered image_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'krea' registered image_gen provider: krea
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'meta-ai-image-gen' registered image_gen provider: meta-ai
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'openai' registered image_gen provider: openai
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'openai-codex' registered image_gen provider: openai-codex
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'openrouter' registered image_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'openrouter' registered image_gen provider: nous
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'xai' registered image_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'deepinfra' registered video_gen provider: deepinfra
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'fal' registered video_gen provider: fal
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'openrouter' registered video_gen provider: openrouter
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'xai' registered video_gen provider: xai
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-brave-free' registered web provider: brave-free
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-ddgs' registered web provider: ddgs
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-exa' registered web provider: exa
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-firecrawl' registered web provider: firecrawl
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-keenable' registered web provider: keenable
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-openai-native' registered web provider: openai-native
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-parallel' registered web provider: parallel
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-perplexity' registered web provider: perplexity
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-searxng' registered web provider: searxng
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-tavily' registered web provider: tavily
+INFO     hermes_cli.plugins:plugins.py:382 Plugin 'web-xai' registered web provider: xai
+INFO     hermes_cli.plugins:plugins.py:1345 Plugin discovery complete: 59 found, 53 enabled
+INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     tools.registry:registry.py:380 check_fn check_browser_back_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn _browser_cdp_check returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_click_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn _browser_dialog_check returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn is_browser_use_cli_mode returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_navigate_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_press_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_scroll_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_snapshot_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_type_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_browser_vision_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_computer_use_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_cronjob_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn <lambda> returned False; dependent tools will be unavailable this turn
+INFO     tools.registry:registry.py:380 check_fn check_tts_requirements returned False; dependent tools will be unavailable this turn
+WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+WARNING  agent.auxiliary_client:auxiliary_client.py:2342 Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).
+WARNING  agent.auxiliary_client:auxiliary_client.py:4930 resolve_provider_client: nous requested but Nous Portal not configured (run: hermes auth)
+INFO     tools.registry:registry.py:380 check_fn check_vision_requirements returned False; dependent tools will be unavailable this turn
+INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+INFO     run_agent:client_lifecycle.py:201 OpenAI client closed (agent_close, shared=True, tcp_force_closed=0) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+INFO     agent.shell_hooks:shell_hooks.py:542 shell hook auto-approved via --accept-hooks / env / config: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard-v4.py
+INFO     agent.shell_hooks:shell_hooks.py:174 shell hook registered: pre_tool_call -> /opt/test-venv/bin/python /var/tmp/hermes-pytest/r-niv7qmnf/pytest-of-root/pytest-0/test_agent_build_arms_only_con0/alpha/guard-v4.py (matcher=write_file, timeout=60s, fail_closed=True)
+INFO     run_agent:agent_runtime_helpers.py:1913 OpenAI client created (agent_init, shared=True) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+INFO     tools.tool_search:tool_search.py:372 tool_search activated (tier 1): 13 core/visible tools kept, 4 deferred (~1862 tokens), listing full (budget ~4000 tokens)
+INFO     agent.model_metadata:model_metadata.py:2030 Could not detect context length for model 'fixture-model' at http://127.0.0.1:18019/v1 — defaulting to 256,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+INFO     run_agent:client_lifecycle.py:201 OpenAI client closed (agent_close, shared=True, tcp_force_closed=0) thread=MainThread:281473373402304 provider=openai-compat base_url=http://127.0.0.1:18019/v1 model=fixture-model
+=========================== short test summary info ============================
+FAILED tests/tui_gateway/test_profile_shell_hooks.py::test_agent_build_arms_only_consented_profile_policy
+============================== 1 failed in 2.07s ===============================
+
+--- tests/agent/test_shell_hooks.py ---
+/opt/test-venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:207: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-8.3.5, pluggy-1.6.0 -- /opt/test-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /repo
+configfile: pyproject.toml
+plugins: timeout-2.3.1, asyncio-0.25.3, anyio-4.15.1
+asyncio: mode=Mode.STRICT, asyncio_default_fixture_loop_scope=None
+collecting ... collected 61 items
+
+tests/agent/test_shell_hooks.py::TestParseResponse::test_block_claude_code_style PASSED [  1%]
+tests/agent/test_shell_hooks.py::TestParseResponse::test_empty_stdout_returns_none PASSED [  3%]
+tests/agent/test_shell_hooks.py::TestSerializePayload::test_basic_pre_tool_call_schema PASSED [  4%]
+tests/agent/test_shell_hooks.py::TestSerializePayload::test_args_not_dict_becomes_null PASSED [  6%]
+tests/agent/test_shell_hooks.py::TestMatcher::test_alternation_matcher PASSED [  8%]
+tests/agent/test_shell_hooks.py::TestMatcher::test_matcher_leading_whitespace_stripped PASSED [  9%]
+tests/agent/test_shell_hooks.py::TestMatcher::test_whitespace_only_matcher_becomes_none PASSED [ 11%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_block_translation_end_to_end PASSED [ 13%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_block_aggregation_through_plugin_manager PASSED [ 14%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_matcher_regex_filters_callback PASSED [ 16%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_payload_schema_delivered PASSED [ 18%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_modify_canonical_parsing PASSED [ 19%]
+tests/agent/test_shell_hooks.py::TestCallbackSubprocess::test_modify_claude_code_parsing PASSED [ 21%]
+tests/agent/test_shell_hooks.py::TestParseHooksBlock::test_valid_entry PASSED [ 22%]
+tests/agent/test_shell_hooks.py::TestParseHooksBlock::test_python_only_event_refused PASSED [ 24%]
+tests/agent/test_shell_hooks.py::TestParseHooksBlock::test_timeout_clamped_to_max PASSED [ 26%]
+tests/agent/test_shell_hooks.py::TestParseHooksBlock::test_none_hooks_block PASSED [ 27%]
+tests/agent/test_shell_hooks.py::TestParseHooksBlock::test_non_tool_event_matcher_warns_and_drops PASSED [ 29%]
+tests/agent/test_shell_hooks.py::TestIdempotentRegistration::test_double_call_registers_once PASSED [ 31%]
+tests/agent/test_shell_hooks.py::TestIdempotentRegistration::test_same_command_different_matcher_registers_both PASSED [ 32%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[command] FAILED [ 34%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[empty] FAILED [ 36%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[absent] FAILED [ 37%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[timeout] FAILED [ 39%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[fail_closed] FAILED [ 40%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[matchers] PASSED [ 42%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[declined] PASSED [ 44%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[approval_error] PASSED [ 45%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[new_manager] FAILED [ 47%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[reload] PASSED [ 49%]
+tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight] FAILED [ 50%]
+tests/agent/test_shell_hooks.py::TestAllowlistConcurrency::test_non_posix_fallback_does_not_self_deadlock PASSED [ 52%]
+tests/agent/test_shell_hooks.py::TestAllowlistConcurrency::test_save_allowlist_uses_unique_tmp_paths PASSED [ 54%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_fail_closed_parsed PASSED [ 55%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_fail_closed_defaults_false PASSED [ 57%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_failclosed_camel_alias PASSED [ 59%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_canonical_wins_over_alias PASSED [ 60%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_non_bool_warns_and_defaults_false PASSED [ 62%]
+tests/agent/test_shell_hooks.py::TestFailClosedParsing::test_fail_closed_on_non_blocking_event_warns_and_ignores PASSED [ 63%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_exit_2_blocks_with_stderr_message PASSED [ 65%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_exit_2_blocks_with_default_message PASSED [ 67%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_exit_2_stdout_block_json_wins PASSED [ 68%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_exit_2_on_non_blocking_event_does_not_block PASSED [ 70%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_other_nonzero_exit_still_parses_stdout PASSED [ 72%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_nonzero_exit_without_directive_is_none PASSED [ 73%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_spawn_error_fails_open_by_default PASSED [ 75%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_spawn_error_fail_closed_blocks PASSED [ 77%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_timeout_fails_open_by_default PASSED [ 78%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_timeout_fail_closed_blocks PASSED [ 80%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_unparseable_stdout_fail_closed_blocks PASSED [ 81%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_unparseable_stdout_fails_open_by_default PASSED [ 83%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_valid_noop_json_passes_fail_closed PASSED [ 85%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_empty_stdout_passes_fail_closed PASSED [ 86%]
+tests/agent/test_shell_hooks.py::TestEvaluateResult::test_fail_closed_on_non_blocking_event_still_fails_open PASSED [ 88%]
+tests/agent/test_shell_hooks.py::TestFailSemanticsEndToEnd::test_exit_2_script_blocks PASSED [ 90%]
+tests/agent/test_shell_hooks.py::TestFailSemanticsEndToEnd::test_fail_closed_missing_command_blocks PASSED [ 91%]
+tests/agent/test_shell_hooks.py::TestFailSemanticsEndToEnd::test_run_once_reflects_exit_2_block PASSED [ 93%]
+tests/agent/test_shell_hooks.py::TestFailSemanticsEndToEnd::test_run_once_reflects_fail_closed_timeout PASSED [ 95%]
+tests/agent/test_shell_hooks.py::TestRoutedProfileEnv::test_hook_child_sees_routed_profile_home_and_no_default_secrets PASSED [ 96%]
+tests/agent/test_shell_hooks.py::test_bare_script_hook_path_executes_on_windows SKIPPED [ 98%]
+tests/agent/test_shell_hooks.py::test_unroutable_script_hook_names_the_remediation SKIPPED [100%]
+
+=================================== FAILURES ===================================
+________ test_config_reconciliation_preserves_policy_snapshot[command] _________
+tests/agent/test_shell_hooks.py:534: in test_config_reconciliation_preserves_policy_snapshot
+    assert block(version) is None
+E   AssertionError: assert 'v3' is None
+E    +  where 'v3' = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffff946e65c0>('v4')
+_________ test_config_reconciliation_preserves_policy_snapshot[empty] __________
+tests/agent/test_shell_hooks.py:519: in test_config_reconciliation_preserves_policy_snapshot
+    assert current == [plugin]
+E   assert [<function te...ffff92a69c60>] == [<function te...ffff92a69800>]
+E     
+E     Left contains one more item: <function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-yziorhur/pytest-of-root/pytest-0/test_config_reconciliation_pre1/v3.py] at 0xffff92a69c60>
+E     
+E     Full diff:
+E       [
+E           <function test_config_reconciliation_preserves_policy_snapshot.<locals>.plugin at 0xffff92a69800>,
+E     +     <function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-yziorhur/pytest-of-root/pytest-0/test_config_reconciliation_pre1/v3.py] at 0xffff92a69c60>,
+E       ]
+_________ test_config_reconciliation_preserves_policy_snapshot[absent] _________
+tests/agent/test_shell_hooks.py:519: in test_config_reconciliation_preserves_policy_snapshot
+    assert current == [plugin]
+E   assert [<function te...ffff92a69260>] == [<function te...ffff92a694e0>]
+E     
+E     Left contains one more item: <function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-yziorhur/pytest-of-root/pytest-0/test_config_reconciliation_pre2/v3.py] at 0xffff92a69260>
+E     
+E     Full diff:
+E       [
+E           <function test_config_reconciliation_preserves_policy_snapshot.<locals>.plugin at 0xffff92a694e0>,
+E     +     <function shell_hook[pre_tool_call:/opt/test-venv/bin/python /var/tmp/hermes-pytest/r-yziorhur/pytest-of-root/pytest-0/test_config_reconciliation_pre2/v3.py] at 0xffff92a69260>,
+E       ]
+________ test_config_reconciliation_preserves_policy_snapshot[timeout] _________
+tests/agent/test_shell_hooks.py:524: in test_config_reconciliation_preserves_policy_snapshot
+    assert message is not None and "timed out after 1s" in message
+E   assert (None is not None)
+______ test_config_reconciliation_preserves_policy_snapshot[fail_closed] _______
+tests/agent/test_shell_hooks.py:527: in test_config_reconciliation_preserves_policy_snapshot
+    assert message is not None and "failed closed" in message
+E   assert (None is not None)
+------------------------------ Captured log call -------------------------------
+WARNING  agent.shell_hooks:shell_hooks.py:476 shell hook stdout was not valid JSON (event=pre_tool_call): not-json
+______ test_config_reconciliation_preserves_policy_snapshot[new_manager] _______
+tests/agent/test_shell_hooks.py:535: in test_config_reconciliation_preserves_policy_snapshot
+    assert block("wrong") == version
+E   AssertionError: assert None == 'v3'
+E    +  where None = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffff9496e7a0>('wrong')
+________ test_config_reconciliation_preserves_policy_snapshot[inflight] ________
+tests/agent/test_shell_hooks.py:534: in test_config_reconciliation_preserves_policy_snapshot
+    assert block(version) is None
+E   AssertionError: assert 'v3' is None
+E    +  where 'v3' = <function test_config_reconciliation_preserves_policy_snapshot.<locals>.block at 0xffff91f6c860>('v4')
+=========================== short test summary info ============================
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[command]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[empty]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[absent]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[timeout]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[fail_closed]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[new_manager]
+FAILED tests/agent/test_shell_hooks.py::test_config_reconciliation_preserves_policy_snapshot[inflight]
+=================== 7 failed, 52 passed, 2 skipped in 4.73s ====================
+
+=== 2 files with test failures (8 tests failed) ===
+  tests/tui_gateway/test_profile_shell_hooks.py  (1 test failed)
+  tests/agent/test_shell_hooks.py  (7 tests failed)

@@ -1,0 +1,22 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /opt/test-venv/bin/python
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~52 tests) under ['tests/agent/test_shell_hooks.py', 'tests/tui_gateway/test_profile_shell_hooks.py']; running with -j 2
+[  1.9% |     1/~52 | ✓1 | ✗0] ✓ tests/tui_gateway/test_profile_shell_hooks.py (1✓, 4.6s)
+[100.0% |    52/~52 | ✓60 | ✗ 0] ✓ tests/agent/test_shell_hooks.py (59✓ 2s, 6.4s)
+
+=== Summary: 2 files, 60 tests passed, 0 failed, 2 skipped (100% complete) in 6.4s (2 workers) ===
+
+  note: windows_only tests (in 1 file) were SKIPPED on this host (linux); they run on the tests-os CI lane (windows-latest).
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 11.0s  (runner wall: 6.4s, parallelism: 2x)
+  P50: 6.43s  P90: 6.43s  P95: 6.43s  P99: 6.43s  Max: 6.43s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+      6.43s  tests/agent/test_shell_hooks.py
+      4.59s  tests/tui_gateway/test_profile_shell_hooks.py

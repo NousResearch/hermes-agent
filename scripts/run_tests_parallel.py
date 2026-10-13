@@ -762,8 +762,8 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
     return result
 
 
-# Label decoration only: classification keys on the severity bits below,
-# not on membership in this table.
+# Names from Microsoft's MS-ERREF NTSTATUS table; decoration only —
+# classification keys on the severity bits below, not on membership here.
 _WINDOWS_NTSTATUS_NAMES = {
     0xC0000005: "STATUS_ACCESS_VIOLATION",
     0xC000007B: "STATUS_INVALID_IMAGE_FORMAT",

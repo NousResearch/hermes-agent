@@ -591,12 +591,11 @@ def test_ntstatus_loader_exit_is_reported_as_a_crash_not_as_no_tests_ran(tmp_pat
     (probe_dir / "test_probe_ntstatus.py").write_text(
         textwrap.dedent(
             """
-            import os
+            import ctypes
 
             def test_loader_failure():
-                # os._exit takes a C int: hand it the signed spelling of the
-                # fault code so the process DWORD comes back as 0xC0000142.
-                os._exit(0xC0000142 - (1 << 32))
+                # Real DWORD transport: ExitProcess takes the unsigned code verbatim.
+                ctypes.windll.kernel32.ExitProcess(ctypes.c_uint32(0xC0000142))
             """
         )
     )

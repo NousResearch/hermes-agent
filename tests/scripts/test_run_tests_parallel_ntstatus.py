@@ -57,6 +57,10 @@ def test_plain_nonzero_exit_stays_out_of_the_crash_classifier():
     # severity bits, so the classifier must separate them by magnitude.
     sigsegv = mod._describe_interpreter_crash(-11, "")
     assert sigsegv is not None and "SIGSEGV" in sigsegv, sigsegv
+    # A hex code quoted in captured text is not an exit status: classify rc,
+    # never the output.
+    embedded = mod._describe_interpreter_crash(1, "bash dofork: 0xc0000142\n1 failed in 0.01s")
+    assert embedded is None
 
 
 def test_ntstatus_child_counts_as_crashed_not_no_ran(tmp_path, monkeypatch):

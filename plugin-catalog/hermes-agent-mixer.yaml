@@ -1,18 +1,18 @@
 name: hermes-agent-mixer
 repo: https://github.com/Sahil-SS9/hermes-agent-mixer
-sha: 04c4e1358016750402c0a81dad05270cbec98ae0
+sha: f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35
 title: Agent Mixer
 maintainer: Sahil-SS9
 tier: community
 category: general
 version: "0.2.0"
-description: 'A mixing desk for how much a coding agent may change: four enforced dials (edits, write-scope globs, per-turn line budget, new-dependency policy) with /mixer, live presets, a Desktop dial panel in the composer, a web-dashboard bar and a steering-console page. Also drives Claude Code, Codex and Gemini CLI through the agent-mixer hook command.'
+description: 'A mixing desk for how much a coding agent may change: four enforced dials (edits, write-scope globs, per-turn line budget, new-dependency policy) with /mixer, live presets, a Desktop dial panel in the composer, a web-dashboard saved-defaults bar and a steering-console page. Also drives Claude Code, Codex and Gemini CLI through the agent-mixer hook command.'
 docs_url: https://github.com/Sahil-SS9/hermes-agent-mixer
-image: https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/04c4e1358016750402c0a81dad05270cbec98ae0/docs/screenshots/dial-panel-open.png
+image: https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dial-panel-open.png
 screenshots:
-  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/04c4e1358016750402c0a81dad05270cbec98ae0/docs/screenshots/dial-panel-open.png
-  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/04c4e1358016750402c0a81dad05270cbec98ae0/docs/screenshots/console-page.png
-  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/04c4e1358016750402c0a81dad05270cbec98ae0/docs/screenshots/dashboard-tab.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dial-panel-open.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/console-page.png
+  - https://raw.githubusercontent.com/Sahil-SS9/hermes-agent-mixer/f1da4ced08326cac33ba7a9fd0d5c1b6acd19f35/docs/screenshots/dashboard-tab.png
 platforms: []
 capabilities:
   provides_tools: []

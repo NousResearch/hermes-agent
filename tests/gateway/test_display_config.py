@@ -147,6 +147,13 @@ def assert_keeps_platform_display_defaults(cfg):
                 platform, key)
 
 
+def test_matrix_tool_activity_default_is_visible_and_streaming_follows_top_level():
+    from gateway.display_config import resolve_display_setting
+
+    assert resolve_display_setting({}, "matrix", "tool_progress") == "all"
+    assert resolve_display_setting({}, "matrix", "streaming") is None
+
+
 class TestInstallerSeededConfigThroughGatewayResolver:
     """Regression for #121230: a fresh install copies cli-config.yaml.example to config.yaml, and the
     gateway then rendered reasoning into QQBot/Telegram/... because the template pinned a global

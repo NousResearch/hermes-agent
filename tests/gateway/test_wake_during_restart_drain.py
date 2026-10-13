@@ -1,0 +1,110 @@
+"""A wake that arrives while the gateway drains for a restart must be refused, not lost.
+
+A draining gateway answers new work with a drain notice and discards queued follow-ups, so a
+wake it admitted would never run, while the Kanban notifier had already advanced its cursor.
+"""
+
+import asyncio
+
+import pytest
+
+from gateway.config import Platform
+from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.platforms.event import MessageEvent
+from gateway.wake import WakeNotAccepted, deliver_wake
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
+from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+
+async def drain(adapter):
+    while adapter._background_tasks:
+        await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
+        await asyncio.sleep(0)
+
+
+def wake_route():
+    runner, adapter = make_restart_runner()
+    adapter.gateway_runner = runner
+    adapter.set_message_handler(runner._handle_message)
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._kanban_dispatcher_lock_handle = object()
+    turns = []
+
+    async def agent_turn(event, source, quick_key, run_generation):
+        turns.append(event.text)
+
+    runner._handle_message_with_agent = agent_turn
+    return runner, adapter, make_restart_source(), turns
+
+
+@pytest.mark.asyncio
+async def test_kanban_wake_during_restart_drain_runs_after_restart(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    runner, adapter, source, turns = wake_route()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long task", assignee="worker")
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id=source.chat_id,
+            user_id=source.user_id,
+            chat_type="dm",
+            delivery_mode="notify+wake",
+        )
+        kb.complete_task(conn, tid, summary="PR merged")
+
+    async def notifier_tick():
+        deliveries = await asyncio.to_thread(
+            _notifier_collect,
+            runner,
+            kb,
+            notifier_profile=None,
+            gc_due=False,
+            gc_retention_days=30,
+        )
+        for delivery in deliveries:
+            await _KanbanNotification(
+                runner, delivery, platform_cls=Platform, sub_fail_counts={}
+            ).deliver()
+        await drain(adapter)
+
+    def undelivered():
+        with kbc.connect() as conn:
+            return kbn.unseen_events_for_sub(
+                conn,
+                task_id=tid,
+                platform="telegram",
+                chat_id=source.chat_id,
+                kinds=["completed"],
+            )[1]
+
+    runner._draining = True  # /restart is waiting for other sessions to finish
+    await notifier_tick()
+    assert turns == []
+    assert undelivered(), "the completion must stay claimable for the restarted gateway"
+    pings = list(adapter.sent)
+    assert len(pings) == 1 and tid in pings[0]  # the passive ping still lands once
+
+    runner._draining = False  # the restarted gateway's notifier retries the wake
+    await notifier_tick()
+    assert len(turns) == 1 and tid in turns[0]
+    assert not undelivered()
+    assert adapter.sent == pings  # no repeated ping, no drain notice
+
+
+@pytest.mark.asyncio
+async def test_wake_for_a_busy_session_is_refused_while_draining():
+    runner, adapter, source, _turns = wake_route()
+    key = adapter._event_session_key(MessageEvent(text="", source=source))
+    adapter._active_sessions[key] = (
+        asyncio.Event()
+    )  # a turn is still running in this chat
+    runner._draining = True
+    with pytest.raises(WakeNotAccepted):
+        await deliver_wake(adapter, text="[kanban] Task t_1 completed.", source=source)
+    assert key not in adapter._pending_messages  # would be discarded when the turn ends

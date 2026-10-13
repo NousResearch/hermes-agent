@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -424,10 +425,11 @@ def test_caller_cancellation_mid_submit_leaves_at_most_one_event(idle_service, m
     facade = HostedRoomFacade(PLUGIN_ID)
     original_send = idle_service.send
     entered = asyncio.Event()
+    release = threading.Event()
 
     def slow_send(**kwargs):
         loop.call_soon_threadsafe(entered.set)
-        time.sleep(0.2)
+        assert release.wait(timeout=5), "test did not release the blocked send"
         return original_send(**kwargs)
 
     monkeypatch.setattr(idle_service, "send", slow_send)
@@ -438,6 +440,7 @@ def test_caller_cancellation_mid_submit_leaves_at_most_one_event(idle_service, m
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        release.set()
 
     loop = asyncio.new_event_loop()
     try:

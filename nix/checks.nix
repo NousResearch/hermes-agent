@@ -1394,7 +1394,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           '';
 
         # ── Config merge + round-trip test ────────────────────────────────
-        # Tests the merge script (Nix activation behavior) across 7
+        # Tests the merge script (Nix activation behavior) across 8
         # scenarios, then verifies Python's load_config() reads correctly.
         config-roundtrip = let
           # Nix settings used across scenarios
@@ -1592,6 +1592,34 @@ json.dump(load_config(), sys.stdout, default=str)
           echo "PASS: Scenario G"
 
           # ═══════════════════════════════════════════════════════════════
+          # Scenario H: A dump fault must leave the previous config intact
+          # ═══════════════════════════════════════════════════════════════
+          echo "=== Scenario H: Dump fault preservation ==="
+          H_HOME=$(mktemp -d)
+          install -m 0644 ${fixtureB} "$H_HOME/config.yaml"
+          H_ORIG=$(cat "$H_HOME/config.yaml")
+          MERGE_PY=$(head -n1 ${configMergeScript} | sed 's/^#!//')
+          if "$MERGE_PY" -c '
+import runpy, sys
+import ruamel.yaml as ry
+def _boom(self, data, stream=None, **kw):
+    raise OSError("synthetic dump fault")
+ry.YAML.dump = _boom
+script = sys.argv[1]
+sys.argv = ["hermes-config-merge", sys.argv[2], sys.argv[3]]
+runpy.run_path(script, run_name="__main__")
+' "${configMergeScript}" "${nixSettings}" "$H_HOME/config.yaml" 2>/dev/null; then
+            fail "H: synthetic dump fault did not fail the merge"
+          fi
+          if [ "$(cat "$H_HOME/config.yaml")" != "$H_ORIG" ]; then
+            fail "H: config bytes changed after a failed merge"
+          fi
+          if ls "$H_HOME"/config.yaml.*.tmp >/dev/null 2>&1; then
+            fail "H: temporary file left behind after a failed merge"
+          fi
+          echo "PASS: Scenario H"
+
+          # ═══════════════════════════════════════════════════════════════
           # Report
           # ═══════════════════════════════════════════════════════════════
           if [ -n "$ERRORS" ]; then
@@ -1602,7 +1630,7 @@ json.dump(load_config(), sys.stdout, default=str)
           fi
 
           echo ""
-          echo "=== All 7 merge scenarios passed ==="
+          echo "=== All 8 merge scenarios passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

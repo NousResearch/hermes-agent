@@ -16341,8 +16341,7 @@ async function probeSshProfileInventory(connection) {
   )
 
   try {
-    await ssh.open()
-    const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+    const platform = await ssh.open().then(() => detectRemotePlatform(ssh, sshConfig.remoteHermesPath || ''))
     const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh, platform)
 
     if (profiles.length > 0) {

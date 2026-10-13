@@ -128,6 +128,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
+        # Outbound-only callers never own inbound webhook registration.
+        # Distinct from _runner: shared-ingress secondaries also leave _runner
+        # None after publishing onto the multiplex listener, but they DID register.
+        self._send_only = False
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
@@ -192,7 +196,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Lifecycle ---
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(
+        self, *, is_reconnect: bool = False, send_only: bool = False
+    ) -> bool:
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
@@ -213,6 +219,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
             return False
+
+        # send_only=True skips the local webhook server. Outbound-only callers
+        # (standalone cron delivery, send_message_tool) don't need to receive
+        # inbound events and must not bind self.webhook_port — the gateway
+        # process already holds it, so binding here raises OSError(EADDRINUSE)
+        # and aborts the send.
+        # A send-only adapter also must not touch gateway-owned runtime state:
+        # it shares the same BlueBubbles config/webhook URL as the running
+        # gateway adapter, so calling _mark_connected() here (and later
+        # _mark_disconnected() / _unregister_webhook() in disconnect()) would
+        # overwrite the gateway's runtime status and could delete the webhook
+        # the gateway registered. This adapter never created the listener, so
+        # it must not manage that lifecycle. disconnect() gates cleanup on
+        # self._send_only (not _runner): a multiplex secondary also leaves
+        # _runner None after shared-ingress publish, but it did register a
+        # webhook and must still unregister on disconnect.
+        if send_only:
+            self._send_only = True
+            return True
+
         # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
         # with no Content-Length.
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -242,12 +268,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
+        # send_only adapters share the gateway's webhook URL and must not
+        # unregister it or overwrite runtime status. Shared-ingress secondaries
+        # also have _runner is None (nothing locally bound) but they DID
+        # register a profile callback — distinguish ownership via _send_only,
+        # not _runner.
+        if not self._send_only:
+            await self._unregister_webhook()
+            if self._runner is not None:
+                await self._runner.cleanup()
+                self._runner = None
+            self._mark_disconnected()
         await self._close_client()
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._mark_disconnected()
 
     @property
     def _webhook_url(self) -> str:

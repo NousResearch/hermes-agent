@@ -309,6 +309,17 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
     except Exception:
         pass
+    # The install probe looks past HERMES_HOME (other roots, gateway services, the launcher on
+    # PATH) and writes a marker at a fixed per-user path: confine it to this test's directory.
+    from hermes_cli import install_state
+
+    isolated_places = install_state.Places(markers=(tmp_path / "machine-marker",),
+                                           sources=(install_state._active_root,))
+    monkeypatch.setattr(install_state, "machine_places", lambda: isolated_places)
+    install_state.probe.cache_clear()
+    from hermes_cli import onboarding_due
+
+    onboarding_due.reset_for_tests()
     # Per-TEST host-rendezvous dir (see the session-level block at the top): the
     # host gateway/serve record is shared per OS user by design, so without this
     # one test's published owner makes the next test's lifecycle code attach to it.

@@ -12,6 +12,7 @@ from . import (
     groups_bot_relay,
     i18n,
     liveness,
+    machine,
     profiles_vault_complete_foreign_subagents,
     projects_pets,
     prompt_voice,

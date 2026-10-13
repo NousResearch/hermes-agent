@@ -435,7 +435,6 @@ gateway:
     last_activity: "**最近活动：** {timestamp}"
     model: "**模型：** `{model}`"
     model_provider: "**模型：** `{model}`（{provider}）"
-    free_tier: "Nous · 免费套餐 · nous/welcome · /login 登录"
     context: "**上下文：** {used} / {total}（{pct}%）"
     context_used: "**上下文：** 约 {used} tokens"
     tokens: "**累计计费 tokens：** {tokens} _（并非当前上下文大小；请使用 `/context` 查看）_"
@@ -779,8 +778,6 @@ gateway:
   plan:
     ack_task: "正在规划：{task}"
     ack_conversation: "正在根据本次对话的上下文进行规划…"
-  initiate_setup:
-    ack: "正在开始设置…"
   init:
     start_failed: "无法启动 /init——请重试。"
     ack_update: "正在根据项目扫描更新 AGENTS.md…"
@@ -843,7 +840,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes——{title}"
     restarted: "♻ 网关已成功重启。你的会话继续有效。"
-    free_tier_line: "推理：Nous 免费套餐（nous/welcome）。登录以获得更多：/login"
     online: "♻️ 网关已上线——Hermes 已恢复就绪。"
     db_corrupt: "⚠️ 检测到会话数据库损坏。消息可能无法持久化。恢复方案：\n1. 运行 `hermes {profile_arg}doctor --fix`\n2. 停止网关，然后执行恢复：\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   （若报告可恢复）hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   ——恢复会先对损坏文件做快照；切勿对正在使用的 state.db 运行 `sqlite3 ... \\\".recover\\\"`，有漏洞的 sqlite3 CLI 可能使其进一步损坏\n3. 从 {backups_dir}/ 中的备份恢复\n运行 `hermes {profile_arg}doctor` 获取脱敏诊断信息。"
     db_fts_corrupt: "⚠️ 会话数据库报告了仅限于搜索索引（FTS5）的损坏错误；消息表未受损。修复前消息可能无法持久化：请运行 `hermes {profile_arg}doctor --fix`，然后重启网关。除非 `hermes {profile_arg}doctor` 确认存在损坏，否则不要运行恢复工具或还原备份。"
@@ -1558,8 +1554,6 @@ slash:
     description: "在此会话中按固定间隔重复运行一条提示词"
   plan:
     description: "将 markdown 实施计划写入 .hermes/plans/，不执行任何操作"
-  initiate-setup:
-    description: "运行首次设置：了解你，并按你的需要设置 Hermes"
   moa:
     description: "用默认的 Mixture of Agents 预设运行一条提示词，然后恢复你的模型"
   subgoal:
@@ -2919,8 +2913,6 @@ cli:
     plan:
       planning: "📋 正在规划：{task}"
       from_conversation: "📋 正在根据本次对话的上下文进行规划..."
-    initiate_setup:
-      starting: "🧭 正在开始设置..."
     init:
       updating: "⚡ 正在通过项目扫描更新 AGENTS.md..."
       generating: "⚡ 正在通过项目扫描生成 AGENTS.md..."

@@ -424,21 +424,42 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry.
+    A turn that outlives ``bot_mode.turn_max_seconds`` is killed and reported
+    'delivery_timeout' — never re-run: it already burned a whole run budget."""
+
+    from tools.bot_relay import turn_max_seconds
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env=turn_env, timeout=turn_max_seconds())
 
-    proc = _turn()
-    if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
-        from tools.bot_relay import retry_turn_env
+    try:
+        proc = _turn()
+        if proc.returncode != 0:
+            from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
+            from tools.bot_relay import retry_turn_env
 
-        # The re-run replays the same session and payload; the failed attempt already persisted the
-        # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
-        if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
-            proc = _turn(retry_turn_env(env))
+            # The re-run replays the same session and payload; the failed attempt already persisted the
+            # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
+            if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
+                proc = _turn(retry_turn_env(env))
+    except subprocess.TimeoutExpired as exc:
+        # The turn never ends (a wedged MCP call, not a slow one): kill it instead of holding
+        # the profile's turn lock forever (#137851). Partial streams still reach the sender.
+        for stream, text in ((sys.stdout, exc.output), (sys.stderr, exc.stderr)):
+            if text:
+                stream.write(text)
+                stream.flush()
+        timeout_seconds = float(exc.timeout or 0.0)
+        print(json.dumps({
+            "error": "Delivery failed: the teammate's turn did not finish within "
+                     f"{timeout_seconds:.0f}s (bot_mode.turn_max_seconds). It was killed so later "
+                     "messages into the profile are not blocked; the turn is not re-run automatically.",
+            "reason": "delivery_timeout",
+        }))
+        return 1
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()

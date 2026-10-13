@@ -647,6 +647,17 @@ def turn_wait_seconds() -> float:
     return float(TURN_WAIT_SECONDS_FALLBACK) if val is None else max(0.0, float(val))
 
 
+def turn_max_seconds() -> float:
+    """Run budget for one LOCAL delivery turn (config, lazily read). The CLI runner's
+    ``subprocess.run`` was the only unbounded wait left on the delivery path (#137851): a
+    turn wedged on a peer that never answers (an unresponsive MCP server) kept its runner
+    alive for days while it held the profile's turn lock, so every later delivery failed
+    'target_busy'. The default matches the relay lane's per-attempt cap so both lanes
+    bound a turn alike."""
+    val = _bot_mode_cfg("turn_max_seconds", loader="load_config")
+    return float(TURN_ATTEMPT_TIMEOUT_SECONDS) if val is None else max(0.0, float(val))
+
+
 def turn_lock_path(root: Path | str, profile: str) -> Path:
     """Per-profile lockfile path (short — safe on macOS temp roots)."""
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(profile or ""))[:64] or "_"

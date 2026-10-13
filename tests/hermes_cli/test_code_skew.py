@@ -62,6 +62,24 @@ class TestDetectCodeSkew:
         monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/topic:bbb2222222222222222")
         assert code_skew.detect_code_skew() == ("aaa1111111", "bbb2222222")
 
+    def test_detached_head_reattached_at_the_same_commit_is_not_skew(self, monkeypatch):
+        """Boot on a detached HEAD, maintenance later reattaches it to a branch.
+
+        The detached form fingerprints as ``git:HEAD:<sha>`` while the branch
+        form is ``git:refs/heads/<name>:<sha>``. Observed in production: an
+        updater checked out a bare revision, services restarted on it, then a
+        later maintenance step reattached HEAD to the branch at the SAME
+        commit — the raw-fingerprint compare then 503'd ``/api/model/options``
+        all day with "running code from X but the checkout on disk is now X".
+        """
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:HEAD:71d34bad1045610252eda02ee79549436896e784")
+        code_skew.record_boot_fingerprint()
+
+        monkeypatch.setattr(
+            code_skew, "_fingerprint", lambda: "git:refs/heads/main:71d34bad1045610252eda02ee79549436896e784"
+        )
+        assert code_skew.detect_code_skew() is None
+
 
 
 

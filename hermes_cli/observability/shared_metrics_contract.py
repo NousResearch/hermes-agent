@@ -156,7 +156,12 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
+# Deleted with the old setup flow. v4 only adds values, and rows that v0.21.6/7 saved with these names
+# must still package; recording maps through the live sets (tool_metric_name, toolset_metric_name).
+RETIRED_TOOL_NAMES = frozenset({"setup_choose", "start_chat"})
+RETIRED_TOOLSET_NAMES = frozenset({"setup", "start_chat"})
+_LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
+TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({
     "alias", "blocked", "connection_required", "connector_backend", "contract_violation", "exception",
     "interrupted", "invalid_arguments", "none", "not_allowed", "timeout", "tool_error", "unknown",
@@ -629,7 +634,7 @@ TOOL_SCHEMA_TOKEN_BUCKETS = frozenset({
     "0", "lt_2k", "2k_to_5k", "5k_to_10k", "10k_to_20k", "20k_to_40k", "gte_40k",
 })
 # Toolsets Hermes ships; MCP servers and plugin toolsets collapse to custom.
-TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | {"custom"}
+TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | RETIRED_TOOLSET_NAMES | {"custom"}
 # compression is the expected cause; the rest are Hermes invalidating a warm prefix (bugs or
 # user-driven), or the provider reporting a cold read Hermes did not cause.
 CACHE_BREAK_CAUSES = frozenset({
@@ -1020,7 +1025,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- end v5 desktop ----
     # ---- v5 signals ----
-    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES},
+    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES | RETIRED_TOOL_NAMES},
     PROVIDER_SETUP_METRIC: {
         "event": PROVIDER_SETUP_EVENTS, "failure_class": PROVIDER_SETUP_FAILURE_CLASSES,
         "surface": PROVIDER_SETUP_SURFACES,
@@ -1773,7 +1778,7 @@ def tool_terminal_fields(
         "outcome": outcome,
         "retry_count_bucket": tool_retry_bucket(kwargs.get("retry_count")),
         "tool_category": category if category in TOOL_CATEGORIES else tool_category(kwargs),
-        "tool_name": tool_name if tool_name is not None and tool_name in TOOL_NAMES
+        "tool_name": tool_name if tool_name is not None and tool_name in _LIVE_TOOL_NAMES
         else tool_metric_name(kwargs),
     }
 
@@ -1823,6 +1828,9 @@ _CONNECTOR_CODE_CLASSES = {
     "TOOL_NOT_ALLOWED": "not_allowed",
     **dict.fromkeys(("ALIAS_REQUIRED", "ALIAS_UNKNOWN"), "alias"),
     "INVALID_ARGUMENTS": "invalid_arguments",
+    # Agent-side file input refusals (``tools.connectors.gateway.wire.FILE_ERROR_FAMILIES``).
+    "FILE_NOT_ALLOWED": "not_allowed",
+    **dict.fromkeys(("FILE_NOT_FOUND", "FILE_TOO_LARGE"), "invalid_arguments"),
 }
 _CONNECTOR_FAMILY_CLASSES = {"backend": "connector_backend"}
 

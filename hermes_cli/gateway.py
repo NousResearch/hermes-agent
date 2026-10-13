@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from hermes_cli import gateway_service_owner, setup_platforms
+# Bare name: the call sites below run through this seam, which tests patch
+# (monkeypatch gateway._read_systemd_user_from_unit).
 from hermes_cli.gateway_service_owner import _read_systemd_user_from_unit
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.

@@ -183,6 +183,18 @@ def test_no_nudge_once_the_board_took_the_task_away(pinned_worker, settle):
     assert build_kanban_stop_nudge(messages=_NARRATED_STOP) is None
 
 
+def test_no_nudge_once_a_successor_run_owns_the_card(pinned_worker):
+    """Stopped, unblocked and re-claimed before this worker's turn ended: the card is
+    ``running`` again, but on a run this worker does not own."""
+    kb, conn, tid = pinned_worker
+    assert kb.block_task(conn, tid, reason="linear: stopped by Pat", kind="needs_input") is True
+    assert kb.unblock_task(conn, tid) is True
+    assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
+    assert kb.get_task(conn, tid).status == "running"
+
+    assert build_kanban_stop_nudge(messages=_NARRATED_STOP) is None
+
+
 def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     """Widening the set must not swallow the case the guard exists for."""
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")

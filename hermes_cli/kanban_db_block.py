@@ -54,27 +54,28 @@ def halt_blocked_worker(conn: sqlite3.Connection, run_id: Optional[int]) -> bool
     fingerprint proof, SIGTERM then SIGKILL, same ``terminal_worker_reaped``
     event. A legacy run with no fingerprint, an UNVERIFIED spawn and a recycled
     PID are never signalled; a worker that survives keeps its evidence for the
-    reaper's next tick. Call after the block's txn has committed: the reap polls
-    for up to ~5 s and opens its own write txn. True when a live worker was ended.
+    reaper's next tick. Call after the block's txn has committed and its hook has
+    fired: the reap polls for up to ~5 s and opens its own write txn. Never
+    raises, so no halt failure can touch the committed block. True when a live
+    worker was ended.
     """
     if run_id is None:
-        return False
-    row = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
-        "WHERE id = ? AND ended_at IS NOT NULL "
-        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
-        (int(run_id),),
-    ).fetchone()
-    if row is None:
         return False
     from hermes_cli.kanban_db_dispatch import _reap_terminal_worker_row
 
     reaped: list[str] = []
     try:
-        _reap_terminal_worker_row(conn, row, _kb._host_prefix(), None, reaped)
+        row = conn.execute(
+            "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+            "WHERE id = ? AND ended_at IS NOT NULL "
+            "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
+            (int(run_id),),
+        ).fetchone()
+        if row is not None:
+            _reap_terminal_worker_row(conn, row, _kb._host_prefix(), None, reaped)
     except Exception:
         # The block has committed; a failed halt leaves the reaper's grace path in charge.
-        logger.exception("kanban: halting blocked worker failed for run %s (task %s)", row["id"], row["task_id"])
+        logger.exception("kanban: halting blocked worker failed for run %s", run_id)
         return False
     return bool(reaped)
 

@@ -2,7 +2,7 @@
 
 ``block_task`` closes the run in one txn and used to leave the OS process alone;
 only ``reap_terminal_workers`` ended it, and only once the run had been closed
-for ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` — a grace that exists for a worker
+for ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` — a grace that exists for a worke
 finishing its OWN terminal call. A human pressing Stop (Linear's agent contract:
 "must not perform any further actions") therefore left the worker calling tools
 for two to three minutes. An external block now runs the reaper's per-run
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +84,7 @@ def _event_kinds(conn, tid: str) -> list[str]:
     return [r["kind"] for r in conn.execute("SELECT kind FROM task_events WHERE task_id = ?", (tid,))]
 
 
+@pytest.mark.platforms("linux")
 def test_external_block_terminates_the_verified_worker_before_returning(conn, worker):
     tid, run_id = _running_card(conn, worker.pid)
 
@@ -98,13 +100,14 @@ def test_external_block_terminates_the_verified_worker_before_returning(conn, wo
     assert "terminal_worker_reaped" in _event_kinds(conn, tid)
 
 
+@pytest.mark.platforms("linux")
 def test_worker_self_block_keeps_the_finalization_grace(conn, worker, signals):
     tid, run_id = _running_card(conn, worker.pid)
 
     assert kb.block_task(conn, tid, reason="need creds", kind="needs_input", expected_run_id=run_id) is True
 
     assert signals == [] and worker.poll() is None
-    assert _run(conn, run_id)["worker_pid"] == worker.pid  # evidence kept for the reaper
+    assert _run(conn, run_id)["worker_pid"] == worker.pid  # evidence kept for the reape
     assert kbd.reap_terminal_workers(conn) == []  # still inside the grace window
     assert "terminal_worker_reaped" not in _event_kinds(conn, tid)
 
@@ -126,6 +129,7 @@ def _recycled(conn, run_id):
     conn.execute("UPDATE task_runs SET worker_started_at = 'stale-epoch|1' WHERE id = ?", (run_id,))
 
 
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("unproven", [_unverified, _legacy, _other_host, _recycled],
                          ids=["unverified-fingerprint", "legacy-no-fingerprint", "other-host", "recycled-pid"])
 def test_external_block_never_signals_an_unproven_identity(conn, worker, signals, unproven):
@@ -139,6 +143,7 @@ def test_external_block_never_signals_an_unproven_identity(conn, worker, signals
     assert worker.poll() is None
 
 
+@pytest.mark.platforms("linux")
 def test_external_block_never_signals_the_calling_process(conn, signals):
     """A worker whose own block reaches block_task without run proof must not kill itself."""
     tid, _run_id = _running_card(conn, os.getpid())
@@ -146,3 +151,48 @@ def test_external_block_never_signals_the_calling_process(conn, signals):
     assert kb.block_task(conn, tid, reason="goal judge: unachievable") is True
 
     assert [s for pid, s in signals if pid == os.getpid()] == []
+
+
+def test_blocked_hook_fires_before_the_halt_and_survives_a_failing_halt(conn, monkeypatch):
+    """The halt can poll for seconds and can fail; neither may delay or cancel the
+    committed block's ``kanban_task_blocked`` hook."""
+    tid, _run_id = _running_card(conn, os.getpid())
+    order: list[str] = []
+    monkeypatch.setattr(kb, "_fire_task_hook", lambda event, *a, **k: order.append(event))
+
+    def broken_reap(*_a, **_k):
+        order.append("halt")
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kbd, "_reap_terminal_worker_row", broken_reap)
+
+    assert kb.block_task(conn, tid, reason="linear: stopped by Pat", kind="needs_input") is True
+
+    assert order == ["kanban_task_blocked", "halt"]
+    assert kb.get_task(conn, tid).status == "blocked"
+
+
+@pytest.mark.parametrize("run_id_env", [None, "not-a-number"], ids=["missing", "invalid"])
+def test_cli_block_from_a_worker_without_run_proof_is_refused(conn, monkeypatch, run_id_env):
+    """``hermes kanban block <own id>`` from the worker's terminal runs as the worker's CHILD:
+    without run proof it would read as a supervisor's block and halt its own parent worker."""
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    tid, run_id = _running_card(conn, os.getpid())
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    if run_id_env is None:
+        monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", run_id_env)
+    args = argparse.Namespace(task_id=tid, ids=None, reason=["stuck"], kind=None)
+
+    with pytest.raises(ValueError, match="HERMES_KANBAN_RUN_ID"):
+        kc._cmd_block(args)
+
+    assert kb.get_task(conn, tid).status == "running"
+    assert kb.list_comments(conn, tid) == []
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    assert kc._cmd_block(args) == 0  # with run proof it is the worker's own block
+    assert kb.get_task(conn, tid).status == "blocked"

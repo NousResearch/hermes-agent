@@ -3169,8 +3169,9 @@ def block_task(
     ``expected_run_id`` is the worker's proof that it is blocking its own run.
     A block without it comes from a supervisor (dashboard, CLI, an integration
     such as a Linear Stop), so the run's live, fingerprint-verified host-local
-    worker is ended once the txn commits (:func:`halt_blocked_worker`) instead
-    of running on until the reaper's grace expires.
+    worker is ended once the txn commits and the hook has fired
+    (:func:`halt_blocked_worker`, which never raises) instead of running on
+    until the reaper's grace expires.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3245,11 +3246,10 @@ def block_task(
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     _release_kanban_admission(task_id, run_id)
+    if not dependency_block:
+        _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     if expected_run_id is None:  # filed by a supervisor, not the worker: halt it now, no reap grace
         halt_blocked_worker(conn, run_id)
-    if dependency_block:
-        return True
-    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
 
 

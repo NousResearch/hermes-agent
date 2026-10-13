@@ -303,7 +303,7 @@ class CLIInitMixin:
         self._tool_callbacks_installed = False
         self._app = None  # prompt_toolkit Application (set in run())
 
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history: list[dict[str, Any]] = []
         self.session_start = datetime.now()
         # Per-prompt elapsed timer shown in the status bar.
         self._prompt_start_time: Optional[float] = None
@@ -448,7 +448,7 @@ class CLIInitMixin:
         self._resize_recovery_timer = self._status_bar_unsuppress_timer = None  # latter: debounced un-suppress
         self._last_resize_width = None  # width change (reflow, needs viewport clear) vs rows-only
 
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_tasks: dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
         # Cache-hit baseline, reset on model switch / compression so the bar shows the current regime.

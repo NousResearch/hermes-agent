@@ -135,7 +135,7 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
+def _assert_not_delegated_child_mutation(path: str | Path | None = None) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
@@ -162,7 +162,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
-def _fire_task_hook(event: str, task: Optional["Task"], task_id: str, run_id: Optional[int], **fields: Any) -> None:
+def _fire_task_hook(event: str, task: Optional[Task], task_id: str, run_id: Optional[int], **fields: Any) -> None:
     """Lifecycle hook for a task transition; ``assignee`` from the (possibly missing) row."""
     _fire_kanban_lifecycle_hook(
         event, task_id, board=get_current_board(),
@@ -192,7 +192,7 @@ def _kanban_observer_consumed(event: str) -> bool:
 
 
 def _fire_worker_spawned_hook(
-    conn: sqlite3.Connection, task: "Task", workspace_path: str, pid: Optional[int], *,
+    conn: sqlite3.Connection, task: Task, workspace_path: str, pid: Optional[int], *,
     board: Optional[str] = None,
 ) -> None:
     """``on_kanban_worker_spawned`` AFTER the PID is durably persisted; best-effort."""
@@ -240,7 +240,7 @@ _TICK_ACTIVITY_FIELDS = (
 
 
 def _fire_dispatch_tick_hook(
-    result: "DispatchResult", *, board: Optional[str] = None, dry_run: bool = False,
+    result: DispatchResult, *, board: Optional[str] = None, dry_run: bool = False,
 ) -> None:
     """``on_kanban_dispatch_tick`` — strictly AFTER ``_dispatch_tick_lock`` is
     released so a slow subscriber cannot stall a sibling dispatcher.
@@ -629,7 +629,7 @@ class Task:
     status: str
     priority: int
     created_by: Optional[str]
-    created_at: int
+    created_at: Optional[int]  # None only for an unparseable stamp
     started_at: Optional[int]
     completed_at: Optional[int]
     workspace_kind: str
@@ -667,12 +667,13 @@ class Task:
     completion_contract: Optional[str] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Task":
-        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))  # noqa: E731
+    def from_row(cls, row: sqlite3.Row) -> Task:
+        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
+            **{col: _to_epoch(g(col)) for col in _TASK_EPOCH_COLUMNS},  # outside writers may store text: epoch or None
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
@@ -687,13 +688,14 @@ class Task:
 
 # Columns every schema version has (KeyError if the SELECT omitted them).
 _TASK_REQUIRED_COLUMNS = (
-    "id", "title", "body", "assignee", "status", "priority", "created_by", "created_at",
-    "started_at", "completed_at", "workspace_kind", "workspace_path", "claim_lock", "claim_expires",
+    "id", "title", "body", "assignee", "status", "priority", "created_by",
+    "workspace_kind", "workspace_path", "claim_lock",
 )
+_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires", "last_heartbeat_at")
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -725,17 +727,16 @@ class Run:
     error: Optional[str]
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Run":
+    def from_row(cls, row: sqlite3.Row) -> Run:
         return cls(
             **{
                 col: _lossy_text(row[col]) for col in (
-                    "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
-                    "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
+                    "task_id", "profile", "step_key", "status", "claim_lock",
+                    "worker_pid", "max_runtime_seconds", "outcome", "summary", "error",
                 )
             },
-            id=int(row["id"]),
-            started_at=int(row["started_at"]),
-            ended_at=_opt_int(row["ended_at"]),
+            **{col: _to_epoch(row[col]) for col in ("claim_expires", "last_heartbeat_at", "ended_at")},
+            id=int(row["id"]), started_at=_to_epoch(row["started_at"]) or 0,
             metadata=_json_or(_lossy_text(row["metadata"])),
         )
 
@@ -749,10 +750,10 @@ class Comment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Comment":
+    def from_row(cls, r: sqlite3.Row) -> Comment:
         return cls(
             id=r["id"], task_id=r["task_id"], author=_lossy_text(r["author"]),
-            body=_lossy_text(r["body"]), created_at=r["created_at"],
+            body=_lossy_text(r["body"]), created_at=_to_epoch(r["created_at"]) or 0,
         )
 
 
@@ -770,11 +771,11 @@ class Attachment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Attachment":
+    def from_row(cls, r: sqlite3.Row) -> Attachment:
         return cls(
             id=r["id"], task_id=r["task_id"], filename=r["filename"],
             stored_path=r["stored_path"], content_type=r["content_type"],
-            size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=r["created_at"],
+            size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=_to_epoch(r["created_at"]) or 0,
         )
 
 
@@ -788,11 +789,12 @@ class Event:
     run_id: Optional[int] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Event":
+    def from_row(cls, row: sqlite3.Row) -> Event:
         run_id = _row_get(row, "run_id")
         return cls(
             id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
-            payload=_json_or(_lossy_text(row["payload"])), created_at=row["created_at"], run_id=_opt_int(run_id),
+            payload=_json_or(_lossy_text(row["payload"])), created_at=_to_epoch(row["created_at"]) or 0,
+            run_id=_opt_int(run_id),
         )
 
 
@@ -2058,7 +2060,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -2380,10 +2382,10 @@ def release_stale_claims(
     ).fetchall()
     for row in stale:
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
-        hb = row["last_heartbeat_at"]
+        hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
-        heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        heartbeat_stale = hb is not None and (now - hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
         if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
                 and not heartbeat_stale):
@@ -2419,8 +2421,8 @@ def release_stale_claims(
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
-                    "claim_expires": int(row["claim_expires"]),
-                    "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                    "claim_expires": _to_epoch(row["claim_expires"]),
+                    "last_heartbeat_at": hb,
                     "now": now,
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
@@ -2482,9 +2484,9 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
                 "reason": "pid_alive",
                 "worker_pid": int(row["worker_pid"]),
                 "claim_lock": row["claim_lock"],
-                "claim_expires_was": int(row["claim_expires"]),
+                "claim_expires_was": _to_epoch(row["claim_expires"]),
                 "claim_expires_now": new_expires,
-                "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                "last_heartbeat_at": _to_epoch(row["last_heartbeat_at"]),
             },
             run_id=run_id,
         )
@@ -4100,7 +4102,7 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
     for row in role_rows:
         first = _first_line(row["summary"], 200) or "(no summary)"
         lines.append(
-            f"- {row['id']} — {row['title']} ({_ctx_stamp(int(row['ended_at']), now)}): {first}"
+            f"- {row['id']} — {row['title']} ({_ctx_stamp(_to_epoch(row['ended_at']) or 0, now)}): {first}"
         )
     lines.append("")
 
@@ -4185,7 +4187,7 @@ def _to_epoch(val) -> Optional[int]:
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
         from datetime import datetime
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s)
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
@@ -4194,9 +4196,7 @@ def _to_epoch(val) -> Optional[int]:
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    _c = _to_epoch(task.created_at)
-    _s = _to_epoch(task.started_at)
-    _co = _to_epoch(task.completed_at)
+    _c, _s, _co = task.created_at, task.started_at, task.completed_at  # from_row coerced
     return {
         "created_age_seconds": now - _c if _c is not None else None,
         "started_age_seconds": now - _s if _s is not None else None,
@@ -4414,7 +4414,7 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
-from hermes_cli.kanban_db_boards import (  # noqa: E402
+from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
     board_metadata_path,
@@ -4424,18 +4424,18 @@ from hermes_cli.kanban_db_boards import (  # noqa: E402
     remove_board,
     write_board_metadata,
 )
-from hermes_cli.kanban_db_connect import (  # noqa: E402
+from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
 )
-from hermes_cli.kanban_db_workspace import (  # noqa: E402
+from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
 )
-from hermes_cli.kanban_db_dispatch import (  # noqa: E402
+from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,

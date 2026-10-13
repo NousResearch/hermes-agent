@@ -38,7 +38,7 @@ class TestGuidanceReachesTheSystemPrompt:
         # wiring behaviorally rather than trusting the constant in isolation.
         from types import SimpleNamespace
 
-        import agent.system_prompt as system_prompt
+        from agent import system_prompt
 
         agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
         assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")

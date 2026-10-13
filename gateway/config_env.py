@@ -105,7 +105,7 @@ def _truthy_token(value: str) -> bool:
     return value.lower() in {"true", "1", "yes", "on"}
 
 
-def _csv_extras(extra: Dict[str, Any], spec) -> None:
+def _csv_extras(extra: dict[str, Any], spec) -> None:
     """``extra[key] = _csv_list(raw)`` for each ``(key, raw)`` whose list is non-empty."""
     for key, raw in spec:
         items = _csv_list(raw)
@@ -132,7 +132,7 @@ def _env_first(envs) -> str:
 _INT = object()  # spec marker: ``int(value)``, silently skipped when malformed
 
 
-def _env_extras(extra: Dict[str, Any], spec, *, strip: bool = False) -> None:
+def _env_extras(extra: dict[str, Any], spec, *, strip: bool = False) -> None:
     """``extra[key] = fn(value)`` for each ``(key, env[, fn])`` whose env value is truthy.
 
     ``strip=True`` strips BEFORE the truthiness check. ``fn=_INT`` parses an int

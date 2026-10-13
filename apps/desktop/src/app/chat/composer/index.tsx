@@ -14,8 +14,8 @@ import {
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
-import { useSetupChatView } from '@/components/onboarding-chat/assembly'
-import { OnboardingSkip } from '@/components/onboarding-chat/skip'
+import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
+import { OnboardingSkip } from '@/components/onboarding/skip-setup'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
@@ -61,6 +61,7 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
@@ -82,7 +83,6 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
-import { LocalSetupCard } from './local-setup-card'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
@@ -184,10 +184,9 @@ export function ChatBar({
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
 
-  // The guide uses the setup profile's inference route; the model pill and
-  // git controls would expose settings unrelated to its conversational steps.
-  // Solo covers startup before the guide's session ids are known. Once the intro has ended the setup
-  // chat is a normal chat again.
+  // The guide's conversational steps have no use for the model pill and git
+  // controls. Solo covers startup before the guide's session ids are known.
+  // Once the intro has ended the onboarding chat is a normal chat again.
   const guidedChat = useSetupChatView()
   const chatOnboardingSolo = useStore($chatOnboardingSolo)
   // The git row (branch / worktree / PR / review) is the coding instrument the
@@ -383,7 +382,7 @@ export function ChatBar({
   })
 
   const hasComposerPayload = hasText || attachments.length > 0
-  const canSubmit = busy || hasComposerPayload
+  const { canSubmit, cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
@@ -1110,6 +1109,7 @@ export function ChatBar({
       busy={busy}
       busyAction={busyAction}
       canSubmit={canSubmit}
+      cardWaiting={cardWaiting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
@@ -1275,7 +1275,7 @@ export function ChatBar({
             them out here is what makes that impossible rather than excluded. */}
         <div
           className={cn(
-            'z-30 flex flex-col',
+            'group/composer-dock z-30 flex flex-col',
             poppedOut ? 'fixed max-w-[calc(100vw-1.5rem)]' : 'absolute bottom-0 left-1/2 max-w-full -translate-x-1/2'
           )}
           data-popped-out={poppedOut ? '' : undefined}
@@ -1302,7 +1302,7 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
-            <OnboardingSkip />
+            <OnboardingSkip sessionId={statusSessionId} />
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
@@ -1482,7 +1482,7 @@ export function ChatBar({
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
                     scrolledUp
-                      ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
+                      ? 'opacity-30 group-hover/composer-dock:opacity-100 group-focus-within/composer-dock:opacity-100'
                       : 'opacity-100'
                   )}
                   data-slot="composer-fade"
@@ -1496,7 +1496,6 @@ export function ChatBar({
                     onUndone={clearDraft}
                     readLiveText={syncDraftFromEditor}
                   />
-                  <LocalSetupCard busy={busy} guidedChat={guidedChat} />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (

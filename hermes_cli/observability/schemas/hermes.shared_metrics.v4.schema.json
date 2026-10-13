@@ -276,6 +276,15 @@
           },
           {
             "$ref": "#/$defs/install_run_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_search_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_batch_counter"
+          },
+          {
+            "$ref": "#/$defs/connector_chain_counter"
           }
         ]
       }
@@ -811,6 +820,7 @@
                 "code_execution",
                 "communication",
                 "computer_use",
+                "connector",
                 "delegation",
                 "file",
                 "home_automation",
@@ -1034,12 +1044,16 @@
           "properties": {
             "error_class": {
               "enum": [
+                "alias",
                 "blocked",
+                "connection_required",
+                "connector_backend",
                 "contract_violation",
                 "exception",
                 "interrupted",
                 "invalid_arguments",
                 "none",
+                "not_allowed",
                 "timeout",
                 "tool_error",
                 "unknown"
@@ -1512,6 +1526,7 @@
                     "aux_model_fallback",
                     "commit_fence_cancelled",
                     "empty_post_handoff_window",
+                    "empty_transcript",
                     "exception",
                     "explicit_interrupt",
                     "feasibility_skip",
@@ -2174,12 +2189,16 @@
             },
             "error_class": {
               "enum": [
+                "alias",
                 "blocked",
+                "connection_required",
+                "connector_backend",
                 "contract_violation",
                 "exception",
                 "interrupted",
                 "invalid_arguments",
                 "none",
+                "not_allowed",
                 "timeout",
                 "tool_error",
                 "unknown"
@@ -2729,6 +2748,7 @@
                     "fetch_failed",
                     "fleet_stale",
                     "fleet_unverified",
+                    "gateway_pause_failed",
                     "git_failed",
                     "git_in_progress",
                     "git_index_locked",
@@ -3631,13 +3651,13 @@
                 "image_gen",
                 "kanban",
                 "memory",
+                "onboarding",
                 "project",
                 "safe",
                 "search",
                 "session_search",
                 "setup",
                 "skills",
-                "spotify",
                 "start_chat",
                 "terminal",
                 "todo",
@@ -4644,13 +4664,6 @@
                 "skill_manage",
                 "skill_view",
                 "skills_list",
-                "spotify_albums",
-                "spotify_devices",
-                "spotify_library",
-                "spotify_playback",
-                "spotify_playlists",
-                "spotify_queue",
-                "spotify_search",
                 "terminal",
                 "text_to_speech",
                 "todo_list",
@@ -4910,6 +4923,7 @@
                 "code_execution",
                 "communication",
                 "computer_use",
+                "connector",
                 "delegation",
                 "file",
                 "home_automation",
@@ -5077,6 +5091,162 @@
                 "failed",
                 "success"
               ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_search_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_search.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hits_bucket",
+            "outcome",
+            "scope"
+          ],
+          "properties": {
+            "hits_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "connector_unavailable",
+                "error",
+                "hits",
+                "no_hits"
+              ]
+            },
+            "scope": {
+              "enum": [
+                "both",
+                "connector",
+                "local"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_batch_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_batch.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connector_share",
+            "model",
+            "provider",
+            "size_bucket"
+          ],
+          "properties": {
+            "connector_share": {
+              "enum": [
+                "all",
+                "none",
+                "some"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "size_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "connector_chain_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.connector_chain.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "described_first",
+            "outcome",
+            "searches_before_bucket"
+          ],
+          "properties": {
+            "described_first": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "blocked",
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "searches_before_bucket": {
+              "$ref": "#/$defs/count_bucket"
             }
           }
         },

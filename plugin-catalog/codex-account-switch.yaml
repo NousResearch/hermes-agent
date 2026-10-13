@@ -1,0 +1,18 @@
+name: codex-account-switch
+repo: https://github.com/SmelterLabs/hermes-account-switcher
+sha: 1d42d4cb7f2e4f27e244574c2e9c27548b96fca6
+subdir: ""
+description: "Windows desktop plugin that switches which Codex login and which Claude subscription account every local Hermes profile uses, with one idle-only, verified restart of Hermes Desktop and the gateway. Refuses while any profile is busy, restores the previous selection if a step fails, and writes a receipt that says whether the switch took effect. Disclosure — Windows only. A switch rewrites, through Hermes's own commands, the Codex credential order in every profile's auth.json and the CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR line in every profile's .env, so every profile that has the plugin enabled spends the same selected Codex login and the same Claude login (one Hermes-owned claude-auth folder; no token is copied between profiles). It reads Codex tokens from each profile's auth.json and the Desktop backends' dashboard session token from their process environment, then closes Hermes Desktop and stops and restarts the gateway once both report idle (work started in the seconds after that check is cut off). It sends the target Codex token to OpenAI's usage endpoint and Claude login tokens to Anthropic's OAuth profile endpoint (also when the setup screen opens); if the target Claude login has expired it first runs the claude CLI once so the CLI renews its own token, which rotates that login's refresh token. No telemetry and no automatic account rotation."
+maintainer: SmelterLabs
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/SmelterLabs/hermes-account-switcher#readme
+version: "1.2.2"
+platforms: [windows]
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

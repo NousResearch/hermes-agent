@@ -1,10 +1,9 @@
 """When the free tier's "sign in for more" offer is due: after finished tasks, backing off.
 
-The first offer comes ``OFFER_DELAY_S`` after the first finished task (normally the task setup hands off
-to). Each later offer needs another finished task after the previous offer, comes ``OFFER_DELAY_S``
-after that task, and never sooner than ``REOFFER_AFTER_S[n]`` after the previous offer, so a user who
-keeps saying "Not now" hears it less often. "Finished task" is ``tui_gateway.free_tier_task_done``'s
-call. The record is install-wide (the setup and primary profiles have different homes), at
+The first offer comes ``OFFER_DELAY_S`` after the first finished task. Each later offer needs another
+finished task after the previous offer, comes ``OFFER_DELAY_S`` after that task, and never sooner than
+``REOFFER_AFTER_S[n]`` after the previous offer, so a user who keeps saying "Not now" hears it less
+often. "Finished task" is ``tui_gateway.free_tier_task_done``'s call. The record is install-wide, at
 ``<default root>/free_tier/sign_in_offer.json``. Signing in ends the free tier, and with it every offer.
 """
 
@@ -29,7 +28,7 @@ def _path():
     return get_default_hermes_root() / "free_tier" / "sign_in_offer.json"
 
 
-def _read() -> Dict[str, Any]:
+def _read() -> dict[str, Any]:
     try:
         data = json.loads(_path().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -38,7 +37,7 @@ def _read() -> Dict[str, Any]:
 
 
 @contextmanager
-def _transaction() -> Iterator[tuple[Dict[str, Any], Any]]:
+def _transaction() -> Iterator[tuple[dict[str, Any], Any]]:
     from hermes_cli.auth import _file_lock
     from utils import atomic_write_text
     path = _path()
@@ -48,10 +47,10 @@ def _transaction() -> Iterator[tuple[Dict[str, Any], Any]]:
 
 def _on_free_tier() -> bool:
     from hermes_cli import anon_auth
-    return anon_auth.has_guest() and anon_auth.guest_enabled()
+    return anon_auth.free_inference_active()
 
 
-def _due_at(state: Dict[str, Any]) -> Optional[float]:
+def _due_at(state: dict[str, Any]) -> Optional[float]:
     if not state:
         return None
     offers = int(state.get("offers") or 0)
@@ -64,7 +63,7 @@ def _due_at(state: Dict[str, Any]) -> Optional[float]:
     return max(last_task + OFFER_DELAY_S, last_offer + REOFFER_AFTER_S[min(offers, len(REOFFER_AFTER_S)) - 1])
 
 
-def _due_in(state: Dict[str, Any]) -> Optional[int]:
+def _due_in(state: dict[str, Any]) -> Optional[int]:
     due_at = _due_at(state)
     if due_at is None or not _on_free_tier():
         return None

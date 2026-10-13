@@ -292,9 +292,9 @@ def _cmd_list(db, args):
     def _ws(s):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
-    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
+    _title = lambda s, n: (s.get("title") or "—")[:n]
+    _preview = lambda s, n: s.get("preview", "")[:n]
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])
 
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
         created = s.get("created_source") or ""

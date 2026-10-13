@@ -97,7 +97,7 @@ def fake_clock(monkeypatch):
     """
     import time as real_time
 
-    import tools.voice_mode as voice_mode
+    from tools import voice_mode
 
     clock = _FakeTime(real_time)
     monkeypatch.setattr(voice_mode, "time", clock)

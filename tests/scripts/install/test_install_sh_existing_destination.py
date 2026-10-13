@@ -26,7 +26,7 @@ def _stage_repository(tmp_path: Path, dest: Path) -> subprocess.CompletedProcess
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                HERMES_INSTALL_DIR=dest.as_posix(), HERMES_REPO_URL=_origin(tmp_path).as_posix())
     script = f"source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest\nstage_repository\n"
-    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False)
 
 
 @pytest.mark.parametrize("shape", ["non-empty-dir", "file"])

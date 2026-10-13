@@ -1,0 +1,23 @@
+{
+  "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+  "name": "web_search",
+  "parameters": {
+    "properties": {
+      "limit": {
+        "default": 5,
+        "description": "Maximum number of results to return. Defaults to 5.",
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\".",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  }
+}

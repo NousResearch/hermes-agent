@@ -16,8 +16,8 @@ from scripts.termux import build_wheels as builder
 def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, bom):
     lock, export, resolved, reqs = (tmp_path / name for name in
                                     ("uv.lock", "export.txt", "resolved.txt", "reqs.txt"))
-    lock.write_bytes(bom + 'package = []\n# café\n'.encode("utf-8"))
-    export.write_bytes(bom + 'example==1.0\n# café\n'.encode("utf-8"))
+    lock.write_bytes(bom + 'package = []\n# café\n'.encode())
+    export.write_bytes(bom + 'example==1.0\n# café\n'.encode())
     builder.normalize_reqs(export, lock, resolved)
     assert resolved.read_bytes() == b"example\t==1.0\t\t\n"
     resolved.write_bytes(bom + resolved.read_bytes())

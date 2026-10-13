@@ -6,7 +6,7 @@ import contextvars
 import copy
 import hashlib
 import importlib
-import inspect  # noqa: F401  (split modules)
+import inspect
 import json
 import logging
 import os
@@ -17,13 +17,13 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
+from typing import Any, Callable, NamedTuple, Optional
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
+from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -34,17 +34,18 @@ from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
-from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
-from agent.skill_commands import describe_skill_invocation  # noqa: F401
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
+from agent.voice_turn_route import session_runtime_view
+from agent.compaction_display import project_compaction_message_for_display
+from agent.skill_commands import describe_skill_invocation
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
-                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)  # noqa: F401
+                                     resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
 from tui_gateway._env import env_float, env_int
-from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
-from tui_gateway.user_messages import (  # noqa: F401
+from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
@@ -90,7 +91,7 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
-from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
+from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -174,16 +175,16 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
-# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
-# session creation + a prompt.submit.
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session
+# creation + a prompt.submit; onboarding.state = a bounded wait on the boot-time due answer.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
-    "learning.frames", "plugins.manage", "reload.mcp", "mcp.servers.test", "mcp.servers.oauth.start",
+    "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
+    "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
@@ -191,8 +192,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
-    "session.start_chat",
+    "onboarding.start", "onboarding.state",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -710,7 +710,7 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
-from tui_gateway import server_requests as _server_requests  # noqa: E402
+from tui_gateway import server_requests as _server_requests
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid),
@@ -1001,7 +1001,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
+def _bind_build_profile_scopes(profile_home: str | None) -> "_TurnScopes | None":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
     launch profile: its own launch-env secret scope (live env while single-profile, frozen once
     multiplexing is active — a hosted-room turn for a default member otherwise died at build with
@@ -1718,6 +1718,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
+    agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
@@ -1759,7 +1760,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        model = str(getattr(agent, "model", "") or "").strip()
+        model = str(model_config.get("model") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
@@ -2058,10 +2059,6 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                from hermes_cli.config import load_config
-                from hermes_cli.tools_config import _get_platform_tools
-                from toolsets import TOOLSET_SESSION_PLATFORMS
-                selection += sorted(_get_platform_tools(load_config(), "cli") & TOOLSET_SESSION_PLATFORMS.keys())
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
@@ -2148,7 +2145,7 @@ def _tool_progress_enabled(sid: str) -> bool:
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
-    "image_generate", "manage_catalog", "delegate_task", "setup_choose", "start_chat",
+    "image_generate", "manage_catalog", "delegate_task", "setup_beat", "set_theme",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })
@@ -2324,7 +2321,7 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     carries. The profile default is the LAST resort, never the answer for a chat that made its own pick."""
     pending = session.get("pending_model_switch") or {}
     mirror = _metadata_mirror(session)
-    agent = session.get("agent")
+    agent = session_runtime_view(session.get("agent"))
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
              or getattr(agent, "model", "") or override.get("model"))
@@ -2354,6 +2351,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, t
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
+    agent = session_runtime_view(agent)
     sess = session or {}
     mirror = _metadata_mirror(session)
     cwd = _display_session_cwd(session)
@@ -2689,7 +2687,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(platform),
+        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
@@ -2751,10 +2749,11 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
                     except Exception:
                         logger.debug("failed to enrich resumed session git metadata", exc_info=True)
-            elif not (row and row.get("cwd")) and hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(
-                _sessions.get(sid)
-            ):
-                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled.
+            elif (not (row and row.get("cwd")) or _is_other_profiles_cwd(row["cwd"], profile_home)) and hasattr(
+                db, "update_session_cwd"
+            ) and not _is_remote_launch_cwd(_sessions.get(sid)):
+                # A stored cwd that was set aside (Hermes's own host tree) stays as stored: only an empty row is filled,
+                # or a named profile's row holding another profile's dir (#87584), repaired to this session's own.
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:
@@ -3279,7 +3278,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:
         stat = pet.spritesheet.stat()
         cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
-    except Exception:  # noqa: BLE001
+    except Exception:
         cache_key = None
     if cache_key is not None:
         with _pet_payload_cache_lock:
@@ -3289,7 +3288,7 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
     try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
         from agent.pet import render
         frames_by_state = render.state_frame_counts(str(pet.spritesheet))
-    except Exception:  # noqa: BLE001
+    except Exception:
         frames_by_state = {}
     raw = pet.spritesheet.read_bytes()
     mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
@@ -3344,7 +3343,7 @@ def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
         now = time.time()
         for child in (c for c in root.iterdir() if c.is_dir() and now - c.stat().st_mtime > max_age_s):
             shutil.rmtree(child, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+    except Exception as exc:
         logger.debug("pet-gen sweep failed: %s", exc)
 
 
@@ -3559,7 +3558,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact", "initiate-setup", "initiate_setup",
+    "init", "compress", "compact",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -3644,12 +3643,12 @@ _paste_counter = 0
 
 
 # mcp.servers.* handlers (methods_tools) resolve this BARE through this namespace.
-from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server
 
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
 # over exists; register() rebinds them onto this namespace.
-from . import (  # noqa: E402
+from . import (
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     plugin_inject as _plugin_inject,
@@ -3660,19 +3659,19 @@ from . import (  # noqa: E402
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
-    session_transports as _session_transports,
+    session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
-    methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
+    methods_tools as _methods_tools, methods_tools_plugin_servers as _methods_tools_plugin_servers,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
-    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat)
+    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n, methods_machine as _methods_machine,
+    methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3680,10 +3679,10 @@ for _m in (
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
-    _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
+    _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_shared_metrics, _methods_start_chat):
+    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog):
     _m.register(sys.modules[__name__])
 del _m

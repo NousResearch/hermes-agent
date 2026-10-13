@@ -80,6 +80,25 @@ class SetupReadyPayload(OpenPayload):
     finished_at: float
 
 
+class OnboardingOutcome(WireEnum):
+    done = "done"
+    skipped = "skipped"
+    replaced = "replaced"
+    deleted = "deleted"
+
+
+class OnboardingEndedPayload(Payload):
+    """``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.
+    ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered;
+    ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted."""
+
+    run_id: str
+    stored_session_id: str
+    outcome: OnboardingOutcome
+
+
+event("onboarding.ended", OnboardingEndedPayload,
+      doc="A first-run onboarding run ended; sent to every connected window.")
 event("setup.ready", SetupReadyPayload,
       doc="The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.")
 
@@ -576,19 +595,12 @@ event("preview.open", PreviewOpenPayload, doc="Open a URL / file in the desktop 
 event("preview.close", PreviewClosePayload, doc="Close the preview pane or one tab.")
 
 
-class LayoutApplyPayload(OpenPayload):
-    """``tools/apply_layout_tool.py``."""
-
-    preset: str
-
-
 class PaneRevealPayload(OpenPayload):
     """``tools/focus_pane_tool.py``."""
 
     pane: str
 
 
-event("layout.apply", LayoutApplyPayload, doc="Apply a named desktop layout preset.")
 event("pane.reveal", PaneRevealPayload, doc="Focus / reveal a named desktop pane.")
 
 
@@ -702,9 +714,9 @@ class PetChangedPayload(OpenPayload):
 
     enabled: bool
     slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
+    displayName: str | None = None
     scale: float | None = None
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
+    spritesheetRevision: str | None = None
 
 
 class PetGenerateProgressPayload(OpenPayload):
@@ -713,7 +725,7 @@ class PetGenerateProgressPayload(OpenPayload):
     token: str
     count: int
     index: int | None = None
-    dataUri: str | None = None  # noqa: N815 - wire key
+    dataUri: str | None = None
 
 
 class PetHatchProgressPayload(OpenPayload):
@@ -749,7 +761,7 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
     "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "LayoutApplyPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",

@@ -51,15 +51,15 @@ def _persist_migration(config):
     _cfg()._persist_migration(config)
 
 
-def _dict_at(config: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _dict_at(config: dict[str, Any], key: str) -> dict[str, Any]:
     """``config[key]`` when it is a mapping (same object, so writes alias), else a fresh ``{}``."""
     value = config.get(key)
     return value if isinstance(value, dict) else {}
 
 
 def _commit(
-    config: Dict[str, Any],
-    results: Dict[str, Any],
+    config: dict[str, Any],
+    results: dict[str, Any],
     quiet: bool,
     added: Optional[str],
     message: Optional[str]) -> None:
@@ -72,7 +72,7 @@ def _commit(
 
 
 def _rewrite_key(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     quiet: bool,
     *,
     section: str,
@@ -81,7 +81,7 @@ def _rewrite_key(
     new: Any,
     added: str,
     message: str,
-    extra_guard: Callable[[Dict[str, Any]], bool] = lambda _m: True,
+    extra_guard: Callable[[dict[str, Any]], bool] = lambda _m: True,
     create_section: bool = False) -> None:
     """Rewrite ``<section>.<key>`` to *new* (None = delete) when ``match(current)`` holds; a
     missing section is skipped unless *create_section*."""
@@ -100,7 +100,7 @@ def _rewrite_key(
         _commit(config, results, quiet, added, message)
 
 
-def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[Dict[str, Any], bool], None]:
+def _rewrite_stale_default(*, old: Any, **kw: Any) -> Callable[[dict[str, Any], bool], None]:
     """Step rewriting a key only while it still equals the OLD default — never clobbers a value
     the user customized; unset keys inherit the new default at read time."""
     return functools.partial(_rewrite_key, match=lambda cur: cur == old, **kw)
@@ -110,7 +110,7 @@ def _lower_is(word: str) -> Callable[[Any], bool]:
     return lambda cur: isinstance(cur, str) and cur.strip().lower() == word
 
 
-def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_12(results: dict[str, Any], quiet: bool) -> None:
     # 11 → 12: custom_providers list → providers dict.
     _custom_provider_entry_to_provider_config = _cfg()._custom_provider_entry_to_provider_config
 
@@ -168,7 +168,7 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
                 print(f"    → {key}: {providers_dict[key].get('api', '')}")
 
 
-def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_13(results: dict[str, Any], quiet: bool) -> None:
     # 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env (written by the old setup wizard;
     # nothing reads them — config.yaml is the sole source of truth).
     _c = _cfg()
@@ -190,7 +190,7 @@ _LOCAL_WHISPER_MODELS = frozenset({
     "large-v3-turbo", "turbo"})
 
 
-def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_14(results: dict[str, Any], quiet: bool) -> None:
     # 13 → 14: legacy flat stt.model → provider section. A provider-agnostic `stt.model` fed
     # OpenAI names to faster-whisper ("Invalid model size"). Only the raw (user-written) config
     # decides; a nested model the user already set is never overwritten.
@@ -224,7 +224,7 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
 
 
-def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_16(results: dict[str, Any], quiet: bool) -> None:
     # 15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress.
     config = read_raw_config()
     display = _dict_at(config, "display")
@@ -247,7 +247,7 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
 
 
-def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_17(results: dict[str, Any], quiet: bool) -> None:
     # 16 → 17: remove legacy compression.summary_* keys; non-empty, non-default values move to
     # auxiliary.compression without overriding an explicit (non-"auto") aux value.
     config = read_raw_config()
@@ -279,10 +279,10 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         _commit(config, results, quiet, None, message)
 
 
-def _installed_user_plugins(disabled: set) -> List[str]:
+def _installed_user_plugins(disabled: set) -> list[str]:
     """Names of plugins under ``$HERMES_HOME/plugins/`` with a manifest, minus *disabled*."""
     _c = _cfg()
-    found: List[str] = []
+    found: list[str] = []
     try:
         user_plugins_dir = _c.get_hermes_home() / "plugins"
         if user_plugins_dir.is_dir():
@@ -307,7 +307,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
     return found
 
 
-def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_21(results: dict[str, Any], quiet: bool) -> None:
     # 20 → 21: plugins are now opt-in (loader requires ``plugins.enabled``). Grandfather installed
     # user plugins not already disabled; bundled plugins ship off and need explicit opt-in.
     config = read_raw_config()
@@ -329,7 +329,7 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
         f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)", message)
 
 
-def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_23(results: dict[str, Any], quiet: bool) -> None:
     # 22 → 23: seed curator defaults + create logs/curator/. Older configs never wrote the curator
     # section; deep-merge made it work but users could not see/edit it and `hermes curator status`
     # had no stable logs dir. Only keys the user hasn't set are written.
@@ -344,7 +344,7 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
 
     config = read_raw_config()
 
-    def _seed_missing(section: Dict[str, Any], defaults: Dict[str, Any]) -> List[str]:
+    def _seed_missing(section: dict[str, Any], defaults: dict[str, Any]) -> list[str]:
         added = [k for k in defaults if k not in section]
         for k in added:
             section[k] = copy.deepcopy(defaults[k])
@@ -375,7 +375,7 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
                     f"({', '.join(added)}) — edit via `hermes config set`")
 
 
-def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_29(results: dict[str, Any], quiet: bool) -> None:
     # 28 → 29: memory/skills tri-state write_mode (on|off|approve) → boolean write_approval.
     # Only "approve" carried gating intent → true; the old "off = block writes" mode is dropped
     # (memory_enabled: false disables memory). Only a persisted key is rewritten.
@@ -401,7 +401,7 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
 # at read time and persisting a default would only bloat a lean config. No registry entry.
 
 
-def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_33(results: dict[str, Any], quiet: bool) -> None:
     # 32 → 33: max_async_children is deprecated; fold a raised value into max_concurrent_children
     # (take the max so nobody loses headroom), then drop it.
     config = read_raw_config()
@@ -431,7 +431,7 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
         "delegations too.")
 
 
-def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_34(results: dict[str, Any], quiet: bool) -> None:
     # 33 → 34: one-time personality reset. Persistence used to be split (TUI/desktop wrote the
     # NAME to display.personality, CLI/gateway wrote rendered TEXT to agent.system_prompt), so
     # once display.personality became authoritative, stale names resurrected personalities users
@@ -484,7 +484,7 @@ def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
             "manual system prompts; personalities live in display.personality.")
 
 
-def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_38(results: dict[str, Any], quiet: bool) -> None:
     # 37 → 38: the bundled observability/nemo_relay plugin was removed (Relay lifecycle moved
     # into the agent core); drop it from plugins.enabled.
     from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
@@ -510,7 +510,7 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
         print(f"  ⚠ {message}")
 
 
-def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_39(results: dict[str, Any], quiet: bool) -> None:
     # 38 → 39: strip the retired `bfl` toolset wherever a backfill/picker save wrote it, so stale
     # config can't resurrect an unknown toolset.
     config = read_raw_config()
@@ -534,14 +534,14 @@ def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
             "Video Generation (Nous Subscription or FAL).")
 
 
-def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
     from hermes_constants import get_hermes_home
     from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
         soul = profile_dir / "SOUL.md"
         try:
@@ -558,7 +558,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
                   f"({', '.join(cleaned)}) — Bot Chat sessions now get the live roster instead.")
 
 
-def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
     # 44 → 45: append `connections` to every saved `platform_toolsets` list that predates it
     # (an explicit list treats absence as unchecked). Skipped when `known_builtin_toolsets`
     # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
@@ -576,7 +576,7 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
     known = _dict_at(config, "known_builtin_toolsets")
     # Same predicate the resolver uses to pick its explicit branch: any configurable or plugin key.
     explicit_keys = _configurable_keys() | _get_plugin_toolset_keys()
-    enabled_for: List[str] = []
+    enabled_for: list[str] = []
     for platform, toolsets in saved.items():
         if not isinstance(toolsets, list) or "connections" in toolsets:
             continue
@@ -605,7 +605,7 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
-def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
     # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
@@ -631,7 +631,7 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
-def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
     # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
     # still equal to the OLD default is the template copied, not a choice: the key is DROPPED so
@@ -662,7 +662,7 @@ def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
 #: only added a schema default that runtime merging supplies without a write. When adding a step,
 #: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
 
-def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
     # 48 → 49: Vercel deprecated sandbox runtimes in favour of images; the default moves from the
     # `node24` runtime to `vercel/sandbox/universal:latest`. A saved runtime still equal to the old
     # seeded default (config.yaml AND the .env mirror the setup wizard wrote) is the template copied,
@@ -686,7 +686,7 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
 _RETIRED_TIRITH_KEYS = ("tirith_enabled", "tirith_path", "tirith_timeout", "tirith_fail_open")
 
 
-def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
     # 49 → 50: the bundled tirith scanner left Hermes. Nothing reads its keys now, so they are
     # dropped; nothing replaces them.
     config = read_raw_config()
@@ -702,7 +702,7 @@ def _migrate_to_50(results: Dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
-MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
+MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
@@ -850,7 +850,7 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
 
 
 def run_migrations(
-    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
     """Apply every registered migration whose target version exceeds *current_ver*; a config
     with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 

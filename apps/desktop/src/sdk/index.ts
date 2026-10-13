@@ -1651,10 +1651,12 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
 
 // -- ui: the design language --------------------------------------------------
 
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1739,6 +1741,7 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
+
 export {
   type ProfileGroupHeaderContribution,
   type ProfileGroupRoute,
@@ -1749,7 +1752,6 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
-
 /** Appearance settings' plugin seam: register a render contribution at
  *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
  *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
@@ -1880,18 +1882,6 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-export type {
-  HermesPlugin,
-  PluginContext,
-  PluginContribution,
-  PluginNativeNotificationInput,
-  PluginNotificationAction,
-  PluginOs,
-  PluginRestOptions,
-  PluginSettingsPage,
-  PluginSettingsSubpage,
-  PluginStorage
-} from '@/contrib/plugin'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1961,7 +1951,7 @@ export * as icons from '@/lib/icons'
  *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
  *  text field whose bare Enter performs an action. */
 export { isSubmitEnter } from '@/lib/ime'
-export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across
  *  a renderer that stays open for days. Only for values that can be

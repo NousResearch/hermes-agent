@@ -4,27 +4,7 @@ repo: https://github.com/ngelik/ttsbuddy-cli
 sha: cb7af8ab874ab4643041a12cb6723c24ea787a66
 subdir: plugins/hermes-ttsbuddy
 description: >-
-  Native TTS Buddy speech provider using the existing TTS Buddy CLI, with offline
-  voice selection, MP3 generation, Hermes voice-message conversion and exact-job
-  recovery, plus terminal-only account deletion through CLI 0.16.0+. Disclosure: launches the user-installed ttsbuddy executable with an
-  argument array and speech text on stdin; the CLI sends text and voice settings
-  to TTS Buddy, downloads hosted audio and consumes the selected account's quota.
-  Requests declare agent execution context. Credentials use Hermes's active
-  profile secret scope or an explicitly selected CLI configuration directory;
-  in the latter mode the CLI reads and may update its own saved login and job
-  state, while the plugin never opens credential files. Writes verified audio
-  to the requested local destination and uses temporary files/configuration for
-  profile-secret calls. No plugin self-updater, automatic software installation,
-  login, plan purchase or separate telemetry is added. Requires the CLI on the
-  Hermes host and ffmpeg for Hermes's optional Opus conversion. The native
-  hermes ttsbuddy account delete commands delegate start, confirm, status and
-  cancel to that CLI. Explicit confirmation and fresh email verification can
-  permanently delete the account, hosted files and identity and cancel
-  subscriptions. Verification codes use hidden terminal input or protected
-  stdin, never model tool arguments. The CLI owns persistent protected recovery
-  state in the explicitly selected config directory; the plugin does not read
-  it. The ttsbuddy-account slash command returns help only. No automatic
-  deletion retries or new model-facing destructive tools are added.
+  Native TTS Buddy speech provider using the existing TTS Buddy CLI, with offline voice selection, MP3 generation, Hermes voice-message conversion and exact-job recovery, plus terminal-only account deletion through CLI 0.16.0+. Disclosure — runs the user-installed `ttsbuddy` CLI (argument array, speech text on stdin), which sends the text and voice settings to TTS Buddy, downloads the hosted audio and uses the account's quota. Credentials come from the profile's `TTSBUDDY_API_KEY` secret or, when the user selects `cli_config_dir`, from that CLI profile's own saved login, which the CLI may read and update. The model-callable `ttsbuddy_recover` tool downloads an existing job to a new MP3 path the model chooses (never overwrites). The terminal command `hermes ttsbuddy account delete` can permanently delete the TTS Buddy account, its hosted files and identity, and cancel subscriptions, after `--yes` and a fresh email code entered at a hidden prompt or protected stdin.
 maintainer: ngelik
 tier: community
 category: voice

@@ -29,7 +29,7 @@ def request(sid, *, qids=None):
 def test_host_routing_and_past_child_lifetimes_never_certify_local_identity(monkeypatch, tmp_path):
     creator, binding, record = setup(monkeypatch, tmp_path)
     from hermes_cli.profiles import get_profile_dir
-    (get_profile_dir("secondary") / "config.yaml").write_text("dashboard:\n  turn_isolation: true\n")
+    (get_profile_dir("secondary") / "config.yaml").write_text("dashboard:\n  turn_isolation: true\n", encoding="utf-8")
     secondary = rpc(creator, "session.create", profile="secondary")["result"]["creation_binding"]
     assert activate(Peer(), secondary, profile="secondary")["error"]["code"] == 4007
     assert "result" in activate(Peer(), binding)  # launch policy is still local

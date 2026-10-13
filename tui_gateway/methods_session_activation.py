@@ -62,10 +62,11 @@ def _activation_engine_guard(session: dict):
 
 def _creation_binding_fields(session: dict, profile_home) -> dict:
     origin = session.get("creation_binding")
-    if origin is None:
+    owner = _transport_auth_user_id(current_transport())
+    if origin is None or owner is None:
         return {}
     store_path = str((Path(profile_home or _hermes_home) / "state.db").resolve())
-    return origin.fields_for(_transport_auth_user_id(current_transport()), store_path)
+    return origin.fields_for(owner, store_path)
 
 
 def _creation_retry_result(rid, sid: str, session: dict, profile, profile_home, copy_parent_history: bool) -> dict:

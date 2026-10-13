@@ -427,9 +427,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         from .session_creation_binding import CreationBinding
-        _sessions[sid]["creation_binding"] = CreationBinding.mint(
+        # Anonymous creation has no authenticated provenance and must not probe its store.
+        _sessions[sid]["creation_binding"] = (CreationBinding.mint(
             sid, key, _sessions[sid]["auth_user_id"],
             str((Path(profile_home or _hermes_home) / "state.db").resolve()), _sessions[sid])
+            if _sessions[sid]["auth_user_id"] is not None else None)
         created_session = _sessions[sid]
         _register_session_cwd(created_session)
         if idem_key is not None:

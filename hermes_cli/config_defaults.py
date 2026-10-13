@@ -1783,9 +1783,11 @@ DEFAULT_CONFIG = {
         "approval": {"transport": "builtin", "transport_fallback": "deny"},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
         # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
-        # globs on the basename (e.g. "*.mdc").
+        # globs on the basename (e.g. "*.mdc"). Allowlist dirs are absolute path prefixes whose
+        # whole subtree is exempt from the gate (operator-declared work trees).
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        "protected_instruction_allowlist_dirs": [],
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:

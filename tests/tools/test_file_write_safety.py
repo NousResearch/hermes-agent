@@ -614,8 +614,8 @@ class TestBomHandling:
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.
 
-    AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .hermes
-    config steer future agent behavior, so a prompt-injected agent writing
+    AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / .hermes.md / project-local
+    .hermes config steer future agent behavior, so a prompt-injected agent writing
     them is a persistence vector. The gate must ask the human every time —
     even under yolo/auto-approve — and fail closed when no human channel
     exists. Ported from: RooCodeInc/Roo-Code RooProtectedController
@@ -626,7 +626,7 @@ class TestProtectedInstructionFiles:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         yield
 
@@ -654,7 +654,7 @@ class TestProtectedInstructionFiles:
     # ---- core behavior -------------------------------------------------
 
     @pytest.mark.parametrize(
-        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules"]
+        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules", ".hermes.md", "HERMES.md"]
     )
     def test_deny_blocks_write(self, tmp_path, approvals, name):
         target = tmp_path / name
@@ -720,7 +720,7 @@ class TestProtectedInstructionFiles:
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (False, [])
+            ft, "_protected_instruction_config", lambda: (False, [], [])
         )
         res = self._write(tmp_path / "AGENTS.md", "ok")
         assert not res.get("error"), res
@@ -729,7 +729,7 @@ class TestProtectedInstructionFiles:
     def test_extra_patterns_from_config(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, ["*.mdc"])
+            ft, "_protected_instruction_config", lambda: (True, ["*.mdc"], [])
         )
         approvals["answer"] = "deny"
         res = self._write(tmp_path / "rules.mdc")
@@ -919,6 +919,112 @@ class TestProtectedInstructionFiles:
         assert rendered["choices"] == ["once", "deny"]
 
 
+def test_allowlist_dirs_config_key_reaches_the_gate(tmp_path, monkeypatch):
+    """The REAL config read (not a stubbed tuple): the key must reach the gate."""
+    import hermes_cli.config as hc
+    import tools.file_tools_write_guards as ft
+
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {
+        "security": {"protected_instruction_allowlist_dirs": [str(work)]}})
+    enabled, extra, allow = ft._protected_instruction_config()
+    assert enabled is True
+    assert extra == []
+    assert allow == [str(work)]
+    assert ft._protected_instruction_reason(str(work / ".hermes.md")) is None
+    # ...and the same path is gated once the allowlist is gone.
+    monkeypatch.setattr(hc, "load_config", lambda *a, **k: {"security": {}})
+    assert ft._protected_instruction_reason(str(work / ".hermes.md")) == ".hermes.md"
+
+
+class TestProtectedInstructionAllowlistDirs:
+    """``security.protected_instruction_allowlist_dirs``: operator-declared work trees are
+    exempt from the always-ask gate BEFORE the basename match, realpath'd on both sides so
+    a symlinked dir cannot evade the exemption — and the gate stays ON everywhere else.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, [], [])
+        )
+        yield
+
+    @pytest.fixture
+    def approvals(self, monkeypatch):
+        from tools.terminal_tool import set_approval_callback
+        state = {"calls": [], "answer": "deny"}
+
+        def cb(command, description, **kwargs):
+            state["calls"].append({"command": command, "description": description})
+            return state["answer"]
+
+        set_approval_callback(cb)
+        yield state
+        set_approval_callback(None)
+
+    def _write(self, path, content="injected"):
+        import json
+        from tools.file_tools import write_file_tool
+        return json.loads(write_file_tool(str(path), content))
+
+    def _allow(self, monkeypatch, *dirs):
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, [], list(dirs))
+        )
+
+    @pytest.mark.parametrize(
+        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules", ".hermes.md", "HERMES.md"]
+    )
+    def test_allowlisted_dir_writes_with_no_prompt(self, tmp_path, approvals, monkeypatch, name):
+        work = tmp_path / "work"
+        work.mkdir()
+        self._allow(monkeypatch, str(work))
+        res = self._write(work / name, "ok")
+        assert not res.get("error"), res
+        assert approvals["calls"] == []
+        assert (work / name).read_text(encoding="utf-8") == "ok"
+
+    def test_gate_stays_on_outside_the_allowlist(self, tmp_path, approvals, monkeypatch):
+        work = tmp_path / "work"
+        work.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        self._allow(monkeypatch, str(work))
+        approvals["answer"] = "deny"
+        res = self._write(other / "AGENTS.md")
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert len(approvals["calls"]) == 1
+        assert not (other / "AGENTS.md").exists()
+
+    @pytest.mark.require_symlinks
+    def test_symlinked_allowlist_entry_still_exempts(self, tmp_path, approvals, monkeypatch):
+        """A symlink can point at the work tree from either direction without evading it."""
+        real = tmp_path / "realwork"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(real)
+        self._allow(monkeypatch, str(alias))
+        res = self._write(real / "AGENTS.md", "ok")
+        assert not res.get("error"), res
+        assert approvals["calls"] == []
+
+    def test_prefix_match_respects_a_path_boundary(self, tmp_path, approvals, monkeypatch):
+        """``/work`` must not exempt ``/workshop`` — a bare startswith would."""
+        work = tmp_path / "work"
+        work.mkdir()
+        sibling = tmp_path / "workshop"
+        sibling.mkdir()
+        self._allow(monkeypatch, str(work))
+        approvals["answer"] = "deny"
+        res = self._write(sibling / "AGENTS.md")
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not (sibling / "AGENTS.md").exists()
+
+
 class TestProfileHomeExemptsHermesRoot:
     """issue #60: under ``hermes -p <name>`` (``HERMES_HOME=<root>/profiles/<name>``)
     the exemption used to cover ONLY the profile dir, so the ROOT's direct files
@@ -932,7 +1038,7 @@ class TestProfileHomeExemptsHermesRoot:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         # The resolved-home slot is filled once per process; keep the fixture honest.
         monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)

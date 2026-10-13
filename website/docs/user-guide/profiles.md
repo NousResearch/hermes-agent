@@ -230,12 +230,12 @@ The CLI always shows which profile is active:
 Profiles are often confused with workspaces or sandboxes, but they are different things:
 
 - A **profile** gives Hermes its own state directory: `config.yaml`, `.env`, `SOUL.md`, sessions, memory, logs, cron jobs, and gateway state.
-- A **workspace** or **working directory** is where terminal commands start. That is controlled separately by `terminal.cwd`.
+- A **workspace** or **working directory** is where terminal commands start: the launch directory for an interactive local session, otherwise `terminal.cwd`.
 - A **sandbox** is what limits filesystem access. Profiles do **not** sandbox the agent.
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
 
-If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
+If you want a profile's gateway and cron sessions to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 
 ```yaml
 terminal:
@@ -243,13 +243,13 @@ terminal:
   cwd: /absolute/path/to/project
 ```
 
-Using `cwd: "."` on the local backend means "the directory Hermes was launched from", not "the profile directory".
+An interactive local session (`hermes`, `hermes -z`, the TUI) still starts in the directory Hermes was launched from; use `--in DIR` to pick another. `cwd: "."` means that launch directory, not the profile directory.
 
 Also note:
 
 - `SOUL.md` can guide the model, but it does not enforce a workspace boundary.
 - Changes to `SOUL.md` take effect cleanly on a new session. Existing sessions may still be using the old prompt state.
-- Asking the model "what directory are you in?" is not a reliable isolation test. If you need a predictable starting directory for tools, set `terminal.cwd` explicitly.
+- Asking the model "what directory are you in?" is not a reliable isolation test. If you need a predictable starting directory for tools, launch with `--in DIR`, or set `terminal.cwd` for gateway and cron sessions.
 
 ## Running gateways
 
@@ -302,7 +302,7 @@ coder config set model.default anthropic/claude-sonnet-4
 echo "You are a focused coding assistant." > ~/.hermes/profiles/coder/SOUL.md
 ```
 
-If you want this profile to work in a specific project by default, also set its own `terminal.cwd`:
+If you want this profile's gateway and cron sessions to work in a specific project by default, also set its own `terminal.cwd`:
 
 ```bash
 coder config set terminal.cwd /absolute/path/to/project
@@ -402,7 +402,7 @@ Add the line to your `~/.bashrc` or `~/.zshrc` for persistent completion. Comple
 
 Profiles use the `HERMES_HOME` environment variable. When you run `coder chat`, the wrapper script sets `HERMES_HOME=~/.hermes/profiles/coder` before launching hermes. Since 119+ files in the codebase resolve paths via `get_hermes_home()`, Hermes state automatically scopes to the profile's directory — config, sessions, memory, skills, state database, gateway PID, logs, and cron jobs.
 
-This is separate from terminal working directory. Tool execution starts from `terminal.cwd` (or the launch directory when `cwd: "."` on the local backend), not automatically from `HERMES_HOME`.
+This is separate from terminal working directory. Tool execution starts in an interactive local session's launch directory, or from `terminal.cwd` for gateway, cron and remote backends, never automatically from `HERMES_HOME`.
 
 On host installs, tool subprocesses keep your real OS-user `HOME` by default so
 existing CLI credentials under `~` keep working across profiles. Profile data is

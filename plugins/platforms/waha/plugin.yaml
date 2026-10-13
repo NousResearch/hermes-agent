@@ -1,0 +1,57 @@
+name: waha
+label: WhatsApp (WAHA)
+kind: platform
+version: 1.0.0
+description: >
+  WhatsApp bridge via WAHA (https://waha.devlike.pro), a separately-run,
+  self-hosted unofficial WhatsApp Web bridge (Docker). Unlike the bundled
+  Baileys bridge adapter, this adapter never spawns or manages the bridge
+  process — it only talks to an already-running WAHA instance over HTTP
+  (REST for outbound sends, a webhook listener for inbound events), so
+  WAHA-routed WhatsApp conversations become real turns in the Bot Chat UI.
+author: Nous Research
+requires_env:
+  - name: WAHA_BASE_URL
+    description: "Base URL of the running WAHA instance (e.g. http://localhost:3000)"
+    prompt: "WAHA base URL"
+    password: false
+  - name: WAHA_SESSION
+    description: "WAHA session name (default: default)"
+    prompt: "WAHA session name"
+    password: false
+optional_env:
+  - name: WAHA_API_KEY
+    description: "WAHA X-Api-Key, if the instance requires one"
+    prompt: "WAHA API key (optional)"
+    password: true
+  - name: WAHA_HMAC_SECRET
+    description: >
+      Shared secret configured as this WAHA session's webhook HMAC key
+      (config.webhooks[].hmac.key / WHATSAPP_HOOK_HMAC_KEY). Required unless
+      the webhook listener is bound to 127.0.0.1-only (loopback).
+    prompt: "WAHA webhook HMAC secret (optional on loopback)"
+    password: true
+  - name: WAHA_WEBHOOK_HOST
+    description: "Host the inbound webhook listener binds to (default: 127.0.0.1)"
+    prompt: "Webhook listen host"
+    password: false
+  - name: WAHA_WEBHOOK_PORT
+    description: "Port the inbound webhook listener binds to (default: 8666)"
+    prompt: "Webhook listen port"
+    password: false
+  - name: WAHA_ALLOWED_USERS
+    description: "Comma-separated phone numbers / JIDs allowed to DM the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: WAHA_ALLOW_ALL_USERS
+    description: "Allow any sender to DM the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: WAHA_GROUP_ALLOWED_USERS
+    description: "Comma-separated WhatsApp group JIDs allowed to use the bot"
+    prompt: "Allowed groups (comma-separated)"
+    password: false
+  - name: WAHA_HOME_CHANNEL
+    description: "Default chat_id for cron / notification delivery"
+    prompt: "Home channel (chat_id)"
+    password: false

@@ -34,7 +34,11 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import (
+    PreflightCompressionTimedOut,
+    PrivacyShieldBlockError,
+    build_turn_context,
+)
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
@@ -1377,6 +1381,21 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> dict[str, Any
     )
 
 
+def _privacy_shield_block_result(agent, exc, conversation_history) -> dict[str, Any]:
+    """Typed recovery result when Privacy-Shield strict/paranoid blocked the turn
+    (Spec v1.1 4c): no provider call was sent, the PII never left the machine."""
+    logger.warning(
+        "Privacy-Shield blocked the turn — ending turn with typed recovery result: %s", exc,
+    )
+    from agent.agent_runtime_helpers import note_turn_persisted
+    note_turn_persisted(agent)
+    return _partial_turn_result(
+        str(exc), list(conversation_history or []), 0,
+        failed=True, turn_exit_reason="privacy_shield_block",
+        failure_reason="privacy_policy_block", failure_retryable=False,
+    )
+
+
 @dataclass
 class _LoopState:
     """Every local the turn loop threads through the phase helpers in ``agent/turn_*.py``.
@@ -1612,6 +1631,9 @@ def _run_conversation_turn(
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    except PrivacyShieldBlockError as _ps_block_exc:
+        return _privacy_shield_block_result(agent, _ps_block_exc, conversation_history)
+
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route

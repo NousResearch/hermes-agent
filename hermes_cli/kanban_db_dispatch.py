@@ -145,6 +145,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    skipped_discovery_failed: list[str] = field(default_factory=list)
+    """Task ids skipped this tick because every pre-dispatch skill-discovery
+    source was unreachable (ADR-001 Phase 1, Spec §1(4) degraded-first). The
+    claim was rolled back, the card stays ``ready`` and retries on a later
+    tick — infrastructure failure, never charged to the card."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -2022,6 +2027,118 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+# --- Phase-1 pre-dispatch skill discovery (ADR-001 Spec v1.0) ------------
+
+def _skill_discovery_enabled() -> bool:
+    """``config.yaml → kanban.skill_discovery.enabled`` (default true); a
+    config-read failure leaves the hook ON — a corrupt config must not
+    silently widen the kill switch."""
+    try:
+        from hermes_cli.kanban_skill_discovery import _discovery_config
+        return bool(_discovery_config().get("enabled", True))
+    except Exception:
+        return True
+
+
+_TOTAL_FAILURE_BACKOFF_S = 10   # Spec §1(4): stop after 10 consecutive ticks
+
+
+def _run_claim_discovery(
+    conn: sqlite3.Connection,
+    claimed: Task,
+    board: Optional[str],
+    result: DispatchResult,
+    lane: str,
+    dry_run: bool,
+):
+    """Run the discovery hook for a freshly claimed task, persist evidence
+    into the run metadata and return the DiscoveryResult; ``None`` on TOTAL
+    source failure (all three sources unresponsive) after 10 consecutive
+    such ticks — then the card is blocked transient with a clear reason
+    (prevents event-spam loops, Spec §1(4))."""
+    from hermes_cli import kanban_skill_discovery as ksd
+
+    discovery = ksd.run_skill_discovery(claimed)
+    run_id = getattr(claimed, "current_run_id", None)
+    if not dry_run and discovery.status != "total_failure":
+        try:
+            with _kb.write_txn(conn):
+                ksd.attach_to_run(conn, run_id, discovery)
+                ksd.write_skills(conn, claimed.id, discovery.skills)
+        except Exception as exc:
+            # Evidence write failure is NOT a spawn blocker — the searches ran.
+            _kb._log.warning(
+                "kanban dispatcher: discovery evidence write for %s failed: %s",
+                claimed.id, exc,
+            )
+    if discovery.status != "total_failure":
+        if discovery.status != "ok":
+            _kb._log.info(
+                "kanban dispatcher: skill discovery degraded for %s (%s)",
+                claimed.id, discovery.status,
+            )
+        return discovery
+
+    # Total failure: consecutive-tick accounting, then give up with a block.
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_events "
+        "WHERE task_id = ? AND kind = 'discovery_total_failure' "
+        "  AND created_at > ?",
+        (claimed.id, int(time.time()) - _TOTAL_FAILURE_MAX_SPAN_S),
+    ).fetchone()
+    streak = int(row[0]) if row else 0
+    if not dry_run:
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, claimed.id, "discovery_total_failure",
+                {"source_results": discovery.source_results},
+                run_id=run_id,
+            )
+    if streak + 1 >= _TOTAL_FAILURE_MAX_TICKS:
+        _kb._log.error(
+            "kanban dispatcher: skill discovery sources down for %d consecutive "
+            "ticks — blocking %s transient", streak + 1, claimed.id,
+        )
+        _kb.block_task(
+            conn, claimed.id,
+            reason="skill discovery: all sources (session, obsidian, vault_search) "
+                   "unreachable for 10 consecutive dispatch ticks",
+            kind="transient",
+        )
+        return discovery   # blocked: caller must not spawn either
+    return None
+
+
+_TOTAL_FAILURE_MAX_TICKS = 10
+_TOTAL_FAILURE_MAX_SPAN_S = 3600  # 10 ticks × 60 s default interval
+
+
+def _skill_discovery_rollback(conn: sqlite3.Connection, task_id: str) -> None:
+    """Roll a total-failure claim back to ``ready`` WITHOUT touching
+    ``consecutive_failures`` (infrastructure failure, not worker failure) —
+    the existing reclaim path restores ``ready`` for the retry tick via
+    ``_retry_status_for_run`` (the run's ``claimed`` event says
+    ``source_status=ready``)."""
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL "
+            "WHERE id = ? AND status = 'running'",
+            (task_id,),
+        )
+        _kb._end_run(
+            conn, task_id, outcome="skipped_discovery_failed", status="skipped_discovery_failed",
+            error="skill discovery: all sources unreachable (degraded-first skipped this tick)",
+        )
+        _kb._append_event(
+            conn, task_id, "skipped_discovery_failed",
+            {"reason": "all discovery sources failed"}, run_id=_kb._current_run_id(conn, task_id),
+        )
+
+
+# --- end skill discovery -------------------------------------------------
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2112,6 +2229,25 @@ def _dispatch_lane_task(
         ):
             result.auto_blocked.append(claimed.id)
         return False
+    # --- Phase-1 pre-dispatch skill discovery (ADR-001) ------------------
+    # After the claim (run row exists), BEFORE workspace/_worker_argv: a hook
+    # failure must never leave a spawned child without its forced skill set.
+    # ``dry_run`` here means "claim but don't spawn" (the ready/review loops
+    # handled it in their dry branch) — the hook runs in evidence-only mode:
+    # queries + hits are computed but nothing is persisted. The pre-created
+    # run row from a failed CAS must not exist in dry-mode; the hook caller
+    # passes dry_run through from the lane kwargs.
+    if _skill_discovery_enabled():
+        discovery = _run_claim_discovery(conn, claimed, board, result, lane, dry_run=dry_run)
+        if discovery is None:
+            # Total failure of every discovery source: roll the claim back and
+            # skip the spawn this tick — the task stays `ready` and retries on
+            # a later tick, WITHOUT touching the failure breaker (Spec §1(4)).
+            _skill_discovery_rollback(conn, claimed.id)
+            result.skipped_discovery_failed.append(claimed.id)
+            return False
+        claimed.skills = list(dict.fromkeys(
+            [*(claimed.skills or []), *discovery.skills]))
     _kbw.set_workspace_path(conn, claimed.id, str(workspace))
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
@@ -2339,12 +2475,19 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    _dispatch_lane_kwargs: Optional[dict] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    :func:`_tick_spawn_budget`.
+
+    ``_dispatch_lane_kwargs``: internal — extra keyword args threaded to every
+    ``_dispatch_lane_task`` call (the per-lane ``dry_run`` flag, so the
+    pre-dispatch skill-discovery hook can also run in its dry-run form)."""
+    extra_lane_kwargs: dict[str, Any] = dict(_dispatch_lane_kwargs or {})
+
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
@@ -2411,7 +2554,8 @@ def _dispatch_once_locked(
                 continue
             row_assignee = default_assignee
             result.auto_assigned_default.append(row["id"])
-        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
+        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready",
+                               **{**lane_kwargs, **extra_lane_kwargs}):
             spawned += 1
 
     # A review agent (sdlc-review) approves (→ done) or requests changes
@@ -2424,7 +2568,8 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review",
+                               **{**lane_kwargs, **extra_lane_kwargs}):
             spawned += 1
     return result
 

@@ -2312,6 +2312,21 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+def _clear_hermes_home_bytecode_cache() -> int:
+    """Home-wide stale-bytecode sweep (profiles + the agent checkout).
+
+    The checkout subtree skips venv/.venv/node_modules/.git/.worktrees via
+    :func:`_clear_bytecode_cache`'s ignore list. Returns directories removed.
+    """
+    home = get_hermes_home()
+    removed = 0
+    for sub in ("profiles", "hermes-agent"):
+        root = home / sub
+        if root.is_dir():
+            removed += _clear_bytecode_cache(root)
+    return removed
+
+
 def _finalize_update_receipt(code: int, reason: str) -> None:
     """Best-effort receipt close at the command boundary; no-op if already finalized."""
     try:

@@ -376,6 +376,14 @@ class PreflightCompressionTimedOut(RuntimeError):
     """Raised when an oversized turn cannot safely finish preflight."""
 
 
+class PrivacyShieldBlockError(RuntimeError):
+    """Privacy-Shield strict/paranoid mode blocked the turn (Spec v1.1 4c).
+
+    No provider call was sent; the message carries the plugin's
+    block_reason for the typed recovery result.
+    """
+
+
 def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     """Stop an oversized turn instead of sending its unchanged provider payload.
     Only a request the model cannot accept (above its context window, or of unknown fit) is stopped: a
@@ -841,6 +849,22 @@ def _collect_pre_llm_call_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
+        # Privacy-Shield User-Message Override Capture (Spec v1.0.1 Section 4b)
+        # Privacy-Shield block-signal capture (Spec v1.1 Section 4c):
+        # the plugin reports strict/paranoid blocks via the return
+        # contract ({"blocked": True, "block_reason": ...}) because the
+        # hook dispatcher swallows exceptions. Consumed by the
+        # override-application site, which raises BEFORE the API call.
+        agent._privacy_shield_override = ""
+        agent._privacy_shield_block = None
+        for _r_ovr in _pre_results:
+            if isinstance(_r_ovr, dict):
+                if _r_ovr.get("blocked") and not agent._privacy_shield_block:
+                    agent._privacy_shield_block = str(
+                        _r_ovr.get("block_reason") or "Privacy-Shield block"
+                    )
+                if _r_ovr.get("user_message") and not agent._privacy_shield_override:
+                    agent._privacy_shield_override = str(_r_ovr["user_message"])
         return "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
@@ -1169,6 +1193,25 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
+    # Privacy-Shield Defense-in-Depth Check (Spec v1.0.1 Section 4)
+    # Wenn Cloud-Provider und Privacy-Shield-Plugin nicht geladen → Hard-Block
+    # Verhindert silent PII-Leak bei Plugin-Crash oder Loader-Regression
+    try:
+        from hermes_cli.plugins import _get_enabled_plugins
+        from hermes_cli.lifecycle import has_hook as _has_hook
+        _privacy_cfg = _get_enabled_plugins() or set()
+        if "privacy-shield" in _privacy_cfg and agent.provider not in ("ollama_local", "ollama"):
+            if not _has_hook("pre_llm_call"):
+                raise RuntimeError(
+                    "Privacy-Shield is enabled in config (plugins.enabled includes "
+                    "'privacy-shield') but the privacy-shield plugin is not loaded. "
+                    "Install: hermes plugin install privacy-shield"
+                )
+    except RuntimeError:
+        raise
+    except Exception as _exc:
+        logger.warning("Privacy-Shield check failed: %s", _exc)
+
     plugin_user_context = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
@@ -1201,6 +1244,22 @@ def build_turn_context(
                 agent, messages, current_turn_user_idx, ext_prefetch_cache,
                 plugin_user_context, preflight_compressed=compaction.compressed,
             )
+            # Privacy-Shield User-Message Override (Spec v1.0.1 Section 4b)
+            # Privacy-Shield block-signal enforcement (Spec v1.1 Section 4c):
+            # the plugin reports strict/paranoid blocks in the hook return
+            # (exceptions are swallowed by the dispatcher); fail the turn
+            # here — outside the hook try/except — BEFORE any API call.
+            _ps_block = getattr(agent, "_privacy_shield_block", None)
+            if _ps_block:
+                raise PrivacyShieldBlockError(str(_ps_block))
+            _ps_override = getattr(agent, "_privacy_shield_override", "")
+            if isinstance(_ps_override, str) and _ps_override:
+                _turn_user_msg = messages[current_turn_user_idx]
+                _ps_composed = compose_user_api_content(
+                    _ps_override, ext_prefetch_cache, plugin_user_context
+                ) or _ps_override
+                if _ps_composed != _turn_user_msg.get("content"):
+                    _turn_user_msg["api_content"] = _ps_composed
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
 

@@ -1889,11 +1889,31 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    ``metadata`` is MERGED over the run's existing metadata (caller wins per
+    key), not overwritten: pre-dispatch bookkeeping writes ``discovery`` to
+    the claimed run row, and a terminal transition closing the run (spawn
+    failure, timeout, reclaim) carries that evidence into the closed-run
+    history instead of wiping it."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    existing_meta: dict = {}
+    if metadata is not None:
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL", (run_id,),
+        ).fetchone()
+        try:
+            existing_meta = _json_dict(row["metadata"]) if row else {}
+        except Exception:
+            existing_meta = {}
+        if not isinstance(existing_meta, dict):
+            existing_meta = {}
+        merged = {**existing_meta, **metadata}
+    else:
+        merged = None
     conn.execute(
         """
         UPDATE task_runs
@@ -1907,7 +1927,7 @@ def _end_run(
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(merged), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -4426,6 +4446,7 @@ from hermes_cli.kanban_db_boards import (
 )
 from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
+    connect_closing,
     init_db,
     write_txn,
 )

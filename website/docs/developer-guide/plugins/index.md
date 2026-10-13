@@ -1592,15 +1592,21 @@ After registration, users can type `/mystatus` in any session. The command appea
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+**Gateway source context:** A gateway handler may opt into the adapter-derived `gateway.session.SessionSource` as a keyword-only `source` argument (or accept it through `**kwargs`). Sync handlers keep running in the gateway executor, and coroutine or returned-awaitable handlers are awaited as before:
 
 ```python
-async def _handle_check(raw_args: str) -> str:
-    result = await some_async_operation()
-    return f"Check result: {result}"
+from gateway.session import SessionSource
 
-def register(ctx):
-    ctx.register_command("check", handler=_handle_check, description="Run async check")
+
+def _handle_admin(raw_args: str, *, source: SessionSource | None = None) -> str:
+    # Non-gateway invocation does not supply a source. Sensitive work must fail closed.
+    if source is None or source.user_id is None:
+        return "This command requires gateway identity context."
+    # Apply plugin-owned policy using stable transport identifiers; do not authorize
+    # from user_name/chat_name or command arguments.
+    if not plugin_policy.allows(source.platform, source.user_id, source.chat_id):
+        return "Not authorized."
+    return perform_allowed_action(raw_args)
 ```
 
 **Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
@@ -1616,6 +1622,7 @@ def _handle_todo(raw_args: str) -> str:
     todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
     return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
+The example's `plugin_policy` and action function are illustrative plugin-owned code, not Hermes APIs. The gateway preserves the existing session-context binding and sync-handler executor behavior. Legacy `handler(raw_args)` callbacks continue receiving only the raw argument string; CLI/non-gateway invocation also retains its existing one-argument contract. Hermes supplies `source=` only when the handler signature accepts that keyword (including `**kwargs`). A parameter named `source` that is positional-only does not opt in. The source describes transport/routing identity and is not an authorization grant: plugin policy remains responsible for each action, and display names are untrusted labels, not authorization evidence. If a sensitive operation requires gateway identity, reject a missing source rather than treating the non-gateway call as authorized. Exceptions raised inside a handler propagate through normal dispatch error handling; Hermes does not retry the callback as a legacy call.
 
 ### Dispatch tools from slash commands
 

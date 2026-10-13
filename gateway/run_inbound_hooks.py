@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import signal
@@ -275,11 +277,13 @@ class GatewayInboundHooksMixin:
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         with self._session_env_scope(_plugin_context):
-            if asyncio.iscoroutinefunction(plugin_handler):
-                result = await plugin_handler(user_args)
+            if inspect.iscoroutinefunction(plugin_handler):
+                result = await invoke_plugin_command(plugin_handler, user_args, source=source)
             else:
-                result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                if asyncio.iscoroutine(result):
+                result = await self._run_in_executor_with_context(
+                    functools.partial(invoke_plugin_command, plugin_handler, user_args, source=source))
+                if inspect.isawaitable(result):
                     result = await result
         return str(result) if result else None

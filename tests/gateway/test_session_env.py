@@ -330,3 +330,49 @@ def test_set_session_env_binds_the_turn_session_id(monkeypatch):
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_ID") == "20261006_x"
     runner._clear_session_env(tokens)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_kind", ["sync", "async", "returned_awaitable"])
+async def test_plugin_slash_command_receives_explicit_source(monkeypatch, handler_kind):
+    """Gateway opt-in passes the exact transport source across sync/async execution paths."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner._draining = False
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="synthetic-chat", user_id="synthetic-user",
+        user_name="untrusted display label", chat_type="dm",
+    )
+    event = MessageEvent(text="/source-check details", source=source, message_id="synthetic-message")
+    seen = []
+
+    async def _resolve(raw_args, received_source):
+        seen.append((raw_args, received_source))
+        return "source delivered"
+
+    if handler_kind == "async":
+        async def _async_handler(raw_args, *, source):
+            return await _resolve(raw_args, source)
+        handler = _async_handler
+    elif handler_kind == "returned_awaitable":
+        def _awaitable_handler(raw_args, *, source):
+            return _resolve(raw_args, source)
+        handler = _awaitable_handler
+    else:
+        def _sync_handler(raw_args, *, source):
+            seen.append((raw_args, source))
+            return "source delivered"
+        handler = _sync_handler
+
+    from hermes_cli import plugins as _plugins_mod
+    monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler", lambda name: handler)
+
+    handled, result, _command = await runner._hm_dispatch_quick_and_plugin_commands(
+        event, source, "source-check"
+    )
+
+    assert handled is True
+    assert result == "source delivered"
+    assert seen == [("details", source)]
+

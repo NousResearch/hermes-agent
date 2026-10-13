@@ -47,7 +47,12 @@ The choice is stored per install under `update.installs` in `config.yaml`. An
 install that never chose a channel only moves forward: a checkout already newer
 than the latest release (for example one that tracked `main` before this default)
 stays where it is until a newer release ships. Running `--set-channel stable`
-pins the checkout to the exact release commit, even when that is older.
+pins the checkout to the exact release commit, even when that is older; the
+Desktop names that move as a rollback to the release, and `hermes update --check`
+says the checkout is newer, instead of announcing a new update. Re-running the
+installer (`install.sh`, `install.ps1` or Hermes-Setup) over an install that chose
+a channel other than `main` keeps its checkout where it is: only `hermes update`
+moves it. An explicit `--commit` pin still applies.
 Windows Store, MSIX and bundled desktop installs are unaffected; their channel
 is baked into the package (see below).
 

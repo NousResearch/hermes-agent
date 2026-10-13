@@ -889,6 +889,8 @@ export interface DesktopUpdateStatus {
   sourceVersion?: string
   /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
   aheadOfRelease?: boolean
+  /** Source stable: the checkout already contains the release, so installing it moves back. */
+  rollback?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

@@ -70,6 +70,38 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def set_pending_response_token_count(agent: Any, value: Any) -> None:
+    """Stage the completion tokens of the response the loop is currently closing, for the
+    assistant row ``build_assistant_message`` is about to build (``agent/conversation_loop.py``
+    resets this at turn start; a usage-less call must clear a stale stage, never pass it on)."""
+    try:
+        agent._pending_response_token_count = int(value or 0) or None
+    except (TypeError, ValueError):
+        agent._pending_response_token_count = None
+
+
+def consume_pending_response_token_count(agent: Any) -> int | None:
+    """Pop the staged completion tokens, or None when the call reported no usable usage.
+
+    One-shot by design: the stage holds exactly one response's figure and the row being
+    built is that response's row, so consuming it here keeps a later row (a re-prompt,
+    the next turn) from inheriting a foreign count. Never revises an existing stamp."""
+    value = getattr(agent, "_pending_response_token_count", None)
+    agent._pending_response_token_count = None
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def stamp_row_token_count(agent: Any, msg: dict[str, Any]) -> None:
+    """Land the staged per-response figure on the assistant row ``build_assistant_message``
+    is building — the single chokepoint every live assistant row flows through. The loop
+    records usage BEFORE the row exists, so the figure is staged on the agent and consumed
+    here; ``session_persistence`` persists ``msg["token_count"]``, which nothing ever set
+    (#136851). No-op (and no field) when the call reported no usable usage."""
+    row_tokens = consume_pending_response_token_count(agent)
+    if row_tokens:
+        msg["token_count"] = row_tokens
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -92,6 +124,8 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
+        # The row this response yields must carry no count, not the previous call's.
+        set_pending_response_token_count(agent, None)
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -107,6 +141,10 @@ def record_response_usage(
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
     total_tokens = canonical_usage.total_tokens
+    # Stage the per-row figure the assistant row for THIS response will carry: the
+    # aggregator's own output (pre-MoA-fold), so advisor fan-out is never billed to the
+    # aggregator's row. build_assistant_message consumes it exactly once.
+    set_pending_response_token_count(agent, aggregator_usage.output_tokens)
     # Canonical token + cache buckets for context engines; legacy keys stay for back-compat.
     usage_dict = {
         "prompt_tokens": prompt_tokens,

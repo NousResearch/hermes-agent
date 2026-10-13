@@ -41,6 +41,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
+from agent.chat_completion_assistant_storage import _assistant_content_for_storage
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -52,6 +53,7 @@ from agent.reasoning_summaries import (
 )
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.turn_usage import stamp_row_token_count
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -1605,20 +1607,6 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     return _sanitize_surrogates(reasoning_text) if reasoning_text else reasoning_text
 
 
-def _assistant_content_for_storage(agent, assistant_message):
-    # Sanitize surrogates (Kimi/GLM via Ollama emit code points that crash json.dumps),
-    # strip inline <think> tags at the storage boundary (they leaked to platforms and
-    # polluted titles), then redact inlined credentials before the message enters
-    # history / state.db / gateway delivery (no-op with HERMES_REDACT_SECRETS off).
-    content = _sanitize_surrogates(flatten_message_text(getattr(assistant_message, "content", None)))
-    if isinstance(content, str) and content:
-        content = agent._strip_think_blocks(content).strip()
-        if content:
-            from agent.redact import redact_sensitive_text
-            content = redact_sensitive_text(content)
-    return content
-
-
 def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     raw_id = getattr(tool_call, "id", None)
     call_id = getattr(tool_call, "call_id", None)
@@ -1679,6 +1667,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     msg = stamp_message_timestamp({"role": "assistant",
         "content": _assistant_content_for_storage(agent, assistant_message), "reasoning": reasoning_text,
         "finish_reason": finish_reason})
+    stamp_row_token_count(agent, msg)
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
     if raw_reasoning_content is None:

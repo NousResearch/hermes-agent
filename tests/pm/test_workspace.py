@@ -52,6 +52,39 @@ def test_preparation_refuses_existing_workspace_without_mutating_it(layout):
     assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
 
 
+@pytest.mark.parametrize("project_text, expected_version", [
+    ("", "0.0.0"),
+    ('[project]\nname="unversioned-plugin"\n', "0.0.0"),
+    ('[project]\nname="configured-plugin"\nversion="2.3.4"\n', "2.3.4"),
+])
+def test_workspace_tool_only_pyproject_locks_and_syncs(layout, project_text, expected_version):
+    """Tool settings alone must produce a valid virtual member without editing the plugin."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    original = project_text + '[tool.ruff]\nline-length = 100\n'
+    pyproject = plugin / "pyproject.toml"
+    pyproject.write_text(original, encoding="utf-8")
+    root = tmp / "workspace"
+    environment = managed_environment(tmp / "env", offline=True)
+
+    ws.lock_and_sync([plugin], [], root=root, source=core, seed_lock=None,
+                     environment=environment)
+
+    [relative] = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]
+    member = tomllib.loads((root / relative / "pyproject.toml").read_text())
+    assert member["project"]["version"] == expected_version
+    assert member["tool"]["ruff"] == {"line-length": 100}
+    locked = tomllib.loads((root / "uv.lock").read_text())["package"]
+    package = next(p for p in locked if p["name"] == member["project"]["name"])
+    assert package["version"] == expected_version
+    assert package["source"] == {"virtual": relative}
+    assert pyproject.read_text(encoding="utf-8") == original
+    probe = subprocess.run([str(environment.executable), "-I", "-c", "import base_dep"],
+                           cwd=tmp, capture_output=True, text=True, timeout=30, check=False)
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_missing_explicit_seed_cannot_silently_resolve_new_versions(layout):
     tmp, core, plug_a, _ = layout
     with pytest.raises(FileNotFoundError):

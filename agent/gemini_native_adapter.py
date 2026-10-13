@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_long_decode import continuation_token, merge_hop_responses, split_stream_continuation
+from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
@@ -622,7 +622,8 @@ def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
     count = lambda key: int(usage_meta.get(key) or 0)
     reasoning_tokens = count("thoughtsTokenCount")
     # Multi-hop long decode: the counts are summed over hops (billing); the context size is hop 1's prompt.
-    initial = {"initial_prompt_tokens": count("initialPromptTokenCount")} if "initialPromptTokenCount" in usage_meta else {}
+    initial = {"initial_prompt_tokens": count("initialPromptTokenCount"),
+               "initial_cached_tokens": count("initialCachedContentTokenCount")} if "initialPromptTokenCount" in usage_meta else {}
     return SimpleNamespace(
         prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
@@ -934,7 +935,10 @@ class GeminiNativeClient:
         if stream:
             return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
         hops = [self._generate(url + self.GENERATE_METHOD, request, timeout)]
-        while token := continuation_token(hops[-1]):  # long decode: same request + token, never the partial output
+        max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
+        # Long decode: same request + token, never the partial output. Past the ceiling the last hop's
+        # CONTINUATION finish translates to ``length``.
+        while (token := continuation_token(hops[-1])) and len(hops) < max_hops:
             hops.append(self._generate(url + self.GENERATE_METHOD, {**request, "continuationToken": token}, timeout))
         return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
 
@@ -952,6 +956,7 @@ class GeminiNativeClient:
     def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
         tool_call_indices: dict[str, dict[str, Any]] = {}  # shared across hops: they form one model turn
         hop_usage: list[dict[str, Any]] = []
+        max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
         body: dict[str, Any] = request
         # ``resume``: the latest token (hop end or mid-stream checkpoint) with nothing yielded after it.
         # The next hop, or a dropped stream, resends the request with it; ``sends`` bounds a stuck token.
@@ -963,7 +968,12 @@ class GeminiNativeClient:
                     if response.status_code != 200:
                         raise self._http_error(response, read_streaming_error_body(response))
                     for event in _iter_sse_events(response):
+                        hops_done = len(hop_usage)
                         event, token = split_stream_continuation(event, hop_usage)
+                        if token and len(hop_usage) > hops_done and len(hop_usage) >= max_hops:
+                            # Hop ceiling: end the turn as truncated, usage summed over every hop.
+                            cand = {**event["candidates"][0], "finishReason": "MAX_TOKENS"}
+                            event, token = {**event, "candidates": [cand], "usageMetadata": merge_hop_usage(hop_usage)}, None
                         chunks = translate_stream_event(event, model, tool_call_indices)
                         if token or chunks:  # a token commits its own event's chunks; a later chunk voids it
                             resume, sends = token, 0 if token else sends

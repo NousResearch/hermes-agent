@@ -100,6 +100,10 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # A draining gateway answers new work with a drain notice and discards queued follow-ups,
+    # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
+    if getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True:
+        raise WakeNotAccepted("gateway is draining; retry after restart")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted()

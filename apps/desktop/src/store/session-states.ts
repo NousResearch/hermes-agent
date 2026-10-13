@@ -38,6 +38,7 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -2232,8 +2233,14 @@ export interface SessionTileDelegate {
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
-   *  branch/handoff — act on the main surface, as they should). */
-  executeSlash(rawCommand: string, sessionId: string, options?: { typed?: boolean }): Promise<void>
+   *  branch/handoff — act on the main surface, as they should). Returns true
+   *  when a prompt-taking dispatch consumed the caller's staged attachments
+   *  onto its kickoff (#81798). */
+  executeSlash(
+    rawCommand: string,
+    sessionId: string,
+    options?: { attachments?: ComposerAttachment[]; typed?: boolean }
+  ): Promise<boolean>
   /** Interrupt a tile's running turn. */
   interruptSession(runtimeId: string): Promise<void>
   /** Drop the wiring cache's stored→runtime bindings. Called on gateway

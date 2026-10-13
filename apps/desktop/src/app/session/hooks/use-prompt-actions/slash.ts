@@ -24,7 +24,7 @@ import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
-import { setComposerDraft } from '@/store/composer'
+import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
@@ -208,8 +208,21 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   return useCallback(
     async (
       rawCommand: string,
-      options?: { hidden?: boolean; sessionId?: string; recordInput?: boolean; typed?: boolean }
-    ) => {
+      options?: {
+        /** Composer chips staged when the command was typed. A `send`/`skill`
+         *  dispatch (/goal <text>, /moa …) is a prompt-taking command: the
+         *  backend executes the command and hands back the kickoff message,
+         *  so the staged attachments must ride that kickoff instead of being
+         *  dropped. exec-only commands (/status, /compress) render text and
+         *  never touch prompt.submit — the caller keeps the chips in the
+         *  composer for the next message. */
+        attachments?: ComposerAttachment[]
+        hidden?: boolean
+        sessionId?: string
+        recordInput?: boolean
+        typed?: boolean
+      }
+    ): Promise<boolean> => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -274,13 +287,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       // `exec` commands (and unknown skill / quick commands the backend owns)
       // run on the gateway and render their text output inline. This is the only
-      // path that talks to slash.exec / command.dispatch.
-      async function runExec(ctx: SlashActionCtx): Promise<void> {
+      // path that talks to slash.exec / command.dispatch. Returns true when a
+      // prompt-taking dispatch consumed the caller's staged attachments.
+      async function runExec(ctx: SlashActionCtx): Promise<boolean> {
         const { arg, command, name } = ctx
         const resolved = await withSlashOutput(ctx)
 
         if (!resolved) {
-          return
+          return false
         }
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
@@ -291,7 +305,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         if (!isDesktopSlashCommand(name, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
-          return
+          return false
         }
 
         // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
@@ -302,10 +316,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         if (subcommandBlocked) {
           renderSlashOutput(subcommandBlocked)
 
-          return
+          return false
         }
 
         let slashExecError: unknown = null
+        // Set when handleDispatch hands the staged attachments to a kickoff
+        // submit — the caller then knows the chips left the composer.
+        let attachmentsConsumed = false
 
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
@@ -386,6 +403,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // dispatch and this branch would otherwise queue the kickoff on
           // whichever chat is now in front (#63352).
           const queued = queueKickoffIfSessionBusy({
+            attachments: options?.attachments,
             displayText,
             foregroundBusy: busyRef.current,
             sessionId,
@@ -394,6 +412,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           if (queued !== 'idle') {
+            // 'queued' handed the staged chips to the queue entry — they are
+            // gone from the composer and will ride the kickoff on drain.
+            if (queued === 'queued') {
+              attachmentsConsumed = true
+            }
+
             renderSlashOutput(BUSY_KICKOFF_TEXT[queued])
 
             return
@@ -409,12 +433,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // queue drain, a session created by this very call) had the same leak.
           // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
           // or after a reload.
-          await submitPromptText(message, {
+          //
+          // A prompt-taking command carries the composer's staged chips into
+          // its kickoff (#81798): the backend executed `/goal <text>` (or any
+          // send/skill dispatch) and hands back the first-turn prompt, so the
+          // attachments the user dropped next to the command belong to THAT
+          // message — dropping them silently lost the user's files.
+          const kickoffAccepted = await submitPromptText(message, {
+            ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
             sessionId,
             storedSessionId,
             displayText,
             ...(options?.hidden && { displayKind: 'hidden' as const })
           })
+
+          // A refused kickoff (session drift, read-only transcript …) never
+          // reached prompt.submit — the chips must go back to the composer,
+          // so only a non-false result counts as consumed.
+          attachmentsConsumed = kickoffAccepted !== false
         }
 
         try {
@@ -428,7 +464,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           if (dispatch) {
             await handleDispatch(dispatch)
 
-            return
+            return attachmentsConsumed
           }
 
           const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
@@ -444,7 +480,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
-          return
+          return false
         } catch (error) {
           // Fall back to command.dispatch for skill/send/alias directives, but
           // keep the worker error: a slash.exec worker timeout/crash is the real
@@ -460,10 +496,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           if (!dispatch) {
             renderSlashOutput('error: invalid response: command.dispatch')
 
-            return
+            return false
           }
 
           await handleDispatch(dispatch)
+
+          return attachmentsConsumed
         } catch (err) {
           // "not a quick/plugin/bundle/skill command" (older gateways: without
           // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
@@ -474,11 +512,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
             renderSlashOutput(`error: /${name} failed: ${original}`)
 
-            return
+            return false
           }
 
           renderSlashOutput(`error: ${dispatchMessage}`)
         }
+
+        return false
       }
 
       // `rpc` commands have a dedicated gateway handler — skip slash.exec /
@@ -1347,7 +1387,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       // The whole dispatcher: resolve the command's desktop surface, then act on
       // its kind. No per-command ladder — behavior lives in the registry.
-      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<boolean> {
         const command = commandText.trim()
         const { name, arg } = parseSlashCommand(command)
 
@@ -1366,7 +1406,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
           }
 
-          return
+          return false
         }
 
         // Shared metrics count each command the user typed exactly once, here, whether the desktop
@@ -1389,25 +1429,31 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const resolved = await withSlashOutput(ctx)
             resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
-            return
+            return false
           }
 
           case 'picker':
-            return openPicker(surface.picker, ctx)
+            await openPicker(surface.picker, ctx)
+
+            return false
 
           case 'action':
-            return actionHandlers[surface.action](ctx)
+            await actionHandlers[surface.action](ctx)
+
+            return false
 
           case 'rpc':
-            return runRpc(surface, ctx)
+            await runRpc(surface, ctx)
+
+            return false
 
           default:
             // exec spec, or an unknown skill / quick command the backend owns.
-            return runExec(ctx)
+            return await runExec(ctx)
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
+      return await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
     },
     [
       activeSessionIdRef,

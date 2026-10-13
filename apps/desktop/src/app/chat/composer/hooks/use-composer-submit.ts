@@ -2,7 +2,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { translateNow, useI18n } from '@/i18n'
+import { translateNow } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
@@ -92,8 +92,6 @@ export function useComposerSubmit({
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
-  const { t } = useI18n()
-  const copy = t.desktop
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -231,24 +229,22 @@ export function useComposerSubmit({
     // busy guard for commands that genuinely need an idle session (skill
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
+    //
+    // Attachments no longer block the command (#81798): the busy path never
+    // cleared the composer scope, so the chips stay staged. A prompt-taking
+    // dispatch (/goal <text>) takes them onto its kickoff — submitText
+    // removes those occurrences from the live scope once the backend
+    // accepted the message; an exec-only command (/status, /compress)
+    // renders text and the chips simply remain for the next message.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
-        // Slash commands cannot ride alongside attachments — warn the user
-        // instead of silently queuing the payload (which would then reach the
-        // idle path and be submitted as plain text with no command execution).
-        notify({
-          kind: 'warning',
-          title: copy.slashCommandIgnoredTitle,
-          message: copy.slashCommandIgnoredBody
-        })
-
-        return false
-      }
-
       triggerHaptic('submit')
       clearDraft()
       dispatchSubmit(text)
-    } else if (!blockingPrompt && !attachments.length && text.trim()) {
+
+      return true
+    }
+
+    if (!blockingPrompt && !attachments.length && text.trim()) {
       // Cursor-style stop-and-correct: interrupt the live turn and redirect
       // it with this text. redirect() preserves the shown reasoning/work; if
       // the turn already ended, steerDraft re-queues so nothing is lost.
@@ -373,9 +369,19 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
+
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
-      scope.attachments.clear({ retainPreviewUrls: true })
+      //
+      // A slash command keeps the chips staged (#81798): submitText routes it
+      // to executeSlashCommand, which either carries them onto a prompt-taking
+      // kickoff (and removes the occurrences itself) or leaves them here for
+      // an exec-only command's next message. Clearing first would silently
+      // drop the user's files when the command renders text only.
+      if (!isSlashCommandText(text)) {
+        scope.attachments.clear({ retainPreviewUrls: true })
+      }
+
       dispatchSubmit(text, submittedAttachments)
     }
 

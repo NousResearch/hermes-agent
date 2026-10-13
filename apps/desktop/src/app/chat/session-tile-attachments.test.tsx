@@ -87,7 +87,7 @@ function installDelegate(): void {
     branchSession: vi.fn(async () => undefined),
     branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(async () => undefined),
-    executeSlash: vi.fn(async () => undefined),
+    executeSlash: vi.fn(async () => false),
     interruptSession: vi.fn(async () => undefined),
     resumeTile: vi.fn(async () => RUNTIME_ID),
     submitToSession: vi.fn(async () => ({

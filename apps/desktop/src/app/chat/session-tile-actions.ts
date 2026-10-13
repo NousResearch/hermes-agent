@@ -330,25 +330,33 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       listTileSession(visibleText)
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return false
-        }
-
         triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+
+        // Attachments no longer block the command (#81798). A prompt-taking
+        // dispatch (/goal <text>, skills) carries the staged chips onto its
+        // kickoff submit; an exec-only command (/status, /compress) renders
+        // text and the chips stay in this tile's own composer scope — the
+        // tile's submitDraft no longer clears it for slash commands, so
+        // exec-only files are simply there for the next message. When the
+        // chips DID ride the kickoff, drop the occurrences from the tile
+        // scope (submit.ts never removes them when given explicit
+        // attachments) so the next Enter doesn't re-send them.
+        const attachmentsConsumed = await sessionTileDelegate()?.executeSlash(
+          visibleText,
+          runtimeIdRef.current,
+          attachments.length ? { attachments } : undefined
+        )
+
+        if (attachmentsConsumed && attachments.length) {
+          scope.attachments.removeOccurrences(attachments)
+        }
 
         return true
       }
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [listTileSession, scope.attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

@@ -19,6 +19,7 @@ import { setSessionCompacting } from '@/store/compaction'
 import {
   $composerAttachments,
   type ComposerAttachment,
+  mainComposerScope,
   patchMainComposerAttachmentOccurrence,
   setComposerAttachmentUploadState,
   updateComposerAttachment
@@ -653,20 +654,54 @@ export function usePromptActions({
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return false
-        }
-
         triggerHaptic('selection')
+
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
+        //
+        // Attachments no longer block the command (#81798). A prompt-taking
+        // dispatch (/goal <text>, skills, /moa) carries the staged chips into
+        // its kickoff submit — the backend already executed the command and
+        // hands back the first-turn prompt, so files dropped next to the
+        // command belong to THAT message. An exec-only command (/status,
+        // /compress) renders text and never submits a prompt, so the chips
+        // must stay available for the next message.
+        //
+        // Where the chips live depends on the caller:
+        //   • idle submit — submitDraft no longer clears the scope for slash
+        //     commands, so the LIVE scope still holds them (options.attachments
+        //     is a clone for the kickoff);
+        //   • busy submit — dispatchSubmit forwards no attachments, so
+        //     `attachments` below IS the live scope;
+        //   • queue drain — the chips live in the queue entry, which the drain
+        //     removes once this call returns true.
+        // submit.ts never removes occurrences when it received explicit
+        // attachments, so this hook owns the live-scope cleanup.
+        const attachmentsConsumed = await executeSlashCommand(visibleText, {
+          ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(attachments.length ? { attachments } : {})
+        })
+
+        if (attachments.length) {
+          if (attachmentsConsumed) {
+            if (!options?.fromQueue) {
+              // Idle/busy: the live scope still holds the chips that just rode
+              // the kickoff — drop them or the next Enter re-sends files that
+              // already went out.
+              mainComposerScope.removeOccurrences(attachments)
+            }
+            // Queue drain: the entry itself is removed by the drain; the chips
+            // already went out with the kickoff.
+          } else if (options?.fromQueue) {
+            // Exec-only command drained from the queue: the entry is about to
+            // be removed, so re-stage the chips in the composer instead of
+            // silently dropping the user's files.
+            for (const attachment of attachments) {
+              mainComposerScope.add(attachment)
+            }
+          }
+          // Idle/busy exec-only: the chips never left the live scope.
+        }
 
         return true
       }

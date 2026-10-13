@@ -602,8 +602,6 @@
   "desktop.readOnlyTranscriptSendBlocked": ["ru"],
   "desktop.readOnlyTranscriptTitle": ["ru"],
   "desktop.resetZoom": ["de","es","fr","ru"],
-  "desktop.slashCommandIgnoredBody": ["de","es","fr","ru"],
-  "desktop.slashCommandIgnoredTitle": ["de","es","fr","ru"],
   "desktop.zoomIn": ["de","es","fr","ru"],
   "desktop.zoomOut": ["de","es","fr","ru"],
   "errors.boundaryDetails": ["ar","ja","ru","zh","zh-hant"],

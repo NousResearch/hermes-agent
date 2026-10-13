@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
@@ -219,18 +218,11 @@ export function useComposerQueue({
         return false
       }
 
-      // Editing a queued entry into a slash-command + attachment combo would
-      // produce an undrainable entry (submitText rejects it on every attempt).
-      // Refuse the save so the queue can never hold an entry that livelocks.
-      if (isSlashCommandText(text) && next.length) {
-        notify({
-          kind: 'warning',
-          title: t.desktop.slashCommandIgnoredTitle,
-          message: t.desktop.slashCommandIgnoredBody
-        })
-
-        return false
-      }
+      // A slash command with attachments is drainable again (#81798): the
+      // drain routes through submitText, which executes the command and
+      // carries a prompt-taking dispatch's chips onto its kickoff (or keeps
+      // them in the composer for an exec-only command). The old livelock
+      // guard is gone with the refusal it protected against.
 
       const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
 
@@ -264,18 +256,10 @@ export function useComposerQueue({
       return false
     }
 
-    // Slash commands cannot ride alongside attachments — the drain path would
-    // reject the entry on every attempt (submitText warns + returns false) and
-    // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
-      notify({
-        kind: 'warning',
-        title: t.desktop.slashCommandIgnoredTitle,
-        message: t.desktop.slashCommandIgnoredBody
-      })
-
-      return false
-    }
+    // Slash commands can ride alongside attachments again (#81798): the drain
+    // executes the command and a prompt-taking dispatch carries the entry's
+    // chips onto its kickoff. The old refusal existed only because the drain
+    // would reject the entry on every attempt and livelock the queue.
 
     // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
     // fenced selection in the runtime map so drain never re-resolves the live

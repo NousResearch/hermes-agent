@@ -147,7 +147,9 @@ export function resolveVersionStatus({
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    ...(busy ? [] : pendingLines({ available, behind, branch: client ? branch : 'main', copy, latestTag, rollback, stable })),
+    ...(busy
+      ? []
+      : pendingLines({ available, behind, branch: client ? branch : 'main', copy, latestTag, rollback, stable })),
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on

@@ -168,6 +168,12 @@ class ConnectionOperationTarget(Payload):
     already_installed: bool | None = None
 
 
+class ConnectionDisplay(Payload):
+    """``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested."""
+
+    suggested: list[str]
+
+
 class ConnectionRequestPayload(Payload):
     """``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume
     snapshot so a client that missed the event restores the card with the server's deadline."""
@@ -181,6 +187,8 @@ class ConnectionRequestPayload(Payload):
     targets: list[ConnectionOperationTarget]
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: str | None = None
+    # Present on a display operation, which has no targets.
+    display: ConnectionDisplay | None = None
 
 
 event("connection.request", ConnectionRequestPayload,

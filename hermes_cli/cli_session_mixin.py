@@ -284,13 +284,6 @@ class CLISessionMixin:
             ctx_label = None
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            if free_tier_route():
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         optional = ((t("cli.session.label_reasoning"), reasoning_label),
                     (t("cli.session.label_approvals"), approval_label),
                     (t("cli.session.label_context"), ctx_label))

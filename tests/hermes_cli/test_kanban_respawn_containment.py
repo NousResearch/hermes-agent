@@ -208,6 +208,24 @@ def test_rate_limit_backoff_grows_and_is_bounded(kanban_home, monkeypatch):
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_rate_limit_backoff_reads_text_timestamps(kanban_home, monkeypatch):
+    """A run stamped with an ISO ``ended_at`` (written outside the mutators)
+    is timed by value, not compared as text."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    clock = {"now": 1_000_000}
+    monkeypatch.setattr(kb.time, "time", lambda: clock["now"])
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rl", assignee="worker")
+        run_id = _end_run(conn, tid, "rate_limited", clock["now"])
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET ended_at=? WHERE id=?",
+                         (kb.time.strftime("%Y-%m-%dT%H:%M:%S+00:00", kb.time.gmtime(clock["now"])), run_id))
+        clock["now"] += 299
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+        clock["now"] += 2
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_rate_limit_exhaustion_parks_then_unblock_recovers(kanban_home, all_assignees_spawnable, spawns, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "1")
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE", "2")

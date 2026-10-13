@@ -5466,6 +5466,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
         from agent.conversation_compression import _raise_if_stale_attempt
+        from agent.context_compressor_pruned import finish_pruned_or_defer
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
@@ -5498,12 +5499,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
             )
-            self._structural_no_op_result(
-                telemetry, "no_compressible_window",
+            return finish_pruned_or_defer(self, messages, canonical_messages, pruned_count,
+                spare_pending_images, telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
                 n_messages,
             )
-            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5517,12 +5517,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not turns_to_summarize:
             # Window is only handoff rows (#59496): skip the aux call; _previous_summary is KEPT —
             # it came from this transcript.
-            self._structural_no_op_result(
-                telemetry, "empty_post_handoff_window",
+            return finish_pruned_or_defer(self, messages, canonical_messages, pruned_count,
+                spare_pending_images, telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
                 n_messages,
             )
-            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

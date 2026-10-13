@@ -42,6 +42,7 @@ class RecordingBoundary extends Component<{ children: ReactNode }, { error: Erro
 
 const lookupErrors = [
   ['useClientLookup', lookupError],
+  ['useClientLookup (keyed scope)', new Error('useClientLookup: Key "1791842467.8330417-98-assistant" not found')],
   ['tapClientLookup', new Error('tapClientLookup: Index 2 out of bounds (length: 2)')],
   ['tapClientResource', new Error('tapClientResource: Index 2 out of bounds (length: 2)')]
 ] as const

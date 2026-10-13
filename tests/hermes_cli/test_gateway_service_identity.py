@@ -20,5 +20,5 @@ def test_identity_without_posix_pwd_database_raises_valueerror(monkeypatch):
     monkeypatch.setitem(sys.modules, "pwd", None)
     monkeypatch.setitem(sys.modules, "grp", None)
 
-    with pytest.raises(ValueError, match="(?i)posix|user|group|account"):
+    with pytest.raises(ValueError, match="(?i)posix pwd/grp lookup is unavailable"):
         gateway_cli._system_service_identity(run_as_user=None)

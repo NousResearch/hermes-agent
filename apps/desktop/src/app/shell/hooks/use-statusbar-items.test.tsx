@@ -134,7 +134,13 @@ afterEach(() => {
 describe('statusbar update channel vocabulary', () => {
   it('names a stable release update without presenting its commit distance', () => {
     act(() => {
-      $desktopVersion.set({ appVersion: '0.21.6', electronVersion: '37', hermesRoot: '/h', nodeVersion: '22', platform: 'linux' })
+      $desktopVersion.set({
+        appVersion: '0.21.6',
+        electronVersion: '37',
+        hermesRoot: '/h',
+        nodeVersion: '22',
+        platform: 'linux'
+      })
       $updateStatus.set({
         behind: 4,
         channel: 'stable',
@@ -152,7 +158,13 @@ describe('statusbar update channel vocabulary', () => {
 
   it('names a stable release older than the checkout as a rollback', () => {
     act(() => {
-      $desktopVersion.set({ appVersion: '0.21.7', electronVersion: '37', hermesRoot: '/h', nodeVersion: '22', platform: 'linux' })
+      $desktopVersion.set({
+        appVersion: '0.21.7',
+        electronVersion: '37',
+        hermesRoot: '/h',
+        nodeVersion: '22',
+        platform: 'linux'
+      })
       $updateStatus.set({
         behind: -1,
         channel: 'stable',

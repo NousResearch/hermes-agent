@@ -14,7 +14,6 @@ export const ruUpdateChannel = {
   change: 'Изменить',
   latestRelease: (v: string) => `У вас последний стабильный релиз (${v}).`,
   rollbackTitle: (v: string) => `Вернуться к стабильному релизу ${v}`,
-  rollbackBody: (v: string) =>
-    `Эта сборка новее стабильного релиза ${v}. Установка вернёт Hermes к этому релизу.`,
+  rollbackBody: (v: string) => `Эта сборка новее стабильного релиза ${v}. Установка вернёт Hermes к этому релизу.`,
   rollbackAction: (v: string) => `Вернуться к ${v}`
 }

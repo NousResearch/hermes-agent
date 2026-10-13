@@ -2316,13 +2316,15 @@ def _prepare_job_prompt(
             runtime_data_prompt=monitor_context,
         )
     except CronPromptInjectionBlocked as block_exc:
-        # Injection scanner tripped: refuse this tick and tell the operator WHY. The content was
-        # judged, so consume the monitor change: the same blocked payload must not fail every
-        # tick until the remote source changes.
+        # Consume a monitor payload only when that payload itself is blocked. A refusal caused
+        # by a skill or per-run user prompt must leave safe monitor data for the healed tick.
         if pending_monitor is not None:
             from cron.monitor import commit_monitor
+            from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
 
-            commit_monitor(job, pending_monitor)
+            _cleaned, monitor_error = _scan_cron_skill_assembled(monitor_context or "")
+            if monitor_error:
+                commit_monitor(job, pending_monitor)
         logger.warning(
             "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s", job_name, job_id, block_exc,
         )

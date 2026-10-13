@@ -271,7 +271,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            project = document.setdefault("project", {})
+            project["name"] = f"hermes-plugin-{key}"
+            # A virtual member is metadata-only, but uv still validates the
+            # [project] table: a pyproject that only carried lint config (no
+            # [project] at all) would otherwise gain a name without a version
+            # and fail the build with "project.version ... neither set nor
+            # present", getting the plugin disabled on update (#137483).
+            # Matches the stub written for members with no pyproject below.
+            project.setdefault("version", "0.0.0")
         if virtual or changed:
             import tomli_w
 

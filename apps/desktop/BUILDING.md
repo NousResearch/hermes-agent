@@ -70,6 +70,19 @@ Do not refresh facts in `afterSign`: that changes resources covered by the signa
 
 ## Local test build
 
+Electron 42 installs its npm package without downloading the executable.
+`hermes desktop` prepares the locked binary with the other source dependencies
+before building. For manual source builds and native test fixtures, run this
+explicit preparation from the repository root after `npm ci`:
+
+```sh
+node scripts/build/electron-runtime.mjs --source .
+```
+
+The preparation reuses a complete matching runtime. `--no-install` validates
+it without acquiring missing files. `hermes desktop --skip-build --source`
+launches only the prepared executable and never downloads it.
+
 To build the commit you have checked out, without a tag and without pushing:
 
 ```sh

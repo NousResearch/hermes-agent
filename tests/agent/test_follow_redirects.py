@@ -255,3 +255,94 @@ def test_installed_openai_fallback_uses_primary_policy(configure):
         agent.client.close()
     finally:
         auxiliary.close()
+
+
+@pytest.mark.parametrize("policy", [False, True])
+@pytest.mark.parametrize("failure", ["transport", "sdk"])
+def test_fallback_construction_failure_cannot_leave_unguarded_client(configure, policy, failure):
+    from openai import OpenAI
+    configure({"redirect-provider": {"follow_redirects": policy}})
+    agent = _agent()
+    auxiliary = OpenAI(api_key="fixture-key", base_url=agent.base_url)
+    target = (patch.object(agent, "_build_keepalive_http_client", return_value=None)
+              if failure == "transport" else
+              patch("agent.process_bootstrap.OpenAI", side_effect=RuntimeError("SDK construction failed")))
+    try:
+        with target, pytest.raises(RuntimeError):
+            _swap_fallback_clients(agent, auxiliary, agent.provider, agent.model, agent.base_url, agent.api_mode)
+        assert agent.client is None
+    finally:
+        auxiliary.close()
+
+
+@pytest.mark.parametrize("timeout", [None, 12])
+def test_unset_fallback_rebuild_failure_preserves_legacy_client(configure, timeout):
+    from openai import OpenAI
+    configure({"redirect-provider": {} if timeout is None else {"request_timeout_seconds": timeout}})
+    agent = _agent()
+    auxiliary = OpenAI(api_key="fixture-key", base_url=agent.base_url)
+    try:
+        with patch.object(agent, "_build_keepalive_http_client", side_effect=RuntimeError("unavailable")) as build:
+            _swap_fallback_clients(agent, auxiliary, agent.provider, agent.model, agent.base_url, agent.api_mode)
+        assert agent.client is auxiliary
+        assert build.call_count == (0 if timeout is None else 1)
+    finally:
+        auxiliary.close()
+
+
+@pytest.mark.parametrize("provider,base_url", [
+    ("redirect-provider", "https://redirect.example/v1"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta"),
+])
+@pytest.mark.parametrize("first_policy", [None, False, True])
+def test_request_cache_uses_one_policy_snapshot(configure, provider, base_url, first_policy):
+    configure({})
+    agent = _agent(provider, base_url)
+    agent.client = agent._create_openai_client(agent._client_kwargs, reason="initial", shared=True)
+    try:
+        with patch("hermes_cli.timeouts.get_provider_follow_redirects",
+                   side_effect=[first_policy, not bool(first_policy)]) as resolve:
+            first = agent._create_request_openai_client(reason="test")
+            assert resolve.call_count == 1
+            transport = first._http if provider == "gemini" else first._client
+            assert transport.follow_redirects is bool(first_policy)
+            assert agent._request_client_cache["key"][1] is first_policy
+            agent._close_request_openai_client(first, reason="request_complete")
+            second = agent._create_request_openai_client(reason="test")
+            assert resolve.call_count == 2
+            assert second is not first
+            transport = second._http if provider == "gemini" else second._client
+            assert transport.follow_redirects is not bool(first_policy)
+            assert agent._request_client_cache["key"][1] is not bool(first_policy)
+            agent._close_request_openai_client(second, reason="request_complete")
+    finally:
+        agent._close_cached_request_openai_client(reason="test")
+        agent.client.close()
+
+
+@pytest.mark.parametrize("kind", ["client", "transport"])
+def test_provider_injection_precedes_redirect_policy(configure, monkeypatch, kind):
+    import providers
+    from providers.base import ProviderProfile
+    configure({"redirect-provider": {"follow_redirects": True}})
+    agent = _agent()
+    with httpx.Client(follow_redirects=False) as owned:
+        class Profile(ProviderProfile):
+            def build_client_kwargs_extras(self, **context):
+                return {"http_client": owned} if kind == "transport" else {}
+
+            def create_client(self, **kwargs):
+                assert "follow_redirects" not in kwargs
+                assert "_follow_redirects" not in kwargs
+                return owned if kind == "client" else None
+
+        providers._discover_providers()
+        monkeypatch.setitem(providers._REGISTRY, agent.provider, Profile(name=agent.provider))
+        with patch.object(agent, "_build_keepalive_http_client", side_effect=AssertionError("must not build")):
+            client = agent._create_openai_client(agent._client_kwargs, reason="test", shared=True,
+                                                  _follow_redirects=True)
+        try:
+            assert (client if kind == "client" else client._client) is owned
+            assert owned.follow_redirects is False
+        finally:
+            client.close()

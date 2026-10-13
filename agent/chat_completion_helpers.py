@@ -757,7 +757,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     return finish(raw_response)
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+def _dispatch_nonstreaming_api_request_raw(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
     Shared by ``interruptible_api_call`` and ``direct_api_call``. ``make_client(reason,
@@ -791,6 +791,18 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
     return request_client.chat.completions.create(**api_kwargs)
+
+
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+    """Provider dispatch with optional, request-local image patch preflight."""
+    from agent.image_patch_preflight import request_with_image_patch_preflight
+
+    return request_with_image_patch_preflight(
+        api_kwargs,
+        lambda request: _dispatch_nonstreaming_api_request_raw(
+            agent, request, make_client=make_client,
+        ),
+    )
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2962,8 +2974,14 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._touch_activity("waiting for provider response (streaming)")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
-        stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
-        return request_client.chat.completions.create(**stream_kwargs)
+        from agent.image_patch_preflight import request_with_image_patch_preflight
+
+        return request_with_image_patch_preflight(
+            stream_kwargs,
+            lambda request: request_client.chat.completions.create(
+                **bypass_chat_sdk_request_transform(request, request_client)
+            ),
+        )
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)

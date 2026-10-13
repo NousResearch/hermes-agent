@@ -142,6 +142,14 @@ DEFAULT_CONFIG = {
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
         # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
         "stream_drain_timeout": 2.0,
+        # Opt-in protection for provider image patch ceilings. Rewrites only the
+        # request-local message copy; persisted history and source files are untouched.
+        "openai_image_patch_preflight": False,
+        "openai_image_patch_max_patches": 30000,
+        "openai_image_patch_target_patches": 27000,
+        "openai_image_patch_target_ratio": 0.9,
+        # Case-insensitive model globs to bypass (all models are eligible by default).
+        "openai_image_patch_excluded_models": [],
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

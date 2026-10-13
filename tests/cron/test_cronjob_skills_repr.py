@@ -208,6 +208,24 @@ def test_doctor_quiet_on_a_real_bracket_named_skill(cron_store, capsys):
     assert "string repr" not in capsys.readouterr().out
 
 
+def test_doctor_reports_the_wrapped_shape_a_pre_fix_release_wrote(cron_store, capsys):
+    """The shape the bug actually left on disk: the pre-fix normalizer str()-ed the caller's
+    string into a ONE-entry list holding the repr, so a store can hold either shape."""
+    from hermes_cli.cron import cron_doctor
+    _create_stored_job(skills=["['news-digest', 'summarize']"])
+    assert cron_doctor() == 1
+    assert "string repr" in capsys.readouterr().out
+
+
+def test_doctor_scope_stops_at_the_active_jobs_it_reports(cron_store, capsys):
+    """Scope decision, not an oversight: doctor diagnoses the jobs it lists. A disabled record
+    is not one of them — and the read path heals it the moment the job runs again."""
+    from hermes_cli.cron import cron_doctor
+    _create_stored_job(skills="['news-digest']", enabled=False)
+    assert cron_doctor() == 0
+    assert "string repr" not in capsys.readouterr().out
+
+
 def test_doctor_flags_the_record_without_rewriting_it(cron_store):
     """Doctor is read-only: the finding is a re-save hint, so the file keeps its shape."""
     from hermes_cli.cron import cron_doctor

@@ -600,7 +600,7 @@ test('readBundledBundleEnv reads the stamped defaults/clears and is absent when 
 })
 
 test.each<[Record<string, string | null> | undefined]>([
-  [undefined], [{ HERMES_GUEST_ONBOARDING: '1' }], [{ HERMES_HOME: null }],
+  [undefined], [{ HERMES_PREVIEW_FULL_CONNECTORS: '1' }], [{ HERMES_HOME: null }],
 ])(
   'bundled smoke admits a fresh home and seeds the resolved provider with defaults %j', async (bundleEnv: Record<string, string | null> | undefined): Promise<void> => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundle-clear-'))

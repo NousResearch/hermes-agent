@@ -118,8 +118,9 @@ export function ClarifyToolPending({
         }
 
         const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
-        next[question.qid] =
-          matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
+        // Words that name no choice (typed in the composer) go to the free-text field as words, not JSON.
+        const draft = replayedAnswers.filter(value => !options.some(choice => bareChoice(choice) === value)).join(', ')
+        next[question.qid] = { choices: matchedChoices, draft }
       }
 
       return next

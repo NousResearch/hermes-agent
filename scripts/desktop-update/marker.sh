@@ -51,10 +51,12 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
     LC_ALL=C awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
   elif [ "$(uname)" = "Darwin" ]; then
     # ps prints lstart in local time: render AND parse it in UTC so a DST
-    # fall-back hour cannot shift the identity by 3600 s.
+    # fall-back hour cannot shift the identity by 3600 s. `-j -f` is BSD-only:
+    # pin /bin/date so GNU coreutils first on the login PATH (Homebrew gnubin)
+    # cannot blank every creation time and fail the bridge-marker claim (#137925).
     lstart="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
     [ -n "$lstart" ] || return 0
-    secs="$(TZ=UTC0 LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
+    secs="$(TZ=UTC0 LC_ALL=C /bin/date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
     [ -n "$secs" ] && printf '%s.000\n' "$secs"
   fi
 }

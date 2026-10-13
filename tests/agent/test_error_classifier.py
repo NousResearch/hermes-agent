@@ -662,6 +662,18 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    @pytest.mark.parametrize("echoed_model", ["some-model-id-extra", "some-model-id.v2", "some-model-id/variant", "some-model-id_2", "some-model-id+variant"])
+    def test_404_echoing_a_different_model_with_requested_prefix_stays_generic(self, echoed_model):
+        body = {
+            "type": "error",
+            "error": {"type": "not_found_error", "message": f"model: {echoed_model}"},
+        }
+        e = MockAPIError("Error code: 404", status_code=404, body=body)
+        result = classify_api_error(e, provider="anthropic", model="some-model-id")
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     def test_404_not_found_error_without_the_model_id_stays_generic(self):
         """The same ``not_found_error`` type on a wrong path does NOT name a model.
 

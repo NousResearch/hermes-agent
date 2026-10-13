@@ -1040,7 +1040,8 @@ def _status_404(c: _Ctx) -> Verdict:
     # matches no _MODEL_NOT_FOUND_PATTERNS entry. Keyed on the echoed id, never on the
     # not_found_error type: a wrong endpoint path answers "Not found" with no id and
     # keeps the retryable generic verdict below (#14013).
-    if c.model_slug and f"model: {c.model_slug}" in c.msg:
+    # Match the whole echoed ID: a different model can share the requested prefix.
+    if c.model_slug and re.search(rf"(?<![\w.-])model: {re.escape(c.model_slug)}(?=$|[\s\"',)\]])", c.msg):
         return _V_MODEL_NOT_FOUND
     # Bare id the catalogue only knows prefixed → malformed id (NVIDIA NIM "404
     # page not found", #78796). A generic 404 (wrong path, proxy glitch) stays

@@ -421,6 +421,21 @@ gateway:
 
 **Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
+#### Per-channel slash-command caps
+
+Use `gateway.channel_command_access` when one group/channel needs a narrower command surface than the rest of its platform. Keys are exact, immutable chat IDs from the transport (not display names, usernames, or wildcard patterns):
+
+```yaml
+gateway:
+  channel_command_access:
+    signal:
+      "<transport chat/group ID>":
+        allowed_slash_commands: [help, status]
+        deny_message: "This command is not enabled in this group."
+```
+
+This is a **restrictive cap**, not a grant: a listed command can still be refused by the existing `allow_admin_from` / `group_allow_admin_from` policy. A matching channel denies every slash command not listed, before command hooks, pending-command interception, busy-session routing, quick/plugin handlers, or skill/bundle rewriting. Built-in command aliases resolve to their canonical command names. User-defined `quick_commands` aliases must themselves be listed; after rewriting, the target command must also pass the cap. The rule applies to DMs too if their exact chat ID is configured. Unmatched channels and platforms retain existing behavior. A malformed matching rule, malformed platform rule, or missing chat ID when rules exist for that platform fails closed. This controls slash-command dispatch only; it does not restrict plain chat, tools, or other gateway capabilities.
+
 #### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.

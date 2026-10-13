@@ -100,6 +100,31 @@ def _yaml_scalar_to_json(value):
     return isoformat() if callable(isoformat) else str(value)
 
 
+def _json_safe_yaml(value):
+    """YAML-loaded data with no value JSON cannot legally carry.
+
+    ``json.dumps`` writes a non-finite float as the bare token ``Infinity``/``NaN``, which no strict
+    JSON parser accepts. A roster response carries EVERY profile in one frame, so one such value
+    anywhere in one profile's ``ui_meta`` makes the whole frame undecodable — and a client that drops
+    undecodable frames (the desktop's does, silently) then never paints a roster at all. YAML 1.1's
+    float rule promotes an unquoted id-like scalar this way, which is exactly what an older desktop
+    build wrote into ``ui_meta['hermes-bots'].chat`` (a session id such as
+    ``20260817_213628_e20138``), so the case is reachable from real documents.
+
+    Coerce at the boundary: the digits are already gone by the time the loader is done, so the goal
+    is a frame that parses, not a recovered value. Containers are rebuilt so nothing non-finite
+    survives below the top level either.
+    """
+    # NaN is never equal to itself; both infinities keep their magnitude under abs().
+    if isinstance(value, float) and (value != value or abs(value) == float("inf")):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe_yaml(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_yaml(v) for v in value]
+    return value
+
+
 def _clean_revisions(raw: dict) -> dict:
     """Normalise a ``_ui_meta_revisions`` map: str keys, non-bool ints clamped at 0."""
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
@@ -263,9 +288,10 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
         fields = {"ui_meta_revisions":
                   _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
         if isinstance(ui_meta, dict) and ui_meta:
-            # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
-            # coerce YAML-only scalars to their ISO string at the boundary (#92506).
-            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+            # YAML promotes unquoted scalars the handler's JSON contract cannot carry: timestamps to
+            # datetime/date (#92506), and id-like digits to a non-finite float that ``json.dumps``
+            # writes as a bare ``Infinity`` token. Coerce both at the boundary.
+            fields["ui_meta"] = json.loads(json.dumps(_json_safe_yaml(ui_meta), default=_yaml_scalar_to_json))
         return fields
 
     # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it

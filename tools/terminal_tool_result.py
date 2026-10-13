@@ -203,6 +203,33 @@ def _verification_evidence(command, cwd, session_id, returncode, output) -> Opti
     return None
 
 
+def _worktree(cwd: str) -> Optional[tuple[str, str, str]]:
+    """``(worktree root, common git dir, branch)`` for a local directory — one ``git`` spawn — or None."""
+    if not os.path.isdir(cwd):
+        return None
+    from hermes_cli._subprocess_compat import bounded_git_probe
+    out = bounded_git_probe(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel",
+                             "--git-common-dir", "--abbrev-ref", "HEAD"], timeout=2.0)
+    parts = out.splitlines()
+    return (parts[0], parts[1], parts[2]) if len(parts) == 3 else None
+
+
+def _workspace_note(session_key: str, landed: str) -> Optional[str]:
+    """A ``cd`` that lands in another worktree of the chat's repo. The desktop labels the chat with its workspace,
+    not the shell's cwd, so tell the agent how to move the chat if the work now lives here. Only for chats with a
+    workspace (the GUI gateway registers ``cwd_source: session``)."""
+    from tools.terminal_tool import resolve_task_overrides
+    overrides = resolve_task_overrides(session_key)
+    if overrides.get("cwd_source") != "session" or not (workspace := overrides.get("cwd")):
+        return None
+    here, home = _worktree(landed), _worktree(str(workspace))
+    if not here or not home or here[0] == home[0] or here[1] != home[1]:
+        return None
+    return (f"The shell is now in {here[0]} (branch {here[2]}), but this chat's workspace, which the desktop shows, "
+            f"is {home[0]} (branch {home[2]}). If the work now lives here, move the chat with desktop_project "
+            f"action=switch path={here[0]}. For a one-off command in another tree, pass workdir instead of cd.")
+
+
 def finalize_foreground_result(
     *, command: str, result: dict, env: Any, env_type: str, effective_task_id: str,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
@@ -249,6 +276,10 @@ def finalize_foreground_result(
     with _quiet("cwd comparison"):
         if observed_cwd and command_cwd and os.path.realpath(str(observed_cwd)) != os.path.realpath(str(command_cwd)):
             changed_cwd = str(observed_cwd)
+    workspace_note = None
+    if changed_cwd and not workdir and env_type == "local":
+        with _quiet("workspace note"):
+            workspace_note = _workspace_note(session_key, changed_cwd)
     # rc=130 is an interrupt only with the executor's marker — a command can
     # legitimately `exit 130` itself. An interrupted approved run keeps the
     # audit note but must never imply success.
@@ -260,6 +291,7 @@ def finalize_foreground_result(
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
+        ("workspace", workspace_note),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
         ("verification_evidence", _verification_evidence(

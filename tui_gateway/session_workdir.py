@@ -377,56 +377,10 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
-def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
-    """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
-    a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
-    checkout's branch). A plain `cd` is deliberately NOT a workspace move (see ``_apply_project_workspace``): a non-git
-    workspace stepping into a repo or a visit to an unrelated repo is browsing, and a workspace the user deliberately
-    moved the chat into is never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed
-    here)."""
-    # A workspace the USER put the chat in (the composer's folder picker -> session.cwd.set, the sidebar's
-    # move-to-project -> session.workspace.move) only moves by another deliberate action; a cwd adopted HERE is
-    # marked `cwd_from_settle` so successive settles keep following. NOT `explicit_cwd`: session.create sets that for
-    # ANY session whose cwd exists on disk, so keying the pin on it made every desktop session — all of which are
-    # created with a workspace — unfollowable, which is exactly the agent-made-a-worktree case this reconcile exists
-    # for.
-    if not session or (session.get("cwd_pinned") and not session.get("cwd_from_settle")):
-        return False
-    if not _session_is_local_backend(session):
-        return False
-    try:
-        from tools.terminal_tool import get_session_cwd
-        if not (recorded := get_session_cwd(session.get("session_key") or "")):
-            return False
-    except Exception:
-        return False
-    resolved = os.path.abspath(os.path.expanduser(str(recorded)))
-    current = os.path.abspath(os.path.expanduser(_session_cwd(session)))
-    if resolved == current or not os.path.isdir(resolved):
-        return False
-    # Worktree ROOTS (folding to the common root would hide the move), both in a git tree, different from each other,
-    # sharing the SAME common .git dir.
-    landed, current_root = git_probe.repo_root(resolved), git_probe.repo_root(current)
-    if not landed or not current_root or landed == current_root:
-        return False
-    landed_common = git_probe.common_repo_root(resolved)
-    if not landed_common or landed_common != git_probe.common_repo_root(current):
-        return False
-    # This is the session's workspace now (a desktop launch-artifact cwd earns a real row); the settle marker keeps it
-    # overridable by the NEXT settle.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=True)
-    _register_session_cwd(session)
-    _persist_session_cwd_and_schedule_git_meta(session, resolved)
-    return True
-
-
 def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
-    """Emit end-of-turn ``session.info``, reconciling a settled cwd first (the agent has stopped moving; riding the
-    turn-end event needs no new event type/round trip)."""
-    try:
-        _reconcile_session_cwd_from_terminal(session)
-    except Exception:
-        logger.debug("failed to reconcile settled session cwd", exc_info=True)
+    """Emit end-of-turn ``session.info`` for the workspace the chat was put in, by the user or by the agent's
+    ``desktop_project`` switch. It does not follow the shell's last ``cd``: a turn can end in a sibling worktree for
+    unrelated reasons (a commit on main, a worktree set up for another task), and following it mislabelled the chat."""
     _emit("session.info", sid, _session_info(agent, session))
 
 
@@ -884,9 +838,8 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
-    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted
-    # cwd — and PINNED, so the settle reconcile cannot drag it to another worktree the agent merely visited.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_pinned=True, cwd_from_settle=False)
+    # An explicit user choice: persisted as the workspace (not the launch-dir fallback).
+    session.update(cwd=resolved, explicit_cwd=True)
     _register_session_cwd(session)
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)

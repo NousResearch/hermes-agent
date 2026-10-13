@@ -8,7 +8,7 @@ import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { appendMidTurnUserMessage } from '@/app/session/hooks/use-prompt-actions/rewind'
+import { appendMidTurnUserMessage, finalizeInterruptedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -207,5 +207,69 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(rows[0].part).toMatchObject({ args: { command: 'echo step1' }, result: 'ok', toolCallId: 'call_settle' })
     // A late completion does not re-open a stream bubble.
     expect(state.streamId).toBeNull()
+  })
+
+  it('keeps the sealed tool row but ignores progress arriving after Stop', () => {
+    event('message.start', 1000)
+    event('tool.start', 1001, { args: { command: 'echo interrupted' }, name: 'terminal', tool_id: 'call_stopped' })
+
+    // Stop uses finalizeInterruptedMessages and marks this session interrupted.
+    // Any late tool.start / tool.complete belongs to the cancelled turn and
+    // must not seed a second transcript row or re-arm the old one.
+    act(() => {
+      const state = stream.state(SID)
+
+      stream.states.set(SID, {
+        ...state,
+        messages: finalizeInterruptedMessages(state.messages, state.streamId, 1002),
+        streamId: null,
+        interrupted: true
+      })
+    })
+
+    event('tool.start', 1003, { args: { command: 'echo interrupted' }, name: 'terminal', tool_id: 'call_stopped' })
+    event('tool.complete', 1004, { name: 'terminal', result: 'late', tool_id: 'call_stopped' })
+
+    const rows = toolRows('call_stopped')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo interrupted' }, completedAt: 1002 })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    expect(stream.state(SID).streamId).toBeNull()
+  })
+
+  it('does not clobber an interrupted-history row when a fresh send reuses its tool id', () => {
+    event('message.start', 1100)
+    event('tool.start', 1101, { args: { command: 'echo original' }, name: 'terminal', tool_id: 'call_optimistic' })
+
+    // Mirrors seedOptimistic's old-bubble finalization and new user message.
+    // Unlike Stop, a fresh submit clears the interrupted flag for the new turn.
+    act(() => {
+      const state = stream.state(SID)
+      const messages = finalizeInterruptedMessages(state.messages, state.streamId, 1102)
+
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...messages,
+          { id: 'user-next', role: 'user', parts: [{ type: 'text', text: 'next command' }], timestamp: 1103 }
+        ],
+        streamId: null,
+        interrupted: false
+      })
+    })
+
+    event('message.start', 1104)
+    event('tool.start', 1105, { args: { command: 'echo replacement' }, name: 'terminal', tool_id: 'call_optimistic' })
+    event('tool.complete', 1106, { name: 'terminal', result: 'replacement result', tool_id: 'call_optimistic' })
+
+    const rows = toolRows('call_optimistic')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo original' }, completedAt: 1102 })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    expect(rows[1].part).toMatchObject({
+      args: { command: 'echo replacement' },
+      result: 'replacement result'
+    })
+    expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
   })
 })

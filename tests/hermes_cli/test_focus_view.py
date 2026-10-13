@@ -366,3 +366,58 @@ class TestCommandRegistration:
         assert host._focus_saved_tool_progress is None
         assert host._focus_hidden_lines == 0
         assert host.tool_progress_mode == "new"
+
+    @staticmethod
+    def _verbose_host(mode: str = "off", focus: bool = False):
+        from cli import HermesCLI
+
+        host = HermesCLI.__new__(HermesCLI)
+        host.tool_progress_mode = mode
+        host._focus_view_enabled = focus
+        host._focus_saved_tool_progress = "all" if focus else None
+        host._focus_hidden_lines = 3 if focus else 0
+        host._focus_last_counted_tool = "terminal" if focus else None
+        host.agent = None
+        return host
+
+    def test_verbose_explicit_mode_sets_instead_of_cycling(self):
+        # The worker path must honor an explicit on-wire mode like the gateway's
+        # config.set branch does, instead of always cycling (#136058).
+        host = self._verbose_host(mode="off")
+        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+            host._toggle_verbose("/verbose all")
+        assert host.tool_progress_mode == "all"
+
+        host = self._verbose_host(mode="all")
+        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
+            host._toggle_verbose("/verbose cycle")
+        assert host.tool_progress_mode == "verbose"  # explicit "cycle" still advances
+
+    def test_verbose_unknown_mode_is_rejected_without_state_change(self):
+        host = self._verbose_host(mode="all")
+        with patch("cli.save_config_value", return_value=True) as save, patch("cli._cprint") as cp:
+            host._toggle_verbose("/verbose bogus")
+        assert host.tool_progress_mode == "all"  # untouched
+        save.assert_not_called()
+        assert any("unknown verbose mode: bogus" in str(c) for c in cp.call_args_list)
+
+    def test_verbose_off_keeps_focus_view(self):
+        # Both sides of "focus on + /verbose off" hide tool lines, so the explicit
+        # "off" mode must not reset focus state (no silent focus_view flip).
+        host = self._verbose_host(mode="off", focus=True)
+        with patch("cli.save_config_value", return_value=True) as save, patch("cli._cprint"):
+            host._toggle_verbose("/verbose off")
+        assert host._focus_view_enabled is True
+        assert host._focus_saved_tool_progress == "all"
+        assert host.tool_progress_mode == "off"
+        save.assert_not_called()
+
+    def test_verbose_visible_mode_announces_focus_release(self):
+        host = self._verbose_host(mode="off", focus=True)
+        with patch("cli.save_config_value", return_value=True) as save, patch("cli._cprint") as cp:
+            host._toggle_verbose("/verbose all")
+        assert host._focus_view_enabled is False
+        assert host.tool_progress_mode == "all"
+        save.assert_called_once()
+        announced = [str(c) for c in cp.call_args_list if "Focus view disabled" in str(c)]
+        assert announced, "the focus release must be printed, not silent"

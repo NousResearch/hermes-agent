@@ -13,16 +13,9 @@ import pytest
 from tui_gateway import server
 from hermes_state import SessionDB
 from tests.tui_gateway.test_tui_gateway_server import _write_profile_cfg
+from tests._fixtures.thread_shim import ImmediateThread as _ImmediateThread
 
 KEY = "20261005_120000_b07c4a7"
-
-
-class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
 
 
 @pytest.fixture

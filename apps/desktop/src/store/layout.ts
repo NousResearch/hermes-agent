@@ -67,6 +67,7 @@ const SIDEBAR_PR_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarPrFilter'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const SIDEBAR_PROJECT_ORDER_STORAGE_KEY = 'hermes.desktop.projectOrder'
+const SIDEBAR_PROJECT_SORT_STORAGE_KEY = 'hermes.desktop.projectSort.recentScopes'
 const SIDEBAR_WORKSPACE_COLLAPSED_STORAGE_KEY = 'hermes.desktop.workspaceCollapsed'
 const SIDEBAR_WORKSPACE_NODE_OPEN_STORAGE_KEY = 'hermes.desktop.workspaceNodeOpen'
 const SIDEBAR_DISMISSED_AUTO_PROJECTS_STORAGE_KEY = 'hermes.desktop.dismissedAutoProjects'
@@ -158,6 +159,12 @@ export const $sidebarProjectOrderIds = persistentAtom(
   SIDEBAR_PROJECT_ORDER_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
+)
+// Only opt-in scopes are stored; absent entries retain the existing manual/default behavior.
+export const $sidebarProjectRecentScopes = persistentAtom<Record<string, string>>(
+  SIDEBAR_PROJECT_SORT_STORAGE_KEY,
+  {},
+  Codecs.stringRecord
 )
 // Explicit open/collapse state for sidebar workspace nodes AND review file-tree
 // folders, keyed by stable node id (repo root / worktree path / `review:<path>`).
@@ -987,6 +994,24 @@ export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
 
 export function setSidebarProjectOrderIds(ids: string[]) {
   setOrderIds($sidebarProjectOrderIds, ids)
+}
+
+export function setSidebarProjectSortMode(scopeKey: string, mode: 'manual' | 'recent') {
+  const current = $sidebarProjectRecentScopes.get()
+
+  if ((current[scopeKey] === 'recent') === (mode === 'recent')) {
+    return
+  }
+
+  const next = { ...current }
+
+  if (mode === 'recent') {
+    next[scopeKey] = 'recent'
+  } else {
+    delete next[scopeKey]
+  }
+
+  $sidebarProjectRecentScopes.set(next)
 }
 
 export function setSidebarResizing(resizing: boolean) {

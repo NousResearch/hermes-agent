@@ -1,6 +1,7 @@
 import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
+import type { ProjectTreeActivity } from '@/types/hermes'
 
 import { rankSessions } from '../order'
 
@@ -51,7 +52,7 @@ export interface SidebarWorkspaceTree {
 }
 
 /** A project node: human-named (or repo-derived), holds its repo subtree. */
-export interface SidebarProjectTree {
+export interface SidebarProjectTree extends ProjectTreeActivity {
   id: string
   label: string
   path: null | string
@@ -71,8 +72,7 @@ export interface SidebarProjectTree {
   // the backend — the tree only carries a preview of the rows themselves.
   totalTokens?: number
   totalCostUsd?: number
-  // Max activity timestamp across the project's sessions (overview sort key).
-  lastActive?: number
+  // ProjectTreeActivity comes through the projects.tree RPC unchanged.
   // Up to N most-recent sessions for the overview preview (set by `projects.tree`).
   previewSessions?: SessionInfo[]
   // Every session id the backend assigned to this project — the authoritative

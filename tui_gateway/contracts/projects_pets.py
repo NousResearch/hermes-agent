@@ -273,6 +273,8 @@ class ProjectTreeNode(Result):
     isNoProject: bool = False
     sessionCount: int = 0
     lastActive: float = 0.0
+    # Strict max of display-active user/assistant messages over selected conversation lineages.
+    lastMessageAt: float = 0.0
     totalTokens: int = 0
     totalCostUsd: float = 0.0
     repos: list[ProjectTreeRepo] = Field(default_factory=list)

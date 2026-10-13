@@ -50,6 +50,7 @@ from hermes_state_guard import (
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_message_clock import SessionMessageClockMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
@@ -463,6 +464,7 @@ class SessionDB(
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin, SessionToolRetriesMixin,
+    SessionMessageClockMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 

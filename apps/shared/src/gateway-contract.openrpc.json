@@ -25536,6 +25536,11 @@
             "title": "Lastactive",
             "type": "number"
           },
+          "lastMessageAt": {
+            "default": 0.0,
+            "title": "Lastmessageat",
+            "type": "number"
+          },
           "totalTokens": {
             "default": 0,
             "title": "Totaltokens",

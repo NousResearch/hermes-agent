@@ -65,7 +65,6 @@ import {
   setPinnedSessionOrder,
   setSidebarCronOpen,
   setSidebarPinsOpen,
-  setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
   setSidebarSessionOrderIds,
   setSidebarSessionOrderManual,
@@ -179,6 +178,7 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { sortProjectsByRecentActivity, useProjectSortMode } from './projects/activity-sort'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
   SidebarBlankState,
@@ -523,6 +523,7 @@ export function ChatSidebar({
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const workspaceParentOrderIds = useStore($sidebarWorkspaceParentOrderIds)
   const projectOrderIds = useStore($sidebarProjectOrderIds)
+  const { mode: projectSortMode, reorderProjects } = useProjectSortMode(activeConnectionId, profileScope)
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
   const projectOwners = useStore($projectOwnerBySessionId)
@@ -985,25 +986,27 @@ export function ChatSidebar({
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
   // overview sort. Membership is the backend tree's — never re-derived here.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
-    const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
-        // A filtered-out project drops its whole lane, header included — hiding
-        // only its rows would leave a row of empty folders behind.
-        .filter(project => !projectFilter.length || projectFilter.includes(project.id))
-        .map(project =>
-          excludeProjectSessions(
-            {
-              ...project,
-              // Home is synthetic, so its name is ours to translate — every
-              // other label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
-              repos: orderRepos(project.repos)
-            },
-            isHiddenFromProjects
-          )
-        ),
-      activeProjectId
-    )
+    const visible = filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      // A filtered-out project drops its whole lane, header included — hiding
+      // only its rows would leave a row of empty folders behind.
+      .filter(project => !projectFilter.length || projectFilter.includes(project.id))
+      .map(project =>
+        excludeProjectSessions(
+          {
+            ...project,
+            // Home is synthetic, so its name is ours to translate — every
+            // other label is a repo basename or a name the user typed.
+            label: project.isNoProject ? s.projects.home : project.label,
+            repos: orderRepos(project.repos)
+          },
+          isHiddenFromProjects
+        )
+      )
+
+    const sorted =
+      projectSortMode === 'recent'
+        ? sortProjectsByRecentActivity(visible)
+        : sortProjectsForOverview(visible, activeProjectId)
 
     // Layer the user's manual drag-order on top of the deterministic sort. Empty
     // (default) returns `sorted` untouched; projects the user hasn't ordered yet
@@ -1022,7 +1025,7 @@ export function ChatSidebar({
       return true
     })
 
-    return orderProjectsByIds(deduped, projectOrderIds)
+    return projectSortMode === 'recent' ? deduped : orderProjectsByIds(deduped, projectOrderIds)
   }, [
     projectTree,
     dismissedAutoProjects,
@@ -1030,6 +1033,7 @@ export function ChatSidebar({
     activeProjectId,
     projectFilter,
     projectOrderIds,
+    projectSortMode,
     isHiddenFromProjects,
     s
   ])
@@ -1543,10 +1547,6 @@ export function ChatSidebar({
     setSidebarSessionOrderManual(true)
     setSidebarSessionOrderIds(ids)
   }
-
-  // Persist the new project overview order (drag-to-reorder); orderByIds applies
-  // it over the default sort, so stale/new ids reconcile on the next render.
-  const reorderProjects = (ids: string[]) => setSidebarProjectOrderIds(ids)
 
   // Sortable rows carry live session ids; the pinned store is keyed by durable
   // (lineage-root) ids, so translate before persisting the new order.

@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-import hermes_cli.legacy_uv as legacy_uv
+from hermes_cli import legacy_uv
 from hermes_cli.legacy_uv import remove_legacy_managed_uv
 
 #: A separate process holding PM's lock. In-process cross-handle lock conflict differs per OS

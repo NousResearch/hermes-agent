@@ -95,6 +95,7 @@ def test_ps1_bootstraps_pin_uv_state_under_the_machine_root(
         [_POWERSHELL, "-NoProfile", "-Command", script],
         env={**os.environ},
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     cache, python_dir = result.stdout.strip().splitlines()[-1].split("|")

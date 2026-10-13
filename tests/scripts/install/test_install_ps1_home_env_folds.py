@@ -30,6 +30,7 @@ def _show_resolved_home(extra_args: list[str]) -> Path:
          "-File", str(INSTALLER), "-SkipSetup", "-NonInteractive", "-ShowResolvedPaths",
          *extra_args],
         capture_output=True, text=True, errors="replace", timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     report = json.loads(result.stdout)

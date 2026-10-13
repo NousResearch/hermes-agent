@@ -92,6 +92,7 @@ def test_bootstrap_python_pins_uv_state_under_the_machine_root(
     result = subprocess.run(
         [bash, "-c", script, "test", str(INSTALL_SH), str(checkout), str(tmp_path / "uv")],
         env=env, cwd=checkout, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip().splitlines()[-1] == str(boot_py), result.stdout + result.stderr

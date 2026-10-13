@@ -1092,6 +1092,7 @@ def test_remove_legacy_uv_refuses_a_junctioned_bin(tmp_path, monkeypatch):
     linked = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(home / "bin"), str(outside)],
         capture_output=True,
+        check=False,
     )
     assert linked.returncode == 0, linked.stderr.decode(errors="replace")
     monkeypatch.setenv("HERMES_HOME", str(home))

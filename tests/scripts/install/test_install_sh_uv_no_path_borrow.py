@@ -69,6 +69,7 @@ def test_ensure_uv_stages_the_pin_even_when_a_newer_uv_is_on_path(
     result = subprocess.run(
         [bash, "-c", script, "test", str(INSTALL_SH)],
         env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

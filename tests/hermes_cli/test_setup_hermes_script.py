@@ -43,7 +43,8 @@ def _win32_path(value: str) -> str:
     """
     if not value.startswith("/"):
         return value
-    out = subprocess.run(["cygpath", "-w", value], capture_output=True, text=True)
+    out = subprocess.run(["cygpath", "-w", value], capture_output=True, text=True,
+                         check=False)
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
 
@@ -268,6 +269,7 @@ def test_setup_stages_uv_into_pms_store_root(tmp_path, monkeypatch, home_kind):
     result = subprocess.run(
         [bash, SETUP_SCRIPT.as_posix()], env=env, cwd=REPO_ROOT,
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     output = result.stdout + result.stderr
     assert "Staging pinned uv" not in output, output
@@ -300,6 +302,7 @@ def test_setup_hermes_refuses_drive_relative_runtime_dir(tmp_path: Path, bad: st
     result = subprocess.run(
         [_BASH, SETUP_SCRIPT.as_posix()], env=env, cwd=tmp_path,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "drive-relative HERMES_RUNTIME_DIR" in result.stderr, result.stderr

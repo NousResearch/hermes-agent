@@ -1249,6 +1249,24 @@
       }
     },
     {
+      "name": "groups.member.yolo",
+      "summary": "Read or set YOLO for one existing local room participant session; omit enabled to read.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsMemberYoloParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsMemberYoloResult"
+        }
+      }
+    },
+    {
       "name": "groups.peer.invite",
       "summary": "Mint one target-issued room/profile grant for a prospective room home.",
       "params": [
@@ -15370,6 +15388,83 @@
           "authority"
         ],
         "title": "GroupsLogResult",
+        "type": "object"
+      },
+      "GroupsMemberYoloParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id"
+        ],
+        "title": "GroupsMemberYoloParams",
+        "type": "object"
+      },
+      "GroupsMemberYoloResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "effective_enabled": {
+            "title": "Effective Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "member_id",
+          "session_key",
+          "enabled",
+          "effective_enabled"
+        ],
+        "title": "GroupsMemberYoloResult",
         "type": "object"
       },
       "GroupsPeerInviteParams": {

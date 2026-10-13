@@ -495,6 +495,23 @@ class HostedRoomService:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
         return self.runtime.retry_indeterminate(task["identity"])
 
+    def member_yolo(
+        self, room_id: str, *, member_id: str, enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a local participant; approval overrides belong to its session, not the roster."""
+        self._owned_authority(room_id)
+        room = self._room(room_id)
+        member = next((row for row in room["members"] if row.get("member_id") == member_id), None)
+        if member is None:
+            raise hosted_rooms.HostedRoomError("room member is unavailable; refresh the room and select a current member")
+        if (member.get("target") or {}).get("kind") != "local":
+            raise hosted_rooms.HostedRoomError("participant YOLO is available only for local room members")
+        profile = str(member["profile"])
+        if profile not in self.local_profiles():
+            raise hosted_rooms.HostedRoomError("room member profile is unavailable; restore the profile before changing YOLO")
+        result = self.rpc.room_session_yolo(profile=profile, room_id=room_id, enabled=enabled)
+        return {"room_id": room_id, "member_id": member_id, **result}
+
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
         choice: str, request_id: str | None = None) -> Mapping[str, Any]:

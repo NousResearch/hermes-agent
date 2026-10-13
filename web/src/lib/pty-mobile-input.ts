@@ -87,6 +87,27 @@ export function shouldTreatInputAsMobileReplacement(
   return isMobileLike && inputType === "insertText" && (data?.length ?? 0) > 1;
 }
 
+// Some Android keyboards (Gboard on Chrome) deliver plain taps as
+// beforeinput/input events only — no keydown and no composition events —
+// so neither xterm's onData nor the compositionend fallback ever fires and
+// every tap is silently dropped (#137986). Those commits must be forwarded
+// through the composition forwarder, whose echo window drops the copies on
+// devices where xterm did emit onData. insertCompositionText is excluded on
+// purpose: on composition-capable keyboards it fires repeatedly with the
+// uncommitted buffer, and only the terminal commit (compositionend /
+// insertFromComposition) is authoritative there.
+export function mobileBeforeInputCommit(
+  inputType: string | undefined,
+  data: string | null | undefined,
+  isMobileLike: boolean,
+): string | null {
+  if (!isMobileLike) return null;
+  if (inputType !== "insertText" && inputType !== "insertLineBreak") return null;
+  if (typeof data !== "string" || data.length === 0) return null;
+  // xterm sends "\r" for Enter; the browser reports "\n" for line breaks.
+  return inputType === "insertLineBreak" ? "\r" : data;
+}
+
 export function updatePtyInputLine(currentLine: string, data: string): string {
   // Escape sequences (arrow keys, home/end, function keys, paste guards)
   // move the cursor or edit the line in ways this flat tracker cannot

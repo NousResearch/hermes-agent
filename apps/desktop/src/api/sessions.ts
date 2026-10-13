@@ -494,9 +494,9 @@ export function getSessionMessages(
     query.set('order', page.order)
   }
 
-  if (page.includeCompacted !== undefined) {
-    query.set('include_compacted', String(page.includeCompacted))
-  }
+  // Display transcript default: keep turns archived by in-place compaction
+  // (active=0, compacted=1). Model working-set callers must pass false.
+  query.set('include_compacted', String(page.includeCompacted ?? true))
 
   const suffix = query.size ? `?${query.toString()}` : ''
 

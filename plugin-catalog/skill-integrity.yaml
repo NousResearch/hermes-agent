@@ -1,0 +1,17 @@
+name: skill-integrity
+version: "0.1.2"
+repo: https://github.com/ZidoCode/skill-integrity
+sha: 9018f6358580809ccaa7542a8cffa3ca6a40c7e2
+description: "Rug-pull detection for installed agent skills — fingerprints every file in every skill directory (SHA-256), keeps a profile-local snapshot, and reports exactly which skill files changed, appeared, or vanished since; a skill that mutates after install without the user touching it is the rug-pull signal. A skill directory made unreadable is reported as a finding, never treated as clean. Read-only observer, stdlib-only, zero network calls; blind spots (oversize files, symlinks, permission-denied) are counted and printed, never silent. The wrapper registers an hourly post_auxiliary_call hook that surfaces findings only."
+maintainer: ZidoCode
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/ZidoCode/skill-integrity#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_auxiliary_call
+  provides_middleware: []
+  requires_env: []

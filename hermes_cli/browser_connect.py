@@ -356,15 +356,15 @@ def resolve_real_profile_browser(system: str | None = None) -> tuple[str | None,
     different browser's logins).
     """
     configured = _browser_setting("real_profile_browser")
-    if isinstance(configured, str) and configured.strip():
-        key = configured.strip().lower()
-        if key in _BROWSER_BY_KEY:
-            return key, None
-        return None, (
-            f"browser.real_profile_browser is set to {configured!r}, which is not a supported "
-            f"browser. Use one of: {', '.join(sorted(_BROWSER_BY_KEY))}; or remove it to follow "
-            "the system default browser.")
-    return detect_default_chromium(system), None
+    if configured is None or (isinstance(configured, str) and not configured.strip()):
+        return detect_default_chromium(system), None
+    key = configured.strip().lower() if isinstance(configured, str) else None
+    if key in _BROWSER_BY_KEY:
+        return key, None
+    return None, (
+        f"browser.real_profile_browser is set to {configured!r}, which is not a supported "
+        f"browser. Use one of: {', '.join(sorted(_BROWSER_BY_KEY))}; or remove it to follow "
+        "the system default browser.")
 
 
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------

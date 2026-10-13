@@ -230,6 +230,13 @@ app icon does nothing" collision. An unsupported value fails closed with a
 fixable message, never falling back to the default browser. `hermes browser
 close-profile` honours the same setting.
 
+Notes: naming the same browser you already use as your default gains nothing;
+the benefit is pointing the agent at a *different* browser. The agent uses
+that browser's own profile and logins, so sign in to your sites there first.
+The setting is read when a real-profile browser is launched; a browser that is
+already running keeps its previous choice until Hermes restarts. Safari is not
+supported.
+
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.

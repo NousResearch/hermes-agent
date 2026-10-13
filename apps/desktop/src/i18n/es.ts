@@ -4623,11 +4623,8 @@ export const esOverrides = {
     statusbar: {
       workhorse: {
         label: 'Subagentes',
-        openPicker: 'Elegir modelo de subagentes',
-        inherit: 'heredar',
-        noModel: 'sin modelo de subagentes',
-        modelTitle: (provider, model) => `Modelo de subagentes · ${provider}: ${model}`,
-        effortInherit: 'heredar esfuerzo del agente principal',
+        inherit: 'Modelo del agente principal',
+        effortInherit: 'Heredar',
         resetModel: 'Heredar modelo y ruta del agente principal',
         resetEffort: 'Heredar esfuerzo del agente principal'
       },

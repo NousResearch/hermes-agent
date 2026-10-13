@@ -1,7 +1,9 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { hermesConfigKey } from '@/app/hooks/use-config-record'
 import type { HermesApiRequest } from '@/global'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
@@ -13,7 +15,6 @@ import type { HermesConfigRecord } from '@/types/hermes'
 
 import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from './scope'
 import { WorkhorseModelPill } from './workhorse-model-pill'
-import { WorkhorseReasoningPill } from './workhorse-reasoning-pill'
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/gateway', async importOriginal => ({
@@ -26,6 +27,16 @@ vi.mock('@/store/notifications', async importOriginal => ({
 }))
 
 const owner = { connectionId: 'connection-a', profile: 'worker-a' }
+
+const tileView = {
+  ...PRIMARY_SESSION_VIEW,
+  kind: 'tile' as const,
+  $runtimeId: atom<string | null>('tile-a'),
+  $model: atom('parent-model'),
+  $provider: atom('p'),
+  $reasoningEffort: atom('medium')
+}
+
 const other = { connectionId: 'connection-b', profile: 'worker-b' }
 const directRoute = { base_url: 'https://old.invalid/v1', api_key: 'old-test-key', api_mode: 'responses' }
 const clearedRoute = { base_url: '', api_key: '', api_mode: '' }
@@ -82,8 +93,9 @@ function ui(route = owner, locale: 'en' | 'es' = 'en') {
     <QueryClientProvider client={queryClient}>
       <I18nProvider configClient={null} initialLocale={locale}>
         <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, ...route }}>
-          <WorkhorseModelPill disabled={false} />
-          <WorkhorseReasoningPill disabled={false} />
+          <SessionViewProvider value={tileView}>
+            <WorkhorseModelPill disabled={false} />
+          </SessionViewProvider>
         </ComposerScopeProvider>
       </I18nProvider>
     </QueryClientProvider>
@@ -92,22 +104,29 @@ function ui(route = owner, locale: 'en' | 'es' = 'en') {
 
 async function mount(route = owner) {
   const result = render(ui(route))
-  await waitFor(() => expect(screen.getByTestId('workhorse-model-pill').textContent).toContain('Old Model'))
+  await waitFor(() => expect(screen.getByTestId('workhorse-model-pill').hasAttribute('disabled')).toBe(false))
 
   return result
 }
 
 async function pick(model: string) {
-  fireEvent.click(screen.getByTestId('workhorse-model-pill'))
-  fireEvent.click(await screen.findByRole('option', { name: model }))
+  fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
+  const search = await screen.findByRole('textbox', { name: 'Search models' })
+  fireEvent.change(search, { target: { value: model } })
+  await screen.findByText(
+    model
+      .split('-')
+      .map(word => word[0].toUpperCase() + word.slice(1))
+      .join(' ')
+  )
+  fireEvent.keyDown(search, { key: 'Enter' })
+  await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
 }
 
 async function openEffort() {
-  fireEvent.pointerDown(screen.getByTestId('workhorse-reasoning-pill'), {
-    button: 0,
-    ctrlKey: false,
-    pointerType: 'mouse'
-  })
+  fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
+  const trigger = await screen.findByTestId('workhorse-reasoning-menu')
+  fireEvent.keyDown(trigger, { key: 'ArrowRight' })
 
   return screen.findByRole('switch')
 }
@@ -188,12 +207,15 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
       owner.connectionId,
       owner.profile,
       'model.options',
-      expect.objectContaining({ profile: owner.profile })
+      expect.objectContaining({ profile: owner.profile, session_id: 'tile-a' })
     )
     await waitFor(() =>
       expect(cached()?.delegation).toMatchObject({ model: 'new-model', max_iterations: 42, max_concurrent_children: 2 })
     )
     expect(records.get(slot(owner))?.model).toEqual({ default: 'parent-model', provider: 'parent-provider' })
+    expect(tileView.$model.get()).toBe('parent-model')
+    expect(tileView.$reasoningEffort.get()).toBe('medium')
+    expect(mocks.request.mock.calls.every(([, , method]) => method === 'model.options')).toBe(true)
     expect(records.get(slot(other))?.delegation).toMatchObject({ model: 'old-model', ...directRoute })
   })
 
@@ -209,7 +231,8 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
     await act(async () => pending.resolve({ ok: true }))
     await waitFor(() => expect(cached()?.delegation).toMatchObject({ model: 'new-model' }))
     expect(cached(other)?.delegation).toMatchObject({ model: 'old-model', ...directRoute })
-    expect(screen.getByTestId('workhorse-model-pill').textContent).toContain('Old Model')
+    fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
+    expect(await screen.findByText('Subagents · Old Model')).toBeTruthy()
   })
 
   it('reactivates Thinking from none through the real shared switch', async () => {
@@ -222,8 +245,8 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
 
   it('explicitly restores model/provider/route inheritance without touching effort or limits', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('workhorse-model-pill'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Inherit parent model and route' }))
+    fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Inherit parent model and route' }))
     await waitFor(() =>
       expect(cached()?.delegation).toMatchObject({
         model: '',
@@ -234,13 +257,13 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
         max_concurrent_children: 2
       })
     )
-    expect(screen.getByTestId('workhorse-reasoning-pill')).toBeTruthy()
+    expect(screen.getByTestId('workhorse-model-pill')).toBeTruthy()
   })
 
   it('restores effort inheritance independently, including when model inherits', async () => {
     records.set(slot(owner), { delegation: { reasoning_effort: 'high' } })
     render(ui())
-    await waitFor(() => expect(screen.getByTestId('workhorse-reasoning-pill').textContent).toContain('High'))
+    await waitFor(() => expect(screen.getByTestId('workhorse-model-pill').hasAttribute('disabled')).toBe(false))
     await openEffort()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Inherit parent effort' }))
     await waitFor(() => expect(cached()?.delegation).toEqual({ reasoning_effort: '' }))
@@ -278,7 +301,9 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
     await act(async () => last.reject(new Error('disk full')))
     await waitFor(() => expect(mocks.notifyError).toHaveBeenCalledTimes(1))
     expect(cached()?.delegation).toMatchObject({ model: 'new-model' })
-    expect(screen.getByTestId('workhorse-model-pill').textContent).toContain('New Model')
+    expect(records.get(slot(owner))?.delegation).toMatchObject({ model: 'new-model' })
+    fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
+    expect(await screen.findByText('Subagents · New Model')).toBeTruthy()
   })
 
   it('does not treat ok:false as a successful save', async () => {
@@ -345,7 +370,7 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
     mocks.request.mockRejectedValue(new Error('owner catalog unavailable'))
     activate(other)
     await mount()
-    fireEvent.click(screen.getByTestId('workhorse-model-pill'))
+    fireEvent.keyDown(screen.getByTestId('workhorse-model-pill'), { key: 'Enter' })
     expect(await screen.findByText('owner catalog unavailable')).toBeTruthy()
     expect(api.mock.calls.some(([r]) => r.path.startsWith('/api/model/'))).toBe(false)
     expect(puts()).toHaveLength(0)
@@ -392,8 +417,10 @@ describe('workhorse owner and mutation regressions (real picker, Thinking, confi
     expect(cached()?.delegation).toMatchObject({ model: 'new-model' })
   })
 
-  it('labels the subagent control visibly in Spanish', async () => {
+  it('labels the icon accessibly in Spanish', async () => {
     render(ui(owner, 'es'))
-    await waitFor(() => expect(screen.getByTestId('workhorse-model-pill').textContent).toContain('Subagentes'))
+    await waitFor(() =>
+      expect(screen.getByTestId('workhorse-model-pill').getAttribute('aria-label')).toBe('Subagentes')
+    )
   })
 })

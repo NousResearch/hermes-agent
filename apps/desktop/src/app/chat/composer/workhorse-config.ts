@@ -28,7 +28,7 @@ interface WorkhorseWrites {
   confirmed: Partial<Record<WorkhorseField, Record<string, unknown>>>
 }
 
-// Both pills (and multiple tiles for one owner) share this queue. Serialize the
+// Model/effort edits (and multiple tiles for one owner) share this queue. Serialize the
 // whole delegation section because the backend saves it by read/merge/write;
 // generations are per field so an effort change cannot obsolete a model pick.
 const writes = new Map<string, WorkhorseWrites>()

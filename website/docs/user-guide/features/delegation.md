@@ -276,7 +276,7 @@ If omitted, subagents use the same model as the parent.
 
 ### Desktop controls
 
-In Desktop, **Subagents** beside the main model selector opens the shared provider/model picker. The adjacent effort control changes `delegation.reasoning_effort` independently of the parent's reasoning level.
+In Desktop, the **Subagents** group icon beside the main model selector opens the same compact model menu, with the same curated models, favorites and filters for that profile. No subagent model or effort label occupies the toolbar. Inside the menu, **Effort** changes `delegation.reasoning_effort` independently of the parent's reasoning level.
 
 These controls save the composer owner's **profile** configuration. They affect newly launched subagents in that profile, not just the current conversation, and do not change the main model or already running children. A side-by-side session tile edits its own profile and connection.
 

@@ -4296,11 +4296,8 @@ export const en: Translations = {
         label: 'Subagents',
         resetModel: 'Inherit parent model and route',
         resetEffort: 'Inherit parent effort',
-        openPicker: 'Open subagent model picker',
-        inherit: 'inherit',
-        noModel: 'no subagent model',
-        modelTitle: (provider, model) => `Subagent model · ${provider}: ${model}`,
-        effortInherit: 'inherit parent effort'
+        inherit: 'Parent model',
+        effortInherit: 'Inherit'
       }
     }
   },

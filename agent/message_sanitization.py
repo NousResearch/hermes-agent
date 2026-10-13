@@ -285,7 +285,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
-def close_interrupted_tool_sequence(messages: list, final_response: Any = None, *, stopped: bool = False) -> bool:
+def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:
     """Append a synthetic assistant turn when an interrupted tail is a tool result: a transcript
     ending on a raw ``tool`` message makes the next user message land as ``tool → user``, an
     alternation violation strict providers (Gemini, Claude) answer by hallucinating a
@@ -297,12 +297,7 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     ``display_kind="hidden"`` keep it out of rendered transcripts, matching the
     ``_INTERRUPTED_PLACEHOLDER`` shape in ``turn_api_call.py``. A caller-supplied banner
     (truncation notices, partial-delivery text) stays visible: it is the turn's only
-    user-facing explanation.
-
-    ``stopped`` (an interrupted turn: a user stop or any other interrupt, not a truncation or
-    overflow exit) puts the stopped mark on the closing row, as ``turn_api_call.py`` does on every
-    interrupted partial reply: it is the turn's last stored row, so a reopened transcript still says
-    the turn was stopped."""
+    user-facing explanation."""
     last = messages[-1] if messages else None
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
@@ -310,13 +305,15 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None, 
     from agent.message_metadata import append_message
 
     stripped = text.strip()
-    if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
-        row = hidden_interrupt_placeholder_row()
+    try:
+        from agent.interrupt_control import is_bare_interrupt_text
+        bare = is_bare_interrupt_text(stripped)
+    except Exception:
+        bare = not stripped or stripped == _INTERRUPTED_PLACEHOLDER
+    if bare or stripped == _INTERRUPTED_PLACEHOLDER:
+        append_message(messages, hidden_interrupt_placeholder_row())
     else:
-        row = {"role": "assistant", "content": stripped}
-    if stopped:
-        row["display_metadata"] = {"interrupted": True}
-    append_message(messages, row)
+        append_message(messages, {"role": "assistant", "content": stripped})
     return True
 
 
@@ -882,7 +879,7 @@ def apply_reasoning_content_policy(
     else:
         api_msg.pop(R, None)
     if carriers is not None and RD not in carriers:
-        # Private ``*.native_assistant`` records (Gemini / profile-declared carriers) survive: the transport lifts
+        # Private ``*.native_assistant`` records (Gemini/Copilot carriers) survive: the transport lifts
         # them onto the route that reads them and filters them from every other wire.
         private = [d for d in api_msg.pop(RD, None) or () if isinstance(d, dict)
                    and str(d.get("type") or "").endswith(".native_assistant")]

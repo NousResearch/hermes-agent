@@ -19,6 +19,7 @@ _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
+_UNRESOLVED_FOLLOW_REDIRECTS = object()
 
 
 def _routermint_headers() -> dict:
@@ -72,9 +73,10 @@ def resolve_primary_follow_redirects(agent, base_url: Any) -> bool | None:
     )
 
 
-def build_primary_http_client(agent, base_url: str, verify: Any) -> Any:
+def build_primary_http_client(agent, base_url: str, verify: Any, policy=_UNRESOLVED_FOLLOW_REDIRECTS) -> Any:
     """Explicit config must not fall back to an SDK's redirect defaults."""
-    policy = resolve_primary_follow_redirects(agent, base_url)
+    if policy is _UNRESOLVED_FOLLOW_REDIRECTS:
+        policy = resolve_primary_follow_redirects(agent, base_url)
     client = agent._build_keepalive_http_client(base_url, verify=verify, follow_redirects=bool(policy))
     if client is None and policy is not None:
         raise RuntimeError("Unable to enforce configured primary-client redirect policy")
@@ -117,8 +119,19 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
     policy = resolve_primary_follow_redirects(agent, fb_base_url)
-    if timeout is not None or policy is not None:
-        # Only explicit policy/timeout changes justify replacing the installed client.
+    if policy is not None:
+        # The generic replacement helper swallows failures; never leave an unguarded fallback installed.
+        try:
+            agent.client = agent._create_openai_client(
+                agent._client_kwargs, reason="fallback_primary_apply", shared=True, _follow_redirects=policy,
+            )
+        except Exception:
+            agent.client = None
+            agent._retire_shared_openai_client(fb_client, reason="fallback_policy_failed")
+            raise
+        if agent.client is not fb_client:
+            agent._retire_shared_openai_client(fb_client, reason="fallback_primary_apply")
+    elif timeout is not None:
         agent._replace_primary_openai_client(reason="fallback_primary_apply")
 
 
@@ -486,7 +499,7 @@ class ClientLifecycleMixin:
             return cached
         if stale is not None:
             self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
-        client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
+        client = self._create_openai_client(request_kwargs, reason=reason, shared=False, _follow_redirects=policy)
         # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
         snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
         self._store_request_slot(_OPENAI_SLOT, client, (snapshot, policy))

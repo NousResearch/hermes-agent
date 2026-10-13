@@ -37,7 +37,14 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # Frozen, never --locked: pm.index_config forwards ambient mirror
+            # indexes (UV_DEFAULT_INDEX, bridged PIP_INDEX_URL, ...) into this
+            # sync, and uv's --locked origin check then rejects our
+            # official-PyPI lock on every mirrored network ("missing remote
+            # index" -> resolve -> "needs to be updated", #125657). The
+            # snapshot's lock is shipped with its pyproject, so frozen installs
+            # straight from the lock's own pinned URLs and hashes.
+            environment.sync(snapshot, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

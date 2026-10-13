@@ -185,3 +185,19 @@ def test_sole_entry_still_surfaces_no_recovery(tmp_path, monkeypatch):
     _prime_probe_cache(primary, restored=True)
 
     assert _mark_usage_limit(pool, "codex-1") is None
+
+
+def test_429_rotation_keeps_selection_scoped_to_the_failing_model(tmp_path, monkeypatch):
+    """The failed-key exclusion must preserve model-scoped rotation from #130423."""
+    model, other_model = "gpt-5.6-sol", "unentitled-model"
+    entries = [_entry(1, _token("primary")), _entry(2, _token("secondary"))]
+    for entry in entries:
+        entry["model_cooldowns"] = {other_model: time.time() + 365 * 86400}
+    pool, _auth_path = _load(tmp_path, monkeypatch, entries)
+    assert pool.select(model=model).id == "codex-1"
+    assert pool.has_available(model=model)
+
+    rotated = _mark_usage_limit(pool, "codex-1")
+
+    assert rotated is not None and rotated.id == "codex-2"
+    assert set(rotated.model_cooldowns) == {other_model}

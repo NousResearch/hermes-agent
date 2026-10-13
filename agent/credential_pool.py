@@ -2365,7 +2365,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # Never re-admit the just-failed key (#97315): a token sync or stale probe would lift its bench
             # mid-selection and either spin on the 429 or strand a healthy lower-priority sibling.
             failed_ids = frozenset({entry.id, *(s.id for s in siblings)})
-            next_entry, _pending = self._select_unlocked(refresh=False, exclude_ids=failed_ids)
+            next_entry, _pending = self._select_unlocked(refresh=False, model=model, exclude_ids=failed_ids)
             if next_entry:
                 logger.info("credential pool: rotated to %s", next_entry.label or next_entry.id[:8])
             return next_entry

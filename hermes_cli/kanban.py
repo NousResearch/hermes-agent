@@ -757,8 +757,9 @@ def _cmd_comment(args: argparse.Namespace) -> int:
         except (OSError, UnicodeError) as exc:
             return _err(f"kanban comment: --body-file: {exc}", 2)
     else:
-        body = " ".join(args.text).strip()
-    if not body.strip():
+        body = " ".join(args.text)
+    body = body.strip()
+    if not body:
         return _err("kanban comment: a non-empty comment body is required", 2)
     if args.max_len is not None:
         if args.max_len < 1:

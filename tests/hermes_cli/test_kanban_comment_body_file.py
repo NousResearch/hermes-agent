@@ -89,3 +89,19 @@ def test_comment_delimiter_keeps_flags_literal(task_id):
     assert args.author == "reviewer"
     assert kc.kanban_command(args) == 0
     assert comments(task_id)[-1].body == "--body-file -"
+
+
+def test_file_input_boundaries_match_inline(task_id, tmp_path, monkeypatch):
+    source = tmp_path / "padded.md"
+    source.write_text(" " * 100 + "short comment", encoding="utf-8")
+    assert comment(task_id, "--body-file", str(source), "--max-len", "45") == 0
+    assert comments(task_id)[-1].body == "short comment"
+    monkeypatch.setattr("sys.stdin", io.StringIO(" " * 100 + "short comment"))
+    assert comment(task_id, "--body-file", "-", "--max-len", "45") == 0
+    assert comments(task_id)[-1].body == "short comment"
+    assert comment(task_id, "--body-file", str(source), "--") == 0
+    before = len(comments(task_id))
+    for abbreviation in ("--body", "--b"):
+        with pytest.raises(SystemExit):
+            comment(task_id, abbreviation, str(source))
+    assert len(comments(task_id)) == before

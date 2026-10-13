@@ -25,6 +25,8 @@ class _KanbanArgumentParser(argparse.ArgumentParser):
     def parse_known_args(self, args=None, namespace=None):
         if not self._intermixed:
             return super().parse_known_args(args, namespace)
+        if args is not None and "--" in args and args.index("--") == len(args) - 1:
+            args = args[:-1]
         # Protect the delimiter across argparse's two passes: its first pass
         # can consume a leading '--' while positionals are suppressed.
         if args is not None and "--" in args:
@@ -310,7 +312,7 @@ _SPECS = [
         _arg("--body-file", help="Read comment from a UTF-8 file ('-' for stdin; local CLI only)"),
         _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
-    ], help="Append a comment", intermixed=True),
+    ], help="Append a comment", intermixed=True, allow_abbrev=False),
     _cmd("attach", [
         _TASK_ID,
         _arg("path", help="Path to the local file to attach"),

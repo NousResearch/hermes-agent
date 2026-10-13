@@ -5,6 +5,7 @@ wake it admitted would never run, while the Kanban notifier had already advanced
 """
 
 import asyncio
+import threading
 
 import pytest
 
@@ -108,3 +109,27 @@ async def test_wake_for_a_busy_session_is_refused_while_draining():
     with pytest.raises(WakeNotAccepted):
         await deliver_wake(adapter, text="[kanban] Task t_1 completed.", source=source)
     assert key not in adapter._pending_messages  # would be discarded when the turn ends
+
+
+@pytest.mark.asyncio
+async def test_wake_is_refused_when_drain_starts_during_admission():
+    runner, adapter, source, turns = wake_route()
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_topic_recovery(
+        _source,
+    ):  # Telegram DM admission awaits this before it claims
+        entered.set()
+        release.wait(5)
+
+    adapter._topic_recovery_fn = slow_topic_recovery
+    admission = asyncio.create_task(
+        deliver_wake(adapter, text="[kanban] Task t_1 completed.", source=source)
+    )
+    assert await asyncio.to_thread(entered.wait, 5)
+    runner._draining = True  # /restart begins while admission is parked
+    release.set()
+    with pytest.raises(WakeNotAccepted):
+        await admission
+    await drain(adapter)
+    assert turns == []

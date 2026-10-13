@@ -12,5 +12,9 @@ export const frUpdateChannel = {
   detailsLabel: 'Canal',
   branch: (b: string) => `Branche : ${b}`,
   change: 'Modifier',
-  latestRelease: (v: string) => `Vous utilisez la dernière version stable (${v}).`
+  latestRelease: (v: string) => `Vous utilisez la dernière version stable (${v}).`,
+  rollbackTitle: (v: string) => `Revenir à la version stable ${v}`,
+  rollbackBody: (v: string) =>
+    `Cette build est plus récente que la version stable ${v}. L’installer ramène Hermes à cette version.`,
+  rollbackAction: (v: string) => `Revenir à ${v}`
 }

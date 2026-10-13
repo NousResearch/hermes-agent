@@ -19,6 +19,11 @@ def _wire_str(value):
     return None if value is None else str(value)
 
 
+def _billing_pick(result: dict, **fields) -> dict:
+    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
+    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
+
+
 def _serialize_billing_error(exc) -> dict:
     """Map a BillingError into the result.error envelope the TUI branches on."""
     from hermes_cli.nous_billing import (

@@ -13,11 +13,11 @@ import {
 
 describe('titlebarControlsPosition', () => {
   it('offsets controls from visible traffic lights', () => {
-    expect(titlebarControlsPosition({ x: 24, y: 10 }).left).toBe(24 + TITLEBAR_CONTROL_OFFSET_X)
+    expect(titlebarControlsPosition({ x: 20, y: 20 }).left).toBe(20 + TITLEBAR_CONTROL_OFFSET_X)
   })
 
   it('pins to the edge when macOS fullscreen hides traffic lights', () => {
-    expect(titlebarControlsPosition({ x: 24, y: 10 }, true).left).toBe(TITLEBAR_EDGE_INSET)
+    expect(titlebarControlsPosition({ x: 20, y: 20 }, true).left).toBe(TITLEBAR_EDGE_INSET)
   })
 
   it('pins to the edge on Windows/Linux where native controls render on the right', () => {
@@ -31,17 +31,17 @@ describe('titlebarControlsPosition', () => {
 
 describe('titlebarControlsYNudge', () => {
   it('nudges pre-Tahoe macOS when traffic lights are visible', () => {
-    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: 24 })).toBe(
+    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 20, y: 20 }, darwinMajor: 24 })).toBe(
       TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
     )
   })
 
   it('stays flat on Tahoe, Windows/Linux, and macOS fullscreen', () => {
     expect(
-      titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR })
+      titlebarControlsYNudge({ windowButtonPosition: { x: 20, y: 20 }, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR })
     ).toBe('0px')
     expect(titlebarControlsYNudge({ windowButtonPosition: null })).toBe('0px')
-    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, isFullscreen: true })).toBe('0px')
+    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 20, y: 20 }, isFullscreen: true })).toBe('0px')
   })
 
   it('nudges while macOS window-button position is still unknown on pre-Tahoe', () => {

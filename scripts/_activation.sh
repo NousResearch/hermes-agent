@@ -8,6 +8,10 @@
 #   hermes_activation_current REPO  is the inherited environment still REPO's?
 #   hermes_ensure_env REPO          sync, compose and apply unless it is current
 #
+# The store-root resolver folds HERMES_HOME to its machine root exactly the
+# way pm.paths.store_root() does; the canonical copy lives beside this file.
+. "$(dirname "${BASH_SOURCE[0]}")/bootstrap/store_root.sh"
+
 # pm records, beside the installed-state file named by __HERMES_ACTIVATED, one
 # stamp per dependency input carrying the exact mtime that input had when the
 # install was last verified against it (pm.environments.record_activation_inputs).
@@ -30,35 +34,21 @@ hermes_sync() {
     ) >&2
 }
 
-# hermes_activation_default_home: the home pm's _get_platform_default_hermes_home
-# answers for this shell -- LOCALAPPDATA first on MSYS/Cygwin/Git Bash (pm runs
-# win32 there and the store lands under it), the account home elsewhere, with
-# HERMES_DATA_DIR_SUFFIX appended LITERALLY like pm does. Empty when there is
-# no account home to anchor a search on.
-hermes_activation_default_home() {
-    local suffix="${HERMES_DATA_DIR_SUFFIX:-}"
-    case "$(uname -s 2>/dev/null)" in
-        MINGW*|MSYS*|CYGWIN*)
-            if [ -n "${LOCALAPPDATA:-}" ]; then printf '%s' "$LOCALAPPDATA/hermes$suffix"
-            elif [ -n "${HOME:-}" ]; then printf '%s' "$HOME/AppData/Local/hermes$suffix"
-            fi
-            ;;
-        *)
-            if [ -n "${HOME:-}" ]; then printf '%s' "$HOME/.hermes$suffix"; fi
-            ;;
-    esac
-}
-
 # hermes_bootstrap_python REPO: print the interpreter that can run pm before
 # any dependency is importable. It only emits the environment; it installs nothing.
+#
+# The store candidates fold through the canonical resolver (scripts/bootstrap/
+# store_root.sh), so a PROFILE home answers with its ROOT's tools exactly like
+# pm.paths.store_root() — a home is shared with the machine, and a candidate
+# searched in the profile's own tools dir never finds the machine store.
 hermes_bootstrap_python() {
-    local repo="$1" store candidate home
+    local repo="$1" store candidate root
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    home="${HERMES_HOME:-$(hermes_activation_default_home)}"
-    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${home:+$home/tools}"; do
+    root="$(hermes_root_of)"
+    for store in "${HERMES_RUNTIME_DIR:-}" "$root/tools" "$repo/../tools"; do
         [ -n "$store" ] || continue
         for candidate in "$store"/python-*/bin/python3 "$store"/python-*/python.exe \
                          "$store"/python-*/bin/python "$store"/python-*/bin/python.exe; do

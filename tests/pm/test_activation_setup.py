@@ -61,7 +61,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         "UV_CACHE_DIR": str(home / ".cache" / "uv"), "UV_PYTHON_DOWNLOADS": "never",
     }
     for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "hermes_yaml.py", "utils.py",
-                 "scripts/_activation.sh"):
+                 "scripts/_activation.sh", "scripts/bootstrap/store_root.sh"):
         (core / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / name, core / name)
     for name in ("pm", "hermes_cli"):

@@ -217,7 +217,53 @@ def test_bootstrap_python_searches_the_pm_default_home(
         [bash(), "-c", '. "$1"; hermes_bootstrap_python "$2"', "probe",
          posix(REPO_ROOT / "scripts" / "_activation.sh"), posix(repo)],
         env={**os.environ}, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert Path(result.stdout.strip()) == python, (
         f"rc={result.returncode} out={result.stdout!r} err={result.stderr!r}"
+    )
+
+
+@pytest.mark.platforms("posix")
+def test_bootstrap_python_reads_the_machine_store_before_a_vcs_neighbor_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``$root/tools`` (the store pm resolves) outranks ``$repo/../tools``.
+
+    The candidate order is pm's own resolution order: the machine root is where
+    this install's interpreter actually lives, and a ``tools/`` directory that
+    merely sits beside the checkout is a legacy-layout leftover, not this
+    install's store. Searching the neighbor first would hand activation an
+    interpreter pm never serves.
+    """
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "account-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "account-home"))
+    if sys.platform != "win32":
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    repo = tmp_path / "src" / "hermes-agent"
+    repo.mkdir(parents=True)
+    custom_root = tmp_path / "custom-root"
+    monkeypatch.setenv("HERMES_HOME", str(custom_root / "profiles" / "coder"))
+
+    def _stage(root: Path, token: str) -> Path:
+        python = root / "tools" / "python-3.14.0" / "bin" / "python3"
+        python.parent.mkdir(parents=True)
+        python.write_text(f"#!/bin/sh\necho {token}\n", encoding="utf-8")
+        python.chmod(0o755)
+        return python
+
+    neighbor = _stage(repo.parent, "VCS_NEIGHBOR_PY")
+    machine = _stage(custom_root, "MACHINE_ROOT_PY")
+
+    result = subprocess.run(
+        [bash(), "-c", '. "$1"; hermes_bootstrap_python "$2"', "probe",
+         posix(REPO_ROOT / "scripts" / "_activation.sh"), posix(repo)],
+        env={**os.environ}, capture_output=True, text=True, timeout=60,
+        check=False,
+    )
+    assert Path(result.stdout.strip()) == machine, (
+        f"activation read {result.stdout.strip()!r} — the vcs-neighbor store "
+        f"({neighbor}) must not outrank the machine store pm resolves"
     )

@@ -132,7 +132,7 @@ def test_subprocess_run_systemctl_mutates_non_gateway_units_blocked(unit):
     on the operator's live dashboard/serve unit sailed through and tripped its
     start-limit on a host running real units."""
     with pytest.raises(RuntimeError, match="live-system guard"):
-        subprocess.run(["systemctl", "--user", "restart", unit])
+        subprocess.run(["systemctl", "--user", "restart", unit], check=False)
 
 
 def test_subprocess_run_full_path_systemctl_blocked():

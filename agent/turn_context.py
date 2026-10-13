@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.request_window import request_exceeds_model_window
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
@@ -383,7 +384,7 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     request that merely sits above the compression threshold is sent unchanged, exactly as the
     cooldown-blocked path sends it every turn — otherwise a slow summariser turns a session that still
     fits its window into a turn that can never run (#113646, #114594)."""
-    from agent.conversation_compression import context_compression_timed_out, request_exceeds_model_window
+    from agent.conversation_compression import context_compression_timed_out
 
     if not context_compression_timed_out(agent):
         return
@@ -413,7 +414,7 @@ def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
     fitting request keeps the send-as-is behaviour — and a pass skipped by the summary-failure
     cooldown is a defer, not proof of incompressibility, so it keeps its typed cooldown result.
     """
-    from agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
+    from agent.conversation_compression import compression_blocked_transiently
 
     if request_exceeds_model_window(agent, request_tokens) is not True:
         return

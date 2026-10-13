@@ -928,18 +928,6 @@ def _prior_timeout_failures(agent: Any) -> int:
     return count if isinstance(count, int) and not isinstance(count, bool) else 0
 
 
-def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bool]:
-    """Whether a ~``request_tokens`` request cannot be sent at all (above the model's context window).
-    ``None`` when either side is unknown (no compressor / unresolvable window / no estimate), so callers
-    keep their conservative default instead of treating "unknown" as "fits"."""
-    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
-        return None
-    if isinstance(request_tokens, bool) or not isinstance(request_tokens, int):
-        return None
-    return request_tokens > window
-
-
 def _retry_compression_on_fallback_chain(
     *, worker: Callable[[CompressionCommitFence], tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,

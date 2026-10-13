@@ -44,6 +44,76 @@ def test_shared_endpoint_uses_configured_identity_not_first_entry(configure):
     assert get_provider_follow_redirects("custom", base_url=url, requested_provider="custom:unknown") is None
 
 
+@pytest.mark.parametrize("provider", ["custom", "custom:second", "second"])
+def test_same_display_name_and_url_preserve_selected_durable_key(configure, provider):
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    url = "https://proxy.example/v1"
+    configure({"providers": {
+        "first": {"name": "Shared Proxy", "base_url": url, "follow_redirects": True,
+                  "models": {"disabled": {"follow_redirects": True}}},
+        "second": {"name": "Shared Proxy", "base_url": url, "follow_redirects": False,
+                   "models": {"disabled": {"follow_redirects": False}}},
+    }})
+    runtime = resolve_runtime_provider(requested="custom:second", target_model="disabled")
+    assert runtime["base_url"] == url
+    kwargs = {"base_url": runtime["base_url"], "requested_provider": "custom:second"}
+    assert get_provider_follow_redirects(provider, **kwargs) is False
+    assert get_provider_follow_redirects(provider, "disabled", **kwargs) is False
+
+
+@pytest.mark.parametrize("configured_url, expected_url, expected_query", [
+    ("https://api.kimi.com/coding", "https://api.kimi.com/coding/v1/", {}),
+    ("https://proxy.example/v1?api-version=2025-04-15", "https://proxy.example/v1/",
+     {"api-version": "2025-04-15"}),
+])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_sdk_rewritten_routes_keep_configured_redirect_policy(
+    configure, configured_url, expected_url, expected_query, legacy,
+):
+    from agent.auxiliary_client import resolve_provider_client
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    entry = {"name": "Redirect Endpoint", "base_url": configured_url, "follow_redirects": True,
+             "models": {"disabled": {"follow_redirects": False}}}
+    configure({"custom_providers": [entry]} if legacy else {"providers": {"durable-key": entry}})
+    identity = "custom:redirect-endpoint" if legacy else "custom:durable-key"
+    runtime = resolve_runtime_provider(requested=identity, target_model="disabled")
+    client, model = resolve_provider_client(
+        "custom", "disabled", explicit_base_url=runtime["base_url"],
+        explicit_api_key="test-key", api_mode="chat_completions",
+    )
+    try:
+        assert model == "disabled"
+        assert str(client.base_url) == expected_url
+        assert client.default_query == expected_query
+        kwargs = {"base_url": str(client.base_url), "requested_provider": identity}
+        assert get_provider_follow_redirects(runtime["provider"], **kwargs) is True
+        assert get_provider_follow_redirects(runtime["provider"], model, **kwargs) is False
+        # Comparison is symmetric even when only the active side has a query/path rewrite.
+        assert get_provider_follow_redirects(
+            "custom", model, base_url=configured_url, requested_provider=identity,
+        ) is False
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("configured_url, active_url", [
+    ("https://API.kimi.com:443/coding/v1/", "https://api.kimi.com/coding"),
+    ("https://proxy.example/v1/", "https://PROXY.example:443/v1?api-version=2025-04-15"),
+    ("https://API.kimi.com:443/coding?version=1", "https://api.kimi.com/coding/v1/"),
+])
+def test_route_normalization_applies_equally_to_active_and_configured_urls(
+    configure, configured_url, active_url,
+):
+    configure({"providers": {"durable-key": {
+        "base_url": configured_url, "follow_redirects": False,
+    }}})
+    assert get_provider_follow_redirects(
+        "custom", base_url=active_url, requested_provider="custom:durable-key",
+    ) is False
+
+
 @pytest.mark.parametrize("providers", [{}, None, [], ["not-a-provider"], {"redirect-provider": []}])
 def test_absent_or_malformed_provider_returns_unset(configure, providers):
     configure({"providers": providers})

@@ -65,7 +65,8 @@ def test_post_attach_reconnects_stop_at_budget_and_unregister(monkeypatch, unreg
     assert bs.SUPERVISOR_REGISTRY.get(supervisor.task_id) is None
 
 
-def test_first_redial_after_live_session_is_debug_not_warning(monkeypatch, unregister, caplog):
+@pytest.mark.parametrize("session_dropped", [False, True])
+def test_first_redial_after_live_session_is_debug_not_warning(monkeypatch, unregister, caplog, session_dropped):
     """The first failed dial after a live session is the endpoint's re-arm race: it logs at
     debug, later failed dials warn, and the reconnect budget's accounting does not move."""
     supervisor = bs.CDPSupervisor(task_id="quiet-first-redial", cdp_url="ws://127.0.0.1:9222")
@@ -84,6 +85,10 @@ def test_first_redial_after_live_session_is_debug_not_warning(monkeypatch, unreg
     async def _noop(*_a, **_k):
         pass
 
+    async def reader():
+        if session_dropped:
+            raise ConnectionError("live session dropped")
+
     real_sleep = asyncio.sleep
 
     async def fast_sleep(_delay):
@@ -91,7 +96,7 @@ def test_first_redial_after_live_session_is_debug_not_warning(monkeypatch, unreg
 
     monkeypatch.setattr(websockets, "connect", connect)
     monkeypatch.setattr(supervisor, "_attach_initial_page", _noop)
-    monkeypatch.setattr(supervisor, "_read_loop", _noop)
+    monkeypatch.setattr(supervisor, "_read_loop", reader)
     monkeypatch.setattr(bs.asyncio, "sleep", fast_sleep)
 
     with caplog.at_level("DEBUG", logger="tools.browser_supervisor"):
@@ -99,8 +104,8 @@ def test_first_redial_after_live_session_is_debug_not_warning(monkeypatch, unreg
 
     connect_failed = [r.levelname for r in caplog.records if "connect failed" in r.getMessage()]
     # A clean reader exit is not a failure; redials 1..budget-1 log, the budget-th ends the loop.
-    assert connect_failed == ["DEBUG"] + ["WARNING"] * (budget - 2)
-    assert dials == budget + 1
+    assert connect_failed == ["DEBUG"] + ["WARNING"] * (budget - 2 - session_dropped)
+    assert dials == budget + 1 - session_dropped
 
 
 def test_initial_connect_failure_stays_fatal_for_start(monkeypatch):

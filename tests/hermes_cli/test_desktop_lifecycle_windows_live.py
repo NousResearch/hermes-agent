@@ -26,7 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from tests.live_process_fixtures import SLEEPER_MARKER, sleeper_script_path
+from tests.live_process_fixtures import (
+    HERMES_ENTRYPOINT_MARKER,
+    SLEEPER_MARKER,
+    hermes_backend_spawn_kwargs,
+    sleeper_script_path,
+)
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -64,6 +69,41 @@ def sleeper():
         )
         procs.append(p)
         assert _wait_until(lambda: _argv_visible(p.pid, SLEEPER_MARKER)), "sleeper argv never visible"
+        return p
+
+    yield _spawn
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
+@pytest.fixture()
+def hermes_backend():
+    """Spawn a sleeping process whose argv IS the Desktop's backend shape: ``-m hermes_cli.main <sub>``.
+
+    ``sleeper`` deliberately cannot serve here. It spawns ``python sleeper.py <tail>``, and a Hermes
+    tail behind an unrelated script is precisely the lookalike the identity matchers must refuse
+    (#121156) — so a holder standing in for a REAL backend has to carry the real spawn shape, with no
+    inert tail.
+
+    ``-P`` plus the PYTHONPATH in ``hermes_backend_spawn_kwargs`` makes ``-m`` resolve to a sleeping
+    stub rather than the repo's real entry point, while CWD stays at the project root so the Windows
+    venv holder scan still keeps the process (it drops a ``-m hermes_cli.main`` holder whose command
+    line and CWD are both outside the project root).
+    """
+    procs: list[subprocess.Popen] = []
+    spawn_kwargs = hermes_backend_spawn_kwargs(PROJECT_ROOT)
+
+    def _spawn(*subcommand: str) -> subprocess.Popen:
+        p = subprocess.Popen(
+            [sys.executable, "-P", "-m", "hermes_cli.main", *subcommand],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **spawn_kwargs,
+        )
+        procs.append(p)
+        assert _wait_until(lambda: _argv_visible(p.pid, HERMES_ENTRYPOINT_MARKER)), "backend argv never visible"
         return p
 
     yield _spawn
@@ -123,17 +163,20 @@ def test_live_supervised_serve_suppresses_cold_start(sleeper, monkeypatch, tmp_p
     assert token is not None and token.get("cold_start_if_installed") is True
 
 
-def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tmp_path):
+def test_holder_scan_fallback_respects_token_classifier(hermes_backend, monkeypatch, tmp_path):
     from hermes_cli import update_cmd
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
     _write_ledger([])  # force the fallback rung
 
-    # Real process whose argv carries genuine serve shape, visible to psutil.
-    serve_like = sleeper("-m", "hermes_cli.main", "serve")
-    # Lookalike from the #90778 class — must NOT confer ownership.
-    kanban_like = sleeper("-m", "hermes_cli.main", "kanban", "--preserve-cache")
+    # Real process whose argv carries genuine serve shape, visible to psutil. It must run from the
+    # Desktop's own ``-m hermes_cli.main`` entry: a Hermes tail behind an unrelated script is the
+    # lookalike #121156 refuses, so it would not stand in for a backend at all.
+    serve_like = hermes_backend("serve")
+    # Lookalike from the #90778 class — a real Hermes argv, but the wrong SUBCOMMAND. Only the token
+    # classifier separates it from the serve holder, which is what this test exists to pin.
+    kanban_like = hermes_backend("kanban", "--preserve-cache")
 
     import psutil
 

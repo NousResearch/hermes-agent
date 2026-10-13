@@ -359,9 +359,23 @@ class HomeChannel:
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: dict[str, Any], *, default_platform: Optional[Platform] = None) -> "HomeChannel":
+        # ``hermes config set platforms.<name>.home_channel.<field>`` writes a mapping with no
+        # ``platform`` key; nested under its own platform block that key is redundant, so the
+        # caller hands the parent platform down and we inherit it (a bare ``KeyError`` here
+        # would escape ``by_platform``'s ``ValueError`` recovery and kill the whole load #137919).
+        raw_platform = data.get("platform")
+        if raw_platform is None:
+            if default_platform is None:
+                raise ValueError("home_channel needs 'platform' or a parent platform block")
+            platform = default_platform
+        else:
+            platform = Platform(raw_platform)
+        chat_id = data.get("chat_id")
+        if chat_id is None or str(chat_id) == "":
+            raise ValueError("home_channel mapping needs 'chat_id'")
         optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
-        return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
+        return cls(platform=platform, chat_id=str(chat_id), name=data.get("name", "Home"), **optional)
 
 
 def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
@@ -442,7 +456,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: dict[str, Any], *, platform: Optional[Platform] = None) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -466,7 +480,7 @@ class PlatformConfig:
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
-            home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
+            home_channel=HomeChannel.from_dict(home, default_platform=platform) if isinstance(home, dict) else None,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
@@ -733,14 +747,15 @@ class GatewayConfig:
             """Warning key prefix: "gateway." when the nested form was the one consulted."""
             return key if key in data else f"gateway.{key}"
 
-        def by_platform(key: str, parse, *, dicts_only: bool = False) -> dict:
+        def by_platform(key: str, parse, *, dicts_only: bool = False, with_platform: bool = False) -> dict:
             """``{Platform(name): parse(block)}`` for a platform-keyed mapping; unknown platforms skipped."""
             out = {}
             for platform_name, block in _coerce_dict(data.get(key, {})).items():
                 if dicts_only and not isinstance(block, dict):
                     continue
                 try:
-                    out[Platform(platform_name)] = parse(block)
+                    target = Platform(platform_name)
+                    out[target] = parse(block, platform=target) if with_platform else parse(block)
                 except ValueError:
                     pass
             return out
@@ -792,7 +807,7 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
 
         return cls(
-            platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
+            platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True, with_platform=True),
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",

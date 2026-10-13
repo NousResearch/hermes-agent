@@ -170,6 +170,45 @@ class TestPlatformConfigMalformedSections:
         assert restored.extra == {}
 
 
+class TestHomeChannelPartialMapping:
+    """``hermes config set platforms.<name>.home_channel.<field>`` persists a mapping with no
+    ``platform`` key; the parent block already names the platform, so the load inherits it
+    instead of dying on a bare ``KeyError`` (#137919)."""
+
+    def test_nested_home_channel_inherits_parent_platform(self):
+        config = GatewayConfig.from_dict({
+            "platforms": {
+                "telegram": {"enabled": True, "home_channel": {"chat_id": "123456789", "name": "Home"}},
+            },
+        })
+
+        home = config.platforms[Platform.TELEGRAM].home_channel
+        assert home is not None
+        assert home.platform == Platform.TELEGRAM
+        assert home.chat_id == "123456789"
+        assert home.name == "Home"
+
+    def test_explicit_platform_wins_over_inherited(self):
+        home = HomeChannel.from_dict(
+            {"platform": "discord", "chat_id": "999"}, default_platform=Platform.TELEGRAM
+        )
+        assert home.platform == Platform.DISCORD
+
+    def test_missing_platform_without_parent_raises_value_error(self):
+        with pytest.raises(ValueError):
+            HomeChannel.from_dict({"chat_id": "123"})
+
+    def test_missing_chat_id_raises_value_error(self):
+        with pytest.raises(ValueError):
+            HomeChannel.from_dict({"platform": "telegram"}, default_platform=Platform.TELEGRAM)
+
+    def test_unresolvable_home_channel_skips_platform_block_not_boot(self):
+        config = GatewayConfig.from_dict({
+            "platforms": {"telegram": {"enabled": True, "home_channel": {"name": "Home"}}},
+        })
+        assert Platform.TELEGRAM not in config.platforms
+
+
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
         config = GatewayConfig(

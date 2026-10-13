@@ -207,6 +207,39 @@ class TestSendDraft:
         assert result2.success
         assert client.chat_appendStream.await_args.kwargs["markdown_text"] == " More."
 
+    @pytest.mark.asyncio
+    async def test_reaped_stream_reopens_with_the_whole_segment(self):
+        """message_not_found: Slack deleted the streamed message outright, unlike
+        the sealed case nothing of the prefix is visible anywhere, so the fresh
+        stream must carry the WHOLE segment from the top — a tail-only resume
+        would start the continuation mid-sentence (#137799). Later deltas still
+        diff against the full segment."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
+
+        client.chat_appendStream = AsyncMock(
+            side_effect=_StreamExpiredError("reaped", {"ok": False, "error": "message_not_found"})
+        )
+        client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "125.000"})
+
+        result = await adapter.send_draft("D1", 7, "Hello world!", metadata=META)
+
+        assert result.success
+        assert result.message_id == "125.000"
+        kwargs = client.chat_startStream.await_args.kwargs
+        assert kwargs["markdown_text"] == "Hello world!"  # reaped message shows nothing
+        (reopened,) = _open_streams(adapter)
+        assert reopened["ts"] == "125.000"
+        assert reopened["sent"] == "Hello world!"  # full segment: deltas diff against it
+        assert reopened["base"] == 0
+        assert adapter._native_stream_unsupported is False  # not the feature-gate path
+
+        # A later frame resumes as a normal delta against the reopened stream.
+        client.chat_appendStream = AsyncMock(return_value={"ok": True})
+        result2 = await adapter.send_draft("D1", 7, "Hello world! More.", metadata=META)
+        assert result2.success
+        assert client.chat_appendStream.await_args.kwargs["markdown_text"] == " More."
+
 
 class TestFeatureGateFallback:
     @pytest.mark.asyncio

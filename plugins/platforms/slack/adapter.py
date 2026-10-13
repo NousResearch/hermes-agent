@@ -451,6 +451,18 @@ def _slack_error_is(exc: BaseException, code: str) -> bool:
         return False
 
 
+def _stream_expiry_kind(exc: BaseException) -> Optional[str]:
+    """Classify a Slack native-stream expiry: ``"sealed"`` when Slack froze the stream but
+    the message survives readable (``message_not_in_streaming_state``), ``"reaped"`` when
+    Slack deleted it outright (``message_not_found``), ``None`` when the error is not an
+    expiry at all."""
+    if _slack_error_is(exc, "message_not_in_streaming_state"):
+        return "sealed"
+    if _slack_error_is(exc, "message_not_found"):
+        return "reaped"
+    return None
+
+
 def _slack_str_field(el: dict, name: str) -> str:
     """Read a string field of a Block Kit element; non-strings (text objects) would break ``str.join``."""
     value = el.get(name)
@@ -2104,18 +2116,20 @@ class SlackAdapter(BasePlatformAdapter):
                     await client.api_call(
                         "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
                 except Exception as exc:
-                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                    expiry = _stream_expiry_kind(exc)
+                    if expiry is None:
                         raise
-                    # Slack seals a native stream server-side after a few minutes of a long
+                    # Slack ends a native stream server-side after a few minutes of a long
                     # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
-                    # documented). The sealed message is a regular message now, so reopen a
-                    # fresh card in the same thread. Every frame already carries the FULL
-                    # visible projection, so nothing is lost; the user sees the card
-                    # continue instead of degrading to text bubbles. One reopen per update:
+                    # documented). A sealed stream leaves the message readable; a reaped
+                    # one (message_not_found) is gone outright. Either way every frame
+                    # carries the FULL visible projection, so reopen a fresh card in the
+                    # same thread and nothing is lost; the user sees the card continue
+                    # instead of degrading to text bubbles. One reopen per update:
                     # a second rejection is a real failure.
                     logger.info(
-                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
-                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
+                        "[Slack] Native task-card stream %s expired (%s); "
+                        "reopening a fresh card in thread %s", stream.stream_ts, expiry, stream.thread_ts)
                     stream.stream_ts = ""
                     await self._start_native_task_card_stream(client, stream, metadata)
                     await client.api_call(
@@ -2511,20 +2525,24 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
             except Exception as exc:
-                if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                expiry = _stream_expiry_kind(exc)
+                if expiry is None:
                     raise
-                # Same server-side seal the native task-card stream hits on a long turn
-                # (see _slack_error_is's other caller above): the sealed message is a
-                # regular message now, so reopen a fresh stream in the same thread seeded
-                # with ONLY the text past the sealed message (the prefix is already visible);
-                # ``sent`` keeps the full segment so later deltas still diff correctly. One
-                # reopen per frame; a second rejection propagates as a real failure, same as
-                # the task-card twin.
+                # Same server-side expiry the native task-card stream hits on a long
+                # turn (see _stream_expiry_kind). Sealed: the sealed message still
+                # shows its prefix, so reopen a fresh stream seeded with ONLY the text
+                # past it; ``sent`` keeps the full segment so later deltas still diff
+                # correctly. Reaped: the message is gone entirely — a tail-only resume
+                # would start the continuation mid-sentence with the earlier text
+                # nowhere on screen, so resend the WHOLE segment from the top. One
+                # reopen per frame; a second rejection propagates as a real failure,
+                # same as the task-card twin.
+                base = len(sent) if expiry == "sealed" else 0
                 logger.info(
-                    "[Slack] Native draft stream %s expired (message_not_in_streaming_state); "
-                    "reopening a fresh stream for chat %s", stream["ts"], chat_id)
+                    "[Slack] Native draft stream %s expired (%s); "
+                    "reopening a fresh stream for chat %s", stream["ts"], expiry, chat_id)
                 return await self._start_stream(
-                    client, stream_key, draft_id, text, metadata, base=len(sent))
+                    client, stream_key, draft_id, text, metadata, base=base)
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors

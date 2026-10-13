@@ -208,12 +208,17 @@ class TestClassifier:
         from agent.vault_login_classifier import classify_checkout_control, select_checkout_fills
         from agent.vault_store import PAYMENT_FIELDS
 
-        for label in ("Issue date (MM / YY)", "Start date (MM/YY)", "Valid from MM/YY"):
-            assert classify_checkout_control(_ctrl(label=label)) is None, label
-        controls = [_ctrl(label="Issue date (MM / YY)", index=0), _ctrl(label="Expiry date (MM / YY)", index=1)]
-        classified = [c for c in map(classify_checkout_control, controls) if c is not None]
-        fills = select_checkout_fills(classified, _CARD, PAYMENT_FIELDS)
-        assert fills == [{"index": 1, "token": "cc-exp", "value": "07/29"}]
+        for name, label in (("", "Issue date (MM / YY)"), ("", "Start date (MM/YY)"),
+                            ("", "Valid from MM/YY"), ("issueDate", "MM/YY"),
+                            ("startDate", "MM/YY"), ("", "Issued (MM/YY)"),
+                            ("", "Starts (MM/YY)"), ("", "Valid since MM/YY"),
+                            ("", "Issue date (not expiry; MM/YY)")):
+            assert classify_checkout_control(_ctrl(name=name, label=label)) is None, (name, label)
+        for label in ("Expiry date (MM / YY)", "Expiry date. Start typing MM/YY",
+                      "Expiration date (do not enter the issue date)"):
+            controls = [_ctrl(name="issueDate", label="MM/YY", index=0), _ctrl(label=label, index=1)]
+            classified = [c for c in map(classify_checkout_control, controls) if c is not None]
+            assert select_checkout_fills(classified, _CARD, PAYMENT_FIELDS) == [{"index": 1, "token": "cc-exp", "value": "07/29"}]
 
     def test_select_password_fill_picks_best_password(self):
         user = ClassifiedLoginControl(_ctrl(index=0, form_index=0, autocomplete="username"), 100, "username")

@@ -508,6 +508,25 @@ _SKILL_REVIEW_PROMPT = (
     "stop. Otherwise, act."
 )
 
+# 声明于两条技能 review prompt 末尾的技能创建硬规则（后台 review 低注意预算——
+# 以独立标注块追加，便于模型在 create 前识别）。
+_SKILL_CREATION_RULES = (
+    "\n\n---\n"
+    "SKILL CREATION RULES — read before any skill_manage(action='create'):\n"
+    "  • DESCRIPTION must be <=60 chars (one sentence, end with a period). The "
+    "skill index truncates at 60 and silently drops the rest — COUNT the chars "
+    "and cut. If skill_manage returns 'Description exceeds...'/'must fit the "
+    "60-char budget', SHORTEN the description and retry the SAME skill — do "
+    "NOT retry with a renamed skill to dodge the error.\n"
+    "  • FOLD-IN, DON'T DUPLICATE. If an existing skill already covers this "
+    "class (including one whose name has a path prefix, e.g. "
+    "'web3/audit-v3-workflow/using-audit-v3-workflow' vs 'using-audit-v3-"
+    "workflow'), PATCH or extend it instead of creating a near-duplicate. "
+    "Only create when NO skill (matching by normalized name) exists. If you "
+    "spot overlapping skills, note it for the curator; never create a third.\n"
+)
+_SKILL_REVIEW_PROMPT += _SKILL_CREATION_RULES
+
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
     "**Memory**: " + _MEMORY_ROUTING_BLOCK +
@@ -559,6 +578,7 @@ _COMBINED_REVIEW_PROMPT = (
     "Act on whichever of the two dimensions has real signal. If genuinely nothing stands out on "
     "either, say 'Nothing to save.' and stop — but don't reach for that conclusion as a default."
 )
+_COMBINED_REVIEW_PROMPT += _SKILL_CREATION_RULES
 
 
 def _preview(text: str, limit: int) -> str:

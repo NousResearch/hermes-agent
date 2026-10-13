@@ -8,9 +8,11 @@ else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shlex
+import sqlite3
 import tempfile
 import threading
 import time
@@ -52,6 +54,8 @@ def _spillover_retention_hours() -> int:
     try:
         from hermes_cli.config import load_config_readonly
         days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+        if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
+            return SPILLOVER_MAX_AGE_HOURS
     except Exception:
         return SPILLOVER_MAX_AGE_HOURS
     # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
@@ -60,14 +64,64 @@ def _spillover_retention_hours() -> int:
     return max(SPILLOVER_MAX_AGE_HOURS, int(days * 24))
 
 
+# How a spill archive is named inside transcript text: every pointer form — the host path,
+# the ``~``-relative translation, the in-container mounted path — carries the ``spillover/<name>``
+# segment. Sandbox-fallback pointers (``…/hermes-results/<name>``) do not, so their host-side
+# original stays unreferenced and is reclaimed by the orphan sweep, never by ownership.
+_SPILLOVER_NAME_RE = re.compile(r"spillover/([A-Za-z0-9_.-]+)")
+
+
+def spillover_names_in_text(*texts) -> set:
+    """Spillover archive basenames referenced by transcript message text (empty set on none)."""
+    names: set = set()
+    for text in texts:
+        if isinstance(text, str) and "spillover/" in text:
+            names.update(_SPILLOVER_NAME_RE.findall(text))
+    return names
+
+
+def referenced_spillover_names(spill_dir) -> set | None:
+    """Basenames under *spill_dir* still referenced by any message in the home's ``state.db``.
+
+    ``set()`` when no database exists (no sessions → nothing references anything), ``None``
+    when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
+    and keep the files; a plain read-only connection is enough, the write path owns the locks."""
+    db_path = spill_dir.parent.parent / "state.db"
+    if not db_path.exists():
+        return set()
+    try:
+        # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            rows = conn.execute(
+                "SELECT content, api_content FROM messages "
+                "WHERE content LIKE '%spillover/%' OR api_content LIKE '%spillover/%' "
+                "LIMIT 20001"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
+        return None
+    names: set = set()
+    for content, api_content in rows:
+        names |= spillover_names_in_text(content, api_content)
+    return names
+
+
 def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     """Delete spillover files older than *max_age_hours*; returns count removed (same
     contract as the ``cleanup_*_cache`` helpers the gateway housekeeping loop runs hourly).
     A ``None`` age means the session retention window, not a cache TTL — an explicit
-    ``max_age_hours`` (tests, legacy callers) still wins."""
+    ``max_age_hours`` (tests, legacy callers) still wins. An expired file is deleted only
+    when no message in the home's state.db references it: the transcript's
+    ``<persisted-output>`` promise outlives the archive's mtime exactly as long as the
+    owning session does (#126351) — referenced archives leave with their session, via the
+    unlink SessionDB delete/prune performs, not with the age sweep."""
     age_hours = _spillover_retention_hours() if max_age_hours is None else max_age_hours
     cutoff = time.time() - (age_hours * 3600)
-    removed = 0
+    expired = []
     try:
         entries = list(get_spillover_dir().iterdir())
     except OSError:
@@ -75,8 +129,19 @@ def cleanup_spillover_cache(max_age_hours: int | None = None) -> int:
     for f in entries:
         try:
             if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
+                expired.append(f)
+        except OSError:
+            pass
+    if not expired:
+        return 0
+    referenced = referenced_spillover_names(get_spillover_dir())
+    removed = 0
+    for f in expired:
+        if referenced is None or f.name in referenced:  # unknown set: fail closed, keep
+            continue
+        try:
+            f.unlink()
+            removed += 1
         except OSError:
             pass
     return removed
@@ -294,9 +359,9 @@ def _build_persisted_message(preview: str, has_more: bool, original_size: int,
         "Use the read_file tool with offset and limit to access specific sections of this output.\n"
         "Recovery: page through the saved file with read_file (offset/limit) or "
         "process it with execute_code — do NOT re-request the same data from the "
-        "remote API while the file exists; it is kept for the session retention "
-        "window, and if it has since been pruned, re-run the original tool to "
-        "regenerate the output.\n\n"
+        "remote API; the archive is kept while this session's transcript references "
+        "it. If it is missing, inspect the current state before retrying — the call "
+        "that produced it may already have taken effect.\n\n"
         f"Preview (first {len(preview)} chars):\n"
         + preview + ("\n..." if has_more else "")
         + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}")

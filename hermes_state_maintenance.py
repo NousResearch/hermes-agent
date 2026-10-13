@@ -323,6 +323,43 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
+    def _spillover_refs(self, conn, session_ids) -> set:
+        """Spillover archive basenames the to-be-deleted sessions' messages point at. Runs
+        INSIDE the delete transaction, before the DELETEs take those messages away, so the
+        owning pointers are captured while they still exist (#126351)."""
+        from tools.tool_result_storage import spillover_names_in_text
+        names: set = set()
+        for chunk in _id_chunks(list(session_ids)):
+            rows = conn.execute(
+                f"SELECT content, api_content FROM messages WHERE session_id IN ({_placeholders(chunk)})"
+                " AND (content LIKE '%spillover/%' OR api_content LIKE '%spillover/%')",
+                chunk,
+            ).fetchall()
+            for content, api_content in rows:
+                names |= spillover_names_in_text(content, api_content)
+        return names
+
+    def _unlink_dead_spillover(self, names: set) -> None:
+        """After the delete transaction committed: remove the archives whose owning messages
+        just went away and that no surviving session references — a spill referenced by a
+        retained session stays available exactly as long as that session does (#126351).
+        Best-effort: any read/unlink hiccup leaves the file to the hourly orphan sweep."""
+        if not names:
+            return
+        from tools.tool_result_storage import referenced_spillover_names
+        try:
+            spill_dir = self.db_path.parent / "cache" / "spillover"
+            referenced = referenced_spillover_names(spill_dir)
+            if referenced is None:  # unknown reference set: fail closed, keep the files
+                return
+            for name in names - referenced:
+                try:
+                    (spill_dir / name).unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.debug("Spillover unlink failed for %s: %s", name, exc)
+        except Exception as exc:
+            logger.debug("Spillover cleanup after session delete failed: %s", exc)
+
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
                        deleted_ids: Optional[list] = None, **filters) -> int:
@@ -337,6 +374,7 @@ class SessionMaintenanceMixin:
         in-memory routes and live sessions after the commit."""
         where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
         removed_ids: list[str] = []
+        spillover_names: set = set()
         def _do(conn):
             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
             session_ids = {row["id"] for row in cursor.fetchall()}
@@ -347,6 +385,7 @@ class SessionMaintenanceMixin:
             prune_retired_tombstones(conn)  # every prune pass also reclaims expired deletion tombstones
             if not session_ids:
                 return 0
+            spillover_names.update(self._spillover_refs(conn, session_ids))
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
             for chunk in _id_chunks(session_ids):
                 ph = _placeholders(chunk)
@@ -363,6 +402,7 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
+        self._unlink_dead_spillover(spillover_names)
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

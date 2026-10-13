@@ -145,7 +145,12 @@ PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
-prepared environment inputs. The generated workspace and extended lock remain
+prepared environment inputs. Plugin snapshots retain published runtime dependencies
+and optional extras, but omit local-only `dependency-groups`, legacy uv development
+dependencies, and group-only uv settings. Those developer tools belong to the plugin's
+own development environment, not the application's runtime lock. The original plugin
+metadata and core development pins are unchanged; genuine runtime conflicts still
+refuse admission. The generated workspace and extended lock remain
 outside shipped source. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 

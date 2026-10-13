@@ -178,6 +178,20 @@ def test_doctor_reports_a_repr_legacy_skill_field_stored_on_disk(cron_store, cap
     assert "string repr" in capsys.readouterr().out
 
 
+def test_doctor_reports_a_repr_field_on_a_record_without_an_id(cron_store, capsys):
+    """A record with no id is listed under the read path's "unknown" id, so its stored copy has
+    to be filed under that same id as well: keying the store by "" would put the two copies in
+    different buckets and go quiet, the same silence this revision exists to remove."""
+    from hermes_cli.cron import cron_doctor
+    path, _ = _create_stored_job(skills="['news-digest']")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for record in data["jobs"]:
+        record.pop("id", None)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert cron_doctor() == 1
+    assert "string repr" in capsys.readouterr().out
+
+
 def test_doctor_quiet_when_the_store_is_clean(cron_store, capsys):
     from hermes_cli.cron import cron_doctor
     _create_stored_job(skills=["news-digest"])

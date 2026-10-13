@@ -701,13 +701,24 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     amount = f"{overdue_s / 3600:.1f}h" if overdue_s >= 3600 else f"{overdue_s / 60:.0f}m"
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
+def _job_key(job: dict[str, Any]) -> str:
+    """The id a record is filed under once the read path has coerced it.
+
+    ``cron.jobs._normalize_job_record`` gives a null or missing ``id`` the text "unknown", so
+    stored records have to be keyed by that same rule: any other key ("" for a missing id) puts
+    the raw record and the normalized twin in different buckets, and the lookup goes quiet.
+    """
+    from cron.jobs import _coerce_job_text
+    return _coerce_job_text(job.get("id"), "unknown")
+
+
 def _stored_jobs_by_id() -> dict[str, dict[str, Any]]:
     """Raw job records keyed by id — what is actually on disk, before the read path heals it."""
     from cron.jobs import load_jobs
     stored: dict[str, dict[str, Any]] = {}
     for record in load_jobs():
         if isinstance(record, dict):
-            stored[str(record.get("id") or "")] = record
+            stored[_job_key(record)] = record
     return stored
 
 
@@ -772,8 +783,7 @@ def cron_doctor() -> int:
     jobs = list_jobs(include_disabled=False)
     stored = _stored_jobs_by_id()
     findings = [(job, issues) for job in jobs
-                if (issues := _cron_doctor_issues_for_job(
-                    job, stored=stored.get(str(job.get("id") or ""))))]
+                if (issues := _cron_doctor_issues_for_job(job, stored=stored.get(_job_key(job))))]
     if not findings:
         print(color("✓ Cron doctor found no issues", Colors.GREEN))
         note = f"  Checked {len(jobs)} active job(s)." if jobs else "  No active jobs configured."

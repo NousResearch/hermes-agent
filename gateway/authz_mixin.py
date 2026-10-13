@@ -448,6 +448,28 @@ class GatewayAuthorizationMixin:
             return bool(sender_allow.strip())
         return isinstance(sender_allow, (list, tuple, set)) and any(str(item).strip() for item in sender_allow)
 
+    def _adapter_group_has_explicit_access_rule(self, source: SessionSource) -> bool:
+        """Exact active group rules are chat-scoped grants after adapter intake.
+
+        The private capability is narrower than ``enforces_own_access_policy``:
+        it does not delegate DM policy. Read only the receiving bot's live rules;
+        a missing/offline adapter must not borrow the launch profile's config.
+        """
+        adapter = self._delivery_adapter_for(source)
+        if getattr(adapter, "_enforces_group_rules", False) is not True:
+            return False
+        rules = getattr(adapter, "_group_rules", None)
+        if not isinstance(rules, dict):
+            return False
+        rule = rules.get(str(source.chat_id))
+        policy = getattr(rule, "policy", None)
+        if policy == "open":
+            return True
+        # Restored/synthetic sources without live intake provenance have not
+        # necessarily passed this rule's sender restrictions.
+        owner = self._transport_owner(source)
+        return policy in {"allowlist", "blacklist", "admin_only"} and owner is not None and owner[0] is adapter
+
     def _pairing_store_for(self, source: SessionSource):
         """Per-profile PairingStore for a source, else the global ``self.pairing_store``."""
         per_profile = getattr(self, "pairing_stores", None) or {}
@@ -542,6 +564,8 @@ class GatewayAuthorizationMixin:
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
+            if allow_adapter_delegation and self._adapter_group_has_explicit_access_rule(source):
+                return True
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True

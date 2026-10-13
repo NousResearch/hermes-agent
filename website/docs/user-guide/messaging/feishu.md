@@ -536,6 +536,17 @@ platforms:
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
 
+An exact, active `group_rules` entry also authorizes that chat at the gateway layer
+after the adapter applies its sender restrictions. For example, `policy: open`
+allows everyone in that named group without granting DM access or access to other
+groups, even when a separate user allowlist is configured. The rule belongs to
+the bot that received the message, including when the conversation runs in a
+different profile. `disabled` and unknown policies do not provide this grant;
+the top-level/default open policy still requires a separate authorization grant.
+Sender-restricted rules require a live message or callback that passed the
+receiving bot's group policy. Restored sessions without that intake provenance
+still require an independent authorization grant.
+
 Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).

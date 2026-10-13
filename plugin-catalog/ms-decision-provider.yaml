@@ -1,13 +1,13 @@
 name: ms-decision-provider
 repo: https://github.com/guglxni/ms-decision-provider
-sha: b7d0d6638a20d95124f9c18a955c3942cd6e949e
+sha: 11b80619166c2e0b0a88eb8b0d0caa85c6d2d755
 description: >-
   Microsoft-Decision-1 (Azure AI Foundry System One) decision provider for bounded
   agent decisions. Registers typed-decision tools (decision_noul, decision_choice,
   decision_score, decide) that preserve full probability distributions, plus an
-  opt-in pre_tool_call gate that blocks tool calls the model judges unsafe to run
-  unattended. Reference implementation of the typed decision-provider runtime in
-  #113008.
+  opt-in pre_tool_call hook that requests human approval for known-risk calls
+  without sending their arguments to Azure. Reference implementation of the
+  typed decision-provider runtime in #113008.
 maintainer: guglxni
 tier: community
 category: automation
@@ -25,3 +25,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - AZURE_FOUNDRY_API_KEY
+    - AZURE_FOUNDRY_BASE_URL

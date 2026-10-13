@@ -486,7 +486,11 @@ function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
         if (reply.status === 'expired') {
           // The wait already ended; the tool's own result says how.
           forgetSettledClarify(request.requestId)
-        } else if (last) {
+
+          return false
+        }
+
+        if (last) {
           // The last lock resolved the batch server-side, so no response frame is owed.
           forgetServerRequest(request.requestId)
         }

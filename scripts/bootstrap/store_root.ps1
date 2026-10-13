@@ -17,11 +17,22 @@ function Expand-HermesHomeValue {
         # PRESENCE, not truthiness: an empty USERPROFILE still substitutes ('~/x'
         # -> '/x', exactly like Python), and '~user' resolves only for the current
         # account (or a same-named profile dir).
+        # $env: cannot express presence — its provider reports a variable set to
+        # the empty string as $null — so presence is read from the dictionary,
+        # mirroring ntpath's 'USERPROFILE'/'HOMEPATH' in os.environ tests. The
+        # pair binds the dictionary values too: ntpath joins with
+        # os.environ.get('HOMEDRIVE', ''), so a present-but-empty drive joins
+        # the same answer a MISSING drive would ('' + HOMEPATH).
+        # A HOMEPATH present WITHOUT HOMEDRIVE still takes the pair rung: ntpath
+        # joins the pair with an empty drive ('' + HOMEPATH) rather than skip
+        # to the $HOME rung, so a lone-HOMEPATH machine must get the same
+        # answer instead of a literal '~...' that stages a phantom home.
         $idx = $Value.IndexOfAny([char[]]@('/', '\'), 1)
         if ($idx -lt 0) { $idx = $Value.Length }
-        $userHome = if ($null -ne $env:USERPROFILE) { $env:USERPROFILE }
-                    elseif ($null -ne $env:HOMEPATH -and $null -ne $env:HOMEDRIVE) { Join-Path $env:HOMEDRIVE $env:HOMEPATH }
-                    elseif ($null -ne $HOME) { $HOME }
+        $envDict = [System.Environment]::GetEnvironmentVariables()
+        $userHome = if ($envDict.Contains('USERPROFILE')) { [string]$envDict['USERPROFILE'] }
+                    elseif ($envDict.Contains('HOMEPATH')) { [string]$envDict['HOMEDRIVE'] + [string]$envDict['HOMEPATH'] }
+                    elseif ($envDict.Contains('HOME')) { [string]$envDict['HOME'] }
                     else { $null }
         if ($null -ne $userHome) {
             if ($idx -ne 1) {

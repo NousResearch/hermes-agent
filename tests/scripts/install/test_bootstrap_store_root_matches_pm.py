@@ -1055,15 +1055,32 @@ _PS1_RUNTIME_ANCHOR = re.compile(
 
 
 def _ps1_anchor_source(ps1: Path) -> str:
-    """The helper plus the runtime-override guard, verbatim from *ps1*.
+    """The helper plus the runtime-override guard, verbatim from shipped bytes.
 
     The guard calls the helper, so extracting only the ``if`` would run an undefined
-    command; both are taken from the shipped bytes and executed as written."""
+    command. ``install.ps1`` is piped (irm | iex) and carries the helper inline;
+    ``setup-hermes.ps1`` dot-sources the canonical resolver instead of carrying a
+    copy, so its helper comes from scripts/bootstrap/store_root.ps1 — the same
+    bytes the shipped script would execute."""
     text = ps1.read_text(encoding="utf-8")
     helper = _PS1_PATH_HELPER.search(text)
+    if helper is None:
+        helper_text = _canonical_ps1_body().group(0)
+    else:
+        helper_text = helper.group(0)
     anchor = _PS1_RUNTIME_ANCHOR.search(text)
-    assert helper and anchor, f"{ps1.name}: the runtime-override anchor block is missing"
-    return f"{helper.group(0)}\n{anchor.group(0)}"
+    assert anchor, f"{ps1.name}: the runtime-override anchor block is missing"
+    return f"{helper_text}\n{anchor.group(0)}"
+
+
+def _canonical_ps1_body() -> re.Match[str]:
+    """The canonical ps1 resolver body, the twin's helper source when a script
+    dot-sources it instead of carrying a copy."""
+    begin, end = _RESOLVER_MARKERS[(CANONICAL_PS1, "canonical")]
+    return re.search(
+        re.escape(begin) + r"\r?\n(.*?)" + re.escape(end),
+        CANONICAL_PS1.read_text(encoding="utf-8-sig"), re.DOTALL,
+    )
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell anchor needs pwsh or powershell")
@@ -1590,22 +1607,59 @@ def test_resolvers_fold_a_case_variant_of_the_default_home(
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell resolver needs pwsh or powershell")
 @pytest.mark.platforms("windows")
+def test_powershell_tilde_expansion_binds_an_empty_homepath_pair() -> None:
+    """A present-but-empty HOMEPATH still takes the pair rung.
+
+    The reviewer-proved ``$env:`` semantics (PR #124313, comment 4237645076):
+    PowerShell's provider reports a variable set to the empty string as
+    ``$null``, so ``$null -ne $env:HOMEPATH`` reads a present-and-empty
+    HOMEPATH as absent and drops to the ``$HOME`` rung — while ntpath's
+    ladder tests ``'HOMEPATH' in os.environ``, stays on the pair rung, and
+    answers ``join(os.environ.get('HOMEDRIVE', ''), '')`` = HOMEDRIVE alone
+    (empty drive folds to ''). Presence is read from the environment
+    dictionary for HOMEPATH exactly as it already is for USERPROFILE, and
+    the pair binds the dictionary values, so an empty-but-present HOMEDRIVE
+    joins the same answer a missing drive would.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME")}
+    env["HOMEDRIVE"] = "C:"
+    env["HOMEPATH"] = ""
+
+    for name, (path, mirror) in PS1_PAIR.items():
+        result = subprocess.run(
+            [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
+             "$ErrorActionPreference='Stop'\n" + _resolver_source(path, mirror) + "\n"
+             "'RESULT=' + (Expand-HermesHomeValue '~/x')"],
+            env=env, capture_output=True, text=True, errors="replace", timeout=120,
+            check=False,
+        )
+        assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
+        assert result.stdout.strip() == "RESULT=C:", (
+            f"{name}: Expand-HermesHomeValue '~/x' -> {result.stdout.strip()!r}, want 'RESULT=C:'"
+        )
+
+
+@pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell resolver needs pwsh or powershell")
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize(("homedrive", "expected"), [
-    (None, "RESULT=/x"),
+    (None, "RESULT=\\Users\\probe/x"),
     ("C:", "RESULT=C:\\Users\\probe/x"),
 ])
 def test_powershell_tilde_expansion_skips_a_lone_homepath(
     homedrive: str | None, expected: str
 ) -> None:
-    """A lone HOMEPATH walks past the pair rung instead of dying in Join-Path.
+    """A lone HOMEPATH still takes the pair rung, joined with an empty drive.
 
     ``Expand-HermesHomeValue`` follows ntpath's ladder — USERPROFILE, else the
     HOMEDRIVE+HOMEPATH pair, else the ``$HOME`` rung — under the twins'
     ``$ErrorActionPreference = 'Stop'``. With HOMEPATH set but HOMEDRIVE
-    missing, the unconditional pair rung bound ``$null`` into ``Join-Path``
-    and terminated the expansion, so an explicit ``~`` home killed the
-    bootstrap; ntpath skips a pair whose drive is absent. The ``C:`` row keeps
-    the pair itself honest.
+    missing, the old ``Join-Path $env:HOMEDRIVE $env:HOMEPATH`` bound ``$null``
+    and terminated the expansion, killing the bootstrap on an explicit ``~``.
+    ntpath's answer for that machine is ``join('', HOMEPATH)`` — an EMPTY-drive
+    join, not a skip to the ``$HOME`` rung — so the twin binds the same
+    ``<HOMEPATH>`` home instead of passing ``~...`` through untouched. The
+    ``C:`` row keeps the pair itself honest.
     """
     env = {k: v for k, v in os.environ.items() if k != "USERPROFILE"}
     if homedrive is None:

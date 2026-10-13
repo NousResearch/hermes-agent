@@ -1691,18 +1691,19 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 
 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
-# slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
+# slugs). Fallback when the live probe fails; longest-key-first. Sol's 500K default was announced 2026-10-11:
+# https://x.com/thsottiaux/status/2109430343346581527 (catalogue and >300K request verified 2026-10-12).
 _CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6.1-sol": 500_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
     "gpt-5.5": 272_000, "gpt-5.4": 272_000, "gpt-5.2": 272_000, "gpt-5": 272_000,
 }
-# Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
+# Codex OAuth advertises smaller defaults for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
+# The bump fires ONLY for known defaults (legacy 272K or the model's fallback). ``gpt-5.6`` and the gpt-6
 # tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
 # aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
 # carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
@@ -1718,7 +1719,7 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: dict[str, int] = {
     # EXACT, not a prefix: the dotted slug is its own line and ``-pro`` is not routable.
     "gpt-6.1-sol": 900_000,
 }
-_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
+_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # legacy default; current per-model defaults may also be bumped
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
 # dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
@@ -1934,15 +1935,14 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     if not model_bare:
         return None, ""
     def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
+        """Lift known defaults (including legacy 272K) to the verified cap for opted-in ``-900k`` variants only,
         never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
-        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+        if bumped is not None and ctx in (_CODEX_OAUTH_STALE_ADVERTISED_CTX, _CODEX_OAUTH_CONTEXT_FALLBACK.get(lookup_bare)):
             bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
-    # The Codex catalog only knows the base slug (no -900k, no vendor/).
     # ``-900k`` variants are Hermes picker aliases — the Codex catalog only knows the base slug, so resolve
     # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through

@@ -4741,7 +4741,24 @@ class BasePlatformAdapter(ABC):
             if pending_event is None:  # consumed elsewhere during the back-off
                 self._cleanup_finished_session_task(session_key, guard)
                 return
+        if self._drain_event_has_consumed_process_completion(pending_event):
+            logger.debug("[%s] Dropping consumed process completion before drain", self.name)
+            self._finish_session_task(session_key, guard or asyncio.Event())
+            return
         await self._process_message_background(pending_event, session_key)
+
+    @staticmethod
+    def _drain_event_has_consumed_process_completion(event: MessageEvent) -> bool:
+        """Only re-run a synthetic completion when at least one result remains unconsumed."""
+        metadata = event.metadata
+        if metadata.get("notification_origin") != "process_registry_synthetic":
+            return False
+        process_session_ids = metadata.get("gateway_process_session_ids") or ()
+        if not process_session_ids:
+            return False
+        from tools.process_registry import process_registry
+        return all(process_registry.is_completion_consumed(str(session_id))
+                   for session_id in process_session_ids)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""

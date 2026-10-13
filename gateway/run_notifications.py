@@ -1155,6 +1155,11 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
             metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
+            process_session_ids = evt.get("process_session_ids") or [evt.get("session_id")]
+            process_session_ids = [str(session_id).strip() for session_id in process_session_ids
+                                   if str(session_id).strip()]
+            if process_session_ids:
+                metadata["gateway_process_session_ids"] = process_session_ids
             synth_text = _mark_internal_notification(synth_text)
             session_key = str(evt.get("session_key") or "").strip()
             from agent.notification_presentation import diagnostic_process_event
@@ -1562,8 +1567,15 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
+            process_session_ids = list(dict.fromkeys(
+                str(event.get("session_id") or "").strip()
+                for _text, event, _future in entries
+                if str(event.get("session_id") or "").strip()
+            ))
             for _text, candidate_evt, _future in entries:
-                delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
+                delivered = await self._deliver_completion_notification(
+                    synth_text, {**candidate_evt, "process_session_ids": process_session_ids},
+                )
                 if delivered is not None:
                     break
             if delivered is True and len(entries) > 1:

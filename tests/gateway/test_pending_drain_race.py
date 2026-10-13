@@ -225,3 +225,73 @@ async def test_no_pending_cleans_up_normally():
     assert sk not in adapter._pending_messages
 
     await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_drain_drops_completion_consumed_after_busy_admission():
+    """A wait/log result consumed after admission must not re-wake the finished turn."""
+    from tools.process_registry import process_registry
+
+    adapter = _make_adapter()
+    sk = _sk()
+    process_id = "pending-completion-consumed"
+    processed = []
+
+    async def handler(event):
+        processed.append(event.text)
+        return "unexpected"
+
+    completion = _make_event(text="background process finished")
+    completion.internal = True
+    completion.metadata.update({
+        "notification_origin": "process_registry_synthetic",
+        "gateway_process_session_ids": [process_id],
+    })
+    adapter._message_handler = handler
+    adapter._active_sessions[sk] = asyncio.Event()
+    process_registry._completion_consumed.add(process_id)
+
+    try:
+        adapter._spawn_drain_task(completion, sk)
+        owner_task = adapter._session_tasks[sk]
+        await asyncio.wait_for(asyncio.shield(owner_task), timeout=5.0)
+
+        assert processed == []
+        assert sk not in adapter._active_sessions
+    finally:
+        process_registry._completion_consumed.discard(process_id)
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_drain_keeps_batched_completion_with_an_unconsumed_result():
+    """A coalesced completion remains runnable until every process result is consumed."""
+    from tools.process_registry import process_registry
+
+    adapter = _make_adapter()
+    sk = _sk()
+    consumed_process_id = "batch-completion-consumed"
+    pending_process_id = "batch-completion-pending"
+    processed = []
+
+    async def handler(event):
+        processed.append(event.text)
+
+    completion = _make_event(text="two background processes finished")
+    completion.internal = True
+    completion.metadata.update({
+        "notification_origin": "process_registry_synthetic",
+        "gateway_process_session_ids": [consumed_process_id, pending_process_id],
+    })
+    adapter._message_handler = handler
+    adapter._active_sessions[sk] = asyncio.Event()
+    process_registry._completion_consumed.add(consumed_process_id)
+
+    try:
+        adapter._spawn_drain_task(completion, sk)
+        await asyncio.wait_for(asyncio.shield(adapter._session_tasks[sk]), timeout=5.0)
+
+        assert processed == ["two background processes finished"]
+    finally:
+        process_registry._completion_consumed.discard(consumed_process_id)
+        await adapter.cancel_background_tasks()

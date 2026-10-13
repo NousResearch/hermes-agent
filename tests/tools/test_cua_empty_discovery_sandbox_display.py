@@ -55,7 +55,7 @@ def test_empty_discovery_still_blames_a_genuinely_missing_sandbox_display(monkey
     """Non-regression: when the sandbox's own DISPLAY really is gone, the diagnosis must still fire."""
     from tools.bot_desktop import placement, runtime as bd_runtime
     monkeypatch.setattr(bd_runtime, "tool_placement", lambda: placement.TERMINAL)
-    monkeypatch.setattr(bd_runtime, "published_env", lambda: {})
+    monkeypatch.setattr(bd_runtime, "published_env", dict)
     monkeypatch.setattr(cb, "_linux_session_locked", lambda: False)
     monkeypatch.setenv("DISPLAY", ":1")  # host happens to have one -- must not matter here
 

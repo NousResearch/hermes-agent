@@ -8,6 +8,8 @@ import type { HermesNotification } from './notification-types'
 const host = vi.hoisted(() => ({
   handle: vi.fn(),
   fromWebContents: vi.fn(),
+  deliver: vi.fn<(notification: EventEmitter) => void>(),
+  linuxCreate: vi.fn(),
   shown: [] as EventEmitter[]
 }))
 
@@ -21,8 +23,13 @@ vi.mock('electron', () => ({
 
     show() {
       host.shown.push(this)
+      host.deliver(this)
     }
   }
+}))
+
+vi.mock('./notification-linux', () => ({
+  createLinuxNotifications: () => ({ create: host.linuxCreate, dispose: vi.fn() })
 }))
 
 import { registerNativeNotifications } from './notification-ipc'
@@ -38,6 +45,9 @@ beforeEach(() => {
   host.handle.mockReset()
   host.fromWebContents.mockReset()
   host.shown.length = 0
+  host.deliver.mockReset()
+  host.deliver.mockImplementation(notification => notification.emit('show'))
+  host.linuxCreate.mockReset()
 })
 
 it('returns native clicks and approval actions to the emitting window, not the primary', async () => {
@@ -129,4 +139,66 @@ it('delivers plugin callbacks to their source and falls back only for navigation
       notifyId: undefined
     })
   )
+})
+
+it('shares pending native delivery with peer renderers and reports asynchronous failure', async () => {
+  host.deliver.mockImplementation(() => undefined)
+  const source = windowStub()
+  host.fromWebContents.mockReturnValue(source)
+  registerNativeNotifications({
+    getMainWindow: () => source as unknown as BrowserWindow,
+    focusWindow: vi.fn(),
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  const event = { sender: source.webContents } as unknown as IpcMainInvokeEvent
+  const payload = { kind: 'turnDone', sessionId: 'shared-pending', title: 'Done' }
+  const first = notify(event, payload)
+  const peer = notify(event, payload)
+  const settled = vi.fn()
+  void first.then(settled)
+  await Promise.resolve()
+  expect(settled).not.toHaveBeenCalled()
+  expect(host.shown).toHaveLength(1)
+  host.shown[0].emit('failed', {}, 'Application is not signed')
+  await expect(first).resolves.toBe(false)
+  await expect(peer).resolves.toBe(false)
+})
+
+it('keeps Linux delivery governed by its asynchronous boolean result', async () => {
+  const source = windowStub()
+  host.fromWebContents.mockReturnValue(source)
+  let finish!: (delivered: boolean) => void
+
+  const delivered = new Promise<boolean>(resolve => {
+    finish = resolve
+  })
+
+  const notification = Object.assign(new EventEmitter(), { show: vi.fn(() => delivered), close: vi.fn() })
+  host.linuxCreate.mockReturnValue(notification)
+  registerNativeNotifications({
+    getMainWindow: () => source as unknown as BrowserWindow,
+    focusWindow: vi.fn(),
+    platform: 'linux'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  const result = notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
+    kind: 'turnDone',
+    sessionId: 'linux-delivery',
+    title: 'Done'
+  })
+
+  expect(host.shown).toHaveLength(0)
+  finish(false)
+  await expect(result).resolves.toBe(false)
 })

@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, Notification } from 'electron'
 
 import { createEventDeduper } from './event-dedupe'
 import { resolveNotificationAction } from './notification-actions'
+import { showNativeNotification } from './notification-delivery'
 import { createLinuxNotifications } from './notification-linux'
 import { createNotificationRegistry } from './notification-registry'
 import type { HermesNotification } from './notification-types'
@@ -109,8 +110,11 @@ export function registerNativeNotifications({
     })
     notifications.retain(notification)
 
-    // Peers share the actual outcome, including pending/failed Linux delivery.
-    const delivery = Promise.resolve(notification.show()).then(result => result !== false)
+    // Peers share the actual outcome, including pending native/DBus delivery.
+    const delivery = linux
+      ? Promise.resolve(notification.show()).then(result => result !== false)
+      : showNativeNotification(notification)
+
     deliveries.set(key, delivery)
     setTimeout(() => {
       if (deliveries.get(key) === delivery) {

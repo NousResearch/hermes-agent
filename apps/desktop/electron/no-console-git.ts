@@ -165,6 +165,23 @@ export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: str
   return env
 }
 
+// simple-git v4 rejects explicitly supplied Git/environment command hooks.
+// Keep ordinary PATH, HOME, SSH_AUTH_SOCK and credentials, while the library
+// continues to reject any guarded key added later instead of enabling it.
+export function simpleGitHostEnv(base: NodeJS.ProcessEnv | undefined, gitBin: string): NodeJS.ProcessEnv {
+  const hooks = new Set(['editor', 'pager', 'prefix', 'ssh_askpass', 'visual'])
+
+  const ambient = Object.fromEntries(
+    Object.entries(base || {}).filter(([name]) => {
+      const key = name.toLowerCase().trim()
+
+      return !key.startsWith('git_') && !hooks.has(key)
+    })
+  )
+
+  return noConsoleGitEnv(ambient, gitBin)
+}
+
 export function planNoConsoleGitSpawn({
   gitBin,
   args,

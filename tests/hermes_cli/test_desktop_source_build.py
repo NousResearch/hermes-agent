@@ -64,3 +64,29 @@ def test_skip_build_source_checks_artifacts_without_provisioning(desktop_source)
     (electron / "package.json").write_text('{}')
     main_desktop.cmd_gui(Namespace(source=True, skip_build=True, build_only=True))
     assert acquired == []
+
+
+def test_skip_build_source_missing_binary_never_acquires_or_launches(desktop_source, monkeypatch, capsys):
+    from hermes_cli import source_build
+
+    root, acquired = desktop_source
+    dist = root / "apps/desktop/dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("prepared renderer")
+    electron = root / "node_modules/electron"
+    electron.mkdir(parents=True)
+    (electron / "package.json").write_text('{}')
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("read-only source launch must not prepare or spawn")
+
+    monkeypatch.setattr(source_build, "prepare_source_dependencies", forbidden)
+    monkeypatch.setattr(main_desktop.subprocess, "run", forbidden)
+    with pytest.raises(SystemExit) as error:
+        main_desktop.cmd_gui(Namespace(source=True, skip_build=True))
+    assert error.value.code == 1
+    assert acquired == []
+    assert _events(root) == []
+    assert not (electron / "path.txt").exists()
+    assert not (electron / "dist").exists()
+    assert "node scripts/build/electron-runtime.mjs --source ." in capsys.readouterr().out

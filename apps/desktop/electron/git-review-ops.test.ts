@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import type * as ChildProcess from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
 import { afterEach, test, vi } from 'vitest'
 
 import {
@@ -12,9 +12,12 @@ import {
   repoStatus,
   resolveRenamePath,
   REVIEW_FILE_CAP,
+  reviewCommit,
   reviewCreatePr,
+  reviewDiff,
   reviewList,
-  SIMPLE_GIT_UNSAFE_BINARY_WARN
+  reviewStage,
+  reviewUnstage
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
 
@@ -97,7 +100,7 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
   }
 })
 
-test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+test('gitFor leaves console.warn intact for internally resolved binaries', () => {
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
   // `windowsGitHost()` resolves nothing in this process (no configured roots, no
   // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
@@ -118,16 +121,12 @@ test('gitFor suppresses only the known custom-binary warning and restores consol
 
     assert.equal(console.warn, recordingWarn)
 
-    // The escape hatch used directly still warns: the message gitFor filters is a
-    // live emission of the installed simple-git, so the filter cannot go stale
-    // silently (an upgrade that rewords it fails this test, not production).
-    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
     console.warn('unrelated warning')
   } finally {
     console.warn = originalWarn
   }
 
-  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
+  assert.deepEqual(warnings, [['unrelated warning']])
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {
@@ -229,4 +228,70 @@ test('reviewCreatePr falls back to the generic message when gh reports no stderr
   failGh('')
 
   await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /is gh installed and authenticated\?/)
+})
+
+test('v4 performs review diff, stage, unstage and local commit without a push', async () => {
+  const actual = await vi.importActual<typeof ChildProcess>('node:child_process')
+  mockExecFile.mockImplementation(actual.execFile)
+  const dir = makeRepo()
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'changed\n')
+  await reviewStage(dir, 'tracked.txt', 'git')
+  assert.match(await reviewDiff(dir, 'tracked.txt', 'uncommitted', null, true, 'git'), /changed/)
+  await reviewUnstage(dir, 'tracked.txt', 'git')
+  assert.equal((await repoStatus(dir, 'git'))?.files[0]?.staged, false)
+  await reviewCommit(dir, 'local regression commit', false, 'git')
+  assert.equal(
+    execFileSync('git', ['log', '-1', '--pretty=%s'], { cwd: dir, encoding: 'utf8' }).trim(),
+    'local regression commit'
+  )
+  assert.equal((await repoStatus(dir, 'git'))?.changed, 0)
+})
+
+test('v4 refuses unsafe config includes and trailer commands through the production factory', async () => {
+  const dir = makeRepo()
+  const includes = path.join(dir, 'ordinary-config')
+  fs.writeFileSync(includes, '[user]\nname = unused\n')
+
+  for (const config of [`include.path=${includes}`, 'trailer.audit.command=not-a-real-command']) {
+    await assert.rejects(gitFor(dir, 'git').raw(['-c', config, 'status', '--short']), /blocked|not permitted|unsafe/i)
+  }
+})
+
+test('the no-console binary tuple forwards safe environment and strips command hooks', async () => {
+  const dir = makeRepo()
+  const script = path.join(dir, 'inspect-env.cjs')
+  fs.writeFileSync(
+    script,
+    `process.stdout.write(JSON.stringify({path:process.env.PATH,home:process.env.HOME,agent:process.env.SSH_AUTH_SOCK,token:process.env.GH_TOKEN,argv0:process.env.HERMES_GIT_ARGV0,prompt:process.env.GIT_TERMINAL_PROMPT,config:process.env.GIT_CONFIG_GLOBAL,ssh:process.env.GIT_SSH_COMMAND,editor:process.env.VISUAL}));`
+  )
+  vi.resetModules()
+  vi.doMock('./no-console-git', async importOriginal => {
+    const actual = await importOriginal<typeof NoConsoleGit>()
+
+    return { ...actual, windowsGitHost: () => ({ isWindows: true, pythonBin: process.execPath, scriptPath: script }) }
+  })
+  vi.stubEnv('PATH', 'trusted-path')
+  vi.stubEnv('HOME', 'trusted-home')
+  vi.stubEnv('SSH_AUTH_SOCK', 'trusted-agent')
+  vi.stubEnv('GH_TOKEN', 'test-token')
+  vi.stubEnv('GIT_CONFIG_GLOBAL', '/untrusted/config')
+  vi.stubEnv('GIT_SSH_COMMAND', 'untrusted-command')
+  vi.stubEnv('VISUAL', 'untrusted-editor')
+
+  try {
+    const { gitFor: hostedGitFor } = await import('./git-review-ops')
+    const env = JSON.parse(await hostedGitFor(dir, 'trusted-git').raw(['status']))
+    assert.deepEqual(env, {
+      path: 'trusted-path',
+      home: 'trusted-home',
+      agent: 'trusted-agent',
+      token: 'test-token',
+      argv0: JSON.stringify('trusted-git'),
+      prompt: '0'
+    })
+  } finally {
+    vi.unstubAllEnvs()
+    vi.doUnmock('./no-console-git')
+    vi.resetModules()
+  }
 })

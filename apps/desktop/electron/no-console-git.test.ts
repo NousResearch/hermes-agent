@@ -14,7 +14,8 @@ import {
   NO_CONSOLE_GIT_SCRIPT,
   planNoConsoleGitSpawn,
   resolveNoConsolePython,
-  simpleGitBinary
+  simpleGitBinary,
+  simpleGitHostEnv
 } from './no-console-git'
 
 const gitArgs = ['-c', 'windows.appendAtomically=false', 'merge-base', '--is-ancestor', 'origin/main', 'HEAD']
@@ -233,5 +234,53 @@ test('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => 
     assert.equal(parsed.creationflags, CREATE_NO_WINDOW)
   } finally {
     fs.rmSync(dir, { force: true, recursive: true })
+  }
+})
+
+test('simple-git host env preserves credentials and rejects config/command injection variables', () => {
+  const env = simpleGitHostEnv(
+    {
+      PATH: 'trusted-path',
+      HOME: 'trusted-home',
+      USERPROFILE: 'trusted-profile',
+      SSH_AUTH_SOCK: 'trusted-agent',
+      GH_TOKEN: 'test-token',
+      GIT_CONFIG_GLOBAL: '/untrusted/config',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'include.path',
+      GIT_CONFIG_VALUE_0: '/untrusted/config',
+      GIT_SSH_COMMAND: 'untrusted-command',
+      git_editor: 'untrusted-editor',
+      EDITOR: 'untrusted-editor',
+      PAGER: 'untrusted-pager',
+      PREFIX: '/untrusted',
+      SSH_ASKPASS: 'untrusted-askpass',
+      VISUAL: 'untrusted-editor'
+    },
+    'trusted-git'
+  )
+
+  expect(env.PATH).toBe('trusted-path')
+  expect(env.HOME).toBe('trusted-home')
+  expect(env.USERPROFILE).toBe('trusted-profile')
+  expect(env.SSH_AUTH_SOCK).toBe('trusted-agent')
+  expect(env.GH_TOKEN).toBe('test-token')
+  expect(env.HERMES_GIT_ARGV0).toBe(JSON.stringify('trusted-git'))
+  expect(env.GIT_TERMINAL_PROMPT).toBe('0')
+
+  for (const key of [
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_SSH_COMMAND',
+    'git_editor',
+    'EDITOR',
+    'PAGER',
+    'PREFIX',
+    'SSH_ASKPASS',
+    'VISUAL'
+  ]) {
+    expect(env[key]).toBeUndefined()
   }
 })

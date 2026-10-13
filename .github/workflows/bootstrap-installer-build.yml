@@ -117,7 +117,6 @@ jobs:
       - name: Sign (same Azure Trusted Signing path as the desktop MSIX)
         shell: bash
         env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
           AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
           AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}

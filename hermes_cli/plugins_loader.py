@@ -152,10 +152,22 @@ def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[],
 
 
 def _evict_modules(module_name: str) -> None:
-    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
+    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
+
+    The match set is snapshot from ``list(sys.modules)`` at entry, and removals use
+    ``pop(name, None)``. The bare ``for n in sys.modules`` comprehension held an open
+    iterator over the live dict: with background plugin discovery
+    (:func:`start_background_plugin_discovery`) racing the foreground loader, a
+    concurrent import (insert) or evict (delete) between two ``__next__`` calls made the
+    comprehension raise ``RuntimeError: dictionary changed size during iteration``. The
+    per-plugin catch site swallowed that as "Failed to load plugin '<name>': dictionary
+    changed size during iteration" and the plugin was silently lost for the life of the
+    process (provider registries absent — e.g. web-firecrawl missing → strict web
+    dispatch fast-fails). ``pop`` also tolerates a name a concurrent evict already
+    removed."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    for name in [n for n in list(sys.modules) if n == module_name or n.startswith(prefix)]:
+        sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

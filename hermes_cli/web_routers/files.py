@@ -29,7 +29,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_files_policy, _managed_response_meta,
+    _path_is_under, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -989,4 +990,10 @@ async def fs_default_cwd(profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()
+    # A locked deployment can run with a process cwd outside the managed read
+    # boundary (Docker WORKDIR=/ with the root at /opt/data); the seed must
+    # land inside it or the picker's first listing is a 403 (#138088).
+    root = _managed_files_policy(None, create_root=False).locked_root
+    if root is not None and not _path_is_under(root, Path(cwd)):
+        cwd = str(root)
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

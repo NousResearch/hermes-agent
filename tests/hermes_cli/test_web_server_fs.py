@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import ssh_workspace_fs, web_server
+from hermes_cli import ssh_workspace_fs, web_server, web_server_files
 from hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
@@ -347,6 +347,40 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_default_cwd_confined_to_locked_root(client, monkeypatch, tmp_path):
+    root = tmp_path / "opt-data"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    monkeypatch.setattr(file_routes, "_fs_default_cwd", lambda: "/")
+    monkeypatch.setattr(file_routes, "_fs_git_branch", lambda cwd: "main")
+
+    # Container WORKDIR=/ with the managed root elsewhere: the reported cwd
+    # must fall back inside the boundary so remote pickers seed at the root.
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json() == {"cwd": str(root), "branch": "main"}
+
+    monkeypatch.setattr(file_routes, "_fs_default_cwd", lambda: str(root / "work"))
+
+    inside = client.get("/api/fs/default-cwd")
+
+    # A cwd already inside the boundary passes through untouched.
+    assert inside.json() == {"cwd": str(root / "work"), "branch": "main"}
+
+
+def test_fs_default_cwd_unlocked_root_keeps_process_cwd(client, monkeypatch):
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    # Guard the local-dev branch even on a host whose default root is /opt/data.
+    monkeypatch.setattr(web_server_files, "_default_hermes_root_is_opt_data", lambda: False)
+    monkeypatch.setattr(file_routes, "_fs_default_cwd", lambda: "/srv/checkout")
+    monkeypatch.setattr(file_routes, "_fs_git_branch", lambda cwd: "main")
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.json() == {"cwd": "/srv/checkout", "branch": "main"}
 
 
 def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):

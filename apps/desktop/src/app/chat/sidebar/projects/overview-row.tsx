@@ -66,6 +66,34 @@ export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProject
 }
 
 /**
+ * The subtree's loudest status, in the row's LEADING cell — the slot, and so the axis, a session row
+ * puts its own dot in. It stands in for the project icon while there is something to report rather
+ * than sitting beside the name: the cue then costs the row no width, and the label behind it cannot
+ * move when a status appears or clears.
+ */
+function projectStatusDot({
+  label,
+  state
+}: {
+  label: null | ReturnType<typeof sessionDotLabel>
+  state: SessionDotState
+}) {
+  return (
+    <SidebarRowLeadGlyph>
+      <span
+        aria-label={label?.ariaLabel}
+        className="grid place-items-center"
+        data-project-attention=""
+        role="status"
+        title={label?.title}
+      >
+        <span className={sessionDotClassName(state)} />
+      </span>
+    </SidebarRowLeadGlyph>
+  )
+}
+
+/**
  * The entered view's back row. Stepping back walks OUT one level at a time: a project that nests
  * under another was entered from it, so the arrow lands on that parent — and only a top-level
  * project (or a parent the tree no longer carries) falls through to `onExit`, the caller's own move
@@ -111,8 +139,8 @@ interface ProjectOverviewRowProps {
    *  "Show all N" promises only rows the view will actually render. */
   hiddenSessionCount?: number
   /** The loudest status anywhere in this project's subtree — its own sessions and every nested
-   *  project's. Painted only while the row is collapsed: an expanded row shows its sessions' own
-   *  dots, and a second dot on the parent would just double the ink. */
+   *  project's. Painted in the row's leading cell whether the row is open or closed, so work waiting
+   *  inside a subproject is visible without folding anything open. */
   attentionState?: SessionDotState
   /** Whether any project nests under this one. A subproject-only parent has no preview rows to fold,
    *  but it still has children — which is exactly what the fold is for. */
@@ -141,19 +169,13 @@ function overviewRowNewSessionPath(project: ProjectOverviewRowProps['project']):
   return (project.repos ?? []).map(repo => repo.path).find(root => (root ?? '').trim()) ?? project.path
 }
 
-/** A project row's label cell: the enter link (an auto-discovered project names its cue for screen
- *  readers, which the aria-hidden glyph can't) and the subtree's status dot. */
+/** A project row's label cell: the enter link, whose own name carries the auto cue for screen
+ *  readers that the aria-hidden glyph cannot. */
 function ProjectRowLabel({
-  attention,
-  attentionLabel,
   isActive,
   onEnter,
   project
-}: Pick<ProjectOverviewRowProps, 'onEnter' | 'project'> & {
-  attention: null | Parameters<typeof sessionDotLabel>[0]
-  attentionLabel: null | ReturnType<typeof sessionDotLabel>
-  isActive: boolean
-}) {
+}: Pick<ProjectOverviewRowProps, 'onEnter' | 'project'> & { isActive: boolean }) {
   const { t } = useI18n()
   const s = t.sidebar
 
@@ -173,24 +195,7 @@ function ProjectRowLabel({
     </SidebarRowLink>
   )
 
-  return (
-    <>
-      {project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
-      {attention && (
-        // Same geometry as a session row's dot: a fixed cell, self-centred in the row and
-        // centring the dot in itself, so the two dots sit on one axis.
-        <span
-          aria-label={attentionLabel?.ariaLabel}
-          className="grid size-3.5 shrink-0 self-center place-items-center"
-          data-project-attention=""
-          role="status"
-          title={attentionLabel?.title}
-        >
-          <span className={sessionDotClassName(attention)} />
-        </span>
-      )}
-    </>
-  )
+  return project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink
 }
 
 /** A project row's actions: its ⋯ menu (every real project) and the trunk "+" — the
@@ -322,6 +327,13 @@ export function ProjectOverviewRow({
       .finally(() => setExpanding(false))
   }
 
+  // One cell, one mark: the subtree's loudest status while there is one, else the project's icon.
+  // Swapping rather than adding is what puts the dot on the session rows' axis without spending a
+  // second column on it.
+  const leadMark = attention
+    ? projectStatusDot({ label: attentionLabel, state: attention })
+    : projectIcon(project)
+
   const lead = reorderable ? (
     <SidebarRowGrab
       ariaLabel={s.projects.reorder(project.label)}
@@ -329,10 +341,10 @@ export function ProjectOverviewRow({
       dragHandleProps={dragHandleProps}
       leadClassName="overflow-visible"
     >
-      {projectIcon(project)}
+      {leadMark}
     </SidebarRowGrab>
   ) : (
-    <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
+    <SidebarRowLead>{leadMark}</SidebarRowLead>
   )
 
   const shell = (
@@ -350,13 +362,7 @@ export function ProjectOverviewRow({
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
       data-glass-opaque={dragging ? '' : undefined}
       label={
-        <ProjectRowLabel
-          attention={attention}
-          attentionLabel={attentionLabel}
-          isActive={isActive}
-          onEnter={onEnter}
-          project={project}
-        />
+        <ProjectRowLabel isActive={isActive} onEnter={onEnter} project={project} />
       }
       lead={lead}
       // The label is grab surface too, not just the lead's grabber — the

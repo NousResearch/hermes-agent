@@ -33,6 +33,16 @@ vi.mock('@/i18n', () => ({
           showAllCount: (count: number) => `Show all ${count} sessions`,
           autoDiscovered: 'Auto-discovered'
         },
+        // The rolled-up status reuses the session rows' own table, so the labels
+        // the rows speak have to be here too.
+        row: {
+          backgroundRunning: 'Background task running',
+          draftSession: 'Draft — nothing sent yet',
+          finishedUnread: 'Finished — unread',
+          needsInput: 'Needs your input',
+          sessionRunning: 'Session running',
+          waitingForAnswer: 'Waiting for your answer'
+        },
         showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
       }
     }
@@ -263,5 +273,31 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New session in Multi' }))
 
     expect(onNewSession).toHaveBeenCalledWith('/work/app')
+  })
+
+  // The subtree's rolled-up status sits on the session rows' own axis: a fixed cell BEFORE the
+  // name. Trailing the label it tracks the name's width instead — a second, wobbling axis in a list
+  // where every session dot is static, and one that shifts the truncation when a status appears.
+  it('paints the subtree status in the leading cell, ahead of the label', () => {
+    const { container } = render(<ProjectOverviewRow attentionState="working" project={project} />)
+
+    const dot = container.querySelector('[data-project-attention]')
+
+    expect(dot).not.toBeNull()
+    expect(screen.getByText('Test D').compareDocumentPosition(dot!) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+  })
+
+  // One cell, one mark: the status stands in for the project's icon rather than joining the row, so
+  // the cue costs the row no width — and the icon returns the moment nothing is left to report.
+  it('swaps the project icon for the status while the subtree has something to report', () => {
+    const { container, rerender } = render(<ProjectOverviewRow attentionState="needs-input" project={project} />)
+
+    expect(container.querySelector('.codicon-folder-library')).toBeNull()
+    expect(container.querySelector('[data-project-attention]')).not.toBeNull()
+
+    rerender(<ProjectOverviewRow attentionState="idle" project={project} />)
+
+    expect(container.querySelector('.codicon-folder-library')).not.toBeNull()
+    expect(container.querySelector('[data-project-attention]')).toBeNull()
   })
 })

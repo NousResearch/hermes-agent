@@ -163,6 +163,8 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
+    from agent.gemini_native_adapter import gemini_uses_thinking_level
+
     if not isinstance(reasoning_config, dict):
         return None
     normalized_model = (model or "").strip().lower().removeprefix("google/")
@@ -193,7 +195,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         config: dict[str, Any] = {"includeThoughts": False}
         if normalized_model.startswith("gemini-2.5-"):
             config["thinkingBudget"] = 0
-        elif normalized_model == "gemini-flash-latest" or normalized_model.startswith("gemini-3"):
+        elif gemini_uses_thinking_level(normalized_model):
             config["thinkingLevel"] = "low"
         return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
@@ -202,16 +204,16 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return thinking_config
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
-    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
-    # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith("gemini-3"):
-        if "flash" in normalized_model:
+    # Gemini 3 Pro is strict (low/high); every other thinking-level model (3.x Flash, Gemini 4 Argon)
+    # documents low/medium/high, and "minimal" is not universal (Argon 400s on it). Clamp Hermes' wider
+    # effort set to what each family accepts so we never forward an undocumented level verbatim.
+    if gemini_uses_thinking_level(normalized_model):
+        if "pro" in normalized_model:
+            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
+        else:
             thinking_config["thinkingLevel"] = (
                 "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
             )
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
     return thinking_config
 
 

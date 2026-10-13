@@ -112,8 +112,29 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
     google-shared converter).
     """
-    match = re.match(r"gemini-(\d+)", bare_gemini_model_id(model).lower())
-    return match is not None and int(match.group(1)) >= 3
+    return _gemini_version(model) >= (3, 0)
+
+
+def _gemini_version(model: str) -> tuple[int, int]:
+    """(major, minor) of a Gemini model id: ``gemini-4-argon`` -> (4, 0), ``google/gemini-3.8-flash`` ->
+    (3, 8); (0, 0) for non-Gemini and unversioned ids (``gemini-flash-latest``, ``gemini-exp-1206``)."""
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", bare_gemini_model_id(model).lower())
+    return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
+
+
+def gemini_uses_thinking_level(model: str) -> bool:
+    """Gemini 3 and every later generation steer thinking with the ``thinkingLevel`` enum (``thinkingBudget``
+    is deprecated there), as do the ``gemini-*-latest`` aliases, which Google hot-swaps to the newest
+    release of each variant. A version-number gate, not a ``gemini-3`` prefix, so a new generation
+    (``gemini-4-argon``) isn't silently treated as legacy."""
+    bare = bare_gemini_model_id(model).lower()
+    return (bare.startswith("gemini-") and bare.endswith("-latest")) or _gemini_version(bare) >= (3, 0)
+
+
+def gemini_sampling_deprecated(model: str) -> bool:
+    """Gemini 3.6+ (Gemini 4 Argon included) ignores ``temperature``/``top_p``/``top_k`` and Google
+    slated them for removal; older families (2.x, 3.0-3.5) keep them."""
+    return _gemini_version(model) >= (3, 6)
 
 
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)

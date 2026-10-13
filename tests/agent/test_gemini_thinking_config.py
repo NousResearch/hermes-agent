@@ -22,6 +22,9 @@ from agent.transports.chat_completions import (
         ("gemini-2.5-flash", ("thinkingBudget", 0)),      # 2.5 still documents thinkingBudget
         ("gemini-3.6-flash", ("thinkingLevel", "low")),   # 3+ deprecated thinkingBudget → thinkingLevel
         ("gemini-3.1-pro", ("thinkingLevel", "low")),
+        ("gemini-4-argon", ("thinkingLevel", "low")),     # a new generation is not treated as legacy
+        ("google/gemini-4-argon", ("thinkingLevel", "low")),
+        ("gemini-flash-lite-latest", ("thinkingLevel", "low")),  # every -latest alias, not just flash
         ("gemini-flash-latest", ("thinkingLevel", "low")),
         ("gemini-1.5-flash", None),                        # pre-2.5: thinking control undocumented
     ],
@@ -87,3 +90,29 @@ def test_gemini4_maps_effort_to_thinking_level_and_long_decode_budget(reasoning,
     compat = profile.build_extra_body(model="gemini-4-argon", reasoning_config=reasoning,
                                       base_url="https://generativelanguage.googleapis.com/v1beta/openai")
     assert "max_output_tokens" not in compat
+
+
+@pytest.mark.parametrize(
+    "model,effort,level",
+    [
+        # Argon documents low/medium/high and 400s on "minimal" — clamp, never forward it.
+        ("gemini-4-argon", "minimal", "low"),
+        ("gemini-4-argon", "low", "low"),
+        ("gemini-4-argon", "medium", "medium"),
+        ("gemini-4-argon", "xhigh", "high"),
+        ("google/gemini-4-argon", "high", "high"),
+        ("gemini-3.8-flash", "medium", "medium"),
+        ("gemini-3.1-pro", "medium", "low"),  # 3 Pro stays strict (low/high)
+        ("gemini-3.1-pro", "high", "high"),
+        ("gemini-pro-latest", "high", "high"),
+    ],
+)
+def test_enabled_reasoning_maps_effort_to_thinking_level_on_gemini_3_and_later(model, effort, level):
+    config = _build_gemini_thinking_config(model, {"enabled": True, "effort": effort})
+    assert config == {"includeThoughts": True, "thinkingLevel": level}
+
+
+def test_unversioned_non_alias_gemini_ids_get_no_thinking_level():
+    # Only a version >= 3 or a -latest alias earns a level; unknown ids keep the no-guess default.
+    assert _build_gemini_thinking_config("gemini-exp-1206", {"effort": "high"}) == {"includeThoughts": True}
+    assert _build_gemini_thinking_config("gemini-1.5-pro", {"effort": "high"}) == {"includeThoughts": True}

@@ -9,7 +9,7 @@
 
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router'
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -22,7 +22,7 @@ import { $freshDraftReady, $gatewayState } from '@/store/session'
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
-import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
+import { appViewForPath, contributedRoutes, isOverlayView, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
 import { useStatusSnapshot } from '../shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from '../shell/hooks/use-statusbar-items'
 import { ModelMenuPanel } from '../shell/model-menu-panel'
@@ -122,6 +122,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   actions: WiringActions
   maxVoiceRecordingSeconds?: number
 }) {
+  const location = useLocation()
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const gateway = useStore($gateway)
@@ -173,48 +174,61 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
     />
   )
 
-  // FULL-PAGE views (not chat): a page is not a tab-able surface, so the zone's
-  // tab strip stands down while one is showing. That is `paneChrome.headerVeto`
-  // on the contribution, not a DOM marker — the `data-zone-no-header` attribute
-  // that used to ride this wrapper gated a body double-click toggle that no
-  // longer exists, and nothing has read it since.
+  // A full page is an OVERLAY above the session view, never a replacement for
+  // it: the base layer is always the session view a chat route renders, so a
+  // page keeps the chat MOUNTED beneath it (navigating to a page must not
+  // unmount the chat) and a page can never outlive its route — any navigation
+  // back to a session route drops the layer and shows that session. The layer
+  // covers the same area the page used to fill, and paints the same surface, so
+  // the result is visually indistinguishable from the old replace-the-workspace
+  // behavior.
+  //
+  // `absolute inset-0` positions against the pane body (the zone's own
+  // `relative` box), so the layer covers exactly the pane the page used to own.
+  // The zone's tab strip still stands down while a page is showing — that is
+  // `paneChrome.headerVeto` on the contribution, driven by `$workspaceIsPage`.
   const page = (view: ReactNode) => (
-    <div className="contents">
+    <div className="absolute inset-0 z-10 bg-(--ui-chat-surface-background)">
       <Suspense fallback={null}>{view}</Suspense>
     </div>
   )
 
+  // An overlay route (settings/…) owns the window as a card over the shell, so
+  // the workspace pane shows nothing under it — the session view stands only on
+  // chat and page routes.
+  const base = isOverlayView(appViewForPath(location.pathname)) ? null : chatView
+
   return (
-    <Routes>
-      <Route element={chatView} index />
-      <Route element={chatView} path=":sessionId" />
-      <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
-      <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
-      <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
-      <Route element={null} path="agents" />
-      <Route element={null} path="command-center" />
-      <Route element={null} path="cron" />
-      <Route element={null} path="profiles" />
-      <Route element={null} path="settings" />
-      <Route element={null} path="starmap" />
-      <Route element={null} path="webhooks" />
-      {/* Registry-contributed pages (core features + plugins) render in the
-          workspace pane like any built-in view — behind the same blast wall
-          as every other contribution mount. */}
-      {routeContributions.map(route => (
-        <Route
-          element={page(
-            <ContribBoundary id={route.key}>
-              <ContribRender render={route.render} />
-            </ContribBoundary>
-          )}
-          key={route.key}
-          path={route.path.slice(1)}
-        />
-      ))}
-      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
-      <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
-      <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
-    </Routes>
+    <>
+      {base}
+      <Routes>
+        <Route element={page(<CapabilitiesView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="capabilities" />
+        <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
+        <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
+        {/* Registry-contributed pages (core features + plugins) render in the
+            workspace pane like any built-in view — behind the same blast wall
+            as every other contribution mount. */}
+        {routeContributions.map(route => (
+          <Route
+            element={page(
+              <ContribBoundary id={route.key}>
+                <ContribRender render={route.render} />
+              </ContribBoundary>
+            )}
+            key={route.key}
+            path={route.path.slice(1)}
+          />
+        ))}
+        {/* Session, index, and overlay paths render no layer: the base session
+            view already stands (or nothing, under an overlay card). Overlay
+            paths fall through the `:sessionId` rung — they are reserved, so the
+            session-id parser never mistakes them for a session. */}
+        <Route element={null} index />
+        <Route element={null} path=":sessionId" />
+        <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
+        <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
+        <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
+      </Routes>
+    </>
   )
 })

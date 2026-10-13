@@ -49,7 +49,9 @@ one-off at the call site.
   previews, files, review, and terminal complement the conversation.
 - **Pages are durable destinations.** Chat, Skills, Messaging, and Artifacts
   remain in shell chrome. Do not hide a distinct product noun inside an
-  unrelated page.
+  unrelated page. A full page renders as a layer ABOVE the session view, not in
+  its place: the chat stays mounted beneath it, so returning to a session is a
+  route change, never a remount.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
   Agents, and Starmap render as `OverlayView` cards and return to the previous
   route on close. Model/session pickers and dialogs layer above the current

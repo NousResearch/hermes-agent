@@ -29,7 +29,9 @@ vi.mock('../shell/hooks/use-statusbar-items', () => ({
 }))
 vi.mock('../shell/statusbar-controls', () => ({ StatusbarControls: () => null }))
 vi.mock('../routes', () => ({
+  appViewForPath: () => 'chat',
   contributedRoutes: () => [],
+  isOverlayView: () => false,
   NEW_CHAT_ROUTE: '/new',
   ROUTES_AREA: 'routes',
   sessionRoute: (id: string) => `/${id}`

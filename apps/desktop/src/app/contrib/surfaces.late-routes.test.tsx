@@ -66,9 +66,10 @@ describe('ChatRoutesSurface late-registered plugin routes', () => {
     })
 
     // The late registration must reach the route table and win over the
-    // `:sessionId` dynamic route.
+    // `:sessionId` dynamic route. The chat stays mounted beneath the page now —
+    // a page is a layer above the session view, not a replacement for it.
     expect(screen.getByTestId('late-page')).toBeTruthy()
-    expect(screen.queryByTestId('chat-view')).toBeNull()
+    expect(screen.getByTestId('chat-view')).toBeTruthy()
 
     act(() => dispose())
   })

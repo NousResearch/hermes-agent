@@ -38,6 +38,7 @@ import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
+import { rememberedViewSubState, rememberViewSubState } from '@/store/view-memory'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
@@ -89,6 +90,9 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
+/** Key into the per-view sub-state memory (see `store/view-memory`). */
+const SETTINGS_MEMORY_KEY = 'settings'
+
 // Pages that take nothing but the resolved sub-page.
 const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: string }>>> = {
   'config:appearance': AppearanceSettings,
@@ -120,8 +124,20 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }, [navigate, search])
 
-  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Reopening Settings lands on the tab last used. An explicit `?tab=` (a
+  // sidebar row / palette deep link) always wins — the remembered value is only
+  // the fallback when the route names none.
+  const rememberedView = rememberedViewSubState(SETTINGS_MEMORY_KEY)
 
+  const defaultView: SettingsViewId =
+    rememberedView && (SETTINGS_VIEWS as readonly string[]).includes(rememberedView)
+      ? (rememberedView as SettingsViewId)
+      : ('config:model' as SettingsViewId)
+
+  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, defaultView)
+
+  // Remember the tab whenever it changes, so the next open lands here.
+  useEffect(() => rememberViewSubState(SETTINGS_MEMORY_KEY, activeView), [activeView])
   useEffect(() => recordFeatureUse(settingsArea(activeView)), [activeView])
   const params = new URLSearchParams(search)
   const requestedSubpage = params.get('page')

@@ -116,7 +116,7 @@ def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one
     working copy. Git-only and local-backend-only; otherwise silently ignored."""
-    return bool(_cfg().get("worktree_isolation", False))
+    return is_truthy_value(_cfg().get("worktree_isolation"), default=False)
 
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
@@ -164,13 +164,7 @@ def _get_max_spawn_depth() -> int:
 
 def _get_orchestrator_enabled() -> bool:
     """delegation.orchestrator_enabled kill switch (default True): False forces every child to leaf."""
-    val = _cfg().get("orchestrator_enabled", True)
-    if isinstance(val, bool):
-        return val
-    # Accept "true"/"false" strings from YAML that doesn't auto-coerce.
-    if isinstance(val, str):
-        return val.strip().lower() in {"true", "1", "yes", "on"}
-    return True
+    return is_truthy_value(_cfg().get("orchestrator_enabled"), default=True)
 
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""

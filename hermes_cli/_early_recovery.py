@@ -686,6 +686,18 @@ def _counts_as_holder(args: list[str], any_git: bool) -> bool:
     return sub not in _NEVER_LOCKS and (any_git or sub not in _READER_GIT)
 
 
+def _exited(pid_dir: Path) -> bool:
+    """The process has released its memory (exiting, or a zombie) or is gone.
+
+    The kernel drops its fds before its cwd, and refuses its cwd/environ once it is exiting, so an
+    unreadable cwd there is not a hidden git: counting it made any git exiting anywhere on a busy
+    machine postpone the repair. A live process keeps a non-empty argv."""
+    try:
+        return not (pid_dir / "cmdline").read_bytes()
+    except OSError:
+        return not pid_dir.exists()
+
+
 def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | bool | None:
     proc = Path("/proc")
     target = os.path.realpath(path)
@@ -734,6 +746,8 @@ def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | b
             env = dict(entry.decode("utf-8", "replace").partition("=")[::2]
                        for entry in (pid_dir / "environ").read_bytes().split(b"\0") if entry)
         except OSError:
+            if _exited(pid_dir):
+                continue  # exited since its argv was read: no cwd/environ left, and it holds nothing
             if git_works_in(args, None, None, places):
                 return _Holder(f"pid {pid_dir.name} ({name(args, pid_dir)})")
             if pid_dir.exists() and _could_write(uid, path.parent):

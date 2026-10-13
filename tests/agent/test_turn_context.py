@@ -282,6 +282,13 @@ _PREVIOUS = "Add the ShapeIndex encoder."
 _PRIOR_TURN = [{"role": "user", "content": _PREVIOUS}, {"role": "assistant", "content": "Done."}]
 
 
+def _carrier(ask: str = "Round-trip the ShapeIndex.") -> str:
+    """A compaction summary flipped into the user role, with the live ask merged after its end marker."""
+    from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+
+    return f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}" + (f"\n\n{ask}" if ask else "")
+
+
 def _compaction_returning_history(history_for):
     """A turn-start compaction that hands back what ``conversation_history_after_compression`` does."""
     from agent.turn_context_compaction import CompactionOutcome
@@ -308,8 +315,16 @@ def _compaction_returning_history(history_for):
           {"role": "assistant", "content": "Done."}], None, _PREVIOUS),
         (_PRIOR_TURN + [{"role": "user", "content": "[System: Your previous response was truncated. Continue."}],
          None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": "1. [ ] encode", "_todo_snapshot_synthetic": True}],
+         None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": _carrier()}, {"role": "assistant", "content": "Done."}],
+         None, "Round-trip the ShapeIndex."),
+        (_PRIOR_TURN + [{"role": "user", "content": _carrier(ask="")}], None, _PREVIOUS),
+        (_PRIOR_TURN + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+                        {"role": "assistant", "content": "Done."}], None, ""),
     ],
-    ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding"],
+    ids=["no-compaction", "in-place-compaction", "rotation", "first-turn", "multimodal", "skips-scaffolding",
+         "skips-flagged-scaffolding", "compaction-carrier-ask", "skips-bare-summary", "image-only-stops-search"],
 )
 def test_providers_get_what_the_person_last_asked(history, compaction, expected, monkeypatch):
     """A resumed process must tell providers what the last turn asked: a live process may have keyed

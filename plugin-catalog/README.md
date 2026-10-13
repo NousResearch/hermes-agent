@@ -72,9 +72,8 @@ meaningful:
 10. **Dependency security policy is the plugin's.** Hermes's 3-day
    `exclude-newer` release-age check covers Hermes's own dependencies only, at
    the time Hermes locks them; a plugin's `python_dependencies` /
-   `pyproject.toml` install under the plugin's policy (no age check). Packages
-   Hermes itself locks stay at Hermes's locked versions, so a plugin cannot
-   require a different version of one. Reviewers read the
+   `pyproject.toml` install under the plugin's policy (no age check), inside
+   Hermes's core constraints: Hermes's exact pins cannot move. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly

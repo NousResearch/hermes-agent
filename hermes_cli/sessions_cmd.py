@@ -90,7 +90,13 @@ def _output_file_in_dir(output, default_name: str):
 def _write_output(output, text, summary, *, newline=None) -> None:
     """Write to stdout when *output* is empty or ``-``; else to the file + print *summary*."""
     if not output or output == "-":
-        sys.stdout.write(text)
+        # CSV cells may contain CR/LF: text-stream translation corrupts them on Windows.
+        if newline == "" and hasattr(sys.stdout, "buffer"):
+            sys.stdout.flush()
+            sys.stdout.buffer.write(text.encode(sys.stdout.encoding or "utf-8", sys.stdout.errors or "strict"))
+            sys.stdout.buffer.flush()
+        else:
+            sys.stdout.write(text)
         return
     with open(output, "w", encoding="utf-8", newline=newline) as f:
         f.write(text)

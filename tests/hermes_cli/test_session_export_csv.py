@@ -120,6 +120,21 @@ def test_csv_prompt_only_does_not_export_tool_metadata_on_user_rows(store, monke
     assert all(row[field] == "" for field in ("tool_calls", "tool_call_id", "tool_name"))
 
 
+def test_csv_stdout_preserves_embedded_line_endings(monkeypatch):
+    from hermes_cli.sessions_cmd import _write_output
+    from hermes_cli.session_export import render_sessions_export
+
+    content = "one\r\ntwo\nthree"
+    text = render_sessions_export([{"id": "s", "messages": [{"role": "user", "content": content}]}], fmt="csv")
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="utf-8", newline="\r\n")
+    monkeypatch.setattr(sys, "stdout", stream)
+    _write_output("-", text, "unused", newline="")
+    stream.flush()
+    rows = list(csv.DictReader(io.StringIO(raw.getvalue().decode("utf-8"), newline="")))
+    assert rows[0]["content"] == content
+
+
 def test_csv_empty_selection_writes_header(store, monkeypatch, capsys):
     _export(monkeypatch, "-", "--source", "nonexistent")
     reader = csv.DictReader(io.StringIO(capsys.readouterr().out))

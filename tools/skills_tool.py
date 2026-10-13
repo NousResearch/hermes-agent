@@ -302,6 +302,11 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
                 all_skills.append(plugin_skill)
         except Exception:
             logger.debug("Plugin skill listing failed", exc_info=True)
+        try:
+            from tools.skills_tool_mcp import list_rows
+            all_skills.extend(list_rows())
+        except Exception:
+            logger.debug("Remote skill listing failed", exc_info=True)
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})
@@ -359,6 +364,23 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
             available_skills=[f"{namespace}:{s}" for s in available],
             hint=f"The '{namespace}' plugin provides {len(available)} skill(s)."), None
     return None, (f"{namespace}/{bare}" if bare else None)  # plugin not found → local scan
+
+
+def _plugin_phase(name, file_path, task_id, preprocess):
+    """``(served_json, local_category_name)`` for the ``':'`` plugin dispatch, resolved in one place.
+
+    A name with no colon never touches the plugin registry. When a plugin namespace does
+    not exist the name falls through as ``namespace/bare`` for the flat-tree scan — and
+    that form (``bare`` is not namespace-checked) is re-validated here so the caller
+    cannot skip the traversal gate by way of the fallback.
+    """
+    if ":" not in name:
+        return None, None
+    served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
+    if served is None and local_category_name:
+        if lookup_error := skill_lookup_path_error(local_category_name):
+            return _fail(lookup_error, hint=_LOOKUP_HINT), local_category_name
+    return served, local_category_name
 
 
 def _under_any(path: Path, dirs) -> bool:
@@ -514,12 +536,13 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
-    skill_md)``; skill_md set iff no error."""
+    skill_md, kind)``; skill_md set iff no error, and ``kind`` distinguishes a genuine miss from a
+    refusal (collision/quarantine) that a remote fallback must not paper over."""
     from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate, skill_candidate_rank
     all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
-            "Skills directory does not exist yet. It will be created on first install."), None, None
+            "Skills directory does not exist yet. It will be created on first install."), None, None, "no_dir"
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     tier_of = {d: t for t, d in roots}
     if len(candidates) > 1:
@@ -546,7 +569,7 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
             "refusing to guess.",
             matches=paths, load_names=load_names,
             hint="Pass the exact relative path instead of the bare name, or rename one of the "
-            "colliding skills so each name is unique."), None, None
+            "colliding skills so each name is unique."), None, None, "ambiguous"
     skill_dir, skill_md = candidates[0] if candidates else (None, None)
     # Quarantine gate: a project-tier skill with a dangerous scan verdict must not
     # load even by explicit name (same chokepoint the index and skills_list use).
@@ -557,12 +580,12 @@ def locate_skill(name: str, local_category_name: Optional[str], roots):
                 f"Project skill '{name}' is quarantined: the security scan flagged its content as "
                 "dangerous. It will not load until the repo's skill content changes and passes a re-scan.",
                 hint="Inspect the skill in the repo checkout, or untrust the repo with "
-                "`hermes skills untrust`."), None, None
+                "`hermes skills untrust`."), None, None, "quarantined"
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in sort_skills(find_all_skills())[:20]]
         return _fail(f"Skill '{name}' not found.", available_skills=available,
-                     hint="Use skills_list to see all available skills"), None, None
-    return None, skill_dir, skill_md
+                     hint="Use skills_list to see all available skills"), None, None, "not_found"
+    return None, skill_dir, skill_md, ""
 
 
 def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:
@@ -590,30 +613,38 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str = "", file_path: str | None = None, task_id: str | None = None,
+    preprocess: bool = True, *, server: str | None = None, uri: str | None = None) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
-    slash/preload callers render the message themselves."""
+    slash/preload callers render the message themselves.
+
+    ``server``/``uri`` locate a remote (SEP-2640) skill and are used together; a qualified
+    ``server:skill`` name is the same locator in one string."""
     try:
+        # Lazy, and safe without the optional MCP SDK: a pure local-name call returns None
+        # here before any MCP module is touched.
+        from tools.skills_tool_mcp import dispatch_before_local_lookup
+        if (early := dispatch_before_local_lookup(
+                name=name, server=server, uri=uri, file_path=file_path, task_id=task_id,
+                lookup_hint=_LOOKUP_HINT)) is not None:
+            return early
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.
         if lookup_error := skill_lookup_path_error(name):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         local_category_name: str | None = None
-        if ":" in name:  # plugin registry; bare names use the flat-tree scan below
-            served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
-            if served is not None:
-                return served
-        # The fall-through form (namespace/bare) joins onto each search dir too; re-validate it
-        # since `bare` is not namespace-checked.
-        if local_category_name and (lookup_error := skill_lookup_path_error(local_category_name)):
-            return _fail(lookup_error, hint=_LOOKUP_HINT)
+        served, local_category_name = _plugin_phase(name, file_path, task_id, preprocess)
+        if served is not None:
+            return served
         roots, active_skills_dir = skill_search_dirs()
         all_dirs = [d for _t, d in roots]
-        error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
+        error, skill_dir, skill_md, kind = locate_skill(name, local_category_name, roots)
         if error is not None:
-            return error
+            from tools.skills_tool_mcp import resolve_local_lookup_failure
+            return resolve_local_lookup_failure(
+                name=name, kind=kind, error=error, file_path=file_path, task_id=task_id)
         try:  # read once — reused for platform check and main content
             content = _read_skill_text(skill_md)
         except Exception as e:
@@ -711,20 +742,28 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter. Skills whose index row is qualified as 'server:skill' come from a remote MCP server: load them by that qualified name, or by passing server and uri together.",
     "parameters": {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans'); for a remote MCP skill, either the qualified form shown in the skills index or server+uri.",
             },
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "server": {
+                "type": "string",
+                "description": "OPTIONAL: Name of the MCP server publishing a remote skill. Pass together with uri; a remote skill is loaded once and its content is verified against what the server declared.",
+            },
+            "uri": {
+                "type": "string",
+                "description": "OPTIONAL: The SKILL.md resource URI of a remote skill (e.g. 'skill://group/name/SKILL.md'). Pass together with server.",
+            },
         },
-        "required": ["name"],
+        "required": [],
     },
 }
 
@@ -745,17 +784,22 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id,
+                        server=args.get("server"), uri=args.get("uri"))
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
+            remote = bool((parsed.get("source") or {}).get("remote"))
             if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
                 return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
+                # Remote views are not local skills: recording them in the usage ledger would
+                # put names the curator can never find on disk into its staleness ranking.
+                if not remote:
+                    bump_view(str(resolved))
+                    # Viewing is actively loading the skill to act on it — that counts as use
+                    # (the curator's stale timer keys off last_used_at).
                 bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 

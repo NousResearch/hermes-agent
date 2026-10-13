@@ -1398,6 +1398,10 @@ def _build_skills_system_prompt_inner(
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
+    # Remote (SEP-2640) catalogs are registry state as well — their published revision is part
+    # of the key so a republished catalog re-renders instead of serving the pre-change index.
+    from agent.skills_prompt_mcp import mcp_skill_rows
+    mcp_rows, mcp_token = mcp_skill_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
     # Skill files are part of the key: another process (a hub install in a second terminal, the curator
     # inside the gateway, a git pull of an external dir) never clears this process's LRU, so a key of
     # config alone served the pre-change index to every running session until restart (#92313).
@@ -1409,7 +1413,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _oneshot_prompt_variant(), tuple(plugin_rows), mcp_token,
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1468,6 +1472,14 @@ def _build_skills_system_prompt_inner(
             if name not in listed:
                 listed.add(name)
                 skills_by_category.setdefault("plugin", []).append((name, desc))
+    if mcp_rows:
+        # Qualified `server:skill` keys, so a remote row can never shadow a local load_name;
+        # a same-named plugin still wins the row (it is the older, user-installed claim).
+        listed = {name for entries in skills_by_category.values() for name, _ in entries}
+        for category, name, desc in mcp_rows:
+            if name not in listed:
+                listed.add(name)
+                skills_by_category.setdefault(category, []).append((name, desc))
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:

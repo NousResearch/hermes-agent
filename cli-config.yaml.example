@@ -1601,6 +1601,14 @@ platform_toolsets:
 #     one prior live connect to populate the cache; a missing or stale cache
 #     entry falls back to the normal eager connect. The banner and the TUI show
 #     such a server as "lazy" with its cached tool count until it is first used.
+#   skills.enabled: opt this server in to the SEP-2640 skills extension, so the
+#     skills it publishes join the ones Hermes already lists (default: false).
+#     The catalog is read as metadata when the server connects; a skill's files
+#     are fetched only when the model loads one, and checked against what the
+#     server published before they are used. This grants no tool permission: the
+#     server's MCP tools still go through its trust policy, and local tools
+#     through their own approval. Switch one off by its qualified name
+#     (<server>::<uri path>) in skills.disabled.
 #
 # mcp_servers:
 #   time:

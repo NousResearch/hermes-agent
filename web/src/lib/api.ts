@@ -468,10 +468,13 @@ export const api = {
       ),
     );
   },
+  // include_compacted: display history must keep turns archived by in-place
+  // compaction (active=0, compacted=1). Without it the dashboard silently
+  // drops everything before the summary boundary after a compress.
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest&include_compacted=true`,
         profile,
       ),
     ),

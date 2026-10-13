@@ -1,0 +1,124 @@
+name: E2E Desktop update
+
+# The Desktop install/update suite (apps/desktop/e2e/update): the packaged app
+# a REAL local install built (scripts/install.sh + `hermes desktop
+# --build-only`, inside the upgrade suite's sandbox machinery), driven through
+# the flows Desktop users hit and the CLI suites cannot see:
+#   - first run on a healthy install (no setup chooser, no bootstrap installer);
+#   - "Update now" in Settings → About: hand-off, update, relaunch, chat after;
+#   - a Desktop build failure inside that update reaches the user as a failure;
+#   - a second update while one runs is refused and the panel stays truthful.
+# External edges only are faked: the git server (a local bare origin behind a
+# url.insteadOf rewrite), api.github.com (a local stand-in behind an HTTPS
+# proxy) and the LLM provider (a scripted loopback model). Open bugs are
+# message-gated (e2e/update/gates.ts), never statically xfailed.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-desktop-update-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Desktop install/update E2E (Linux, ${{ matrix.cell }})
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 30
+    # Required whenever the e2e_desktop_update lane fires (see ci.yaml): it was
+    # advisory until it proved stable, and every main push shard since has passed.
+    strategy:
+      fail-fast: false
+      # One install per shard (every spec restores it; paths are baked in, so
+      # shards cannot share one), so each job stays well inside 15 minutes.
+      matrix:
+        include:
+          - cell: first-run
+            specs: e2e/update/first-run.spec.ts e2e/update/gates.spec.ts
+          - cell: app-update
+            specs: e2e/update/app-update.spec.ts
+          - cell: build-fail
+            specs: e2e/update/build-fail.spec.ts
+          - cell: update-concurrency
+            specs: e2e/update/update-concurrency.spec.ts
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          # The seeded install clones this checkout through a local bare origin.
+          fetch-depth: 0
+
+      - name: Install system dependencies for Electron and the sandbox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            xvfb bubblewrap \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+          # bwrap (the installer/updater sandbox) needs unprivileged user namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Prepare locked toolchain and test environment
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+
+      # The Playwright runner and its Electron driver. The install under test
+      # runs its own npm install inside the sandbox.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Run the update suite under xvfb
+        working-directory: apps/desktop
+        run: |
+          git --version
+          # Resource trail in the log, so a runner that dies mid-run leaves its last state behind.
+          ( while sleep 10; do
+              echo "::group::resources $(date -u +%T)"
+              df -h / "$RUNNER_TEMP" | tail -n +2; free -g | head -2
+              echo "procs=$(ps -e --no-headers | wc -l) upload-packs=$(pgrep -c -f git-upload-pack || true)"
+              ps -eo pid,ppid,etimes,rss,args --sort=-rss | head -6 | cut -c1-200
+              ps -eo args | grep -E '(^|/)git[ -]' | cut -c1-160 | sort | uniq -c | sort -rn | head -8
+              # Ancestry of the newest upload-pack: who is asking for all these packs?
+              p=$(pgrep -n -f git-upload-pack || true)
+              while [ -n "$p" ] && [ "$p" != 1 ]; do
+                ps -o pid=,etimes=,args= -p "$p" | cut -c1-220; p=$(ps -o ppid= -p "$p" | tr -d ' ')
+              done
+              echo "::endgroup::"
+            done ) &
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            npx playwright test -c e2e/update/playwright.config.ts ${{ matrix.specs }}
+        env:
+          CI: 'true'
+          HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
+          # Short on purpose: the install bakes this path into AF_UNIX socket paths.
+          HERMES_E2E_UPDATE_ROOT: ${{ runner.temp }}/hdu
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+          ANTHROPIC_API_KEY: ''
+
+      - name: Collect the install's logs
+        if: failure() || cancelled()
+        run: |
+          mkdir -p apps/desktop/test-results/update/install-logs
+          cp -r "${{ runner.temp }}/hdu/sb/home/.hermes/logs" apps/desktop/test-results/update/install-logs/ 2>/dev/null || true
+          cp "${{ runner.temp }}/hdu/sb/terminal-update.log" apps/desktop/test-results/update/install-logs/ 2>/dev/null || true
+
+      - name: Upload failure artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-update-e2e-${{ matrix.cell }}-${{ github.sha }}
+          path: |
+            apps/desktop/test-results/update
+            apps/desktop/playwright-report/update
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: ignore

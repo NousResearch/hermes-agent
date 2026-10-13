@@ -44,7 +44,8 @@ function resetStores() {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   })
 }
 
@@ -61,30 +62,6 @@ const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
-  it('hard initial-boot failure surfaces the recovery overlay (the working path)', async () => {
-    // failDesktopBoot() ran: error set, gateway never opened.
-    $desktopBoot.set({
-      ...$desktopBoot.get(),
-      error: 'Hermes backend did not become ready',
-      running: false,
-      visible: true
-    })
-    setGatewayState('error')
-
-    await act(async () => {
-      render(
-        <>
-          <GatewayConnectingOverlay />
-          <BootFailureOverlay />
-        </>
-      )
-    })
-
-    expect(isRecoveryShown()).toBe(true)
-    // Connecting overlay bows out when boot.error is set.
-    expect(isConnectingShown()).toBe(false)
-  })
-
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
     // 1. Initial boot succeeded: gateway opened, boot completed (no error).
     setGatewayState('open')

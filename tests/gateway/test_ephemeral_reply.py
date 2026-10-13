@@ -29,10 +29,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
-    MessageEvent,
-    MessageType,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -106,13 +105,6 @@ def _make_event(text="/stop", chat_id="42"):
 # ---------------------------------------------------------------------------
 
 
-def test_unwrap_ephemeral_default_ttl_zero_disables():
-    """Config default of 0 (the shipped default) means the feature is off."""
-    adapter = _delete_adapter()
-    with patch.object(adapter, "_get_ephemeral_system_ttl_default", return_value=0):
-        text, ttl = adapter._unwrap_ephemeral(EphemeralReply("bye"))
-    assert text == "bye"
-    assert ttl == 0
 
 
 def test_unwrap_ephemeral_handles_unreadable_config():

@@ -97,13 +97,6 @@ def test_passthrough_from_wire_stamps_routed_profile():
     assert fwd.profile == "reviewer"
 
 
-@pytest.mark.asyncio
-async def test_connect_wires_passthrough_handler_over_ws(adapter):
-    """connect() registers the passthrough handler on the transport so a
-    connector-delivered passthrough_forward frame reaches the adapter."""
-    await adapter.connect()
-    stub = adapter._transport
-    assert stub._passthrough is not None
 
 
 @pytest.mark.asyncio
@@ -266,3 +259,42 @@ async def test_dm_interaction_keys_as_discord_dm(adapter, monkeypatch):
     assert ev.source.delivered_via_upstream_relay is True
 
 
+
+
+@pytest.mark.asyncio
+async def test_routed_profile_round_trips_on_every_egress_frame(adapter, monkeypatch):
+    """Relay passthrough round-trip keeps ``profile`` (#88715 phase 5): the profile the connector
+    stamped on an inbound interaction is echoed on the chat's outbound frames and on the
+    ``follow_up`` addressed by the routed session key, so the connector can stamp it on the NEXT
+    passthrough_forward for that chat; a single-profile gateway emits no ``profile`` key at all."""
+    await adapter.connect()
+    stub = adapter._transport
+    monkeypatch.setattr(adapter, "handle_message", _noop_handle)
+
+    fwd = _interaction_forward(
+        {
+            "id": "interaction-3", "type": 2, "channel_id": "chan-9", "guild_id": "guild-7",
+            "data": {"name": "summarize"}, "member": {"user": {"id": "user-3", "username": "ben"}},
+        },
+        profile="reviewer",
+    )
+    await stub.push_passthrough(fwd, buffer_id=None)
+    await adapter.send("chan-9", "done")
+    await adapter.send_follow_up(
+        session_key="agent:reviewer:discord:group:chan-9", kind="discord.interaction_token", content="x")
+    assert stub.sent[-1]["metadata"]["profile"] == "reviewer"
+    assert stub.follow_ups[-1]["metadata"]["profile"] == "reviewer"
+
+    # Legacy namespace / unrouted chat: byte-identical frames, no profile key.
+    await stub.push_passthrough(_interaction_forward({
+        "id": "interaction-4", "type": 2, "channel_id": "chan-1", "guild_id": "guild-7",
+        "data": {"name": "summarize"}, "member": {"user": {"id": "user-3"}}}), buffer_id=None)
+    await adapter.send("chan-1", "done")
+    await adapter.send_follow_up(
+        session_key="agent:main:discord:group:chan-1", kind="discord.interaction_token", content="x")
+    assert "profile" not in stub.sent[-1]["metadata"]
+    assert "profile" not in stub.follow_ups[-1]["metadata"]
+
+
+async def _noop_handle(event):
+    return None

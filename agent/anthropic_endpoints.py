@@ -72,6 +72,25 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     )
 
 
+
+_DEEPSEEK_THINKING_MODEL_PREFIXES = (
+    "deepseek-r", "deepseek-v4", "deepseek_v4", "deepseek-pro",
+    "deepseek_pro", "deepseek-flash", "deepseek_flash",
+)
+
+
+def _model_name_is_deepseek_thinking(model: str | None) -> bool:
+    """Known DeepSeek thinking families behind an Anthropic-compatible relay.
+
+    Strip vendor namespaces, but do not treat arbitrary DeepSeek chat/distill
+    names as evidence of the thinking replay contract.
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    return bool(name) and name.startswith(_DEEPSEEK_THINKING_MODEL_PREFIXES)
+
+
 def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     """DeepSeek's ``/anthropic`` route. In thinking mode DeepSeek requires prior-turn ``thinking``
     blocks to round-trip while the generic third-party path strips them; its blocks are unsigned,
@@ -138,3 +157,29 @@ def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     host_padded = f".{(parsed.hostname or '').lower().rstrip('.')}."
     is_azure_host = ".services.ai.azure." in host_padded or ".openai.azure." in host_padded
     return is_azure_host and "/anthropic" in (parsed.path or "").lower()
+
+
+def _is_bedrock_runtime_endpoint(base_url: str | None) -> bool:
+    """Amazon Bedrock's runtime host (``bedrock-runtime[-fips].<region>.amazonaws.com[.cn]``, and VPC
+    endpoint names carrying the same label), which the AnthropicBedrock SDK path binds as its base URL."""
+    host = base_url_hostname(base_url or "")
+    return any(label.startswith("bedrock-runtime") for label in host.split(".")) and (
+        base_url_host_matches(host, "amazonaws.com") or base_url_host_matches(host, "amazonaws.com.cn")
+    )
+
+
+def _is_vertex_ai_endpoint(base_url: str | None) -> bool:
+    """Vertex AI hosts: global ``aiplatform.googleapis.com`` and regional ``<region>-aiplatform.googleapis.com``."""
+    host = base_url_hostname(base_url or "")
+    return host == "aiplatform.googleapis.com" or host.endswith("-aiplatform.googleapis.com")
+
+
+def _is_claude_platform_endpoint(base_url: str | None) -> bool:
+    """Cloud platforms serving Claude under Anthropic's own thinking signatures: Bedrock, Vertex AI and
+    Azure AI Foundry ``/anthropic``. Anthropic documents ``signature`` values as compatible across the
+    Claude API, Bedrock and Google Cloud, so these replay signed thinking like the direct API."""
+    return (
+        _is_bedrock_runtime_endpoint(base_url)
+        or _is_vertex_ai_endpoint(base_url)
+        or _is_azure_anthropic_endpoint(base_url)
+    )

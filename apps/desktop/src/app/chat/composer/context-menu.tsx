@@ -47,7 +47,7 @@ export function ContextMenu({
   return (
     <>
       <DropdownMenu>
-        <Tip label={state.tools.label} side="top">
+        <Tip label={state.tools.label} placement="control">
           <DropdownMenuTrigger asChild>
             <Button
               aria-label={state.tools.label}

@@ -16,7 +16,7 @@ from agent.session_activity import ActivityProvenance
 logger = logging.getLogger("run_agent")
 
 
-def _activity_lock(obj) -> "threading.Lock":
+def _activity_lock(obj) -> threading.Lock:
     """Lazy per-instance ``_turn_liveness_activity_lock`` (so ``__new__``/SimpleNamespace doubles work)."""
     _lock = getattr(obj, "_turn_liveness_activity_lock", None)
     if _lock is None:
@@ -28,7 +28,7 @@ def _activity_lock(obj) -> "threading.Lock":
 class ActivityTrackingMixin:
     """Liveness timestamps/labels and rate-limited session activity persistence."""
 
-    def _liveness_activity_lock(self) -> "threading.Lock":
+    def _liveness_activity_lock(self) -> threading.Lock:
         """Shared lock for the activity clock and its generation counter.
 
         ``_touch_activity`` stamps under it and the liveness watchdog samples/commits under it, so a stall
@@ -48,24 +48,26 @@ class ActivityTrackingMixin:
         the exact ``(generation, timestamp)`` it sampled. Also bridges (rate-limited, best-effort) to the
         kanban heartbeat when this is a dispatcher-spawned worker, and to the durable SessionDB activity
         projection. ``provenance`` names special writers (compression); ``force_persist`` bypasses the
-        SessionDB rate limit. Module-level lock helper, not ``self._liveness_activity_lock()``: doubles bind
-        only ``_touch_activity`` (tests/run_agent/test_session_activity_persist.py).
+        SessionDB rate limit — as does any terminal compression provenance, which must converge the durable
+        row at once (nothing writes after it). Module-level lock helper, not ``self._liveness_activity_lock()``:
+        doubles bind only ``_touch_activity`` (tests/agent/test_session_activity_persist.py).
 
         Bridge is rate-limited (60s) and best-effort — it never raises into the agent loop. See #31752.
         See #72016, #72039.
         """
         from agent.session_activity import (
-            bound_activity_description, normalize_activity_provenance,
-            reset_session_activity_persist_window,
+            bound_activity_description, is_terminal_compression_provenance,
+            normalize_activity_provenance, reset_session_activity_persist_window,
         )
 
+        resolved_provenance = normalize_activity_provenance(provenance)
         with _activity_lock(self):
             self._turn_liveness_activity_generation = (
                 getattr(self, "_turn_liveness_activity_generation", 0) + 1
             )
             self._last_activity_ts = time.time()
             self._last_activity_desc = bound_activity_description(desc)
-            self._last_activity_provenance = normalize_activity_provenance(provenance)
+            self._last_activity_provenance = resolved_provenance
             # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must abandon
             # itself at the final mutation edge.
             self._turn_liveness_abort_claim = None
@@ -78,7 +80,11 @@ class ActivityTrackingMixin:
                 heartbeat_current_worker_from_env()
                 # Fold new operator notes into the running turn (OUT-OF-BAND steer).
                 inject_new_comments_from_env(self)
-        if force_persist:
+        if force_persist or is_terminal_compression_provenance(resolved_provenance):
+            # A terminal compression stamp must land durably NOW. The heartbeat wrote "context compression
+            # in progress" moments ago, so deferring this write to the next 60s window leaves the durable
+            # row advertising a compression that has already ended — and no later writer corrects it once
+            # the turn is over or the host is gone (the permanently "stuck" chat, #72039 follow-up).
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
 

@@ -2,18 +2,21 @@ import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
+import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
+import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -63,6 +66,53 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
   })
 }
 
+/** Terminal error frames (status "error") carry the failure in structured
+ *  fields: `error` is the message, `partial` marks `text` as streamed output to
+ *  keep rather than the error string, and `error_surface` (newer gateways)
+ *  names the failing layer for the card. */
+function turnFailure(payload: GatewayEventPayload | undefined, finalText: string) {
+  if (payload?.status !== 'error') {
+    return undefined
+  }
+
+  return {
+    error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
+    partial: Boolean(payload.partial),
+    surface: parseErrorSurface(payload.error_surface)
+  }
+}
+
+function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
+  const { deps, payload, occurredAt } = ctx
+  const label = coerceGatewayText(payload?.label) || 'reference'
+  const idx = typeof payload?.index === 'number' ? payload.index : undefined
+  const cnt = typeof payload?.count === 'number' ? payload.count : undefined
+  const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
+  const body = coerceThinkingText(payload?.text)
+  const text = `${header}\n${body}\n\n`
+
+  if (idx === undefined || idx <= 1) {
+    // First reference: clear any stale reasoning left over from
+    // before this turn's references start, same as before.
+    deps.appendReasoningDelta(sessionId, text, true, occurredAt)
+
+    return
+  }
+
+  // Later references must accumulate, not replace — otherwise
+  // each new reference wipes out the ones already shown (#64658).
+  // Queue-then-flush (rather than the streamed/batched queue path)
+  // applies it immediately, since each reference arrives as one
+  // complete block rather than incremental tokens. reasoning.delta
+  // cannot be mid-flight here: MoAChatCompletions.reference_callback
+  // (agent/moa_loop.py) fires "moa.reference" once per reference's
+  // already-complete text, with no concurrent token stream for the
+  // reference-gathering phase, so there is no in-flight delta to
+  // collide with in the shared queue bucket.
+  deps.appendReasoningDelta(sessionId, text, false, occurredAt)
+  deps.flushQueuedDeltas(sessionId)
+}
+
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
@@ -75,6 +125,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     completeAssistantMessage,
     finalizeInterimAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     nativeSubagentSessionsRef,
     sessionStateByRuntimeIdRef,
     updateSessionState
@@ -85,7 +136,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    flushQueuedDeltas(sessionId)
+    // Turn-boundary orphan drop (#119543): when no turn is live, anything
+    // still queued belongs to a turn that already ended (a delta reordered
+    // behind its own complete or heartbeat). Flushing it would seed a bubble
+    // the new turn inherits, painting a stale duplicate of the previous
+    // reply. A still-live previous turn (steer) keeps the flush: those bytes
+    // are real output of the bubble on screen.
+    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+      flushQueuedDeltas(sessionId)
+    } else {
+      dropQueuedDeltas(sessionId)
+    }
+
     pruneFinishedSessionSubagents(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)
@@ -130,6 +192,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+        // A new turn is a new occurrence: the previous turn's late terminal
+        // frame (#119569) can no longer claim its heartbeat-settled bubble.
+        heartbeatSettledStreamId: null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)
@@ -227,31 +292,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // the mixture-of-agents process is visible. Reuses the reasoning
     // disclosure rather than introducing a parallel surface.
     if (sessionId) {
-      const label = coerceGatewayText(payload?.label) || 'reference'
-      const idx = typeof payload?.index === 'number' ? payload.index : undefined
-      const cnt = typeof payload?.count === 'number' ? payload.count : undefined
-      const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
-      const body = coerceThinkingText(payload?.text)
-      const text = `${header}\n${body}\n\n`
-
-      if (idx === undefined || idx <= 1) {
-        // First reference: clear any stale reasoning left over from
-        // before this turn's references start, same as before.
-        appendReasoningDelta(sessionId, text, true, occurredAt)
-      } else {
-        // Later references must accumulate, not replace — otherwise
-        // each new reference wipes out the ones already shown (#64658).
-        // Queue-then-flush (rather than the streamed/batched queue path)
-        // applies it immediately, since each reference arrives as one
-        // complete block rather than incremental tokens. reasoning.delta
-        // cannot be mid-flight here: MoAChatCompletions.reference_callback
-        // (agent/moa_loop.py) fires "moa.reference" once per reference's
-        // already-complete text, with no concurrent token stream for the
-        // reference-gathering phase, so there is no in-flight delta to
-        // collide with in the shared queue bucket.
-        appendReasoningDelta(sessionId, text, false, occurredAt)
-        flushQueuedDeltas(sessionId)
-      }
+      appendMoaReference(ctx, sessionId)
     }
 
     if (isActiveEvent) {
@@ -321,7 +362,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // session so a background turn finishing can't wipe the active chat's
     // prompt, and vice versa.
     clearAllPrompts(sessionId)
-    clearClarifyRequest(undefined, sessionId)
+    clearSettledClarifyRequest(sessionId)
     // Turn ended without a final `todo` update — drop a still-unfinished
     // list so "Tasks N/M" doesn't stay pinned above the composer with the
     // last item stuck pending/in_progress. Finished lists keep their linger.
@@ -335,25 +376,31 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-    // Terminal error frames (status "error") carry the failure in
-    // structured fields: `error` is the message, `partial` marks
-    // `text` as streamed output to keep rather than the error string, and
-    // `error_surface` (newer gateways) names the failing layer for the card.
-    const failure =
-      payload?.status === 'error'
-        ? {
-            error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
-            partial: Boolean(payload.partial),
-            surface: parseErrorSurface(payload.error_surface)
-          }
-        : undefined
+    completeAssistantMessage(
+      sessionId,
+      finalText,
+      payload?.response_previewed,
+      turnFailure(payload, finalText),
+      occurredAt,
+      payload?.persisted_turn,
+      Boolean(payload?.response_transformed),
+      typeof payload?.status === 'string' ? payload.status : undefined,
+      payload?.response_reused === true
+    )
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    if (payload?.status === 'complete') {
+      noteFreeTierTurnComplete()
+    }
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.
     if (payload?.billing) {
       surfaceBillingBlock(sessionId, payload.billing)
+    }
+
+    // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
+    if (typeof payload?.warning === 'string' && payload.warning.trim()) {
+      notify({ kind: 'warning', message: payload.warning })
     }
 
     if (isActiveEvent) {
@@ -387,6 +434,10 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         setCurrentUsage(current => ({ ...current, ...payload.usage }))
       }
     }
+
+    // Refresh only the structured-control sessions already proven capable.
+    // Initial hydration owns the unknown capability probe.
+    void refreshSupportedSessionControlAfterTurn(sessionId)
 
     return true
   }

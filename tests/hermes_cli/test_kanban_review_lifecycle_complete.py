@@ -216,7 +216,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
     # Move the task through review while its parent is temporarily terminal,
     # then make the parent non-terminal again before changes are requested.
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
     assert kb.request_review(
@@ -244,7 +244,7 @@ def test_review_changes_reapply_parent_gate(conn):
 
 def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     task_id = kb.create_task(
         conn,
         title="Implementation with reopened parent",
@@ -264,7 +264,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     still_running = kb.get_task(conn, task_id)
     assert still_running is not None
     assert still_running.status == "running"
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     assert kb.request_review(
         conn,
         task_id,
@@ -383,6 +383,82 @@ def test_interrupted_review_runs_retry_in_review_phase(
     assert event.payload.get("retry_status") == "review"
 
 
+def _iso(ago: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(int(time.time()) - ago))
+
+
+def test_dispatcher_sweeps_survive_iso_text_timestamps(conn, monkeypatch) -> None:
+    """ISO text in the start/heartbeat columns (written outside the mutators,
+    #97455) must not abort the per-tick dispatcher sweeps, and a READABLE stamp
+    must still drive the decision: an unreadable start is skipped (never killed),
+    a fresh ISO heartbeat spares a run, an old ISO start times out / goes stale,
+    and the dead-worker backstop reclaims."""
+    iso = _iso
+    monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", lambda *a, **k: {"terminated": True})
+    monkeypatch.setattr(kbd, "_kill_fn", lambda signal_fn: None)
+
+    def running(title, *, start, heartbeat=None):
+        task_id = kb.create_task(conn, title=title, assignee="builder", max_runtime_seconds=60)
+        claimed = kb.claim_task(conn, task_id)  # host-local claim lock: the sweeps' scope
+        assert claimed is not None
+        kbd._set_worker_pid(conn, task_id, 98765)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET started_at = ?, last_heartbeat_at = ? WHERE id = ?",
+                         (start, heartbeat, task_id))
+            conn.execute("UPDATE task_runs SET started_at = ? WHERE id = ?", (start, claimed.current_run_id))
+        return task_id
+
+    garbled = running("garbled", start="not-a-timestamp", heartbeat="2020-01-01T00:00:00+00:00")
+    assert kb.get_task(conn, garbled).last_heartbeat_at == 1577836800  # Task coerces it too
+    assert kbd.enforce_max_runtime(conn) == []  # eligible (running, pid, cap) but unreadable: not killed
+    assert kbd.detect_stale_running(conn, stale_timeout_seconds=1) == []
+    fresh = running("fresh heartbeat", start=iso(7200), heartbeat=iso(5))
+    assert kbd.detect_stale_running(conn, stale_timeout_seconds=600) == []  # fresh ISO heartbeat spares it
+    stale = running("stale", start=iso(7200), heartbeat=iso(7200))
+    assert kbd.detect_stale_running(conn, stale_timeout_seconds=600) == [stale]
+    assert kbd.enforce_max_runtime(conn) == [fresh]  # readable ISO start 2h ago > 60s cap
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)  # garbled start: past the launch grace
+    assert kbd.detect_crashed_workers(conn) == [garbled]
+
+
+def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
+    """SQLite sorts TEXT above every INTEGER, so ISO stamps (#97455) must not pass
+    the guards' SQL windows by type: an old ISO success does not hold a card, an
+    old ISO PR comment does not either, and an ISO handoff OLDER than an int PR
+    comment does not lift ``active_pr``."""
+    now, iso = int(time.time()), _iso
+
+    def card(title):
+        task_id = kb.create_task(conn, title=title, assignee="dev")
+        conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        return task_id
+
+    def comment(task_id, at):
+        conn.execute("INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'dev', ?, ?)",
+                     (task_id, "opened https://github.com/o/r/pull/1", at))
+
+    old_success = card("old success")
+    kb.claim_task(conn, old_success)
+    kb.complete_task(conn, old_success, result="ok", force=True)
+    with kb.write_txn(conn):
+        conn.execute("UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (iso(30 * 86400), old_success))
+        conn.execute("DELETE FROM task_events WHERE task_id = ?", (old_success,))
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (old_success,))
+    assert kbd.check_respawn_guard(conn, old_success) is None
+    with kb.write_txn(conn):
+        conn.execute("UPDATE task_runs SET ended_at = ? WHERE task_id = ?", (iso(60), old_success))
+    assert kbd.check_respawn_guard(conn, old_success) == "recent_success"  # a readable recent ISO still holds
+
+    with kb.write_txn(conn):
+        old_pr, guarded = card("old pr"), card("guarded")
+        comment(old_pr, iso(90 * 86400))
+        comment(guarded, now - 60)
+        conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "
+                     "(?, 'assigned', '{\"assignee\": \"ops\", \"from\": \"dev\"}', ?)", (guarded, iso(7200)))
+    assert kbd.check_respawn_guard(conn, old_pr) is None
+    assert kbd.check_respawn_guard(conn, guarded) == "active_pr"
+
+
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
     assert kbd._record_task_failure(
@@ -426,7 +502,7 @@ def test_review_escalation_unblocks_back_to_review(conn) -> None:
 
 def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> None:
     parent_id = kb.create_task(conn, title="Parent", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     task_id = kb.create_task(
         conn,
         title="Review after dependency refresh",
@@ -456,7 +532,7 @@ def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> N
     waiting = kb.get_task(conn, task_id)
     assert waiting is not None
     assert waiting.status == "todo"
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     resumed = kb.get_task(conn, task_id)
     assert resumed is not None
     assert resumed.status == "review"

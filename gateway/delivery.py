@@ -2,7 +2,6 @@
 platform home channel ("telegram"), origin (back to where the job was created), or local (files)."""
 
 import logging
-import os
 import re
 from pathlib import Path
 from datetime import datetime
@@ -37,6 +36,15 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
 
 
+class PartialDeliveryError(RuntimeError):
+    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
+    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
+
+    def __init__(self, message: str, result: Any):
+        super().__init__(message)
+        self.result = result
+
+
 @dataclass(frozen=True)
 class DeliveryTransport:
     """Resolved live transport for one logical delivery platform."""
@@ -49,14 +57,14 @@ class DeliveryTransport:
         return self.transport_platform == Platform.RELAY
 
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
-                   metadata: Optional[Dict[str, Any]]) -> Any:
+                   metadata: Optional[dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
-                               adapters: Optional[Dict[Platform, Any]]) -> Optional[DeliveryTransport]:
+                               adapters: Optional[dict[Platform, Any]]) -> Optional[DeliveryTransport]:
     """Resolve a logical platform to its live delivery transport. A concrete native adapter always wins;
     Relay is eligible only when its authenticated transport explicitly advertises that it fronts the
     logical platform, so restart-time delivery is independent of per-chat caches without letting Relay
@@ -106,6 +114,11 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    # Raw target string when the platform name is unknown. The platform falls
+    # back to LOCAL for routing, but the original name is preserved so
+    # deliver() can report {success: False, error: unknown_platform} instead
+    # of silently misrouting to local files.
+    unknown_platform: Optional[str] = None
 
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -114,12 +127,14 @@ class DeliveryTarget:
         if target.lower() == "origin":
             return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id, is_origin=True)
                     if origin else cls(platform=Platform.LOCAL, is_origin=True))
-        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms -> local.
+        # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms ->
+        # LOCAL for routing but preserve the raw target so deliver() reports
+        # unknown_platform instead of silently saving locally.
         parts = target.split(":", 2)
         try:
             platform = Platform(parts[0].lower())
         except ValueError:
-            return cls(platform=Platform.LOCAL)
+            return cls(platform=Platform.LOCAL, unknown_platform=target)
         return (cls(platform=platform, chat_id=parts[1], thread_id=parts[2] if len(parts) > 2 else None, is_explicit=True)
                 if len(parts) > 1 else cls(platform=platform))
 
@@ -127,6 +142,8 @@ class DeliveryTarget:
         """Convert back to string format."""
         if self.is_origin:
             return "origin"
+        if self.unknown_platform is not None:
+            return self.unknown_platform
         if self.platform == Platform.LOCAL:
             return "local"
         parts = [self.platform.value, self.chat_id, self.thread_id if self.chat_id else None]
@@ -147,18 +164,22 @@ async def _ensure_named_dm_topic(adapter: Any, chat_id: str, name: str, *, refre
 class DeliveryRouter:
     """Resolves delivery targets and dispatches messages to platform adapters."""
 
-    def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None,
+    def __init__(self, config: GatewayConfig, adapters: dict[Platform, Any] | None = None,
                  dead_targets: Optional[DeadTargetRegistry] = None):  # profile-local registry when omitted
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_hermes_home() / "cron" / "output"
         self.dead_targets = dead_targets or DeadTargetRegistry()
 
-    async def deliver(self, content: str, targets: List[DeliveryTarget], job_id: Optional[str] = None,
-                      job_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def deliver(self, content: str, targets: list[DeliveryTarget], job_id: Optional[str] = None,
+                      job_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
+            if target.unknown_platform is not None:
+                results[target.to_string()] = {
+                    "success": False, "error": f"unknown_platform: {target.unknown_platform}"}
+                continue
             # Skip targets proven permanently unreachable (deleted group, blocked bot, deactivated user) —
             # re-sending each tick wastes flood-control budget. Self-healing: a later successful send
             # clears the flag. LOCAL/origin-without-chat targets are never dead-tracked.
@@ -187,7 +208,7 @@ class DeliveryRouter:
         return results
 
     def _deliver_local(self, content: str, job_id: Optional[str], job_name: Optional[str],
-                       metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                       metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Save content to local files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = self.output_dir / (job_id or "misc") / f"{timestamp}.md"
@@ -208,10 +229,8 @@ class DeliveryRouter:
         return path
 
     def _filter_silence_narration_enabled(self) -> bool:
-        """``HERMES_FILTER_SILENCE_NARRATION`` env overrides the ``gateway.filter_silence_narration`` flag."""
-        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
-        return (bool(getattr(self.config, "filter_silence_narration", True)) if env is None
-                else env.strip().lower() in ("1", "true", "yes", "on"))
+        """filter silence narration based on gateway config without checking process env"""
+        return bool(getattr(self.config, "filter_silence_narration", True))
 
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
@@ -239,9 +258,19 @@ class DeliveryRouter:
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
-                                   metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
-        transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
+                                   metadata: Optional[dict[str, Any]],
+                                   transport: Optional[DeliveryTransport] = None,
+                                   ) -> dict[str, Any]:
+        """Deliver content to a messaging platform.
+
+        ``transport`` carries an already-authorized transport past resolution:
+        the cron live lane resolved and authorized it per target (including the
+        SharedRouteAdapters satellite grant), and re-resolving from the plain
+        adapters dict cannot re-derive that grant under satellite config
+        (#115656). Omitted (None) preserves resolution for every other caller.
+        """
+        if transport is None:
+            transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:
             raise ValueError(f"No adapter configured for {target.platform.value}")
         if not target.chat_id:
@@ -298,5 +327,8 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
+            from gateway.platforms.base import BasePlatformAdapter
+            if BasePlatformAdapter._is_partial_delivery(result):
+                raise PartialDeliveryError(error, result)
             raise RuntimeError(error or f"{target.platform.value} delivery failed")
         return result

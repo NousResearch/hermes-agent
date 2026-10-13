@@ -10,7 +10,8 @@ it. New commands land often; `/help` in-session is always authoritative.
 /new (/reset) [name]     Fresh session
 /clear                   Clear screen + new session (CLI)
 /retry                   Resend last message
-/undo [N]                Back up N user turns and re-prompt
+/undo [N]                Back up N user turns and re-prompt (idle only)
+/recall [N]              Gateway mid-turn: deny approvals + stop + rewind in one
 /title [name]            Name the session
 /prompt (/compose)       Compose next prompt in $EDITOR (CLI)
 /compress (/compact)     Compress context ('here [N]' keeps N turns; --preview)

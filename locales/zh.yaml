@@ -498,6 +498,12 @@ gateway:
     nothing: "没有可撤销的内容。"
     removed: "↩️ 已撤销 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
     invalid_count: "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
+  recall:
+    removed: "↩️ 已撤回 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
+    stopped_removed: "⚡ 已停止并撤回 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
+    invalid_count: "无效的数量「{arg}」—— 请使用 /recall 或 /recall N。"
+    failed: "已停止当前回合，但无法安全回退对话（停止期间内容发生了变化）。请重试 /recall，或等待会话稳定后使用 /undo。"
+
   update:
     platform_not_messaging: "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
     not_git_repo: "✗ 不是 git 仓库 — 无法更新。"

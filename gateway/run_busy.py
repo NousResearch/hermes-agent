@@ -918,7 +918,7 @@ class GatewayBusySessionMixin:
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
-        "loop", "refine", "review", "voice",
+        "loop", "refine", "review", "voice", "recall",
     )
 
     def _command_handler_table(self, names) -> dict[str, Any]:
@@ -950,7 +950,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop", "recall")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -1023,6 +1023,25 @@ class GatewayBusySessionMixin:
         )
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
         return EphemeralReply(t("gateway.stop.stopped"))
+
+    async def _busy_recall_command(self, event: MessageEvent, quick_key: str, source):
+        # One-message abort-and-rewind. Deny any parked dangerous-command approvals BEFORE the
+        # interrupt: a thread blocked on the approval Event.wait can't observe a hard stop, and an
+        # /approve-shaped release would execute the very command being recalled. Then hard-kill the
+        # turn (same interrupt as /stop) and back up the last turn(s) on the same session.
+        from gateway.run import _INTERRUPT_REASON_STOP
+        from tools.approval import resolve_gateway_approval
+        with contextlib.suppress(Exception):
+            resolve_gateway_approval(quick_key, "deny", resolve_all=True)
+        n = self._recall_count(event)
+        if isinstance(n, str):
+            return n
+        await self._interrupt_and_clear_session(
+            quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
+            invalidation_reason="recall_command",
+        )
+        logger.info("RECALL for session %s — agent interrupted; rewinding %d turn(s)", quick_key, n)
+        return await self._perform_recall(source, event, n, stopped=True)
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay

@@ -153,6 +153,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
 | Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
 | Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
+| Stop a run **and** rewind it in one step | —                                   | `/recall` (mid-turn: denies pending approvals, stops, then rewinds; `/undo` stays idle-only) |
 | Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
 | Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |

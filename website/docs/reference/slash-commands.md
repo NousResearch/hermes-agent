@@ -252,7 +252,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/personality [name]` | Set a personality overlay for the session. `/personality none` (or `default` / `neutral`) clears it. |
 | `/fast [normal\|fast\|auto\|cold\|status]` | Fast mode — OpenAI Priority Processing / Anthropic Fast Mode. `auto`/`cold` open a bounded fast window per turn / per session. |
 | `/retry` | Retry the last message. |
-| `/undo` | Remove the last exchange. |
+| `/undo` | Remove the last exchange. Idle-only — rejected while the agent is running. |
+| `/recall [N]` | Abort the **running** turn and rewind it in one message (default N=1). It denies every pending dangerous-command approval, hard-stops the turn (same as `/stop`), waits for the turn's cross-process lock to release (force-releasing a wedged one), then removes the last N user turn(s) from the same session. Use this instead of `/stop` → `/undo` → `/deny`; `/undo` remains the idle-only command. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
 | `/topic [off\|help\|session-id]` | **Telegram DM only.** Manage user-managed multi-session topic mode. `/topic` enables it or shows status; `/topic off` disables it and clears bindings; `/topic help` shows usage; `/topic <session-id>` inside a topic restores a previous session. See [Multi-session DM mode](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic). |

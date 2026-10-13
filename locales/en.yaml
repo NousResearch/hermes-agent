@@ -502,6 +502,12 @@ gateway:
     nothing: "Nothing to undo."
     removed: "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
     invalid_count: "Invalid count \"{arg}\" — use /undo or /undo N."
+  recall:
+    removed: "↩️ Recalled {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    stopped_removed: "⚡ Stopped and recalled {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    invalid_count: "Invalid count \"{arg}\" — use /recall or /recall N."
+    failed: "Stopped the running turn, but the transcript could not be rewound safely (it changed while stopping). Try /recall again, or /undo once the session settles."
+
   update:
     platform_not_messaging: "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
     not_git_repo: "✗ Not a git repository — cannot update."

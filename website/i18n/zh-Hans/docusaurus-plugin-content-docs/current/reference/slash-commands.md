@@ -209,7 +209,8 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/personality [name]` | 为会话设置 personality 覆盖层。 |
 | `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。 |
 | `/retry` | 重试最后一条消息。 |
-| `/undo` | 移除最后一轮对话。 |
+| `/undo` | 移除最后一轮对话。仅在空闲时可用——代理运行中会被拒绝。 |
+| `/recall [N]` | 一条消息中止**正在运行**的回合并回退（默认 N=1）：先拒绝所有待处理的危险命令审批，硬停止当前回合（同 `/stop`），等待其跨进程锁释放（卡死则强制释放），再从同一会话移除最后 N 个用户回合。用它替代 `/stop` → `/undo` → `/deny`；`/undo` 仍为仅空闲命令。 |
 | `/sethome`（别名：`/set-home`） | 将当前聊天标记为该平台的 home 频道，用于消息投递。 |
 | `/compress [focus topic]` | 手动压缩对话上下文。可选的焦点主题可缩小摘要保留的范围。 |
 | `/topic [off\|help\|session-id]` | **仅限 Telegram DM。** 管理用户自主的多会话话题模式。`/topic` 启用或显示状态；`/topic off` 禁用并清除绑定；`/topic help` 显示用法；在话题中执行 `/topic <session-id>` 可恢复之前的会话。见 [多会话 DM 模式](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic)。 |

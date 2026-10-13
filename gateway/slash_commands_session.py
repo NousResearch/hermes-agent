@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import os
 import shlex
+import time
 from typing import Optional, Union
 
 from agent.i18n import t
@@ -31,6 +32,10 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 # Bound on the off-loop agent cleanup during /new; past it the reset proceeds and the teardown
 # finishes (or leaks) in its worker thread rather than blocking the event loop.
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+# /recall: grace window for a just-stopped turn to release its durable turn lease before the
+# abort backstop force-releases it. Short: a cooperative stop unwinds within ~1s; a wedged worker
+# is fenced by the force-release instead of pinning the session for the full 300s lease TTL.
+_RECALL_LEASE_GRACE_S = 5.0
 # chat_type values whose session key is per-user (DM-like), incl. the unknown/blank case.
 _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
@@ -468,6 +473,61 @@ class GatewaySessionCommandsMixin:
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
         return t("gateway.undo.removed", turns=result["turns_undone"],
                  count=result["rewound_count"], preview=preview)
+
+    @staticmethod
+    def _recall_count(event: MessageEvent) -> Union[int, str]:
+        """Parse /recall [N]; return the clamped count or a localized error string."""
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return 1
+        try:
+            return max(1, int(raw_args.split()[0]))
+        except ValueError:
+            return t("gateway.undo.invalid_count", arg=raw_args.split()[0])
+
+    async def _perform_recall(self, source: SessionSource, event: MessageEvent, n: int,
+                              *, stopped: bool) -> str:
+        """Shared /recall tail: settle the stopped turn's durable lease, then back up the last
+        ``n`` user turn(s) on the SAME session (unlike /new, the session is preserved). When
+        ``stopped``, first wait (bounded) for the interrupted turn to release its cross-process
+        turn lease; if it stays held (a wedged worker), force-release it — the killed turn's later
+        flush is holder-fenced and cannot land. Once the lease is clear the rewind's CAS cannot
+        lose a race with the dead turn, so no retry is needed; ``None`` then means nothing to undo.
+        """
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+        if stopped:
+            deadline = time.monotonic() + _RECALL_LEASE_GRACE_S
+            holder = await self.async_session_store.turn_lease_holder(session_id)
+            while holder and time.monotonic() < deadline:
+                await asyncio.sleep(0.25)
+                holder = await self.async_session_store.turn_lease_holder(session_id)
+            if holder:
+                # Backstop for a turn that won't unwind: a holder-qualified DELETE fences every
+                # later flush by the killed holder, so the rewind below can't be clobbered.
+                await self.async_session_store.force_release_turn_lease(session_id)
+        result = await self.async_session_store.rewind_session(session_id, n)
+        if result is None:
+            # Lease was settled (or we were idle); a missing target means there is nothing to undo.
+            return t("gateway.undo.nothing") if not stopped else t("gateway.recall.failed")
+        session_entry.last_prompt_tokens = 0  # transcript was truncated
+        with contextlib.suppress(Exception):
+            self._evict_cached_agent(build_session_key(source))
+        target_text = result["target_text"]
+        preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
+        key = "gateway.recall.stopped_removed" if stopped else "gateway.recall.removed"
+        return t(key, turns=result["turns_undone"], count=result["rewound_count"], preview=preview)
+
+    async def _handle_recall_command(self, event: MessageEvent) -> str:
+        """Handle /recall [N] while idle — same transcript rewind as /undo (denies any stale
+        pending approvals first). Mid-run use is handled by ``_busy_recall_command``."""
+        n = self._recall_count(event)
+        if isinstance(n, str):
+            return n
+        with contextlib.suppress(Exception):
+            from tools.approval import resolve_gateway_approval
+            resolve_gateway_approval(self._session_key_for_source(event.source), "deny", resolve_all=True)
+        return await self._perform_recall(event.source, event, n, stopped=False)
 
     # --------------------------------------------------------------------- /compress
 

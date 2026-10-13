@@ -680,3 +680,32 @@ class SessionTranscriptMixin:
             self._clear_dirty_transcript(session_id)
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
                     "target_text": outcome.live_text}
+
+    def turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Current LIVE durable turn-lease holder for ``session_id``'s conversation, or None.
+        Resolves through the same profile-scoped DB handle as ``rewind_session``. Used by the
+        /recall abort path to wait for the stopped turn before rewinding the same session."""
+        db = self._db_for_session_id(session_id)
+        getter = getattr(db, "get_session_turn_lease_holder", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(session_id)
+        except Exception:
+            logger.debug("turn_lease_holder lookup failed for %s", session_id, exc_info=True)
+            return None
+
+    def force_release_turn_lease(self, session_id: str) -> bool:
+        """User-initiated abort path (/recall): delete the conversation's current durable turn
+        lease after the stopped turn was interrupted and a grace wait elapsed. The release is
+        holder-qualified, so the killed turn's later flush is holder-fenced and cannot land.
+        No-op without DB support."""
+        db = self._db_for_session_id(session_id)
+        releaser = getattr(db, "force_release_session_turn_lease", None)
+        if not callable(releaser):
+            return False
+        try:
+            return bool(releaser(session_id))
+        except Exception:
+            logger.debug("force_release_turn_lease failed for %s", session_id, exc_info=True)
+            return False

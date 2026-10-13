@@ -5,6 +5,7 @@ Mixin bound onto ``SessionDB`` via the MRO, built on its ``_read_ctx`` /
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -730,6 +731,54 @@ class SessionCompressionMixin:
         row = self._read_one(
             "SELECT holder FROM compression_locks WHERE session_id = ? AND expires_at >= ?", (session_id, time.time()))
         return None if row is None else row[0]
+
+    def get_session_turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Current LIVE durable turn-lease holder for the conversation that owns
+        ``session_id`` (compression-parent aware), or None. Mirrors the write guard's
+        staleness rule: an expired row OR a holder whose ``pid=`` is provably dead is not a
+        live holder. Lets a same-session abort (/recall) wait for a just-stopped turn to
+        release its lease before mutating the transcript."""
+        if not session_id:
+            return None
+        try:
+            conversation_id = self._session_turn_lease_key(session_id)
+        except Exception:
+            return None
+        row = self._read_one(
+            "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?",
+            (conversation_id,))
+        if row is None:
+            return None
+        holder, expires_at = row[0], float(row[1])
+        if expires_at <= time.time():
+            return None
+        from hermes_state import _compression_lock_holder_process_is_dead
+        with contextlib.suppress(Exception):
+            if _compression_lock_holder_process_is_dead(holder):
+                return None
+        return holder
+
+    def force_release_session_turn_lease(self, session_id: str) -> bool:
+        """Delete the CURRENT durable turn-lease row for the conversation owning ``session_id``,
+        regardless of holder. Used only by a user-initiated hard abort (/recall) AFTER the turn
+        was interrupted and a bounded grace wait elapsed. Self-fencing: the killed turn's later
+        flush passes its old holder into the write guard, sees no matching lease, and is refused
+        (SessionTurnLeaseLostError), so it cannot clobber the rewind. Returns True if a row was
+        removed."""
+        if not session_id:
+            return False
+
+        def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            cur = conn.execute(
+                "DELETE FROM session_turn_leases WHERE conversation_id = ?", (conversation_id,))
+            return cur.rowcount
+
+        try:
+            return bool(self._execute_write(_do))
+        except Exception:
+            logger.debug("force_release_session_turn_lease failed for %s", session_id, exc_info=True)
+            return False
 
     def finalize_orphaned_compression_sessions(self) -> int:
         """Mark orphaned compression continuations (parent ended by compression; child has

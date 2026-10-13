@@ -185,7 +185,7 @@ done
 # case is subsumed (hermes is already a member, so it is skipped here).
 # Idempotent across container restarts; a no-op when /proc/1/status is
 # unavailable (non-Linux / restricted /proc).
-granted_gids=$(awk '/^Groups:/ { for (i=2; i<=NF; i++) print $i }' /proc/1/status 2>/dev/null)
+granted_gids=$(awk '/^Groups:/ { for (i=2; i<=NF; i++) print $i }' /proc/1/status 2>/dev/null) || granted_gids=""
 # shellcheck disable=SC2086 # intentional word splitting over the GID list
 for gid in $granted_gids; do
     # GID 0 is always in PID 1's list and can never be distinguished from

@@ -922,9 +922,9 @@ def _cmd_compress(rid, params, session, name, arg):
 # MEMORY.md/USER.md and its memory char limits (see the scope note on `_session_home_scope`,
 # #110695).
 _MEMORY_USAGE = ("Unknown /memory subcommand. "
-                 "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+                 "Use: pending, approve <id> <review-token>, approve all, reject <id>, approval <on|off>.")
 _SKILLS_USAGE = ("Unknown /skills subcommand here. "
-                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                 "Use: pending, approve <id> <review-token>, reject <id>, diff <id>, approval <on|off>. "
                  "(Search/install/browse are terminal-side.)")
 
 

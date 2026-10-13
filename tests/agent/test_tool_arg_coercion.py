@@ -286,6 +286,38 @@ class TestCoerceToolArgsNested:
             result = coerce_tool_args("test_tool", {"count": "5", "verbose": "true"})
             assert result == {"count": 5, "verbose": True}
 
+    def test_ref_paths_through_arrays_and_percent_escapes_resolve(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"My Type": {"type": "integer"}},
+                "properties": {
+                    "limit": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                    # zod-to-json-schema points a reused schema at its first occurrence by path.
+                    "offset": {"$ref": "#/properties/limit/anyOf/0"},
+                    "page": {"$ref": "#/$defs/My%20Type"},
+                },
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"offset": "7", "page": "3"})
+            assert result == {"offset": 7, "page": 3}
+
+    def test_malformed_pointer_escape_is_left_unresolved(self):
+        schema = {
+            "name": "test_tool",
+            "description": "test",
+            "parameters": {
+                "type": "object",
+                "$defs": {"a~2b": {"type": "integer"}},
+                "properties": {"count": {"$ref": "#/$defs/a~2b"}},
+            },
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"count": "5"}) == {"count": "5"}
+
     def test_array_item_referenced_via_defs_is_parsed(self):
         schema = {
             "name": "test_tool",

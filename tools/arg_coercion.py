@@ -8,7 +8,9 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
+import re
 from typing import Any, Dict
+from urllib.parse import unquote
 
 from tools.registry import registry
 
@@ -86,24 +88,29 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     return args
 
 
+# RFC 6901: an array index is "0" or a number without leading zeros; "~" escapes only "~0" and "~1".
+_POINTER_INDEX = re.compile(r"0|[1-9][0-9]*")
+_BAD_POINTER_ESCAPE = re.compile(r"~(?![01])")
+
+
 def _resolve_local_schema_ref(
     schema: Any,
     root_schema: Any,
     seen_refs: set[str] | None = None,
 ) -> Any:
-    """Resolve document-local JSON Pointers for coercion decisions."""
+    """Resolve document-local JSON Pointers for coercion decisions; leave remote,
+    malformed or dangling refs as they are."""
     if not isinstance(schema, dict) or not isinstance(root_schema, dict):
         return schema
 
     ref = schema.get("$ref")
-    if not isinstance(ref, str):
+    if not isinstance(ref, str) or not ref.startswith("#"):
         return schema
-    if ref == "#":
-        tokens = []
-    elif ref.startswith("#/"):
-        tokens = ref[2:].split("/")
-    else:
-        return schema
+    # A $ref is a URI reference: percent-decode the fragment, then read it as a JSON Pointer.
+    pointer = unquote(ref[1:])
+    if pointer and not pointer.startswith("/"):
+        return schema  # a plain-name anchor such as "#Address", not a pointer
+    tokens = pointer.split("/")[1:]
 
     seen = seen_refs or set()
     if ref in seen:
@@ -111,10 +118,16 @@ def _resolve_local_schema_ref(
 
     target: Any = root_schema
     for raw_token in tokens:
-        token = raw_token.replace("~1", "/").replace("~0", "~")
-        if not isinstance(target, dict) or token not in target:
+        if _BAD_POINTER_ESCAPE.search(raw_token):
             return schema
-        target = target[token]
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(target, dict) and token in target:
+            target = target[token]
+        elif isinstance(target, list) and _POINTER_INDEX.fullmatch(token) and int(token) < len(target):
+            # Path refs can pass through arrays, e.g. zod-to-json-schema's "#/properties/a/anyOf/0".
+            target = target[int(token)]
+        else:
+            return schema
     if not isinstance(target, dict):
         return schema
 

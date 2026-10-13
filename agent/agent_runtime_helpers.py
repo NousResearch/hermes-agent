@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from agent.client_lifecycle import build_primary_http_client, resolve_primary_follow_redirects
+from agent.client_lifecycle import _UNRESOLVED_FOLLOW_REDIRECTS, build_primary_http_client, resolve_primary_follow_redirects
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
@@ -1958,7 +1958,7 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
 
 
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
+def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool, _follow_redirects=_UNRESOLVED_FOLLOW_REDIRECTS):
     """Native Gemini client when the base_url is the Gemini API, else None."""
     from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
     base_url = str(client_kwargs.get("base_url", "") or "")
@@ -1969,7 +1969,7 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
         if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
     }
     if "http_client" not in safe_kwargs:
-        keepalive_http = build_primary_http_client(agent, base_url, httpx_verify)
+        keepalive_http = build_primary_http_client(agent, base_url, httpx_verify, _follow_redirects)
         if keepalive_http is not None:
             safe_kwargs["http_client"] = keepalive_http
     client = GeminiNativeClient(**safe_kwargs)
@@ -1979,7 +1979,7 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
     return client
 
 
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool, _follow_redirects=_UNRESOLVED_FOLLOW_REDIRECTS) -> Any:
     from agent.auxiliary_client import (
         _to_openai_base_url,
         _validate_base_url,
@@ -1991,6 +1991,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     # Redirect policy is Hermes config, never an SDK constructor argument.
     client_kwargs.pop("follow_redirects", None)
+    if _follow_redirects is _UNRESOLVED_FOLLOW_REDIRECTS:
+        _follow_redirects = resolve_primary_follow_redirects(agent, client_kwargs.get("base_url", ""))
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
@@ -2036,7 +2038,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         return provider_client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
+        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared, _follow_redirects=_follow_redirects)
         if client is not None:
             return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
@@ -2064,11 +2066,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
         )
     if "http_client" not in client_kwargs:
-        keepalive_http = build_primary_http_client(agent, client_kwargs.get("base_url", ""), httpx_verify)
+        keepalive_http = build_primary_http_client(agent, client_kwargs.get("base_url", ""), httpx_verify, _follow_redirects)
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
-    # Retries belong to the outer conversation loop (honors Retry-After); SDK retries would
-    # double-retry inside it. auxiliary_client keeps SDK retries as it isn't wrapped.
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop, which honors Retry-After and
     # applies adaptive/jittered backoff. The OpenAI SDK default (max_retries=2) uses its own 1-2s backoff
     # that ignores Retry-After and double-retries inside our loop — the same deadlock the Anthropic clients

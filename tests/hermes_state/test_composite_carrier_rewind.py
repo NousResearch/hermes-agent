@@ -167,8 +167,11 @@ def test_default_rewind_return_shape_and_active_counters_remain_compatible(db):
 
     result = db.rewind_to_message(sid, target_id)
 
-    assert set(result) == {"rewound_count", "target_message", "new_head_id"}
+    assert {"rewound_count", "target_message", "new_head_id"} <= set(result)
     assert result["rewound_count"] == 2
+    # ``rewound_ids`` names exactly the rows this call deactivated, so /redo
+    # can replay the rewind without resurrecting unrelated archived rows.
+    assert len(result["rewound_ids"]) == result["rewound_count"]
     assert _session_counts(db, sid) == (2, 0, 1)
 
 

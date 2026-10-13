@@ -172,6 +172,24 @@ def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     assert store.memory_entries == ["RULE B: CI is per-head."]
 
 
+def test_handle_approve_lists_a_patch_as_the_entry_before_the_edit(hermes_home):
+    """An approved patch keeps the rest of its entry; the approve output called it an
+    overwrite and told the user to re-add text they had deliberately changed."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
+    store.add("memory", entry)
+    wa.stage_write("memory", {"action": "batch", "target": "memory", "operations": [
+        {"action": "patch", "old_text": "ci per HEAD", "content": "CI is per-head", "matched_entry": entry}]},
+        summary="batch", origin="background_review")
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Patched entry (as it was before the edit):" in out and entry in out
+    assert "Overwrote" not in out
+    assert store.memory_entries == ["RULE A: gate merges. RULE B: CI is per-head. RULE C: never squash."]
+
+
 _KEPT = "Repo lives in ~/src/app; tests via make test"
 _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 
@@ -205,7 +223,7 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     from tools import write_approval as wa
     store, pid = _review_stages_remove(shape)
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
-    assert json.loads(memory_tool(action="replace", old_text="pg-staging-2", content=newer, store=store))["success"]
+    assert json.loads(memory_tool(action="patch", old_text=_REVIEWED, content=newer, store=store))["success"]
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 

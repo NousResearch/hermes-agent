@@ -148,14 +148,23 @@ export function SetupChoosePending({
     [kind, mode, question.multiSelect, requestId, setMode]
   )
 
+  const commitLook = useCallback(
+    (ids: string[]) => {
+      if (ids[0]) {
+        LIVE_LOOK[kind]?.commit?.(ids[0])
+      }
+    },
+    [kind]
+  )
+
   // Composer text that names a row picks it through this card, so the typed pick applies its look too.
   const liveRequestId = request?.requestId
 
   useEffect(() => {
     if (liveRequestId) {
-      stageSetupChoose(liveRequestId, { preview: stage })
+      stageSetupChoose(liveRequestId, { commit: commitLook, preview: stage })
     }
-  }, [liveRequestId, stage])
+  }, [commitLook, liveRequestId, stage])
 
   const toggle = useCallback(
     (_question: ClarifyQuestion, choice: string) => {

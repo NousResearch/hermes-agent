@@ -266,6 +266,48 @@ def test_fs_download_rejects_sensitive_files(client, tmp_path):
     assert response.status_code == 403
 
 
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("endpoint", ["/api/fs/download", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("prefix", ["/", "/cygdrive/", "/mnt/"])
+def test_fs_media_shell_paths_deliver_files_and_preserve_access_checks(client, tmp_path, endpoint, prefix):
+    """MEDIA may reuse the path a successful Git Bash command used."""
+    target = tmp_path / "checklist with spaces #1.txt"
+    target.write_bytes(b"Weekend checklist\n[ ] Take a walk\n")
+    sensitive = tmp_path / ".env"
+    sensitive.write_bytes(b"SECRET=must-not-be-delivered")
+
+    def shell_path(path):
+        native = path.as_posix()
+        return f"{prefix}{native[0].lower()}{native[2:]}"
+
+    for path in (shell_path(target), str(target), target.as_uri()):
+        response = client.get(endpoint, params={"path": path})
+        assert response.status_code == 200, response.text
+        data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                if endpoint.endswith("read-data-url") else response.content)
+        assert data == target.read_bytes()
+
+    for path, expected in ((sensitive, 403), (tmp_path / "missing.txt", 404)):
+        response = client.get(endpoint, params={"path": shell_path(path)})
+        assert response.status_code == expected, response.text
+        assert "must-not-be-delivered" not in response.text
+
+    invalid_session = client.get(endpoint, params={
+        "path": shell_path(target), "profile": "default", "session_id": "missing-session",
+    })
+    assert invalid_session.status_code == 404, invalid_session.text
+    client.headers.pop(web_server._SESSION_HEADER_NAME)
+    assert client.get(endpoint, params={"path": shell_path(target)}).status_code == 401
+
+
+@pytest.mark.platforms("posix")
+def test_fs_media_posix_paths_are_not_interpreted_as_windows_drives():
+    from hermes_cli.web_server_files import _fs_path
+
+    for path in ("/c/Users/example/checklist.txt", "/cygdrive/c/checklist.txt", "/mnt/c/checklist.txt"):
+        assert _fs_path(path) == Path(path).resolve()
+
+
 @pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
 @pytest.mark.parametrize("relative", [".env", "auth.json", "mcp-tokens/github.json"])
 def test_fs_readers_reject_sensitive_paths(client, tmp_path, endpoint, relative):

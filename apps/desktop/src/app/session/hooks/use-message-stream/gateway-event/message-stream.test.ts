@@ -72,6 +72,7 @@ describe('handleMessageStreamEvent message.complete reasoning', () => {
       undefined,
       false,
       undefined,
+      false,
       'summary text'
     )
   })

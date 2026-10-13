@@ -66,6 +66,17 @@ describe('useMessageStream completion reasoning fallback', () => {
     expect(chatMessageText(lastAssistant()!)).toBe('done')
   })
 
+  it('keeps reused final text once while attaching completion-only reasoning', async () => {
+    stream = renderMessageStream(SID)
+    await start()
+    await delta('done')
+
+    await complete({ reasoning: 'summary text', response_reused: true, text: 'done' })
+
+    expect(reasoningTexts()).toEqual(['summary text'])
+    expect(chatMessageText(lastAssistant()!)).toBe('done')
+  })
+
   it('keeps the streamed reasoning and ignores a differing completion reasoning', async () => {
     stream = renderMessageStream(SID)
     await start()

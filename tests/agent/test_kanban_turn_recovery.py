@@ -561,7 +561,7 @@ def test_recovers_in_place(driver, cli_harness, live_claim, monkeypatch):
 
     _worker_env(monkeypatch, recovery=2)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, ui = cli_harness(driver, [_failed(), _success()])
+    cli_mod, entered, _ui = cli_harness(driver, [_failed(), _success()])
 
     assert _drive(cli_mod, driver) == 0  # settled successfully
     assert len(entered) == 2  # the failed turn, then the recovery turn
@@ -577,7 +577,7 @@ def test_budget_exhausted_stops_and_releases(driver, cli_harness, live_claim, mo
 
     _worker_env(monkeypatch, recovery=1)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, ui = cli_harness(driver, _failed)  # never recovers
+    cli_mod, entered, _ui = cli_harness(driver, _failed)  # never recovers
 
     assert _drive(cli_mod, driver) == KANBAN_RATE_LIMIT_EXIT_CODE
     assert len(entered) == 2  # original + one recovery attempt
@@ -622,7 +622,7 @@ def test_single_turn_route_outcomes(driver, env, script, code, cli_harness, live
             _worker_env(monkeypatch, task=env["task"])
     else:
         _worker_env(monkeypatch)
-    cli_mod, entered, ui = cli_harness(driver, list(script))
+    cli_mod, entered, _ui = cli_harness(driver, list(script))
 
     assert _drive(cli_mod, driver) == code
     assert len(entered) == 1
@@ -636,7 +636,7 @@ def test_claim_denial_stops_before_model_reentry(driver, cli_harness, capsys, mo
 
     _worker_env(monkeypatch)
     monkeypatch.setattr(rec, "worker_claim_is_live", lambda: False)
-    cli_mod, entered, ui = cli_harness(driver, [_failed()])
+    cli_mod, entered, _ui = cli_harness(driver, [_failed()])
 
     assert _drive(cli_mod, driver) == KANBAN_RATE_LIMIT_EXIT_CODE
     assert len(entered) == 1
@@ -701,7 +701,7 @@ def test_goal_mode_does_not_continue(
     if setup.get("recovery") is not None:
         clear_kanban_env.setenv("HERMES_KANBAN_TURN_RECOVERY", str(setup["recovery"]))
 
-    cli_mod, entered, ui = cli_harness(driver, script)
+    cli_mod, entered, _ui = cli_harness(driver, script)
 
     assert _drive(cli_mod, driver) == code
     assert len(entered) == entries
@@ -720,7 +720,7 @@ def test_goal_mode_continues_after_a_successful_authorized_recovery(
 
     _worker_env(monkeypatch, goal_mode=True, recovery=2)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    cli_mod, entered, ui = cli_harness(driver, [_failed(), _success()])
+    cli_mod, entered, _ui = cli_harness(driver, [_failed(), _success()])
 
     assert _drive(cli_mod, driver) == 0
     assert len(entered) == 2

@@ -287,7 +287,7 @@ async def test_transient_rich_error_does_not_legacy_resend(exc):
 
 @pytest.mark.asyncio
 async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabled(monkeypatch):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
@@ -309,7 +309,7 @@ async def test_rich_transport_error_redacts_bot_token_even_when_redaction_disabl
 
 @pytest.mark.asyncio
 async def test_legacy_send_error_redacts_bot_token_without_traceback(monkeypatch, caplog):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
@@ -714,7 +714,7 @@ async def test_finalize_edit_cjk_rich_content_can_be_opted_in():
 
 @pytest.mark.asyncio
 async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monkeypatch, caplog):
-    import agent.redact as redact
+    from agent import redact
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"

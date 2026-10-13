@@ -333,7 +333,11 @@ interface ServerBotMeta {
 /** How many times a save re-reads the server after losing a CAS race. */
 const BOT_META_CAS_ATTEMPTS = 3
 
-async function readServerBotMeta(bot: RosterRow, name: string, route: null | ProfileRoute): Promise<null | ServerBotMeta> {
+async function readServerBotMeta(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute
+): Promise<null | ServerBotMeta> {
   const params = { include_sessions: false }
 
   // The read is the first half of a user's save: it dials foreground like the write.
@@ -826,10 +830,12 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
       traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
+      const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
+      await reconcileBotMeta(profiles, issuedAt)
 
       return {
         ...merged,
-        profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+        profiles,
         sources,
         fetchedAt: issuedAt
       }
@@ -842,18 +848,40 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
 
+      const profiles = (merged?.profiles || []).map(row =>
+        row?.remoteSource ? { ...row, sourceReachable: false } : row
+      )
+
+      await reconcileBotMeta(profiles, issuedAt)
+
       return {
         ...merged,
-        profiles: (merged?.profiles || []).map(row => (row?.remoteSource ? { ...row, sourceReachable: false } : row)),
+        profiles,
         fetchedAt: issuedAt
       }
     }
   }
 
+  await reconcileBotMeta(Array.isArray(local?.profiles) ? local.profiles : [], issuedAt)
+
   return {
     ...(local && typeof local === 'object' ? local : {}),
     fetchedAt: issuedAt
   }
+}
+
+/** Every fresh snapshot corrects the cached names before anyone reads them —
+ *  the Bots pane's query and the composer's cold `primeRoster` alike. Run only
+ *  from the pane's effect, a launch that never opened Bots kept a stale cached
+ *  title ahead of the backend's own in mentions and group prompts. Late import:
+ *  profile-ops imports this module. */
+async function reconcileBotMeta(rows: RosterRow[], fetchedAt: number): Promise<void> {
+  const { mergeServerMeta } = await import('./profile-ops')
+
+  mergeServerMeta(
+    rows.filter(row => !row?.ghost),
+    fetchedAt
+  )
 }
 
 export function useRoster() {

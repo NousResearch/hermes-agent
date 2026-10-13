@@ -83,9 +83,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   // A save reads the bot's server namespace (profiles.list) before writing it.
   request.mockImplementation(async (method: string) =>
-    method === 'profiles.list'
-      ? { profiles: [{ name: 'default' }, { name: 'ghost' }] }
-      : { applied: { ui_meta: true } }
+    method === 'profiles.list' ? { profiles: [{ name: 'default' }, { name: 'ghost' }] } : { applied: { ui_meta: true } }
   )
 })
 

@@ -44,6 +44,8 @@ export interface UninstallSummaryDetails {
 
 export interface DesktopUninstallSummary extends UninstallSummaryDetails {
   code_removal_allowed: boolean
+  /** Set only when the OS or package manager owns removal; the renderer shows it verbatim. */
+  native_removal_instructions: string | null
 }
 
 export interface DesktopUninstallResult {
@@ -63,6 +65,8 @@ export interface DesktopUninstallIpcDeps {
   fallbackSummary: () => UninstallSummaryDetails
   probeSummary: () => Promise<UninstallSummaryDetails>
   runUninstall: (mode: string) => Promise<DesktopUninstallResult>
+  removableAppPath: () => string | null
+  openAppsSettings: () => Promise<void>
 }
 
 export function registerDesktopUninstallIpc({
@@ -70,7 +74,9 @@ export function registerDesktopUninstallIpc({
   stamp,
   fallbackSummary,
   probeSummary,
-  runUninstall
+  runUninstall,
+  removableAppPath,
+  openAppsSettings
 }: DesktopUninstallIpcDeps): void {
   const kind: InstallKind = resolveInstallKind(stamp ?? {})
   const codeRemovalAllowed: boolean = installKindAllowsCodeRemoval(kind)
@@ -78,8 +84,23 @@ export function registerDesktopUninstallIpc({
   ipcMain.handle('hermes:uninstall:summary', async (): Promise<DesktopUninstallSummary> => {
     const summary: UninstallSummaryDetails = codeRemovalAllowed ? await probeSummary() : fallbackSummary()
 
-    // The local artifact owns this decision, not the Python summary.
-    return { ...summary, code_removal_allowed: codeRemovalAllowed }
+    // The local artifact owns this decision, not the Python summary. When
+    // removal belongs to the OS, the main process also supplies the canonical
+    // instructions so the renderer never guesses platform or install kind.
+    return {
+      ...summary,
+      code_removal_allowed: codeRemovalAllowed,
+      native_removal_instructions: codeRemovalAllowed
+        ? null
+        : nativeRemovalInstructions(kind, summary.platform, removableAppPath())
+    }
+  })
+  ipcMain.handle('hermes:uninstall:openAppsSettings', async (): Promise<void> => {
+    // The generic openExternal bridge admits web schemes only; this one
+    // deep link is fixed here so the renderer cannot pass a URL.
+    if (!codeRemovalAllowed && process.platform === 'win32') {
+      await openAppsSettings()
+    }
   })
   ipcMain.handle(
     'hermes:uninstall:run',
@@ -169,7 +190,8 @@ function allowedUninstallModes(kind: InstallKind): string[] {
  * through Apps & Features, macOS through the Trash, a Linux AppImage is a
  * single file the user placed somewhere, and a Nix install belongs to the
  * flake / profile that made it. `appPath` is the resolveRemovableAppPath()
- * result (the AppImage path on Linux), used only to name the exact file.
+ * result (the .app bundle on macOS, the AppImage path on Linux), used only to
+ * name the exact bundle or file.
  */
 function nativeRemovalInstructions(kind, platform, appPath = null) {
   if (kind === 'nix') {
@@ -179,12 +201,24 @@ function nativeRemovalInstructions(kind, platform, appPath = null) {
     )
   }
 
+  if (kind === 'external') {
+    // Deleting a package manager's files by hand leaves the package registered with missing files.
+    return (
+      'Another package manager installed this Hermes desktop app. ' +
+      'Uninstall it with that package manager, the same way you installed it.'
+    )
+  }
+
   if (platform === 'win32') {
     return 'To uninstall, go to Windows Settings → Apps → Installed apps.'
   }
 
   if (platform === 'darwin') {
-    return 'Quit the app and drag Hermes.app from Applications to the Trash.'
+    // Name the running bundle: channel builds ship under different .app names.
+    const bundle = appPath ? path.posix.basename(String(appPath)) : 'the Hermes app'
+    const folder = appPath ? path.posix.dirname(String(appPath)) : 'Applications'
+
+    return `Quit the app and drag ${bundle} from ${folder} to the Trash.`
   }
 
   if (appPath && /\.appimage$/i.test(String(appPath))) {

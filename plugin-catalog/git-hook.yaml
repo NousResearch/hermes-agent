@@ -1,12 +1,12 @@
 name: git-hook
 repo: https://github.com/aean0x/hermes-git-hook
-sha: 66a6efcc1708e9d9d920a8f6c03031abb57e7594
-description: "Auto fetch/pull before reads, and commit + push only the files each turn changed, for every git worktree Hermes touches. Disclosure — after each turn it commits and pushes (push on by default; GIT_HOOK_PUSH=0 keeps commits local) the changed files of git worktrees under GIT_HOOK_ROOTS (default PROJECTS_ROOT, \"*\" for every repo), pushing to origin HEAD when no upstream is set; it pulls --ff-only before reads."
+sha: a7303c89b429704a31e2df4212ec4f08ee76692a
+description: "Auto fetch/pull before reads, and commit + push only the files each turn changed, for every git worktree Hermes touches. Disclosure — after each turn it commits and pushes (push on by default; GIT_HOOK_PUSH=0 keeps commits local) the changed files of git worktrees under GIT_HOOK_ROOTS (default PROJECTS_ROOT, \"*\" for every repo), pushing to origin HEAD when no upstream is set; it pulls --ff-only before reads. A branch whose direct push the remote refuses on policy grounds (branch protection, a PR-required ruleset) is never committed to again: the hook drops its own unpushed commit, leaves the edit staged and dirty, and reports it once."
 maintainer: aean0x
 tier: community
 category: automation
 docs_url: https://github.com/aean0x/hermes-git-hook#readme
-version: "0.4.3"
+version: "0.5.1"
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -118,6 +118,7 @@ export default async function afterPack(context) {
   // one bad payload DLL fails the whole package. Unlike the stamp below this
   // is NOT best-effort: shipping past it means shipping an unsignable bundle.
   // this is a hack until https://github.com/astral-sh/python-build-standalone/pull/1217 is merged.
+  console.log(`[after-pack] scanning PE certificate headers in ${context.appOutDir}`)
   const { scanned, repaired } = sanitizeTree(context.appOutDir)
   console.log(`[after-pack] ${scanned} PEs scanned, ${repaired.length} dangling certificate tables cleared`)
   for (const file of repaired) {

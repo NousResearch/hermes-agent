@@ -17,7 +17,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, normalizeQuestions, normalizeSetupChoose, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import type { PreviewOwner } from '@/store/preview-ownership'
@@ -293,42 +293,8 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // user focuses that chat. The Python side blocks on the response frame; without a
 // handler the channel answers -32601 and the tool fails fast instead of stalling.
 
-const clarify: Handler = ctx => {
+const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
-
-  if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({})
-
-    return
-  }
-
-  const questions = normalizeQuestions(p.questions)
-
-  // `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
-  const lockedAnswers =
-    typeof p.answers === 'object' && p.answers !== null
-      ? Object.fromEntries(
-          Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
-          )
-        )
-      : undefined
-
-  if (questions.length === 0) {
-    request.respond({})
-
-    return
-  }
-
-  const clarifyRequest = {
-    lockedAnswers,
-    questions,
-    receivedAt: Date.now() / 1000,
-    requestId: request.id,
-    sessionId: sessionId || null
-  }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -361,7 +327,58 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.map(q => q.question).join(' · '))
+  notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))
+}
+
+const clarify: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const p = request.params
+
+  if (sessionId && deps.sessionInterrupted(sessionId)) {
+    request.respond({})
+
+    return
+  }
+
+  const questions = normalizeQuestions(p.questions)
+
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
+  const lockedAnswers =
+    typeof p.answers === 'object' && p.answers !== null
+      ? Object.fromEntries(
+          Object.entries(p.answers as Record<string, unknown>).filter(
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
+          )
+        )
+      : undefined
+
+  if (questions.length === 0) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
+  })
+}
+
+const setupChoose: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const setup = normalizeSetupChoose(request.params)
+
+  if (!setup || (sessionId && deps.sessionInterrupted(sessionId))) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, { ...setup, receivedAt: Date.now() / 1000, requestId: request.id, sessionId: sessionId || null })
 }
 
 const approval: Handler = ctx => {
@@ -376,7 +393,7 @@ const approval: Handler = ctx => {
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
-    // false only when a tirith warning forbids it; backend omits the field otherwise.
+    // false only when the backend forbids a permanent allow; it omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
     choices: Array.isArray(p.choices)
       ? p.choices.filter((choice): choice is string => typeof choice === 'string')
@@ -615,7 +632,9 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request, sessionId }) => {
+const NOT_ACTIVE_TOUR_ERROR = 'Tours only run in the session the user is looking at.'
+
+const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
   // page. Active session only, same window-ownership rule as preview.act
   // (WINDOW_OWNED_REQUESTS).
@@ -630,31 +649,50 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
   }
 
   if (!isActiveSession) {
-    answerValue(request, { error: 'Tours only run in the session the user is looking at.', success: false })
+    answerValue(request, { error: NOT_ACTIVE_TOUR_ERROR, success: false })
 
     return
   }
 
-  void import('@/lib/tour')
-    .then(({ runTour }) =>
-      runTour(
-        {
-          kind: (str(p.action) || 'stop') as TourAction['kind'],
-          selector: p.selector as never,
-          side: p.side as TourStep['side'],
-          startAt: p.step_index as never,
-          steps: p.steps as TourStep[] | undefined,
-          text: p.text as never,
-          title: p.title as never
-        },
-        p.surface === 'preview' ? 'preview' : 'app',
-        previewOwnerFor(sessionId)
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
+  const kind = (str(p.action) || 'stop') as TourAction['kind']
+
+  // The built-in tour waits for local-model data before it opens, and the user
+  // may switch chats meanwhile: ask again, against the live active id.
+  const stillActive = () =>
+    requestNamesActiveSession({
+      activeSessionId: deps.activeSessionIdRef.current,
+      sessionId,
+      storedIdForRuntimeId: runtimeId =>
+        deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+    })
+
+  // start with no steps is the app's own tour: one call, the app owns the stops.
+  // The backend validated `preset`; absent means full.
+  const run =
+    kind === 'start' && !Array.isArray(p.steps)
+      ? import('@/app/chat/built-in-tour').then(({ runBuiltInTour }) =>
+          runBuiltInTour(p.preset === 'quick' ? 'quick' : 'full', stillActive, NOT_ACTIVE_TOUR_ERROR)
+        )
+      : import('@/lib/tour').then(({ runTour }) =>
+          runTour(
+            {
+              kind,
+              selector: p.selector as never,
+              side: p.side as TourStep['side'],
+              startAt: p.step_index as never,
+              steps: p.steps as TourStep[] | undefined,
+              text: p.text as never,
+              title: p.title as never
+            },
+            p.surface === 'preview' ? 'preview' : 'app',
+            previewOwnerFor(sessionId)
+          )
+        )
+
+  void run.then(
+    result => answerValue(request, result),
+    error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+  )
 }
 
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */
@@ -665,6 +703,7 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
+  setup_choose: setupChoose,
   sudo,
   'terminal.read': terminalRead,
   tour,

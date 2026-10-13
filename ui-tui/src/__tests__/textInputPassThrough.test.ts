@@ -1,9 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler, shouldPreserveCtrlJNewline } from '../components/textInput.js'
+import { INITIAL_STATE, parseMultipleKeypresses } from '../../packages/hermes-ink/src/ink/parse-keypress.js'
+import {
+  isCtrlJNewline,
+  shouldPassThroughToGlobalHandler,
+  shouldPreserveCtrlJNewline
+} from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) => ({ ctrl: false, meta: false, ...overrides }) as any
+
+describe('isCtrlJNewline', () => {
+  it.each([
+    ['Kitty CSI-u', '\x1b[106;5u'],
+    ['modifyOtherKeys', '\x1b[27;5;106~']
+  ])('recognizes Ctrl+J parsed from %s', (_label, sequence) => {
+    const [[parsed]] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    if (parsed?.kind !== 'key') {
+      throw new Error('expected a parsed key event')
+    }
+
+    expect(parsed).toMatchObject({ ctrl: true, name: 'j' })
+    expect(isCtrlJNewline(parsed.name ?? '', parsed)).toBe(true)
+  })
+
+  it('does not consume plain J or chords with additional modifiers', () => {
+    expect(isCtrlJNewline('j', key())).toBe(false)
+    expect(isCtrlJNewline('j', key({ ctrl: true, meta: true }))).toBe(false)
+    expect(isCtrlJNewline('j', key({ ctrl: true, shift: true }))).toBe(false)
+  })
+})
 
 describe('shouldPreserveCtrlJNewline', () => {
   it('preserves Ctrl+J as newline in Ghostty even when tmux masks TERM/TERM_PROGRAM', () => {

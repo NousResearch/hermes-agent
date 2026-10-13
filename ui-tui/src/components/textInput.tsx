@@ -279,11 +279,19 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
 }
 
 type ReturnDecisionKey = {
+  alt?: boolean
   ctrl: boolean
   meta: boolean
   return?: boolean
   shift?: boolean
   super?: boolean
+}
+
+/** Extended-key protocols report Ctrl+J as a modified printable key instead
+ * of the legacy LF byte. Keep the documented Ctrl+J newline binding without
+ * consuming Ctrl+Shift+J or other modified chords. */
+export function isCtrlJNewline(input: string, key: ReturnDecisionKey): boolean {
+  return input.toLowerCase() === 'j' && key.ctrl && !key.alt && !key.meta && !key.shift && !key.super
 }
 
 /**
@@ -1440,6 +1448,13 @@ export function TextInput({
 
           return
         }
+
+        return
+      }
+
+      if (isCtrlJNewline(inp, k)) {
+        flushKeyBurst()
+        pastePlainText('\n')
 
         return
       }

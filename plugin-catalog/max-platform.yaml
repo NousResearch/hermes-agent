@@ -1,0 +1,19 @@
+name: max-platform
+title: Hermes MAX.ru Integration
+repo: https://github.com/Realmagnum/hermes-max-integration
+sha: 9b4df24c07933968742edb156283a75bd43a6aa8
+image: https://raw.githubusercontent.com/Realmagnum/hermes-max-integration/9b4df24c07933968742edb156283a75bd43a6aa8/assets/banner.jpg
+description: "MAX messenger (max.ru) gateway adapter for Hermes Agent with polling/webhook, streaming, interactive callbacks, media/voice forwarding, PNG tables, and Desktop sidebar."
+maintainer: Realmagnum
+tier: community
+category: platform
+requires_hermes: ">=0.20"
+platforms: []
+docs_url: https://github.com/Realmagnum/hermes-max-integration/blob/9b4df24c07933968742edb156283a75bd43a6aa8/README.md
+version: "2.10.2"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MAX_BOT_TOKEN

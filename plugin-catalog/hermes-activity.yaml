@@ -1,16 +1,16 @@
 name: hermes-activity
 repo: https://github.com/hassan-kamel/hermes-activity
-sha: b1fcc76b7da7ec398901158e4e343e569db042d3
+sha: ea47366f594ebd7f7e475a363c1659dfd9a97280
 title: Activity
-description: "Hermes Desktop session analytics and provider-reported usage: annual heatmaps, token mix, model breakdowns and source-period summaries. Disclosure: the Hermes tab reads the selected profile's state.db in SQLite read-only mode. Providers uses an Activity-owned profile-local cache; explicit refresh reads existing provider credentials and calls CommandCode, Codex, OpenCode or Ollama APIs. Remote profiles run through the configured Hermes gateway. No telemetry, credential changes or automatic sign-in. Provider collection requires Node.js 22.18+. No Quota dependency."
+description: "Hermes Desktop session analytics and provider-reported usage: annual heatmaps, token mix, model breakdowns and source-period summaries. Disclosure: Hermes reads profile state.db read-only. Providers passive reads use an Activity aggregate cache and optionally quota_cache.json; explicit refresh uses the public Hermes Codex request broker and optional declared CommandCode, OpenCode and Ollama plugin secrets to call chatgpt.com, api.commandcode.ai, opencode.ai and ollama.com. No private credential-file reads, telemetry or sign-in flow. Remote profiles use the configured gateway. Node.js 22.18+ required; no Quota dependency."
 maintainer: hassan-kamel
 tier: community
 category: desktop
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.7"
 docs_url: https://github.com/hassan-kamel/hermes-activity
-version: "0.2.0"
+version: "0.2.1"
 screenshots:
-  - https://raw.githubusercontent.com/hassan-kamel/hermes-activity/b1fcc76b7da7ec398901158e4e343e569db042d3/assets/activity-preview.png
+  - https://raw.githubusercontent.com/hassan-kamel/hermes-activity/ea47366f594ebd7f7e475a363c1659dfd9a97280/assets/activity-preview.png
 readme: true
 platforms: []
 capabilities:

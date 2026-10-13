@@ -898,12 +898,20 @@ def _previous_user_message_text(conversation_history: Optional[list[Any]]) -> st
     Read before the turn appends its own message or turn-start compaction rebinds the history: in-place
     compaction hands back a list that already ends in this turn's message, and rotation hands back none.
     Runtime scaffolding in the user role (continue nudges, task-list snapshots, compaction summaries) is
-    skipped, so the value is what the person last asked."""
-    from agent.conversation_compression import _is_real_user_message
+    skipped, so the value is what the person last asked. A compaction carrier contributes the live ask it
+    wraps, and an image-only turn ends the search with ``""`` rather than falling back to an older ask."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.conversation_compression import _SYNTHETIC_USER_FLAGS, _SYNTHETIC_USER_PREFIXES, _message_text
 
     for message in reversed(conversation_history or []):
-        if _is_real_user_message(message):
-            return _memory_query_text(message.get("content"))
+        # The canonical view cannot see metadata-flagged scaffolding, so screen it out first.
+        if not isinstance(message, dict) or any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
+            continue
+        if _message_text(message).strip().startswith(_SYNTHETIC_USER_PREFIXES):
+            continue
+        live_view = user_originated_turn_view(message)
+        if live_view is not None:
+            return _memory_query_text(live_view.get("content"))
     return ""
 
 

@@ -27,7 +27,7 @@ def runner_is_draining(runner: Any) -> bool:
     return bool(getattr(runner, "_draining", False) or getattr(runner, "_external_drain_active", False))
 
 
-async def refuse_until_started(runner: Any, job_id: str, *, received_at: float) -> Optional["web.Response"]:
+async def refuse_until_started(runner: Any, job_id: str, *, received_at: float) -> Optional[web.Response]:
     """None once ``runner`` has finished starting (``_running``: every platform connect attempted and its
     adapters published), or when there is no runner to ask (a self-hosted api_server, a test double).
     Otherwise the retryable 503, worded like the dashboard's own "gateway unreachable" so NAS classifies
@@ -53,8 +53,8 @@ async def refuse_until_started(runner: Any, job_id: str, *, received_at: float) 
 
 
 async def live_adapters_once_started(
-        api_adapter: Any, request: "web.Request", job_id: str, *, received_at: float,
-) -> tuple[Optional["web.Response"], Any]:
+        api_adapter: Any, request: web.Request, job_id: str, *, received_at: float,
+) -> tuple[Optional[web.Response], Any]:
     """``(refusal, adapters)`` for a fire: the startup gate's retryable 503, else the gateway's LIVE adapters
     (parity with the built-in ticker: E2EE / relay-fronted platforms have no native credential, so without
     them delivery fails). ``None`` adapters when there is no runner (a self-hosted api_server)."""

@@ -283,7 +283,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
-    def _fenced_read(self, body: str, *more: str) -> "tuple[Optional[list[str]], Optional[int], ExecuteResult]":
+    def _fenced_read(self, body: str, *more: str) -> tuple[Optional[list[str]], Optional[int], ExecuteResult]:
         """Run BODY, then each of MORE, each in its own sentinel-delimited segment; return (those
         segments, BODY's exit status, reply).
 
@@ -337,7 +337,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         return self._decode_base64_sample(segments[0])
 
-    def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+    def _read_exact_bytes(self, path: str) -> tuple[Optional[bytes], Optional[ExecuteResult]]:
         """The file's bytes exactly, for the edit paths that write back every line they did not touch.
 
         The text transport cannot carry them: it decodes with errors="replace", so a byte UTF-8 cannot
@@ -395,7 +395,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ExecuteResult(stdout=_strip_terminal_fence_leaks(payload).strip() or f"{path}: exit {read_rc}",
                              exit_code=read_rc)
 
-    def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+    def _read_exact_bytes_hex(self, path: str) -> tuple[Optional[bytes], Optional[ExecuteResult]]:
         """``od`` fallback for a backend without ``base64``, fenced the same way.
 
         ``read_file_raw`` is the edit paths' source read AND, through ``_apply_add``, their
@@ -494,8 +494,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # gutter line on every newline-terminated file (`cat -n` semantics).
         # Exactly ONE terminator is dropped, so a genuinely selected trailing
         # blank line in a page keeps its own number.
-        if content.endswith('\n'):
-            content = content[:-1]
+        content = content.removesuffix('\n')
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -565,7 +564,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
-    def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+    def _atomic_write(self, path: str, content: str) -> ExecuteResult:
         """Write ``content`` atomically: stdin → temp file in the SAME directory →
         ``mv -f`` (same-FS rename; cross-device ``mv`` is copy+unlink, NOT atomic).
         ``mkdir -p`` folded in. Exit 0 = swap happened; non-zero = original intact.
@@ -732,7 +731,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         )
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
-                        file_size: int) -> "Optional[ReadResult]":
+                        file_size: int) -> Optional[ReadResult]:
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
         to the binary-file error). Skips known-binary extensions and files over
         10 MiB. ``path`` must already be expanded."""
@@ -1619,9 +1618,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import fuzzy_find_and_replace
-        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all)
+        from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
+        correction_notes = []
+        new_content, match_count, strategy, error = fuzzy_find_and_replace(
+            content, old_string, new_string, replace_all, correction_notes=correction_notes)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
         # Models send bare-LF old/new strings; normalize the substituted region to
@@ -1639,6 +1639,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=lint_result.to_dict() if lint_result else None,
+            note="\n".join(n for n in (*correction_notes, boundary_note([strategy])) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics,
             _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])

@@ -30,8 +30,31 @@ For a managed source installation:
 hermes update
 ```
 
-Source installs track `main`, the only valid source channel. The update
-prepares dependencies through PM and reports configuration changes and process-restart results.
+A source checkout of the official repository tracks the **stable** channel: the
+latest published `vX.Y.Z` GitHub release (never a draft, prerelease or canary tag),
+checked out at its exact commit. `hermes update` and the Desktop update button move
+only from one release to the next, never commit by commit. Forks and mirrors keep
+tracking their `main` branch. The update prepares dependencies through PM and
+reports configuration changes and process-restart results.
+
+```bash
+hermes update --set-channel main     # follow every commit on main instead
+hermes update --set-channel stable   # back to releases only
+hermes update --channel main         # one run against main; nothing is saved
+```
+
+The choice is stored per install under `update.installs` in `config.yaml`. An
+install that never chose a channel only moves forward: a checkout already newer
+than the latest release (for example one that tracked `main` before this default)
+stays where it is until a newer release ships. Running `--set-channel stable`
+pins the checkout to the exact release commit, even when that is older; the
+Desktop names that move as a rollback to the release, and `hermes update --check`
+says the checkout is newer, instead of announcing a new update. Re-running the
+installer (`install.sh`, `install.ps1` or Hermes-Setup) over an install that chose
+a channel other than `main` keeps its checkout where it is: only `hermes update`
+moves it. An explicit `--commit` pin still applies.
+Windows Store, MSIX and bundled desktop installs are unaffected; their channel
+is baked into the package (see below).
 
 ### Bundled desktop updates
 
@@ -230,8 +253,8 @@ git -C "$repo" -c gc.writeCommitGraph=false gc --auto
 
 ### Updating against a non-default branch: `--branch`
 
-Source installs track `origin/main`. Use
-`--branch NAME` for a one-run branch override:
+`--branch NAME` is a one-run override that updates against a branch tip
+instead of the selected channel:
 
 ```bash
 hermes update --branch release-candidate
@@ -287,7 +310,8 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-`hermes update --check` compares the checkout with `origin/main`
+`hermes update --check` compares the checkout with the selected channel's
+target (the latest stable release by default, `origin/main` on the main channel)
 without applying code, installing dependencies, or restarting gateways. The
 comparison can fetch Git metadata; it is not a promise of zero filesystem writes.
 Package-owned installs report their external update method.

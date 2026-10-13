@@ -218,7 +218,7 @@ Secrets consumed by specific bundled / optional skills. Each is only needed if y
 
 ### Langfuse Observability
 
-Environment variables for the bundled [`observability/langfuse`](../user-guide/features/built-in-plugins.md#observabilitylangfuse) plugin. Set these in `~/.hermes/.env`. The plugin must also be enabled (`hermes plugins enable observability/langfuse`, or check the box in `hermes plugins`) before any of these take effect.
+Environment variables for the official [`langfuse`](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse) catalog plugin (formerly bundled as `observability/langfuse`). Set these in `~/.hermes/.env`. The plugin must be installed (`hermes plugins install langfuse`) before any of these take effect.
 
 | Variable | Description |
 |----------|-------------|
@@ -230,6 +230,7 @@ Environment variables for the bundled [`observability/langfuse`](../user-guide/f
 | `HERMES_LANGFUSE_SAMPLE_RATE` | SDK sampling rate 0.0–1.0 (default: `1.0`) |
 | `HERMES_LANGFUSE_MAX_CHARS` | Per-field truncation for serialized payloads (default: `12000`) |
 | `HERMES_LANGFUSE_MAX_DEPTH` | Nesting depth kept in captured tool inputs/outputs before values become `<max-depth>` (default: `4`; invalid values warn and keep the default) |
+| `HERMES_LANGFUSE_CAPTURE` | Content capture mode: `metadata` (no content), `sanitized` (default: secret redaction + truncation) or `full` (truncation only) |
 | `HERMES_LANGFUSE_DEBUG` | `true` enables verbose plugin logging to `agent.log` |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Standard Langfuse SDK names. Accepted as fallbacks when the `HERMES_LANGFUSE_*` equivalents are unset. |
 
@@ -275,7 +276,6 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_USER` | SSH username |
 | `TERMINAL_SSH_PORT` | SSH port (default: 22) |
 | `TERMINAL_SSH_KEY` | Path to private key |
-| `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
 ## Container Resources (Docker, Singularity, Modal, Daytona)
 
@@ -289,11 +289,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 
 ## Persistent Shell
 
+Exported env vars carry from one command to the next while on; the working directory always carries. See [Persistent Shell](../user-guide/configuration.md#persistent-shell).
+
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_PERSISTENT_SHELL` | Enable persistent shell for non-local backends (default: `true`). Also settable via `terminal.persistent_shell` in config.yaml |
-| `TERMINAL_LOCAL_PERSISTENT` | Enable persistent shell for local backend (default: `false`) |
-| `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH backend (default: follows `TERMINAL_PERSISTENT_SHELL`) |
+| `TERMINAL_PERSISTENT_SHELL` | SSH backend: carry exported env vars between commands (default: `true`). Also settable via `terminal.persistent_shell` in config.yaml |
+| `TERMINAL_SSH_PERSISTENT` | SSH backend override; wins over `TERMINAL_PERSISTENT_SHELL` (default: follows it) |
+| `TERMINAL_LOCAL_PERSISTENT` | Local backend: carry exported env vars between commands (default: `true`) |
 
 ## Egress proxy (sandbox-injected)
 

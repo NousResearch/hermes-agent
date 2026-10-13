@@ -143,7 +143,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (
-            ("action", "action"), ("target", "target", "memory"), ("content", "content"),
+            ("action", "action"), ("target", "target"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
@@ -185,8 +185,10 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
     result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        turn_id=getattr(agent, "_current_turn_id", None) or None,
         connection_callback=getattr(agent, "connection_callback", None),
         connectors_available=gateway_config.connectors_available,
+        card_surface=getattr(agent, "platform", None) == "desktop",
     )
     _scope_in_connected_mcp_servers(agent, result)
     return result

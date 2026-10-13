@@ -45,12 +45,22 @@ export interface PluginCatalogEntry {
   sha?: string
   /** Sub-directory of a monorepo the plugin lives in; empty when the repo root is the plugin. */
   subdir?: string
+  /** The description's first sentence: what the plugin does, in one line. */
+  summary?: string
 }
 
 export type PluginCatalogLookupError = 'invalid_name' | 'unavailable' | 'unknown'
 
 export type PluginCatalogLookup =
   { ok: false; error: PluginCatalogLookupError } | { ok: true; entry: PluginCatalogEntry }
+
+/** Mirrors `plugin_catalog_presence._first_sentence`, so the dialog and the setup card agree. */
+function firstSentence(text: string): string | undefined {
+  const flat = text.split(/\s+/).filter(Boolean).join(' ')
+  const end = flat.indexOf('. ')
+
+  return (end >= 0 ? flat.slice(0, end + 1) : flat) || undefined
+}
 
 function asEntry(raw: unknown): null | PluginCatalogEntry {
   if (!raw || typeof raw !== 'object') {
@@ -59,15 +69,26 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
 
   const row = raw as Record<string, unknown>
 
-  if (typeof row.name !== 'string' || typeof row.repo !== 'string' || !row.repo) {
+  // A field that is not a string reads as absent.
+  const text = (field: 'description' | 'name' | 'repo' | 'sha' | 'subdir'): string | undefined => {
+    const value = row[field]
+
+    return typeof value === 'string' ? value : undefined
+  }
+
+  const name = text('name')
+  const repo = text('repo')
+
+  if (name === undefined || !repo) {
     return null
   }
 
   return {
-    name: row.name,
-    repo: row.repo,
-    sha: typeof row.sha === 'string' && row.sha ? row.sha : undefined,
-    subdir: typeof row.subdir === 'string' && row.subdir ? row.subdir : undefined
+    name,
+    repo,
+    sha: text('sha') || undefined,
+    subdir: text('subdir') || undefined,
+    summary: firstSentence(text('description') ?? '')
   }
 }
 

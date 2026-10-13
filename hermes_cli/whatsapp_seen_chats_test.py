@@ -101,6 +101,40 @@ class WhatsAppSeenChatsTest(unittest.TestCase):
             )
         self.assertEqual(chats[0]["name"], "FPX Marketing")
 
+    def test_session_title_is_not_shown_as_the_chat_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "channel_aliases.json").write_text(
+                json.dumps({"whatsapp": {"120363@g.us": "Hermes?"}}),
+                encoding="utf-8",
+            )
+            conn = sqlite3.connect(home / "state.db")
+            conn.execute(
+                "CREATE TABLE sessions (chat_id TEXT, chat_type TEXT, display_name TEXT, title TEXT, "
+                "started_at REAL, ended_at REAL, session_key TEXT, origin_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "120363@g.us",
+                    "group",
+                    "120363",
+                    "Hermes?",
+                    10.0,
+                    None,
+                    "agent:fpx_laureline:whatsapp:group:120363@g.us",
+                    None,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            chats = collect_whatsapp_seen_chats([home])
+            saved = json.loads((home / "channel_aliases.json").read_text(encoding="utf-8"))
+
+        self.assertIsNone(chats[0]["name"])
+        self.assertEqual(saved["whatsapp"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

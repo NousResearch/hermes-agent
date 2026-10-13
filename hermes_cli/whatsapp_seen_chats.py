@@ -118,7 +118,30 @@ def _chats_from_directory(home: Path, found: dict[str, dict[str, Any]]) -> None:
         )
 
 
-def _chats_from_sessions(home: Path, found: dict[str, dict[str, Any]]) -> None:
+def _note_message_title(blocked: dict[str, set[str]], chat_id: str, title: Any) -> None:
+    """Session titles are the conversation text, not the WhatsApp group subject."""
+    text = str(title or "").strip()
+    if not text:
+        return
+    blocked.setdefault(chat_id, set()).add(text)
+    local = _jid_local(chat_id)
+    if local != chat_id:
+        blocked.setdefault(local, set()).add(text)
+
+
+def _drop_message_titles(found: dict[str, dict[str, Any]], blocked: dict[str, set[str]]) -> None:
+    for chat_id, row in found.items():
+        banned = set(blocked.get(chat_id, ()))
+        banned.update(blocked.get(_jid_local(chat_id), ()))
+        if row.get("name") in banned:
+            row["name"] = None
+
+
+def _chats_from_sessions(
+    home: Path,
+    found: dict[str, dict[str, Any]],
+    blocked_titles: dict[str, set[str]],
+) -> None:
     db_path = home / "state.db"
     if not db_path.is_file():
         return
@@ -157,9 +180,8 @@ def _chats_from_sessions(home: Path, found: dict[str, dict[str, Any]]) -> None:
             last_seen = ended if isinstance(ended, (int, float)) else started
             if not isinstance(last_seen, (int, float)):
                 last_seen = None
-            name = _clean_name(record.get("display_name"), chat_id) or _clean_name(
-                record.get("title"), chat_id
-            )
+            _note_message_title(blocked_titles, chat_id, record.get("title"))
+            name = _clean_name(record.get("display_name"), chat_id)
             _absorb(
                 found,
                 chat_id,
@@ -214,6 +236,28 @@ def _apply_bridge_chats(found: dict[str, dict[str, Any]], bridge_chats: Iterable
                 found[local]["kind"] = "group"
 
 
+def prune_message_title_aliases(home: Path, blocked_titles: dict[str, set[str]]) -> None:
+    """Remove aliases that were the session's message title, not a group subject."""
+    path = Path(home) / "channel_aliases.json"
+    data = _read_json_dict(path)
+    current = data.get("whatsapp")
+    if not isinstance(current, dict) or not current:
+        return
+    changed = False
+    for chat_id, name in list(current.items()):
+        banned = set(blocked_titles.get(str(chat_id), ()))
+        banned.update(blocked_titles.get(_jid_local(str(chat_id)), ()))
+        if str(name or "").strip() in banned:
+            del current[chat_id]
+            changed = True
+    if not changed:
+        return
+    data["whatsapp"] = current
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def remember_whatsapp_aliases(home: Path, names: dict[str, str]) -> None:
     """Keep learned group titles in channel_aliases.json so the table still has them later."""
     path = Path(home) / "channel_aliases.json"
@@ -245,10 +289,14 @@ def collect_whatsapp_seen_chats(
 ) -> list[dict[str, Any]]:
     """Merge seen WhatsApp chats across profile homes. Newest activity first."""
     found: dict[str, dict[str, Any]] = {}
-    for home in homes:
-        path = Path(home)
+    blocked_titles: dict[str, set[str]] = {}
+    home_paths = [Path(home) for home in homes]
+    for path in home_paths:
         _chats_from_directory(path, found)
-        _chats_from_sessions(path, found)
+        _chats_from_sessions(path, found, blocked_titles)
+    _drop_message_titles(found, blocked_titles)
+    for path in home_paths:
+        prune_message_title_aliases(path, blocked_titles)
     if bridge_chats:
         _apply_bridge_chats(found, bridge_chats)
     chats = list(found.values())

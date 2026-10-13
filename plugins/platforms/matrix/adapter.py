@@ -8,6 +8,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
+  MATRIX_REACTION_TRIGGERS (default off; true = 👍/👎, or a list of emoji: see adapter_reactions);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
@@ -53,6 +54,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
+from plugins.platforms.matrix.adapter_reactions import MatrixReactionAnswersMixin, parse_reaction_triggers
 
 try:
     from mautrix.types import (
@@ -791,7 +793,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixReactionAnswersMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -871,6 +873,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
+        self._reaction_triggers = parse_reaction_triggers(
+            _extra_or_secret(config.extra, "reaction_triggers", "MATRIX_REACTION_TRIGGERS", None))
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -2110,14 +2114,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
-        if not thread_id:
-            if is_dm:
-                synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
-            else:
-                synthetic = self._matrix_session_scope == "thread" or (
-                    self._matrix_session_scope != "room" and self._auto_thread)
-            if synthetic:
-                thread_id = event_id
+        if not thread_id and self._wants_synthetic_thread(is_dm, is_mentioned):
+            thread_id = event_id
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
@@ -2129,6 +2127,12 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
+
+    def _wants_synthetic_thread(self, is_dm: bool, is_mentioned: bool) -> bool:
+        """Whether an unthreaded inbound event opens its own thread (see _resolve_message_context)."""
+        if is_dm:
+            return bool((self._dm_mention_threads and is_mentioned) or self._dm_auto_thread)
+        return self._matrix_session_scope == "thread" or (self._matrix_session_scope != "room" and self._auto_thread)
 
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict
@@ -2470,46 +2474,20 @@ class MatrixAdapter(BasePlatformAdapter):
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        msg_id, room_id = event.message_id, event.source.chat_id
+        msg_id, room_id = self._lifecycle_reaction_target(event), event.source.chat_id
         if self._reactions_enabled and msg_id and room_id:
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
             if reaction_event_id:
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        msg_id, room_id = event.message_id, event.source.chat_id
+        msg_id, room_id = self._lifecycle_reaction_target(event), event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
         if eyes_event_id:
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
-
-    async def _on_reaction(self, event: Any) -> None:
-        sender = str(getattr(event, "sender", ""))
-        if self._is_self_sender(sender):
-            return
-        event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
-            return
-        room_id = str(getattr(event, "room_id", ""))
-        content = getattr(event, "content", None)
-        if not content:
-            return
-        relates_to = (content.get("m.relates_to", {}) if isinstance(content, dict)
-                      else getattr(content, "relates_to", {}))
-        reacts_to = key = ""
-        if isinstance(relates_to, dict):
-            reacts_to = relates_to.get("event_id", "")
-            key = relates_to.get("key", "")
-        elif hasattr(relates_to, "event_id"):
-            reacts_to = str(getattr(relates_to, "event_id", ""))
-            key = str(getattr(relates_to, "key", ""))
-        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
-        for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
-                        self._handle_choice_picker_reaction):
-            if await handler(room_id, reacts_to, key, sender):
-                return
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
@@ -3235,6 +3213,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
+    ("reaction_triggers", "MATRIX_REACTION_TRIGGERS", "csv"),
 )
 
 

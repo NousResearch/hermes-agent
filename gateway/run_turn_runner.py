@@ -49,6 +49,28 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
+_PROGRESS_FENCE_LINE = re.compile(r"^[ \t]*`{3,}[ \t]*$")
+
+
+def _progress_repeat_marker(msg: str, count: int) -> str:
+    """Append the ``(×N)`` repeat marker without breaking a fenced progress block.
+
+    The marker used to be appended to the LAST line. For a fenced terminal progress
+    block that line IS the closing fence, so ``\\`\\`\\` (×2)`` no longer matches the
+    send-time closer (``(^[ \\t]*```)[ \\t]*\\r?$``): the MarkdownV2 formatter then
+    never sees the block close, escapes the fence characters, and the bubble shows
+    literal backticks. Put the marker on the header line (or its own line when the
+    block has no header) so the fence stays a bare closing fence.
+    """
+    lines = msg.split("\n")
+    last = next((ln for ln in reversed(lines) if ln.strip()), "")
+    if _PROGRESS_FENCE_LINE.match(last):
+        if lines and not _PROGRESS_FENCE_LINE.match(lines[0]):
+            return "\n".join([lines[0] + f" (×{count})", *lines[1:]])
+        return msg + f"\n(×{count})"
+    return msg + f" (×{count})"
+
+
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
     say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
@@ -337,7 +359,7 @@ class TurnRunner:
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(_progress_repeat_marker(msg, ctx.repeat_count[0] + 1))
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
@@ -674,7 +696,7 @@ class TurnRunner:
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = _progress_repeat_marker(base_msg, count + 1)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw

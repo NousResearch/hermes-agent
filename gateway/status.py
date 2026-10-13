@@ -1148,7 +1148,13 @@ def _prepare_runtime_status_update(
             ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
             ("restart_requested", restart_requested, bool),
             ("active_agents", active_agents, parse_active_agents),
-            ("active_work", active_work, lambda v: list(v) if v else None),
+            # v=[] (truly idle, draining with zero work) must persist as [] — "list(v) if v else None"
+            # treated an empty list as falsy and collapsed it to None, indistinguishable downstream
+            # (update_cmd_drain_report.read_active_work) from "old gateway / unreadable state file".
+            # That made `hermes update`'s drain-wait print the scary "did not report what it is
+            # waiting on" message even when the gateway was genuinely idle. Only None (never set /
+            # not draining) should map to None.
+            ("active_work", active_work, lambda v: list(v) if v is not None else None),
             ("served_profiles", served_profiles, lambda v: list(v or [])),
             ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
             ("session_store", session_store, _coerce_session_store),

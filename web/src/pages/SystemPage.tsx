@@ -583,7 +583,9 @@ export default function SystemPage() {
         const info = await api.checkHermesUpdate(force);
         setUpdateInfo(info);
         if (force) {
-          if (info.update_available) {
+          if (info.update_available && info.rollback && info.message) {
+            showToast(info.message, "success");
+          } else if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
                 ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
@@ -930,9 +932,11 @@ export default function SystemPage() {
                     updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
-                        {updateInfo.behind && updateInfo.behind > 0
-                          ? `${updateInfo.behind} behind`
-                          : "update available"}
+                        {updateInfo.rollback
+                          ? `newer than v${updateInfo.source_version}`
+                          : updateInfo.behind && updateInfo.behind > 0
+                            ? `${updateInfo.behind} behind`
+                            : "update available"}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">latest</Badge>

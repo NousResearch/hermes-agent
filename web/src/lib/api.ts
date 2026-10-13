@@ -1910,6 +1910,9 @@ export interface UpdateCheckResponse {
   // count (nix/pypi), or null when the check could not run.
   behind: number | null;
   update_available: boolean;
+  /** A stable release this build already contains: applying it moves back. */
+  rollback?: boolean;
+  source_version?: string | null;
   can_apply: boolean;
   update_command: string;
   message: string | null;

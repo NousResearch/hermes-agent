@@ -308,7 +308,7 @@ function IdleView({
   // instead of generic filler. On a release-feed channel (stable), name the
   // release tag instead of commit vocabulary.
   // A stable release this checkout already contains is a move back, never "a new update".
-  const rollbackTag = target === 'client' ? rollbackRelease(status) : null
+  const rollbackTag = rollbackRelease(status)
   const channelCopy = t.settings.about.channel
 
   const { title, body } = rollbackTag

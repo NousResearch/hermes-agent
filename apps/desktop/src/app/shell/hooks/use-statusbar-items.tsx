@@ -447,6 +447,10 @@ export function useStatusbarItems({
       copy,
       remote: true,
       restarting: backendUpdateApply.stage === 'restart',
+      rollback: rollbackSentence(
+        { rollback: backendUpdateStatus?.rollback, sourceVersion: backendUpdateStatus?.sourceVersion },
+        t.settings.about.channel.rollbackBody
+      ),
       target: 'backend',
       updateAvailable: backendUpdateStatus?.updateAvailable,
       version: statusSnapshot?.version
@@ -468,6 +472,9 @@ export function useStatusbarItems({
     connection?.mode,
     statusSnapshot?.version,
     backendUpdateStatus?.behind,
+    backendUpdateStatus?.rollback,
+    backendUpdateStatus?.sourceVersion,
+    t.settings.about.channel.rollbackBody,
     backendUpdateStatus?.updateAvailable,
     backendUpdateApply.applying,
     backendUpdateApply.message,

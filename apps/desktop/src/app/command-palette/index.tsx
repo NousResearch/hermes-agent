@@ -611,7 +611,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       copy: t.shell.statusbar,
       latestTag: status?.latestTag,
       remote: backend,
-      rollback: backend ? undefined : rollbackSentence(status, t.settings.about.channel.rollbackBody),
+      rollback: rollbackSentence(status, t.settings.about.channel.rollbackBody),
       restarting: apply.stage === 'restart',
       sha: status?.currentSha?.slice(0, 7) ?? null,
       target: backend ? 'backend' : 'client',

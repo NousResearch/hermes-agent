@@ -123,7 +123,7 @@ function ordinaryUpdateStatus({
   }
 
   if (updateAvailable) {
-    const back = target === 'client' && rollback ? rollbackRelease(status) : null
+    const back = rollback ? rollbackRelease(status) : null
 
     return {
       applying,

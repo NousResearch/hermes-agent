@@ -922,8 +922,7 @@ function Stage-Repository {
         # Only an explicit -Commit pin outranks the choice.
         if (-not $Commit) { $channel = Get-ChosenChannel }
         if ($channel -ceq 'main') { $channel = '' }
-        if ($channel) { Log "Repairing $InstallDir on the $channel update channel it chose" }
-        else { Log "Updating $InstallDir ($Branch)" }
+        if ($channel) { Log "Repairing $InstallDir on the $channel update channel it chose" } else { Log "Updating $InstallDir ($Branch)" }
         # A checkout cloned before longpaths was set: a deep path past MAX_PATH fails checkout.
         Invoke-Native { git -C $InstallDir config core.longpaths true } | Out-Null
         # An explicit HERMES_REPO_URL names the source for reruns too, not

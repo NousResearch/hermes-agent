@@ -102,7 +102,15 @@ def _model_flow_ai_gateway(config, current_model=""):
 
 def _model_flow_moa(config, current_model=""):
     """Mixture of Agents virtual provider: pick a preset (list always shown, even with one entry),
-    persist it, print the breakdown. No credential step — presets reference configured providers."""
+    persist it, print the breakdown. No credential step — presets reference configured providers.
+
+    ENTITLEMENT-GATE EXEMPTION (t_27cf7a7b), stated rather than implied: ``selected_name``
+    is a PRESET NAME from ``moa.presets``, not a model slug, and the virtual provider
+    (``moa://local``) has no endpoint. There is nothing to probe and no plan to be
+    entitled by; the reference/aggregator models a preset names are gated on their
+    own persist paths when they are configured. Pinned by
+    ``tests/hermes_cli/test_model_entitlement_guard.py::TestMoAExemption``.
+    """
     from hermes_cli.auth import _save_model_choice
     from hermes_cli.moa_config import normalize_moa_config
     moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
@@ -246,12 +254,24 @@ def _nous_verified_credentials(creds_or_none=None):
         return None
 
 
-def _nous_persist_selection(selected: str, creds: dict) -> dict:
+def _nous_persist_selection(selected: str, creds: dict) -> dict | None:
     """Nous persist step: model choice + provider state, then rewrite ``model`` on a fresh
     config (the caller's may carry stale custom-provider fields) and clear a conflicting
-    OPENAI_BASE_URL / OPENAI_API_KEY. Returns the saved config."""
+    OPENAI_BASE_URL / OPENAI_API_KEY. Returns the saved config, or ``None`` when the
+    entitlement gate refused the pick (nothing written; the gate printed the reason).
+
+    Entitlement-gated (t_27cf7a7b): a model the Portal refuses for this account does
+    not become the default. ``creds`` carries the endpoint + credential this flow
+    would run on, so the gate is conclusive here.
+    """
     from hermes_cli.auth import _save_model_choice, _update_config_for_provider
     from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.model_entitlement_guard import ensure_pick_entitled, resolve_endpoint
+    _endpoint, _key = resolve_endpoint("nous")
+    if not ensure_pick_entitled(selected, provider="nous",
+                                base_url=str(creds.get("base_url") or "") or _endpoint,
+                                api_key=str(creds.get("api_key") or "") or _key):
+        return None
     _save_model_choice(selected)
     inference_url = creds.get("base_url", "")
     _update_config_for_provider("nous", inference_url)
@@ -313,7 +333,10 @@ def _model_flow_nous(config, current_model="", args=None):
         if creds is None:
             return
         selected = tier_row["models"][0]
-        _nous_persist_selection(selected, creds)
+        model = _nous_persist_selection(selected, creds)
+        if model is None:
+            print("No change.")
+            return
         print(f"Default model set to: {selected} (via {tier_row['name']})")
         return
     model_ids = get_curated_nous_model_ids()
@@ -361,6 +384,9 @@ def _model_flow_nous(config, current_model="", args=None):
         print("No change.")
         return
     config = _nous_persist_selection(selected, creds)
+    if config is None:
+        print("No change.")
+        return
     print(f"Default model set to: {selected} (via Nous Portal)")
     # Offer Tool Gateway enablement for paid subscribers
     prompt_enable_tool_gateway(config)
@@ -396,8 +422,9 @@ def _model_flow_openai_codex(config, current_model=""):
     selected = _prompt_model_selection(
         codex_models, current_model=current_model, confirm_provider="openai-codex",
         confirm_base_url=_codex_base or DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
-    _activate_provider_model(selected, "openai-codex", DEFAULT_CODEX_BASE_URL,
-                             f"Default model set to: {selected} (via OpenAI Codex)")
+    _activate_provider_model(selected, "openai-codex", _codex_base or DEFAULT_CODEX_BASE_URL,
+                             f"Default model set to: {selected} (via OpenAI Codex)",
+                             api_key=_codex_token or "")
 
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
@@ -416,14 +443,17 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     # credentials may live only in the pool (``hermes auth add xai-oauth``) — fall back to
     # the default base URL so the picker still completes.
     base_url = DEFAULT_XAI_OAUTH_BASE_URL
+    xai_key = ""
     with contextlib.suppress(Exception):
         creds = resolve_xai_oauth_runtime_credentials()
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+        xai_key = str(creds.get("api_key") or "")
 
     models = provider_model_ids("xai-oauth")
     selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
     _activate_provider_model(selected, "xai-oauth", base_url,
-                             f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
+                             f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)",
+                             api_key=xai_key)
 
 
 def _model_flow_qwen_oauth(_config, current_model=""):
@@ -441,15 +471,20 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
     # Try live model discovery, fall back to curated list.
     models = None
+    qwen_key = ""
     with contextlib.suppress(Exception):
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         models = fetch_api_models(creds["api_key"], creds["base_url"])
+        qwen_key = str(creds.get("api_key") or "")
     if not models:
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
     default = current_model or (models[0] if models else "qwen3-coder-plus")
     selected = _prompt_model_selection(models, current_model=default, confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
-    _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
+    # Persist base_url unchanged (DEFAULT_QWEN_BASE_URL); the resolved credential
+    # is handed to the gate so the probe authenticates as the session will.
+    _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)",
+                             api_key=qwen_key)
 
 
 def _model_flow_minimax_oauth(config, current_model="", args=None):
@@ -477,7 +512,8 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     from hermes_cli.models import _PROVIDER_MODELS
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
-    _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
+    _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}",
+                             no_change=None, api_key=str(creds.get("api_key") or ""))
 
 
 def _copilot_model_list(live_ids) -> list:
@@ -589,8 +625,9 @@ def _model_flow_copilot(config, current_model=""):
         print("No change.")
         return
     selected = _normalize(selected)
-    _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
+    if _persist_model(selected, provider_id, base_url=effective_base,
+                      api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key)) is None:
+        return
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 

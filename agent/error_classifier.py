@@ -100,6 +100,29 @@ class ClassifiedError:
 # The Nous gateway's own words for "the free tier will not serve this" — a billing wall for a
 # named account, the tier refusing for an anonymous one (see ``_WELCOME_403_NAMED_PATTERNS``).
 _FREE_TIER_REFUSAL_PATTERNS = ("model_not_supported_on_free_tier", "not available on the free tier")
+
+# "This account cannot use this model HERE" — a plan/permission wall, not a throttle.
+# A provider reuses a throttling status for it, so the body is the only signal:
+#   * Z.AI/Zhipu 429 ``code=1311`` "Your current subscription plan does not yet
+#     include access to <model>" (#t_27cf7a7b) — before this pattern the verdict was
+#     ``rate_limit``, so a permanent plan refusal was retried on the same route.
+#   * OpenRouter 404 "This model is unavailable for free ... the paid version is
+#     available now" — the retired free slug, which used to land on ``unknown``
+#     with ``should_fallback`` False (no fallback at all).
+#   * a key/model permission statement ("not allowed for this api key").
+_MODEL_ENTITLEMENT_PATTERNS = (
+    "does not yet include access", "does not include access",
+    "unavailable for free", "no longer free", "not available for free",
+    "not allowed for this api key", "permission_denied",
+)
+
+# Structured codes with the same meaning. Z.AI/Zhipu stamp the plan refusal on a
+# 429, whose handler always returns before ``_by_error_code`` runs, so both the
+# code table below and the 429 handler consult it.
+_MODEL_ENTITLEMENT_ERROR_CODES = frozenset({
+    "1311",  # zai/zhipu: "subscription plan does not yet include access"
+})
+
 _BILLING_PATTERNS = (
     "insufficient credits", "insufficient_quota", "insufficient balance", "credit balance",
     "credits exhausted", "credits have been exhausted", "requires available credits",
@@ -903,6 +926,9 @@ def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     if c.code == PROVIDER_STREAM_NON_JSON_ERROR_CODE and "request validation failed:" in c.msg:
         return _V_FORMAT_ERROR
     verdict = _ERROR_CODE_VERDICTS.get(c.code)
+    if verdict is None and c.code in _MODEL_ENTITLEMENT_ERROR_CODES:
+        # Plan/entitlement codes whose status handler (429/404) never returns.
+        verdict = _V_MODEL_ENTITLEMENT
     if verdict is None:
         family = _PROVIDER_CODE_FAMILIES.get(c.provider_slug, c.provider_slug)
         verdict = _PROVIDER_CODE_VERDICTS.get(family, {}).get(c.code)
@@ -1038,6 +1064,12 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    # A model/key permission wall ("not allowed for this API key"): the credential is
+    # not stale, this account simply cannot use this model here (t_27cf7a7b).
+    if c.code in _MODEL_ENTITLEMENT_ERROR_CODES or any(
+        p in c.msg for p in _MODEL_ENTITLEMENT_PATTERNS
+    ):
+        return _V_MODEL_ENTITLEMENT
     return _V_AUTH_FALLBACK
 
 
@@ -1046,6 +1078,13 @@ def _status_404(c: _Ctx) -> Verdict:
     # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # A retired free slug or a plan wall reported as 404 ("This model is unavailable
+    # for free ... use the paid slug instead") means this account cannot use THIS
+    # model here: fall back instead of retrying an unknown route (t_27cf7a7b).
+    if c.code in _MODEL_ENTITLEMENT_ERROR_CODES or any(
+        p in c.msg for p in _MODEL_ENTITLEMENT_PATTERNS
+    ):
+        return _V_MODEL_ENTITLEMENT
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
@@ -1061,6 +1100,12 @@ def _status_429(c: _Ctx) -> Verdict:
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # A plan/entitlement wall wearing a 429 (zai ``code=1311``): permanent for this
+    # account, so it must not read as a throttle window (t_27cf7a7b).
+    if c.code in _MODEL_ENTITLEMENT_ERROR_CODES or any(
+        p in c.msg for p in _MODEL_ENTITLEMENT_PATTERNS
+    ):
+        return _V_MODEL_ENTITLEMENT
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):

@@ -29,7 +29,18 @@ _GUARD_SCRIPTS = (
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
 )
-_SUPPORT = ("scripts/ci/profile_scope_patterns.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
+# The bootstrap-resolver guard runs the generator against every file it splices,
+# so a fixture missing one of them fails on the missing input rather than the
+# drift it is there to judge.
+_RESOLVER_ENGINE = (
+    "scripts/gen-bootstrap-resolver.py", "scripts/bootstrap/store_root.sh",
+    "scripts/bootstrap/store_root.ps1", "scripts/bootstrap/uv_state_pins.ps1",
+    "scripts/install.sh", "scripts/install.ps1",
+)
+_SUPPORT = (
+    "scripts/ci/profile_scope_patterns.json", "agent/subdirectory_hints.py",
+    *_GUARD_SCRIPTS, *_RESOLVER_ENGINE,
+)
 _LEGACY = "def legacy(x):\n" + "".join(f"    if x == {i}:\n        return {i}\n" for i in range(21))
 _GROWN = _LEGACY + "    if x == 99:\n        return 99\n"
 _ENV_COPY = "import os\n\n\ndef child_env():\n    env = os.environ.copy()\n    return env\n"

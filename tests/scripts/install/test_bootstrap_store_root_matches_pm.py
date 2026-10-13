@@ -12,9 +12,9 @@ Two things keep the copies honest, and neither re-derives the rule:
 * the shipped bytes are executed over a matrix of homes and compared against
   ``pm.paths.store_root()``, so the expectation always comes from pm.
 
-Byte-identity also covers the PowerShell twins' uv-state pin body
+Byte-identity also covers the PowerShell uv-state pin body
 (``Set-UvStatePins``): the store slot and uv's cache/python dirs are one
-contract — see ``test_mirrored_uv_state_pin_bodies_are_identical``.
+contract, now pinned by the generator drift check and the sourcing tests.
 
 The comparison assumes the checkout carries no ``install-stamp.json``: pm honors
 a stamped ``runtimeDir`` that a bootstrap cannot read yet (it runs before Python
@@ -49,24 +49,54 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# name -> (file, the twin its BEGIN marker names)
-SH_PAIR = {
-    "install.sh": (REPO_ROOT / "scripts" / "install.sh", "setup-hermes.sh"),
-    "setup-hermes.sh": (REPO_ROOT / "setup-hermes.sh", "scripts/install.sh"),
-}
-PS1_PAIR = {
-    "install.ps1": (REPO_ROOT / "scripts" / "install.ps1", "setup-hermes.ps1"),
-    "setup-hermes.ps1": (REPO_ROOT / "setup-hermes.ps1", "scripts/install.ps1"),
+# The store-root resolver's single source. install.sh (piped to bash, no
+# sibling) carries a GENERATED copy between markers; setup-hermes.sh and
+# scripts/_activation.sh run from a checkout and source the canonical file
+# directly, so they carry no copy to drift.
+# The store-root resolver has ONE source per language: scripts/bootstrap/.
+# install.sh / install.ps1 are piped (curl|bash, irm|iex) and carry a GENERATED
+# copy between markers; setup-hermes.sh / setup-hermes.ps1 / scripts/_activation.sh
+# run from a checkout and source the canonical files, so they carry no copy.
+CANONICAL_SH = REPO_ROOT / "scripts" / "bootstrap" / "store_root.sh"
+CANONICAL_PS1 = REPO_ROOT / "scripts" / "bootstrap" / "store_root.ps1"
+CANONICAL_PINS = REPO_ROOT / "scripts" / "bootstrap" / "uv_state_pins.ps1"
+
+# One marker pair per resolver copy. The canonical files mark their own body
+# with the same marker text the generator reads (scripts/gen-bootstrap-
+# resolver.py), so both spellings staying identical is pinned by the drift test.
+CANON_SH_BEGIN = "# --- BEGIN canonical store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
+CANON_SH_END = "# --- END canonical store-root resolver ---"
+GEN_SH_BEGIN = "# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
+GEN_SH_END = "# --- END GENERATED: store-root resolver ---"
+CANON_PS1_BEGIN = "# --- BEGIN canonical store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
+CANON_PS1_END = "# --- END canonical store-root resolver ---"
+GEN_PS1_BEGIN = "# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---"
+GEN_PS1_END = "# --- END GENERATED: store-root resolver ---"
+
+# (path, kind) -> the marker pair that file's resolver body sits between.
+_RESOLVER_MARKERS = {
+    (CANONICAL_SH, "canonical"): (CANON_SH_BEGIN, CANON_SH_END),
+    (REPO_ROOT / "scripts" / "install.sh", "generated"): (GEN_SH_BEGIN, GEN_SH_END),
+    (CANONICAL_PS1, "canonical"): (CANON_PS1_BEGIN, CANON_PS1_END),
+    (REPO_ROOT / "scripts" / "install.ps1", "generated"): (GEN_PS1_BEGIN, GEN_PS1_END),
 }
 
-_BEGIN = "# --- BEGIN store-root resolver (mirrored in {}) ---"
-_END = "# --- END store-root resolver ---"
+# The bootstrap copies the matrix walks, one entry per live resolver copy:
+# (display name, path, which marker pair that file's body sits between).
+# setup-hermes.sh / setup-hermes.ps1 are absent on purpose — they SOURCE the
+# canonical files, and walking the canonical body once per language covers them.
+SH_PAIR = {
+    "install.sh": (REPO_ROOT / "scripts" / "install.sh", "generated"),
+    "store_root.sh": (CANONICAL_SH, "canonical"),
+}
+PS1_PAIR = {
+    "install.ps1": (REPO_ROOT / "scripts" / "install.ps1", "generated"),
+    "store_root.ps1": (CANONICAL_PS1, "canonical"),
+}
 
 # The uv-state pins decide where uv writes its cache and managed python; the
 # ps1 twins alone carry them as a marked block (the sh twins export the same
 # paths at top level), so only PS1_PAIR participates here.
-_PIN_BEGIN = "# --- BEGIN uv state pins (mirrored in {}) ---"
-_PIN_END = "# --- END uv state pins ---"
 
 _POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
@@ -121,13 +151,22 @@ HOME_KINDS = (
 )
 
 
-def _resolver_source(path: Path, mirror: str) -> str:
-    text = path.read_text(encoding="utf-8")
-    # The PowerShell bootstraps are CRLF, the shell ones LF; both must extract.
+def _resolver_source(path: Path, kind: str) -> str:
+    """The resolver body a bootstrap executes, between its own marker pair.
+
+    *kind* names which marker pair the file carries:
+    ``canonical``  -- scripts/bootstrap/store_root.{sh,ps1}, the single source;
+    ``generated``  -- the spliced copy inside the piped installers.
+
+    setup-hermes.sh / setup-hermes.ps1 / scripts/_activation.sh carry NO copy:
+    they source the canonical file, so the canonical body is their body.
+    """
+    begin, end = _RESOLVER_MARKERS[(path, kind)]
     match = re.search(
-        re.escape(_BEGIN.format(mirror)) + r"\r?\n(.*?)" + re.escape(_END), text, re.DOTALL
+        re.escape(begin) + r"\r?\n(.*?)" + re.escape(end), path.read_text(encoding="utf-8-sig"),
+        re.DOTALL,
     )
-    assert match, f"{path.name}: the store-root resolver block is missing"
+    assert match, f"{path.name}: the {kind} store-root resolver block is missing"
     return match.group(1)
 
 
@@ -351,41 +390,47 @@ def _staged_store(resolved: str) -> Path:
     return Path(os.path.realpath(Path(resolved.strip()) / "tools"))
 
 
-def test_mirrored_resolver_bodies_are_identical() -> None:
-    """A fix applied to one bootstrap must not miss its twin (#101269)."""
-    for label, pair in (("POSIX", SH_PAIR), ("PowerShell", PS1_PAIR)):
-        bodies = {name: _resolver_source(path, mirror) for name, (path, mirror) in pair.items()}
-        names = list(bodies)
-        assert len(set(bodies.values())) == 1, (
-            f"the {label} store-root resolvers have drifted apart: "
-            f"{names[0]} and {names[1]} must carry the same body"
+def test_spliced_resolver_matches_the_generator() -> None:
+    """install.sh's generated resolver copy must equal the canonical file (#101269).
+
+    The copy is derived, not maintained: the generator splices
+    scripts/bootstrap/store_root.sh into the piped installer, and this is the
+    drift check (the same shape as test_bootstrap_pins_fragment.py). Running
+    the generator directly keeps the file on disk and this test honest.
+    """
+    root = REPO_ROOT
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "gen-bootstrap-resolver.py"), "--check"],
+        cwd=root, capture_output=True, text=True, timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_checkout_bootstraps_source_the_canonical_resolver() -> None:
+    """setup-hermes.sh and scripts/_activation.sh carry NO resolver copy.
+
+    Both always run from a checkout, so they source the canonical file; a copy
+    pasted into either would be a fourth hand-maintained implementation of the
+    fold, which is precisely the drift the generator exists to prevent.
+    """
+    for name in ("setup-hermes.sh", "scripts/_activation.sh"):
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        assert "bootstrap/store_root.sh" in text, (
+            f"{name}: does not source the canonical store-root resolver"
+        )
+        assert "# --- BEGIN store-root resolver" not in text, (
+            f"{name}: carries an inline resolver copy that must be sourced instead"
         )
 
 
-def _pin_source(path: Path, mirror: str) -> str:
-    """Extract one bootstrap's uv-state pin block, marker lines excluded.
-
-    Same extraction shape as :func:`_resolver_source` (CRLF included): the
-    store-root resolver decides the stage slot, these pins decide where uv
-    writes its cache and managed python — the two halves of "a uv PM can serve".
-    """
-    text = path.read_text(encoding="utf-8")
-    match = re.search(
-        re.escape(_PIN_BEGIN.format(mirror)) + r"\r?\n(.*?)" + re.escape(_PIN_END),
-        text, re.DOTALL,
-    )
-    assert match, f"{path.name}: the uv state pins block is missing"
-    return match.group(1)
-
-
-def test_mirrored_uv_state_pin_bodies_are_identical() -> None:
-    """The ps1 twins must pin uv state with the same body (#101269)."""
-    bodies = {name: _pin_source(path, mirror) for name, (path, mirror) in PS1_PAIR.items()}
-    names = list(bodies)
-    assert len(set(bodies.values())) == 1, (
-        f"the PowerShell uv state pins have drifted apart: "
-        f"{names[0]} and {names[1]} must carry the same body"
-    )
+def test_setup_ps1_sources_the_canonical_files() -> None:
+    """setup-hermes.ps1 carries NO resolver or pins copy (it runs from a checkout)."""
+    text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8-sig")
+    assert "bootstrap\\store_root.ps1" in text, "setup-hermes.ps1 must dot-source the canonical resolver"
+    assert "bootstrap\\uv_state_pins.ps1" in text, "setup-hermes.ps1 must dot-source the canonical pins"
+    assert "# --- BEGIN store-root resolver" not in text, "an inline resolver copy came back"
+    assert "# --- BEGIN uv state pins" not in text, "an inline pins copy came back"
 
 
 @pytest.mark.platforms("posix")
@@ -404,8 +449,14 @@ def test_posix_bootstraps_resolve_pms_store_root(
         result = subprocess.run(
             [bash, "-c", f"{body}\nhermes_root_of"],
             env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+        assert result.stderr == "", (
+            f"{name}: the spliced resolver wrote to stderr — the block must be "
+            f"self-contained (every helper it calls is defined inside it): "
+            f"{result.stderr}"
+        )
         staged = _staged_store(result.stdout)
         assert staged == expected, (
             f"{name} would stage uv into {staged}, but pm resolves {expected} "
@@ -460,6 +511,7 @@ def test_posix_resolver_unset_home_uses_the_account_database(
         result = subprocess.run(
             [bash, "-c", f"{body}\nprintf '%s\\n%s\\n' \"$(hermes_root_of)\" \"$(hermes_default_home)\""],
             env=child_env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         root_line, default_line = result.stdout.splitlines()[:2]
@@ -492,6 +544,7 @@ def test_powershell_bootstraps_resolve_pms_store_root(
             # the variable; blank it there to keep pwsh's default deterministic.
             env={**os.environ, "LOCALAPPDATA": _child_localappdata(tmp_path)}, cwd=tmp_path,
             capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         staged = _staged_store(result.stdout)
@@ -558,6 +611,7 @@ def test_powershell_resolver_keeps_unc_and_ellipsis_semantics(tmp_path: Path) ->
             [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(probe)],
             env={**os.environ}, capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0 and result.stdout.strip().endswith("OK"), (
             f"{name}: {result.stdout}{result.stderr}"
@@ -596,6 +650,7 @@ def test_powershell_resolver_keeps_drive_relative_home_forms(
             [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(probe)],
             env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         staged = _staged_store(result.stdout)
@@ -632,6 +687,7 @@ def test_powershell_resolver_keeps_a_bare_drive_root(
             [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(probe)],
             env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         assert result.stdout.strip() == raw_home, (
@@ -673,6 +729,7 @@ def test_powershell_resolver_falls_back_to_the_platform_default_home(
             [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(probe)],
             env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         staged = _staged_store(result.stdout)
@@ -715,6 +772,7 @@ def test_install_sh_stages_into_the_root_it_resolved(
     result = subprocess.run(
         [bash, "-c", script, "test", str(install_sh)],
         env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     resolved, recomputed = result.stdout.splitlines()[:2]
@@ -754,6 +812,7 @@ def test_install_sh_default_home_follows_the_host_os_case(
     result = subprocess.run(
         [bash, "-c", script, "test", str(install_sh)],
         env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     if sys.platform == "win32":
@@ -796,6 +855,7 @@ def test_install_sh_drops_an_inherited_export_when_it_defaults_the_home(
     result = subprocess.run(
         [bash, "-c", script, "test", str(install_sh), str(REPO_ROOT), sys.executable],
         env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     root, child_home, child_root = result.stdout.splitlines()[:3]
@@ -845,6 +905,7 @@ def test_install_sh_trims_outer_whitespace_from_the_home(
     result = subprocess.run(
         [bash, "-c", script, "test", str(install_sh)],
         env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     hermes_home, install_dir = result.stdout.splitlines()[:2]
@@ -890,6 +951,7 @@ def test_install_sh_expands_and_anchors_the_explicit_home(
         [bash, "-c", script, "test", str(install_sh)],
         env={**os.environ, "HERMES_HOME": raw}, cwd=tmp_path,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     hermes_home, install_dir, install_log = result.stdout.splitlines()[:3]
@@ -928,6 +990,7 @@ def test_install_sh_binds_the_runtime_override_before_the_chdir(
         [bash, "-c", script, "test", str(install_sh)],
         env={**os.environ, "HERMES_RUNTIME_DIR": raw}, cwd=tmp_path,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines()[0] == want, result.stdout
@@ -941,6 +1004,7 @@ def test_install_sh_binds_the_runtime_override_before_the_chdir(
          "import os; from pathlib import Path; print(Path(os.environ['HERMES_RUNTIME_DIR']).resolve())"],
         env={**os.environ, "HERMES_RUNTIME_DIR": want}, cwd=str(checkout),
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     assert child.stdout.splitlines()[0] == str(Path(want).resolve())
@@ -972,6 +1036,7 @@ def test_install_sh_refuses_drive_relative_runtime_dir(
         [bash, "-c", 'source "$1" --manifest\n', "test", str(install_sh)],
         env={**os.environ, "HERMES_RUNTIME_DIR": bad}, cwd=tmp_path,
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "drive-relative HERMES_RUNTIME_DIR" in result.stderr, result.stderr
@@ -1015,12 +1080,13 @@ def test_powershell_anchors_a_relative_runtime_override(
     Host-independent: only the relative case is platform-neutral — the absolute and
     drive-relative controls live in the platforms("windows") test below."""
     script = (
-        "$env:HERMES_RUNTIME_DIR = 'runtime-store'\n{}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
-        .format(_ps1_anchor_source(ps1))
+        f"$env:HERMES_RUNTIME_DIR = 'runtime-store'\n{_ps1_anchor_source(ps1)}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
+
     )
     result = subprocess.run(
         [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+        check=False,
     )
     assert result.returncode == 0, f"{ps1.name}: {result.stdout}{result.stderr}"
     got = result.stdout.strip()
@@ -1047,12 +1113,13 @@ def test_windows_runtime_override_anchor_matches_pm_resolution(
     Push-Location): a drive-relative ``C:foo`` anchors at the drive's current
     directory, never converts to a drive-rooted ``C:\\foo``."""
     script = (
-        "$env:HERMES_RUNTIME_DIR = '{}'\n{}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
-        .format(raw, _ps1_anchor_source(ps1))
+        f"$env:HERMES_RUNTIME_DIR = '{raw}'\n{_ps1_anchor_source(ps1)}\nWrite-Output $env:HERMES_RUNTIME_DIR\n"
+
     )
     result = subprocess.run(
         [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+        check=False,
     )
     assert result.returncode == 0, f"{ps1.name}: {result.stdout}{result.stderr}"
     anchored = result.stdout.strip()
@@ -1067,6 +1134,7 @@ def test_windows_runtime_override_anchor_matches_pm_resolution(
          "import os; from pathlib import Path; print(Path(os.environ['HERMES_RUNTIME_DIR']).resolve())"],
         env={**os.environ, "HERMES_RUNTIME_DIR": anchored}, cwd=str(checkout),
         capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert child.returncode == 0, child.stdout + child.stderr
     pm = child.stdout.strip()
@@ -1092,20 +1160,21 @@ def test_setup_ps1_binds_a_relative_home_before_push_location(
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
     text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8")
-    resolver = _resolver_source(REPO_ROOT / "setup-hermes.ps1", "scripts/install.ps1")
+    resolver = _resolver_source(CANONICAL_PS1, "canonical")
     bind = re.search(
         r'if \(\$env:HERMES_HOME\) \{\r?\n    \$e = Expand-HermesHomeValue.*?\$env:HERMES_HOME = \$e\r?\n\}',
         text, re.DOTALL,
     )
     assert bind, "setup-hermes.ps1: the explicit-home binding block is missing"
     script = (
-        "$env:HERMES_HOME = 'custom-hermes'\n{}".format(resolver)
+        f"$env:HERMES_HOME = 'custom-hermes'\n{resolver}"
         + f"\n{bind.group(0)}\n"
         + "Write-Output $env:HERMES_HOME\nWrite-Output (Get-HermesRoot)\n"
     )
     result = subprocess.run(
         [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     bound, root = result.stdout.strip().splitlines()[-2:]
@@ -1135,7 +1204,7 @@ def test_setup_ps1_folds_a_whitespace_only_home_like_pm(
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
     text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8")
-    resolver = _resolver_source(REPO_ROOT / "setup-hermes.ps1", "scripts/install.ps1")
+    resolver = _resolver_source(CANONICAL_PS1, "canonical")
     bind = re.search(
         r'if \(\$env:HERMES_HOME\) \{\r?\n    \$e = Expand-HermesHomeValue.*?\$env:HERMES_HOME = \$e\r?\n\}',
         text, re.DOTALL,
@@ -1154,6 +1223,7 @@ def test_setup_ps1_folds_a_whitespace_only_home_like_pm(
         env={**os.environ, "LOCALAPPDATA": _child_localappdata(tmp_path)},
         cwd=str(tmp_path),
         capture_output=True, text=True, errors="replace", timeout=120,
+        check=False,
     )
     assert result.returncode == 0, f"{result.stdout}{result.stderr}"
     root_line, home_line = result.stdout.strip().splitlines()[-2:]
@@ -1175,7 +1245,7 @@ def test_setup_ps1_skills_dir_treats_a_whitespace_home_as_unset(
         pytest.skip("running the PowerShell bootstraps needs pwsh or Windows PowerShell")
     monkeypatch.delenv("HERMES_HOME", raising=False)
     text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8")
-    resolver = _resolver_source(REPO_ROOT / "setup-hermes.ps1", "scripts/install.ps1")
+    resolver = _resolver_source(CANONICAL_PS1, "canonical")
     skills = re.search(
         r"\$skillsDir = if \(\$env:HERMES_HOME -and \$env:HERMES_HOME\.Trim\(\)\) \{.*?\n\} else \{\r?\n.*?\n\}",
         text, re.DOTALL,
@@ -1194,6 +1264,7 @@ def test_setup_ps1_skills_dir_treats_a_whitespace_home_as_unset(
             [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
             cwd=str(tmp_path),
             capture_output=True, text=True, errors="replace", timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{assignment}: {result.stdout}{result.stderr}"
         outputs.append(result.stdout.strip())
@@ -1220,11 +1291,12 @@ def test_setup_ps1_skills_dir_seeds_the_platform_default_home(
          "from hermes_constants import get_hermes_home; print(get_hermes_home() / 'skills')"],
         env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
         cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert want.returncode == 0, want.stdout + want.stderr
     expected = Path(want.stdout.strip())
     text = (REPO_ROOT / "setup-hermes.ps1").read_text(encoding="utf-8")
-    resolver = _resolver_source(REPO_ROOT / "setup-hermes.ps1", "scripts/install.ps1")
+    resolver = _resolver_source(CANONICAL_PS1, "canonical")
     skills = re.search(
         r"\$skillsDir = if \(\$env:HERMES_HOME -and \$env:HERMES_HOME\.Trim\(\)\) \{.*?\n\} else \{\r?\n.*?\n\}",
         text, re.DOTALL,
@@ -1239,6 +1311,7 @@ def test_setup_ps1_skills_dir_seeds_the_platform_default_home(
         [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
         cwd=str(tmp_path),
         capture_output=True, text=True, errors="replace", timeout=120,
+        check=False,
     )
     assert result.returncode == 0, f"{result.stdout}{result.stderr}"
     assert Path(result.stdout.strip()) == expected
@@ -1266,6 +1339,7 @@ def test_sh_resolver_never_answers_an_empty_root(tmp_path: Path, monkeypatch: py
             result = subprocess.run(
                 [bash, "-c", f"{body}\nhermes_root_of"],
                 env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+                check=False,
             )
             assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
             assert result.stdout == ".", (
@@ -1302,7 +1376,7 @@ def test_setup_sh_folds_outer_whitespace_from_the_home(
     monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
     monkeypatch.chdir(tmp_path)
     setup_sh = REPO_ROOT / "setup-hermes.sh"
-    body = _resolver_source(setup_sh, "scripts/install.sh")
+    body = _resolver_source(CANONICAL_SH, "canonical")
     text = setup_sh.read_text(encoding="utf-8")
     fold = re.search(r"# Trim like the resolver.*?\nfi\n", text, re.DOTALL)
     assert fold, "setup-hermes.sh: the HERMES_HOME fold block is missing"
@@ -1312,6 +1386,7 @@ def test_setup_sh_folds_outer_whitespace_from_the_home(
          'printf "value=%s\\n" "$HERMES_HOME"\n'
          'printf "exported=%s\\n" "$(env | sed -n \'s/^HERMES_HOME=//p\')"'],
         env={**os.environ}, cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     value_line, exported_line = result.stdout.strip().splitlines()[-2:]
@@ -1341,7 +1416,7 @@ def test_setup_sh_expands_the_home_for_its_shell_consumers(
     monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
     monkeypatch.chdir(tmp_path)
     setup_sh = REPO_ROOT / "setup-hermes.sh"
-    body = _resolver_source(setup_sh, "scripts/install.sh")
+    body = _resolver_source(CANONICAL_SH, "canonical")
     text = setup_sh.read_text(encoding="utf-8")
     fold = re.search(r"# Trim like the resolver.*?\nfi\n", text, re.DOTALL)
     assert fold, "setup-hermes.sh: the HERMES_HOME fold block is missing"
@@ -1360,6 +1435,7 @@ def test_setup_sh_expands_the_home_for_its_shell_consumers(
     result = subprocess.run(
         [bash, script_path.as_posix()],
         env={**os.environ}, cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     home_line, skills_line, exported_line = result.stdout.strip().splitlines()[-3:]
@@ -1402,6 +1478,7 @@ def test_setup_sh_anchors_a_relative_runtime_override(
     result = subprocess.run(
         [bash, script_path.as_posix()],
         env={**os.environ}, cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     value_line, exported_line = result.stdout.strip().splitlines()[-2:]
@@ -1433,7 +1510,7 @@ def test_sh_resolver_expands_percent_syntax_like_ntpath(
     # through the environment: Windows' own OS=Windows_NT collides case-
     # insensitively with an `os` entry in the child's environment block.
     expected = _pm_store_root()
-    body = _resolver_source(REPO_ROOT / "setup-hermes.sh", "scripts/install.sh")
+    body = _resolver_source(CANONICAL_SH, "canonical")
     script_path = tmp_path / "pct.sh"
     script_path.write_text(
         "os=win32\n" + body + "\nprintf '%s\\n' \"$(hermes_root_of)\"\n",
@@ -1442,6 +1519,7 @@ def test_sh_resolver_expands_percent_syntax_like_ntpath(
     result = subprocess.run(
         [bash, script_path.as_posix()],
         env={**os.environ}, cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     staged = _staged_store(result.stdout.splitlines()[0])
@@ -1473,7 +1551,7 @@ def test_resolvers_fold_a_case_variant_of_the_default_home(
     monkeypatch.chdir(tmp_path)
     expected = _pm_store_root()
 
-    sh_body = _resolver_source(REPO_ROOT / "setup-hermes.sh", "scripts/install.sh")
+    sh_body = _resolver_source(CANONICAL_SH, "canonical")
     sh_script = tmp_path / "casefold.sh"
     sh_script.write_text(
         "os=win32\n" + sh_body + "\nprintf '%s\\n' \"$(hermes_root_of)\"\n",
@@ -1482,6 +1560,7 @@ def test_resolvers_fold_a_case_variant_of_the_default_home(
     sh_result = subprocess.run(
         [bash, sh_script.as_posix()],
         env={**os.environ}, cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert sh_result.returncode == 0, sh_result.stdout + sh_result.stderr
     sh_staged = str(_staged_store(sh_result.stdout.splitlines()[0]))
@@ -1500,6 +1579,7 @@ def test_resolvers_fold_a_case_variant_of_the_default_home(
              "-File", str(probe)],
             env={**os.environ, "LOCALAPPDATA": _child_localappdata(tmp_path)},
             cwd=str(tmp_path), capture_output=True, text=True, timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
         staged = str(_staged_store(result.stdout))
@@ -1540,6 +1620,7 @@ def test_powershell_tilde_expansion_skips_a_lone_homepath(
              "$ErrorActionPreference='Stop'\n" + _resolver_source(path, mirror) + "\n"
              "'RESULT=' + (Expand-HermesHomeValue '~/x')"],
             env=env, capture_output=True, text=True, errors="replace", timeout=120,
+            check=False,
         )
         assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
         assert result.stdout.strip() == expected, (

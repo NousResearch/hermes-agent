@@ -400,12 +400,14 @@ function Initialize-ResolvedPaths {
 # The MACHINE-scoped bootstrap root: HermesHome is the PROFILE home, but the
 # store is shared by every profile, so this fold mirrors
 # get_default_hermes_root() (<root>\profiles\<name> and anything under the
-# platform default fold back to the root); byte-identical to the twin in
-# setup-hermes.ps1 (the mirror-body test compares both with pm's answer). A
+# platform default fold back to the root). This copy is GENERATED from
+# scripts/bootstrap/store_root.ps1: edit the source, never this block. A
 # stamped ``runtimeDir`` is not yet readable here (no Python yet); a sealed
 # payload's writable store folds to this same root, so one branch covers both.
 # HERMES_RUNTIME_DIR remains the explicit override.
-# --- BEGIN store-root resolver (mirrored in setup-hermes.ps1) ---
+# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---
+# Derived from scripts/bootstrap/store_root.ps1. DO NOT EDIT BY HAND:
+# run scripts/gen-bootstrap-resolver.py after editing the canonical file.
 function Expand-HermesHomeValue {
     # os.path.expandvars+expanduser for both styles: %VAR% on Windows, $VAR on
     # POSIX; an UNSET name stays literal, and ~/~user follow ntpath's rule.
@@ -648,7 +650,7 @@ function Test-HermesFullyQualifiedPath {
     if ($Value -match '^[\\/](?![\\/])') { return $false }
     return $true
 }
-# --- END store-root resolver ---
+# --- END GENERATED: store-root resolver ---
 
 
 
@@ -1530,18 +1532,22 @@ function Stage-Venv {
 # (the run_locked_uv_sync contract moved into pm/environment.py).
 # This tool-only bootstrap runs before PM's own dependencies exist. pm.cli
 # prepares and enters its independently locked runtime before installing apps.
-# --- BEGIN uv state pins (mirrored in setup-hermes.ps1) ---
+# --- BEGIN GENERATED: uv state pins (scripts/gen-bootstrap-resolver.py) ---
+# Derived from scripts/bootstrap/uv_state_pins.ps1. DO NOT EDIT BY HAND:
+# run scripts/gen-bootstrap-resolver.py after editing the canonical file.
 function Set-UvStatePins {
     # uv's default state belongs to the USER's uv (#101269), so pin both to the
-    # MACHINE root. The cache keeps its own slot — pm seeds <root>\cache\uv once,
-    # skipping entries that already exist, so bootstrap bytes there first would
-    # mark a partial seed done — while nothing seeds the python dir.
+    # MACHINE root unless the caller already set them: an explicitly configured
+    # value stays authoritative, exactly as the shell twins leave it. The cache
+    # keeps its own slot — pm seeds <root>\cache\uv once, skipping entries that
+    # already exist, so bootstrap bytes there first would mark a partial seed
+    # done — while nothing seeds the python dir.
     $hermesRoot = Get-HermesRoot
     $cache = Join-Path $hermesRoot 'cache'
-    $env:UV_CACHE_DIR = Join-Path $cache 'uv-bootstrap'
-    $env:UV_PYTHON_INSTALL_DIR = Join-Path $cache 'uv-python'
+    if (-not $env:UV_CACHE_DIR) { $env:UV_CACHE_DIR = Join-Path $cache 'uv-bootstrap' }
+    if (-not $env:UV_PYTHON_INSTALL_DIR) { $env:UV_PYTHON_INSTALL_DIR = Join-Path $cache 'uv-python' }
 }
-# --- END uv state pins ---
+# --- END GENERATED: uv state pins ---
 
 function Get-BootstrapPython {
     # The full ladder runs every stage in one process and four of them need

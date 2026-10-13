@@ -159,7 +159,12 @@ def test_dev_setup_reaches_the_same_mirror_without_python(tmp_path, server):
     http.files["/archive/" + digest] = body
     repo = tmp_path / "repo"
     (repo / "pm").mkdir(parents=True)
+    (repo / "scripts" / "bootstrap").mkdir(parents=True)
     shutil.copyfile(ROOT / "setup-hermes.sh", repo / "setup-hermes.sh")
+    # setup-hermes.sh sources the canonical resolver instead of carrying a copy,
+    # so the isolated checkout needs it too.
+    shutil.copyfile(ROOT / "scripts" / "bootstrap" / "store_root.sh",
+                    repo / "scripts" / "bootstrap" / "store_root.sh")
     (repo / "pm/artifact-mirror.json").write_text(json.dumps({"origin": base, "prefix": "archive/"}, indent=2), encoding="utf-8")
     (repo / "pm/lock.json").write_text(json.dumps({"packages": {
         "uv": {"version": "fixture", "artifacts": {current_target(): {"url": base + "/missing.tar.gz", "sha256": digest}}},

@@ -98,37 +98,37 @@ case "$CHANNEL" in
     *) printf -- '--channel must be stable or main, not %s\n' "$CHANNEL" >&2; exit 2 ;;
 esac
 
-# The mirrored resolver block below compares ${os:-} against win32; derive it
-# from uname BEFORE the block runs — the same case setup-hermes.sh carries
-# outside its twin block (the block body is byte-identical and cannot do it).
-# A non-matching uname stays POSIX (the block's ${os:-} default); platform
-# acceptance itself remains check_platform's call under main.
-case "$(uname -s)" in
-  Linux) os=linux ;;
-  Darwin) os=darwin ;;
-  MINGW*|MSYS*|CYGWIN*) os=win32 ;;
-  *) os="" ;;
-esac
-
 # HERMES_HOME/INSTALL_DIR defaults are finalized AFTER the resolver block below
 # (it needs the raw home and defines hermes_default_home).
 
 # The MACHINE-scoped bootstrap root: HERMES_HOME is the PROFILE home, but the
-# store is shared by every profile, so this fold mirrors
-# get_default_hermes_root() (<root>/profiles/<name> and anything under the
-# platform default fold back to the root). Self-contained on purpose — under
-# `curl | bash` no sibling exists to source — and byte-identical to the twin
-# in setup-hermes.sh (the mirror-body test compares both with pm's answer). A
-# stamped ``runtimeDir`` is not yet readable here (no Python yet); a sealed
-# payload's writable store folds to this same root, so one branch covers both.
-# HERMES_RUNTIME_DIR remains the explicit override.
-# --- BEGIN store-root resolver (mirrored in setup-hermes.sh) ---
-_hermes_user_home() {
-    # '~user' -> the account's home, or nothing when unknown (getent / dscacheutil).
-    local _name="$1" _home=""
-    case "$_name" in
-        ""|*[!A-Za-z0-9_.-]*) return 1 ;;
+# store is shared by every profile. The resolver body below is GENERATED from
+# scripts/bootstrap/store_root.sh: edit the source, never this block. It is the
+# SAME body setup-hermes.sh sources, so it carries the win32 branches that body
+# needs under msys; install.sh runs POSIX-only (check_platform rejects Windows,
+# where install.ps1 is the entry), so those branches are unreachable here — a
+# documented dead edge, kept so the canonical file stays one implementation
+# rather than two generated variants. A stamped ``runtimeDir`` is not yet
+# readable here (no Python yet); a sealed payload's writable store folds to
+# this same root, so one branch covers both. HERMES_RUNTIME_DIR remains the
+# explicit override.
+# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---
+# Derived from scripts/bootstrap/store_root.sh. DO NOT EDIT BY HAND:
+# run scripts/gen-bootstrap-resolver.py after editing the canonical file.
+# _hermes_os -> win32 | posix. Same precedence setup-hermes.sh used: uname,
+# so a Cygwin/Git Bash shell reads pm's win32 default like native Windows does.
+_hermes_os() {
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) printf 'win32' ;;
+        *) printf 'posix' ;;
     esac
+}
+
+# _hermes_user_home NAME -> the account's home, or failure when unknown.
+
+_hermes_user_home() {
+    local _name="$1" _home=""
+    case "$_name" in ""|*[!A-Za-z0-9_.-]*) return 1 ;; esac
     if command -v getent >/dev/null 2>&1; then
         _home="$(getent passwd "$_name" 2>/dev/null | cut -d: -f6)"
     fi
@@ -138,14 +138,12 @@ _hermes_user_home() {
     [ -n "$_home" ] || return 1
     printf '%s' "$_home"
 }
+
+# _hermes_env_ci NAME -> the value of *name* read case-insensitively, as
+# ntpath.expandvars reads os.environ. An exact printenv hit is one fork and
+# keeps multi-line values verbatim; the awk fallback scans the exported names
+# because printenv cannot fold case.
 _hermes_env_ci() {
-    # ntpath reads os.environ case-insensitively ('%localappdata%' finds
-    # LOCALAPPDATA); printenv cannot fold case, so scan the exported names.
-    # An empty value still counts as set (ntpath maps it to '').
-    # Exact hit first: printenv is one fork and emits multi-line values
-    # verbatim; `env` line-delimits them, so the awk fallback below can only
-    # see the first line. awk stays a single child — a read loop that forks
-    # per entry rides msys process-substitution edge cases for no benefit.
     local _name="$1" _v
     if _v="$(printenv "$_name")"; then
         printf '%s' "$_v"
@@ -156,149 +154,121 @@ _hermes_env_ci() {
         END { exit !found }
     '
 }
-_hermes_expand() {
-    # os.path.expandvars+expanduser without eval: an UNSET name keeps its source
-    # text (braces included), anything else malformed stays literal, and printenv
-    # reads the exported table (unlike ${!name}).
-    local _s="$1" _out="" _name _v _rest
+
+# _hermes_vars VALUE -> os.path.expandvars(VALUE) on POSIX and
+# ntpath.expandvars(VALUE) on win32. A `$` name is [A-Za-z0-9_]+; an UNSET name
+# keeps its source text (braces included); an unclosed "${" leaves the
+# remainder literal. On win32, %VAR% is read case-insensitively, an unknown or
+# unclosed form stays source text, and '%%' folds to one '%'.
+_hermes_vars() {
+    local _s="$1" _out="" _pre _name _val _rest _win
+    _win="$(_hermes_os)"
     while [ -n "$_s" ]; do
+        _pre="${_s%%[$%]*}"
+        if [ "$_pre" = "$_s" ]; then printf '%s' "$_out$_s"; return 0; fi
+        _out="$_out$_pre"
+        _s="${_s#"$_pre"}"
         case "$_s" in
             '$'*)
                 _s="${_s#\$}"
                 case "$_s" in
                     '{'*)
                         case "$_s" in
-                            *'}'*)
-                                _name="${_s#\{}"
-                                _name="${_name%%\}*}"
-                                _s="${_s#*\}}"
-                                if [ -z "$_name" ]; then
-                                    _out="$_out\${}"
-                                elif _v="$(printenv "$_name")"; then
-                                    _out="$_out$_v"
-                                else
-                                    _out="$_out\${$_name}"
-                                fi
-                                ;;
-                            *)
-                                _out="$_out\$"
-                                ;;
+                            *'}'*) _name="${_s#\{}"; _name="${_name%%\}*}"; _s="${_s#*\}}" ;;
+                            # An unclosed "${" stops the scan with the remainder
+                            # left literal, exactly as Python's break does.
+                            *) printf '%s' "$_out\$$_s"; return 0 ;;
                         esac
-                        ;;
-                    [A-Za-z0-9_]*)
-                        _name="${_s%%[!A-Za-z0-9_]*}"
-                        _s="${_s#"$_name"}"
-                        if _v="$(printenv "$_name")"; then
-                            _out="$_out$_v"
-                        else
-                            _out="$_out\$$_name"
-                        fi
-                        ;;
+                        if _val="$(printenv "$_name")"; then _out="$_out$_val"
+                        else _out="$_out\${$_name}"
+                        fi ;;
                     *)
-                        _out="$_out\$"
-                        ;;
-                esac
-                ;;
+                        _name="${_s%%[!A-Za-z0-9_]*}"
+                        if [ -z "$_name" ]; then _out="$_out\$"; continue; fi
+                        _s="${_s#"$_name"}"
+                        if _val="$(printenv "$_name")"; then _out="$_out$_val"
+                        else _out="$_out\$$_name"
+                        fi ;;
+                esac ;;
             '%'*)
-                # ntpath reads '%VAR%' case-insensitively, keeps an unknown or
-                # unclosed form as source text, and folds '%%' to one '%'.
-                if [ "${os:-}" != win32 ]; then
+                if [ "$_win" != win32 ]; then
                     _out="$_out%"      # posixpath.expandvars has no '%' syntax
                     _s="${_s#%}"
                 else
                     _rest="${_s#%}"
                     case "$_rest" in
-                        '%'*)
-                            _out="$_out%"
-                            _s="${_rest#%}"
-                            ;;
+                        '%'*) _out="$_out%"; _s="${_rest#%}" ;;
                         *'%'*)
                             _name="${_rest%%\%*}"
                             _s="${_rest#"$_name%"}"
-                            if _v="$(_hermes_env_ci "$_name")"; then
-                                _out="$_out$_v"
-                            else
-                                _out="$_out%$_name%"
-                            fi
-                            ;;
-                        *)
-                            _out="$_out%"
-                            _s="$_rest"
-                            ;;
+                            if _val="$(_hermes_env_ci "$_name")"; then _out="$_out$_val"
+                            else _out="$_out%$_name%"
+                            fi ;;
+                        *) _out="$_out%"; _s="$_rest" ;;
                     esac
-                fi
-                ;;
-            *)
-                _out="$_out${_s%%[$%]*}"
-                _s="${_s#"${_s%%[$%]*}"}"
-                ;;
+                fi ;;
         esac
     done
-    case "$_out" in
-        "~"|"~/"*)
-            # posixpath.expanduser: HOME when it is set — an EMPTY HOME answers
-            # "/" — and the account database when HOME is unset (expanduser's pwd
-            # fallback). '~user' below always resolves through the account database.
-            local _tail=""
-            case "$_out" in "~/"*) _tail="${_out#"~"}" ;; esac
-            if [ "${HOME+x}" = x ]; then
-                if [ -n "$HOME" ]; then
-                    _out="$HOME$_tail"
-                else
-                    _out="/${_tail#/}"
-                fi
-            elif _v="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then
-                _out="$_v$_tail"
-            fi
-            ;;
-        "~"?*)
-            # '~user'/'~user/rest': the account home replaces the prefix; unknown stays literal.
-            local _user="${_out#"~"}" _tail=""
-            case "$_user" in
-                */*) _tail="/${_user#*/}"; _user="${_user%%/*}" ;;
-            esac
-            if _v="$(_hermes_user_home "$_user")"; then
-                _out="$_v$_tail"
-            fi
-            ;;
-    esac
     printf '%s' "$_out"
 }
+
+# _hermes_tilde VALUE -> os.path.expanduser(VALUE). A HOME that is SET wins even
+# when empty (answering "/"); unset falls back to the account database; '~user'
+# looks the account up and stays literal when unknown.
+_hermes_tilde() {
+    local _v="$1" _user _tail _home
+    case "$_v" in
+        "~"|"~/"*) _tail="${_v#\~}"
+            if [ "${HOME+x}" = x ]; then
+                [ -n "$HOME" ] && printf '%s' "$HOME$_tail" || printf '%s' "/${_tail#/}"
+            elif _home="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then printf '%s' "$_home$_tail"
+            else printf '%s' "$_v"
+            fi ;;
+        "~"*) _user="${_v#\~}"; _tail=""
+            case "$_user" in */*) _tail="/${_user#*/}"; _user="${_user%%/*}" ;; esac
+            if _home="$(_hermes_user_home "$_user")"; then printf '%s' "$_home$_tail"
+            else printf '%s' "$_v"
+            fi ;;
+        *) printf '%s' "$_v" ;;
+    esac
+}
+
+# _hermes_expand VALUE -> os.path.expanduser(os.path.expandvars(VALUE)).
+_hermes_expand() { _hermes_tilde "$(_hermes_vars "$1")"; }
+
+# _hermes_norm VALUE -> str(Path(VALUE)): collapse separator runs, drop ".";
+# ".." is KEPT, because pm returns the lexical path a custom home spelled.
+# On win32 a backslash is a separator, exactly as Path treats it.
 _hermes_norm() {
-    # Lexical normalization like Path: collapse repeated separators and drop
-    # "."; ".." stays VERBATIM (the fold runs on the RESOLVED path).
     local _rest="$1" _out="" _comp
-    if [ "${os:-}" = win32 ]; then
-        # Path treats "\" as a separator on Windows only; on POSIX it is a
-        # legal filename character and must stay untouched.
+    if [ "$(_hermes_os)" = win32 ]; then
         _rest="${_rest//\\//}"
     fi
-    case "$_rest" in
-        "//"[!/]*) _out="//" ;;
-        /*)        _out="/" ;;
-    esac
+    case "$_rest" in "//"[!/]*) _out="//" ;; /*) _out="/" ;; esac
     _rest="${_rest#/}"
-    case "$_rest" in
-        "//"*) _rest="${_rest#//}" ;;
-    esac
+    case "$_rest" in "//"*) _rest="${_rest#//}" ;; esac
     while [ -n "$_rest" ]; do
         _comp="${_rest%%/*}"
-        case "$_rest" in
-            */*) _rest="${_rest#*/}" ;;
-            *)   _rest="" ;;
-        esac
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
         [ -z "$_comp" ] && continue
         [ "$_comp" = "." ] && continue
-        if [ -z "$_out" ]; then _out="$_comp"
-        elif [ "$_out" = "/" ] || [ "$_out" = "//" ]; then _out="$_out$_comp"
-        else _out="$_out/$_comp"; fi
+        case "$_out" in
+            "") _out="$_comp" ;;
+            "/") _out="/$_comp" ;;
+            "//") _out="//$_comp" ;;
+            *) _out="$_out/$_comp" ;;
+        esac
     done
     printf '%s' "$_out"
 }
+
+# _hermes_resolve VALUE -> Path(VALUE).resolve(strict=False): follow every
+# symlink along the chain (not only the longest existing prefix), keep missing
+# components, pop ".." off the resolved prefix (never the anchor). One portable
+# walk on purpose: `realpath -m` does not exist on BSD/macOS, so a host-tool
+# fast path plus a shell fallback would put a second, never-executed resolver
+# behind every macOS run — this is the only implementation every POSIX host runs.
 _hermes_resolve() {
-    # Path.resolve(strict=False): follow every symlink along the chain (not only
-    # the longest existing prefix), keep missing components, pop ".." off the
-    # resolved prefix (never the anchor).
     local _p="$1"
     case "$_p" in
         /*) ;;
@@ -347,86 +317,76 @@ _hermes_resolve() {
     done
     printf '/%s' "$_res"
 }
+
+# hermes_default_home -> _get_platform_default_hermes_home(): win32 answers
+# %LOCALAPPDATA%\hermes<suffix> first, else HOME under AppData/Local, else the
+# literal "~/AppData/Local/..." form; POSIX answers the account home. The
+# suffix is appended LITERALLY, never expanded.
 hermes_default_home() {
-    # The home used when HERMES_HOME is unset (_get_platform_default_hermes_home):
-    # on win32 %LOCALAPPDATA%\hermes<suffix> first, else Path.home()/"AppData"/
-    # "Local"/hermes<suffix>; on POSIX the platform account home with the suffix
-    # appended LITERALLY. HOME is used verbatim when SET and non-empty; an EMPTY HOME makes
-    # posixpath.expanduser("~") answer "/", so the default is "/.hermes<suffix>";
-    # an unset HOME resolves through the account database; a missing account
-    # keeps the tilde the way expanduser does.
-    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _account_home _lad
-    if [ "${os:-}" = win32 ]; then
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _acct _lad
+    if [ "$(_hermes_os)" = win32 ]; then
         _lad="${LOCALAPPDATA-}"
         _lad="${_lad#"${_lad%%[![:space:]]*}"}"
         _lad="${_lad%"${_lad##*[![:space:]]}"}"
-        if [ -n "$_lad" ]; then
-            printf '%s' "$_lad/hermes$_suffix"
-        elif [ -n "${HOME:-}" ]; then
-            printf '%s' "$HOME/AppData/Local/hermes$_suffix"
-        else
-            printf '%s' "~/AppData/Local/hermes$_suffix"
+        if [ -n "$_lad" ]; then printf '%s' "$_lad/hermes$_suffix"
+        elif [ -n "${HOME:-}" ]; then printf '%s' "$HOME/AppData/Local/hermes$_suffix"
+        else printf '%s' "~/AppData/Local/hermes$_suffix"
         fi
         return
     fi
     if [ "${HOME+x}" = x ]; then
-        if [ -n "$HOME" ]; then
-            printf '%s' "$HOME/.hermes$_suffix"
-        else
-            printf '%s' "/.hermes$_suffix"
-        fi
-        return
+        # Path.home() collapses every root form (/, //, ///) to '/' before the
+        # join, so the answer is '/.hermes'. A raw "$HOME/.hermes" keeps the
+        # '//' anchor, which Path treats as a different path.
+        _home="${HOME%/}"
+        while [ "${_home#/}" != "$_home" ]; do _home="${_home#/}"; done
+        [ -n "$_home" ] && { printf '%s' "/$_home/.hermes$_suffix"; return; }
+        printf '%s' "/.hermes$_suffix"; return
     fi
-    if _account_home="$(_hermes_user_home "$(id -un 2>/dev/null)" 2>/dev/null)"; then
-        printf '%s' "$_account_home/.hermes$_suffix"
-        return
+    if _acct="$(_hermes_user_home "$(id -un 2>/dev/null)" 2>/dev/null)"; then
+        printf '%s' "$_acct/.hermes$_suffix"; return
     fi
     printf '%s' "~/.hermes$_suffix"
 }
+
+# hermes_root_of -> get_default_hermes_root(). Containment is decided on
+# RESOLVED paths, folded case-insensitively on win32 (WindowsPath.relative_to
+# normcases); the returned form is lexical (it keeps ".."), as pm returns.
 hermes_root_of() {
-    # Containment is decided on RESOLVED paths but the lexical form is returned,
-    # mirroring get_default_hermes_root() (its non-fold answer keeps "..").
-    local _default_lex _default_res _lex _res _raw _cmp_res _cmp_def
-    # The default is the platform account home + LITERAL suffix; never run it
-    # through _hermes_expand (a $ in the suffix would expand; pm keeps it raw).
-    _default_lex="$(_hermes_norm "$(hermes_default_home)")"
-    _default_res="$(_hermes_resolve "$_default_lex")"
-    # pm strips the RAW env home before expanding it; whitespace-only folds to default.
+    local _def_lex _def_res _cmp_res _cmp_def _raw _lex _res _parent
+    _def_lex="$(_hermes_norm "$(hermes_default_home)")"
+    _def_res="$(_hermes_resolve "$_def_lex")"
     _raw="${HERMES_HOME-}"
     _raw="${_raw#"${_raw%%[![:space:]]*}"}"
     _raw="${_raw%"${_raw##*[![:space:]]}"}"
     if [ -n "$_raw" ]; then
         _lex="$(_hermes_norm "$(_hermes_expand "$_raw")")"
+        _res="$(_hermes_resolve "$_lex")"
+        _cmp_res="$_res"
+        _cmp_def="$_def_res"
+        if [ "$(_hermes_os)" = win32 ]; then
+            _cmp_res="$(printf '%s' "$_res" | tr '[:upper:]' '[:lower:]')"
+            _cmp_def="$(printf '%s' "$_def_res" | tr '[:upper:]' '[:lower:]')"
+        fi
+        case "$_cmp_res/" in
+            "$_cmp_def"/*) _lex="$_def_lex" ;;
+            *)
+                _parent="${_lex%/*}"
+                if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
+                    case "$_parent" in
+                        profiles) _lex="." ;;
+                        /profiles) _lex="/" ;;
+                        *) _lex="${_parent%/profiles}" ;;
+                    esac
+                fi ;;
+        esac
     else
-        _lex="$_default_lex"
+        _lex="$_def_lex"
     fi
-    _res="$(_hermes_resolve "$_lex")"
-    # Containment compares like pathlib: WindowsPath.relative_to normcases (the
-    # PowerShell twin folds with OrdinalIgnoreCase); POSIX compares keep case.
-    # tr folds ASCII only — a non-ASCII case-varying path could slip this fold
-    # where normcase would not; known fidelity limit, not equivalence.
-    _cmp_res="$_res"
-    _cmp_def="$_default_res"
-    if [ "${os:-}" = win32 ]; then
-        _cmp_res="$(printf '%s' "$_res" | tr '[:upper:]' '[:lower:]')"
-        _cmp_def="$(printf '%s' "$_default_res" | tr '[:upper:]' '[:lower:]')"
-    fi
-    case "$_cmp_res/" in
-        "$_cmp_def"/*) _lex="$_default_lex" ;;
-        *)
-            local _parent="${_lex%/*}"
-            if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
-                if [ "$_parent" = profiles ]; then _lex=".";
-                elif [ "$_parent" = /profiles ]; then _lex=/;
-                else _lex="${_parent%/profiles}"; fi
-            fi
-            ;;
-    esac
-    # "." like Path("."): an empty root would make "${HERMES_ROOT}/tools" the fs root.
-    [ -z "$_lex" ] && _lex="."
+    [ -n "$_lex" ] || _lex="."
     printf '%s' "$_lex"
 }
-# --- END store-root resolver ---
+# --- END GENERATED: store-root resolver ---
 
 # Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
 # transcripts and the Hermes-Setup driver read plain text. Defined before the

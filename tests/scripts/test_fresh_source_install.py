@@ -69,6 +69,10 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("utils.py", "hermes_constants.py", "hermes_yaml.py", "hermes_bootstrap.py", "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
+    # setup-hermes.sh sources the canonical resolver instead of carrying a copy.
+    (source / "scripts" / "bootstrap").mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "bootstrap" / "store_root.sh",
+                 source / "scripts" / "bootstrap" / "store_root.sh")
     # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),
     # and its config/env layer consults the stdlib-only safe-worker policy; the rest of agent/ stays
     # out so the tail cannot grow a dependency on the agent runtime.

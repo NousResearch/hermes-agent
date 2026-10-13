@@ -195,7 +195,8 @@ class MemoryProvider(ABC):
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
         memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).
         For replace/remove, ``metadata["previous_content"]`` is the full entry selected
-        under the native-store lock. Notifications follow a successful complete write
+        under the native-store lock. A memory-tool patch arrives as a replace whose
+        ``content`` is the whole entry after the edit. Notifications follow a successful complete write
         or batch; each batch operation sees the preceding operation's result. Older
         callers may omit this field: ``old_text`` alone is not authoritative identity.
         """

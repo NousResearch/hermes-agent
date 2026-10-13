@@ -14,6 +14,7 @@ import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { FileMenuTranslations } from './types_file_menu'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
@@ -392,27 +393,8 @@ export interface Translations extends NoticeTranslations {
     on: string
     off: string
   }
+  fileMenu: FileMenuTranslations
 
-  fileMenu: {
-    revealFinder: string
-    revealExplorer: string
-    revealFileManager: string
-    revealInSidebar: string
-    copyPath: string
-    copyRelativePath: string
-    download: string
-    downloadSaved: string
-    downloadFailed: string
-    rename: string
-    delete: string
-    renameTitle: string
-    renameLabel: string
-    deleteTitle: (name: string) => string
-    deleteBody: string
-    pathCopied: string
-    revealMissing: string
-    revealUnavailable: string
-  }
 
   boot: BootTranslations
 

@@ -28,7 +28,13 @@ export const arOverrides = {
   sessionImport: arConnectors.sessionImport,
   sendDiagnostics: arDiagnostics.sendDiagnostics,
   common: arCommon.common,
-  fileMenu: arChrome.fileMenu,
+  fileMenu: {
+    ...arChrome.fileMenu,
+    newFile: 'ملف جديد…',
+    newFolder: 'مجلد جديد…',
+    createFailed: 'فشل الإنشاء',
+    deleteRemoteBody: 'سيُحذف نهائيًا من الجهاز البعيد — ولا يمكن التراجع عن ذلك.'
+  },
   boot: arBoot.boot,
   notifications: arDiagnostics.notifications,
   remoteDisplayBanner: arBoot.remoteDisplayBanner,

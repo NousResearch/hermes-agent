@@ -10,6 +10,7 @@ import { zhHantCommandCenter } from './zh-hant_command_center'
 import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
+import { zhHantFileMenu } from './zh-hant_file_menu'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
@@ -75,7 +76,7 @@ export const zhHantOverrides = {
   intro: introZhHant,
   sessionImport: zhHantConnectors.sessionImport,
   common: zhHantCommon.common,
-  fileMenu: zhHantChrome.fileMenu,
+  fileMenu: zhHantFileMenu,
   boot: zhHantBoot.boot,
   notifications: zhHantDiagnostics.notifications,
   remoteDisplayBanner: zhHantBoot.remoteDisplayBanner,

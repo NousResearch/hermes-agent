@@ -111,7 +111,11 @@ The **microphone** is dictation; hover it and the other voice toggles fan out ab
 
 ### File browser
 
-Explore and preview the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
+Explore, preview, and manage the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
+
+Right-click a row for **Reveal** (local), **Copy path**, **Download** (remote files), **Rename** (F2), and **Delete**; folders also offer **New File**, and remote folders offer **New Folder**. Renames and deletes work on a remote gateway too — the operations use the selected profile's filesystem: the gateway host for a local terminal backend, or the SSH workspace for an SSH backend. Two delete flavors to know about: a local delete moves the file to the OS trash (recoverable), while a remote delete is **permanent** — the confirm dialog says which one you're getting. New File in local mode is an exclusive create (an existing name is refused, never truncated); local **New Folder** is not offered because the native bridge does not yet support creating folders.
+
+On an SSH-backed gateway profile, rename requires Linux, Python 3, and a filesystem that supports atomic no-replace rename (`renameat2`). If that capability or the configured terminal backend is unsupported, mutations fail explicitly rather than overwrite an entry or fall back to the gateway host. A locked hosted files root also constrains create, rename, and delete; SSH mutations are refused when that gateway-local root cannot authorize the SSH filesystem. Switching the active connection or profile cancels pending file edits and delete confirmations.
 
 ### Artifacts
 

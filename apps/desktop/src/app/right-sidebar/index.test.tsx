@@ -60,6 +60,15 @@ describe('RightSidebarPane', () => {
     expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull()
   })
 
+  it('does not offer unsupported local folder creation from the project root', async () => {
+    setCurrentCwd('/repo')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    expect(await screen.findByRole('button', { name: /^New File/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^New Folder/ })).toBeNull()
+  })
+
   it('does not read a retained cwd while it belongs to a previous session', async () => {
     $selectedStoredSessionId.set('new-session')
     $workspaceCwdOwner.set('previous-session')

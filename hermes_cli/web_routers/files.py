@@ -6,6 +6,7 @@ reached through the late-binding seam (cycle-safe).
 
 import asyncio
 import base64
+import errno
 import binascii
 import contextlib
 import mimetypes
@@ -27,12 +28,16 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
 from hermes_cli.web_deps import late
+from hermes_cli.web_routers._common import destructive_profile
 from hermes_cli.web_server_files import (
-    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_files_policy,
+    _managed_response_meta, _path_is_under, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
-    ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
+    ChatImageUpload, FsCreate, FsDelete, FsRename, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
+    ManagedFileUpload,
 )
 
 router = APIRouter()
@@ -278,13 +283,31 @@ def _fs_backend(profile: Optional[str] = None):
     return get_ssh_workspace_fs(profile_key, terminal)
 
 
+def _fs_mutation_backend(profile: Optional[str] = None):
+    """Select the same local/SSH workspace as reads, refusing other configured backends."""
+    backend = _fs_backend(profile)
+    if backend is not None:
+        return backend
+    with _profile_scope(profile):
+        configured = str((load_config().get("terminal") or {}).get("backend") or "local").strip().lower()
+    if configured != "local":
+        raise HTTPException(
+            status_code=501,
+            detail=f"Filesystem mutations are not supported for terminal backend '{configured}'",
+        )
+    return None
+
+
 def _raise_fs_backend_error(exc: Exception) -> None:
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
 
     if not isinstance(exc, SshWorkspaceFsError):
         raise exc
     status = {
+        "EUNSUPPORTED": 501,
         "EACCES": 403,
+        "EEXIST": 409,
+        "ENOTEMPTY": 409,
         "ECONN": 503,
         "EFBIG": 413,
         "EINVAL": 400,
@@ -293,7 +316,10 @@ def _raise_fs_backend_error(exc: Exception) -> None:
         "ENOTREG": 400,
     }.get(exc.code, 400)
     detail = {
+        "EUNSUPPORTED": "SSH rename requires Python 3 and filesystem support for atomic no-replace rename",
         "EACCES": "File is not readable",
+        "EEXIST": "Path already exists",
+        "ENOTEMPTY": "Directory is not empty (enable recursive delete)",
         "ECONN": "SSH workspace is unavailable",
         "EFBIG": "File too large",
         "EINVAL": "Invalid path",
@@ -765,7 +791,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
     if backend is not None:
         try:
             return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
     _hosted_fs_read_guard(target, request)
@@ -800,7 +826,7 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         target_path = Path(target)
         return {
@@ -851,7 +877,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
@@ -888,6 +914,265 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically rename without replacing a concurrently-created destination."""
+    if os.name == "nt":
+        os.rename(source, destination)  # Windows rename is no-replace.
+        return
+
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    src = os.fsencode(source)
+    dst = os.fsencode(destination)
+    if sys.platform.startswith("linux"):
+        operation = getattr(libc, "renameat2", None)
+        if operation is None:
+            raise NotImplementedError("atomic no-replace rename is unavailable")
+        result = operation(-100, ctypes.c_char_p(src), -100, ctypes.c_char_p(dst), 1)
+    elif sys.platform == "darwin":
+        operation = getattr(libc, "renamex_np", None)
+        if operation is None:
+            operation = getattr(libc, "renameatx_np", None)
+            if operation is None:
+                raise NotImplementedError("atomic no-replace rename is unavailable")
+            result = operation(-2, ctypes.c_char_p(src), -2, ctypes.c_char_p(dst), 0x00000004)
+        else:
+            result = operation(ctypes.c_char_p(src), ctypes.c_char_p(dst), 0x00000004)
+    else:
+        raise NotImplementedError("atomic no-replace rename is unavailable")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+def _is_junction(path: Path) -> bool:
+    check = getattr(path, "is_junction", None)
+    if os.name == "nt" and not callable(check):
+        raise HTTPException(status_code=501, detail="Windows junction detection is unavailable")
+    return bool(check and check())
+
+
+# Serialize destination checks against other /api/fs mutations in this process.
+_rename_locks: dict[str, asyncio.Lock] = {}
+
+
+def _fs_mutation_policy_guard(target: Path, request: Request, *, remote: bool = False) -> None:
+    """Apply the managed-files lock boundary to filesystem mutations."""
+    policy = _managed_files_policy(request, create_root=False)
+    root = policy.locked_root
+    if root is None:
+        return
+    if remote or not _path_is_under(root, target):
+        raise HTTPException(status_code=403, detail="Path is outside the managed files root")
+
+
+def _fs_expanduser_path(raw_path: str) -> Path:
+    return Path(raw_path).expanduser()
+
+
+def _fs_mutation_policy_guard_raw(
+    raw_path: str, request: Request, *, remote: bool = False, expanduser: bool = False
+) -> None:
+    target = Path(raw_path).expanduser() if expanduser else Path(raw_path)
+    _fs_mutation_policy_guard(target, request, remote=remote)
+
+
+def _fs_parent_lock(parent: Path) -> asyncio.Lock:
+    return _rename_locks.setdefault(str(parent), asyncio.Lock())
+
+
+def _fs_mutation_target(raw_path: str) -> Path:
+    """Resolve the PARENT (must exist, no symlinked directory in the chain)
+    and keep the FINAL component lexical, never followed.
+
+    - A symlinked PARENT (e.g. `/project/link/...` where `link` points
+      elsewhere) would have redirected creation/rename/delete outside the
+      directory the tree shows — reject it (400).
+    - The FINAL component as a symlink is mutated AS the link (renamed,
+      unlinked, or collided) — never chased to its referent, which would
+      mutate outside the tree. This is what the managed-files route avoids and
+      what a filesystem-safe tree mutation must do.
+    """
+    try:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError
+        # Reject any `.`/`..` component: `Path('.../existing/..')` would pass
+        # the parent checks with the final name `..`, and a delete/copy of
+        # that target resolves to the PARENT directory — deleting outside the
+        # selected tree (e.g. `rmtree('/tmp/existing/..')` → `/tmp`).
+        if any(part in (".", "..") for part in candidate.parts):
+            raise ValueError
+        parent = candidate.parent
+        if not parent.is_dir():
+            raise HTTPException(status_code=400, detail="Parent directory does not exist")
+        # Reject a symlinked parent chain: the desktop tree resolves entries so
+        # no legit caller passes a symlinked dir for a mutation.
+        probe = parent
+        while probe != probe.parent:
+            if _is_junction(probe):
+                raise HTTPException(status_code=400, detail="Cannot mutate through a junction directory")
+            if probe.is_symlink():
+                raise HTTPException(status_code=400, detail="Cannot mutate through a symbolic-link directory")
+            probe = probe.parent
+        return parent.resolve() / candidate.name
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _fs_valid_new_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    return name
+
+
+@router.post("/api/fs/create")
+async def fs_create(payload: FsCreate, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/fs/create")
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True)
+        try:
+            target = await asyncio.to_thread(backend.create, payload.path, directory=payload.directory)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target, "isDirectory": bool(payload.directory)}
+
+    await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
+    async with _fs_parent_lock(target.parent):
+        with _io_errors("Parent directory is not writable", "Could not create"):
+            if payload.directory:
+                try:
+                    target.mkdir()
+                except OSError as exc:
+                    if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                        raise HTTPException(status_code=409, detail="Path already exists")
+                    raise
+            else:
+                try:
+                    # Base mode 0o666 (not the 0o777 open() default) so the
+                    # umask yields 0644 for new text files, not 0755.
+                    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                    os.close(fd)
+                except OSError as exc:
+                    if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                        raise HTTPException(status_code=409, detail="Path already exists")
+                    raise
+    return {"ok": True, "path": str(target), "isDirectory": bool(payload.directory)}
+
+
+@router.post("/api/fs/rename")
+async def fs_rename(payload: FsRename, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/fs/rename")
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True)
+        try:
+            target = await asyncio.to_thread(backend.rename, payload.path, _fs_valid_new_name(payload.name))
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target}
+
+    name = _fs_valid_new_name(payload.name)
+    await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, expanduser=True)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
+    destination = target.parent / name
+    await asyncio.to_thread(_fs_mutation_policy_guard, destination, request)
+
+    if not (target.is_symlink() or target.exists()):
+        raise HTTPException(status_code=404, detail="Path not found")
+    if destination == target:
+        return {"ok": True, "path": str(target)}
+    if destination.exists() or destination.is_symlink():
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+
+    async with _fs_parent_lock(target.parent):
+        # Re-check under the lock: a concurrent create of `destination` between
+        # the pre-flight check and here must still be refused, not replaced.
+        if destination.exists() or destination.is_symlink():
+            raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+        with _io_errors("Path is not writable", "Could not rename"):
+            try:
+                _rename_noreplace(target, destination)
+            except FileExistsError:
+                raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+            except NotImplementedError as exc:
+                raise HTTPException(status_code=501, detail=str(exc))
+            except OSError as exc:
+                if exc.errno in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL}:
+                    raise HTTPException(status_code=501, detail="Atomic no-replace rename is unavailable on this filesystem")
+                raise
+    return {"ok": True, "path": str(destination)}
+
+
+@router.delete("/api/fs/delete")
+async def fs_delete(payload: FsDelete, request: Request, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "DELETE /api/fs/delete")
+    if not payload.path or payload.path.startswith("file:"):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    backend = await asyncio.to_thread(_fs_mutation_backend, profile)
+    if backend is not None:
+        await asyncio.to_thread(_fs_mutation_policy_guard_raw, payload.path, request, remote=True, expanduser=True)
+        try:
+            target = await asyncio.to_thread(backend.delete, payload.path, recursive=payload.recursive)
+        except SshWorkspaceFsError as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target}
+
+    policy = await asyncio.to_thread(_managed_files_policy, request, create_root=False)
+    requested = await asyncio.to_thread(_fs_expanduser_path, payload.path)
+    if policy.locked_root is not None and await asyncio.to_thread(_path_is_under, requested, policy.locked_root):
+        raise HTTPException(status_code=400, detail="Cannot delete the managed directory root or its ancestor")
+    await asyncio.to_thread(_fs_mutation_policy_guard, requested, request)
+    target = await asyncio.to_thread(_fs_mutation_target, payload.path)
+    await asyncio.to_thread(_fs_mutation_policy_guard, target, request)
+    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
+    # a delete unlinks the LINK itself (unlink never chases the referent), so
+    # broken links must still be deletable.
+    if not (target.is_symlink() or target.exists()):
+        raise HTTPException(status_code=404, detail="Path not found")
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    policy = _managed_files_policy(request)
+    if policy.locked_root is not None and (
+        target == policy.locked_root or _path_is_under(target, policy.locked_root)
+    ):
+        raise HTTPException(status_code=400, detail="Cannot delete the managed directory root")
+
+    async with _fs_parent_lock(target.parent):
+        with _io_errors("Path is not writable", "Could not delete path"):
+            # The final component must not be followed: a symlink is unlinked AS
+            # the link. is_dir() would chase a link-to-directory and rmdir() the
+            # referent instead, so test is_symlink() BEFORE the directory branch.
+            if target.is_symlink():
+                target.unlink()
+            elif _is_junction(target):
+                target.rmdir()
+            elif target.is_dir():
+                if payload.recursive:
+                    shutil.rmtree(target)
+                else:
+                    # rmdir() removes an EMPTY directory (matches the managed-files
+                    # route); only ENOTEMPTY/EEXIST map to the 409 — any other
+                    # OSError (e.g. EACCES) keeps its real 403/500 mapping.
+                    try:
+                        target.rmdir()
+                    except OSError as exc:
+                        if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                            raise HTTPException(
+                                status_code=409, detail="Directory is not empty (enable recursive delete)"
+                            )
+                        raise
+            else:
+                target.unlink()
+    return {"ok": True, "path": str(target)}
+
+
 async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
     if session_id is not None:
         from hermes_cli.web_routers.sessions import get_session_detail
@@ -915,7 +1200,7 @@ async def fs_read_data_url(
             data, _size, target = await asyncio.to_thread(
                 backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
@@ -938,7 +1223,7 @@ async def fs_download(
     if backend is not None:
         try:
             target, _size = await asyncio.to_thread(backend.inspect_file, path)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         target_path = Path(target)
         if _is_sensitive_path(target_path):
@@ -967,7 +1252,7 @@ async def fs_git_root(path: str, profile: Optional[str] = None):
     if backend is not None:
         try:
             return {"root": await asyncio.to_thread(backend.git_root, path)}
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
@@ -985,7 +1270,7 @@ async def fs_default_cwd(profile: Optional[str] = None):
         cwd = backend.cwd
         try:
             branch = await asyncio.to_thread(backend.git_branch, cwd)
-        except Exception as exc:
+        except SshWorkspaceFsError as exc:
             _raise_fs_backend_error(exc)
         return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()

@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaConnectors } from './ja_connectors'
+import { jaFileMenu } from './ja_file_menu'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -67,26 +68,8 @@ export const jaOverrides = {
     off: 'オフ'
   },
 
-  fileMenu: {
-    revealFinder: 'Finder で表示',
-    revealExplorer: 'エクスプローラーで表示',
-    revealFileManager: '格納フォルダーを開く',
-    revealInSidebar: 'ファイルツリーで表示',
-    copyPath: 'パスをコピー',
-    copyRelativePath: '相対パスをコピー',
-    download: 'ダウンロード',
-    downloadSaved: '保存しました',
-    downloadFailed: 'ダウンロードに失敗しました',
-    rename: '名前を変更…',
-    delete: '削除',
-    renameTitle: '名前を変更',
-    renameLabel: '新しい名前',
-    deleteTitle: name => `${name} を削除しますか？`,
-    deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
-    pathCopied: 'パスをコピーしました',
-    revealMissing: 'そのフォルダーはこのコンピューターにありません'
-  },
 
+  fileMenu: jaFileMenu,
   boot: {
     ready: 'Hermes Desktop の準備ができました',
     desktopBootFailedWithMessage: message => `デスクトップの起動に失敗しました: ${message}`,

@@ -1,4 +1,6 @@
 import base64
+import os
+import stat
 import urllib.parse
 from contextlib import nullcontext
 from pathlib import Path
@@ -349,6 +351,383 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert default_response.status_code == 401
 
 
+def test_fs_create_file_and_directory(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    file_response = client.post("/api/fs/create", json={"path": str(parent / "notes.md"), "directory": False})
+    dir_response = client.post("/api/fs/create", json={"path": str(parent / "subdir"), "directory": True})
+
+    assert file_response.status_code == 200
+    assert (parent / "notes.md").is_file()
+    assert file_response.json()["isDirectory"] is False
+    assert dir_response.status_code == 200
+    assert (parent / "subdir").is_dir()
+    assert dir_response.json()["isDirectory"] is True
+
+
+def test_fs_create_refuses_existing_and_missing_parent(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("x")
+
+    existing = client.post("/api/fs/create", json={"path": str(parent / "taken.txt")})
+    missing_parent = client.post("/api/fs/create", json={"path": str(parent / "no" / "such" / "file")})
+
+    assert existing.status_code == 409
+    assert missing_parent.status_code == 400
+    assert not (parent / "no").exists()
+
+
+def test_fs_rename_same_parent_collision_guard(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("a")
+    (root / "b.txt").write_text("b")
+
+    moved = client.post("/api/fs/rename", json={"path": str(root / "a.txt"), "name": "c.txt"})
+    collision = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "c.txt"})
+    escape = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "../escape.txt"})
+    missing = client.post("/api/fs/rename", json={"path": str(root / "ghost.txt"), "name": "x.txt"})
+
+    assert moved.status_code == 200
+    assert moved.json()["path"] == str(root / "c.txt")
+    assert (root / "c.txt").read_text() == "a"
+    assert collision.status_code == 409
+    assert escape.status_code == 400
+    assert not (tmp_path / "escape.txt").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_mutations_enforce_locked_managed_root_boundary(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "source.txt").write_text("source")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    monkeypatch.setattr(
+        file_routes, "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    create = client.post("/api/fs/create", json={"path": str(outside / "new.txt")})
+    rename = client.post("/api/fs/rename", json={"path": str(outside / "keep.txt"), "name": "renamed.txt"})
+    delete = client.request("DELETE", "/api/fs/delete", json={"path": str(outside / "keep.txt")})
+
+    assert [create.status_code, rename.status_code, delete.status_code] == [403, 403, 403]
+    assert (locked / "source.txt").read_text() == "source"
+    assert (outside / "keep.txt").read_text() == "keep"
+    assert not (outside / "new.txt").exists()
+
+
+def test_fs_rename_noreplace_preserves_independent_destination(tmp_path):
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "target.txt"
+    source.write_text("source")
+    destination.write_text("independent writer")
+
+    with pytest.raises(FileExistsError):
+        file_routes._rename_noreplace(source, destination)
+
+    assert source.read_text() == "source"
+    assert destination.read_text() == "independent writer"
+
+
+def test_fs_rename_keeps_target_created_at_final_publication(client, tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "source.txt"
+    destination = root / "target.txt"
+    source.write_text("source")
+    original = file_routes._rename_noreplace
+
+    def competing_writer(src, dst):
+        dst.write_text("independent writer")
+        return original(src, dst)
+
+    monkeypatch.setattr(file_routes, "_rename_noreplace", competing_writer)
+    response = client.post("/api/fs/rename", json={"path": str(source), "name": destination.name})
+
+    assert response.status_code == 409
+    assert source.read_text() == "source"
+    assert destination.read_text() == "independent writer"
+
+
+def test_fs_rename_unavailable_atomic_primitive_is_explicit(client, tmp_path, monkeypatch):
+    import errno
+
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"source")
+
+    def unsupported(source, destination):
+        raise OSError(errno.ENOTSUP, "Atomic no-replace rename is unsupported")
+
+    monkeypatch.setattr(file_routes, "_rename_noreplace", unsupported)
+    response = client.post("/api/fs/rename", json={"path": str(source), "name": "destination.txt"})
+
+    assert response.status_code == 501
+    assert source.read_bytes() == b"source"
+    assert not (tmp_path / "destination.txt").exists()
+
+
+def test_fs_rename_accepts_directory(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "olddir").mkdir(parents=True)
+
+    response = client.post("/api/fs/rename", json={"path": str(root / "olddir"), "name": "newdir"})
+
+    assert response.status_code == 200
+    assert (root / "newdir").is_dir()
+    assert not (root / "olddir").exists()
+
+
+def test_fs_delete_file_dir_and_recursive_guard(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "deep.txt").write_text("d")
+    (root / "leaf.txt").write_text("l")
+
+    dir_without_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": False}
+    )
+    file_delete = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "leaf.txt")})
+    dir_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": True}
+    )
+    missing = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "ghost.txt")})
+
+    assert dir_without_recursive.status_code == 409
+    assert file_delete.status_code == 200
+    assert not (root / "leaf.txt").exists()
+    assert dir_recursive.status_code == 200
+    assert not (root / "sub").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_delete_empty_directory_without_recursive(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "empty").mkdir(parents=True)
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "empty"), "recursive": False})
+
+    assert response.status_code == 200
+    assert not (root / "empty").exists()
+
+
+def test_fs_delete_refuses_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "managed-root"
+    locked.mkdir()
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(locked), "recursive": True})
+
+    assert response.status_code == 400
+    assert locked.exists()
+
+
+def test_fs_mutation_refuses_symlinked_parent(client, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("keep")
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    create = client.post("/api/fs/create", json={"path": str(root / "link" / "evil.txt"), "directory": False})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "link" / "sentinel.txt"), "name": "moved.txt"})
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "link" / "sentinel.txt"), "recursive": False}
+    )
+
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    assert delete.status_code == 400
+    # Nothing was created/renamed/deleted outside the project tree.
+    assert not (outside / "evil.txt").exists()
+    assert (outside / "sentinel.txt").read_text() == "keep"
+    assert not (outside / "moved.txt").exists()
+
+
+def test_fs_delete_refuses_ancestor_of_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "opt-data"
+    locked.mkdir()
+    (locked / "keep.txt").write_text("keep")
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    # Deleting an ANCESTOR of the locked root with recursive must be refused:
+    # a naive `target == locked_root` guard would let rmtree(ancestor) remove
+    # the locked /opt/data underneath it.
+    response = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(tmp_path), "recursive": True}
+    )
+
+    assert response.status_code == 400
+    assert (locked / "keep.txt").exists()
+
+
+def test_fs_create_file_atomically_refuses_existing(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("precious")
+
+    # The same-body call twice: os.open(O_CREAT|O_EXCL) makes this a hard 409 —
+    # Path.touch() would have silently succeeded and clobbered the content.
+    for _ in range(2):
+        response = client.post("/api/fs/create", json={"path": str(parent / "taken.txt"), "directory": False})
+
+    assert response.status_code == 409
+    assert (parent / "taken.txt").read_text() == "precious"
+
+
+def test_fs_mutation_refuses_dot_components(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "sub").mkdir()
+    (root / "sub" / "keep.txt").write_text("keep")
+    (root / "sentinel.txt").write_text("sentinel")
+
+    # A trailing `..` would resolve the delete target to the PARENT directory —
+    # `rmtree('/project/sub/..')` removes /project, escaping the selected tree.
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub" / ".."), "recursive": True}
+    )
+    create = client.post("/api/fs/create", json={"path": str(root / "sub" / ".." / "evil.txt")})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "sub" / "keep.txt"), "name": "../../escape.txt"})
+
+    assert delete.status_code == 400
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    # Nothing outside the selected folder was created or removed.
+    assert (root / "sentinel.txt").read_text() == "sentinel"
+    assert (tmp_path / "evil.txt").exists() is False
+    assert (root / "sub" / "keep.txt").read_text() == "keep"
+
+
+def test_fs_delete_and_rename_handle_dangling_symlink(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "broken").symlink_to(root / "missing-target")
+
+    # exists() follows the referent so a dangling link reports missing; the
+    # mutation targets the LINK itself, so both must still succeed (200).
+    renamed = client.post("/api/fs/rename", json={"path": str(root / "broken"), "name": "broken2"})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["path"] == str(root / "broken2")
+    assert (root / "broken2").is_symlink()
+    assert not (root / "broken").exists()
+
+    deleted = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "broken2")})
+    assert deleted.status_code == 200
+    assert not (root / "broken2").exists()
+
+
+@pytest.mark.platforms("windows")
+def test_fs_mutations_fail_closed_when_junction_detection_is_unavailable(client, tmp_path, monkeypatch):
+    """Mutation admission fails closed if pathlib cannot inspect junctions."""
+    parent = tmp_path / "project"
+    parent.mkdir()
+    source = parent / "source.txt"
+    source.write_text("preserve")
+
+    monkeypatch.setattr(Path, "is_junction", None)
+
+    create = client.post("/api/fs/create", json={"path": str(parent / "new.txt")})
+    rename = client.post("/api/fs/rename", json={"path": str(source), "name": "renamed.txt"})
+    delete = client.request("DELETE", "/api/fs/delete", json={"path": str(source)})
+
+    assert [create.status_code, rename.status_code, delete.status_code] == [501, 501, 501]
+    assert all("junction detection is unavailable" in response.text for response in (create, rename, delete))
+    assert source.read_text() == "preserve"
+    assert not (parent / "new.txt").exists()
+    assert not (parent / "renamed.txt").exists()
+
+
+@pytest.mark.platforms("windows")
+def test_fs_mutations_reject_junction_parents_and_delete_junction_only(client, tmp_path):
+    import subprocess
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("keep")
+    root = tmp_path / "project"
+    root.mkdir()
+    junction = root / "junction"
+    created = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True, text=True, check=False,
+    )
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    blocked = client.post("/api/fs/create", json={"path": str(junction / "evil.txt")})
+    removed = client.request("DELETE", "/api/fs/delete", json={"path": str(junction), "recursive": True})
+
+    assert blocked.status_code == 400
+    assert removed.status_code == 200
+    assert not junction.exists()
+    assert sentinel.read_text() == "keep"
+    assert not (outside / "evil.txt").exists()
+
+
+def test_fs_create_file_uses_0666_base_mode(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+
+    response = client.post("/api/fs/create", json={"path": str(parent / "notes.md")})
+
+    assert response.status_code == 200
+    # 0o666 base masked by the umask → 0644 (never the 0755 an 0o777 default
+    # open() would produce for new text files).
+    mode = stat.S_IMODE((parent / "notes.md").stat().st_mode)
+    assert mode == 0o666 & ~current_umask
+
+
+def test_fs_delete_never_removes_filesystem_root(client, tmp_path):
+    response = client.request("DELETE", "/api/fs/delete", json={"path": "/", "recursive": True})
+
+    assert response.status_code == 400
+
+
+def test_fs_mutations_require_auth(client, tmp_path):
+    unauthenticated = TestClient(web_server.app)
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    create_response = unauthenticated.post("/api/fs/create", json={"path": str(parent / "x.txt")})
+    rename_response = unauthenticated.post("/api/fs/rename", json={"path": str(parent / "x.txt"), "name": "y.txt"})
+    delete_response = unauthenticated.request("DELETE", "/api/fs/delete", json={"path": str(parent / "x.txt")})
+
+    assert create_response.status_code == 401
+    assert rename_response.status_code == 401
+    assert delete_response.status_code == 401
 def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
     target = tmp_path / "半导体行业运营分享会纪要.md"
     target.write_text("hello")
@@ -387,3 +766,114 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+
+
+def test_fs_mutations_route_to_selected_ssh_workspace_without_host_fallback(client, monkeypatch):
+    calls = []
+
+    class FakeSshFs:
+        def create(self, path, *, directory):
+            calls.append(("create", path, directory))
+            return path
+
+        def rename(self, path, name):
+            calls.append(("rename", path, name))
+            return "/srv/repos/project/renamed.txt"
+
+        def delete(self, path, *, recursive):
+            calls.append(("delete", path, recursive))
+            return path
+
+    backend = FakeSshFs()
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: backend)
+    monkeypatch.setattr(
+        file_routes, "_fs_mutation_target",
+        lambda *_args, **_kwargs: pytest.fail("SSH path must not be interpreted on gateway host"),
+    )
+
+    created = client.post(
+        "/api/fs/create", params={"profile": "remote-dev"},
+        json={"path": "/srv/repos/project/new.txt", "directory": False},
+    )
+    renamed = client.post(
+        "/api/fs/rename", params={"profile": "remote-dev"},
+        json={"path": "/srv/repos/project/new.txt", "name": "renamed.txt"},
+    )
+    deleted = client.request(
+        "DELETE", "/api/fs/delete", params={"profile": "remote-dev"},
+        json={"path": "/srv/repos/project/renamed.txt", "recursive": True},
+    )
+
+    assert created.status_code == 200, created.text
+    assert renamed.status_code == 200, renamed.text
+    assert deleted.status_code == 200, deleted.text
+    assert calls == [
+        ("create", "/srv/repos/project/new.txt", False),
+        ("rename", "/srv/repos/project/new.txt", "renamed.txt"),
+        ("delete", "/srv/repos/project/renamed.txt", True),
+    ]
+
+
+def test_fs_mutations_fail_closed_for_unimplemented_terminal_backend(client, monkeypatch):
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: None)
+    monkeypatch.setattr(file_routes, "_profile_scope", lambda _profile: nullcontext())
+    monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"backend": "docker"}})
+    monkeypatch.setattr(
+        file_routes, "_fs_mutation_target",
+        lambda *_args, **_kwargs: pytest.fail("unsupported backend must not fall back to gateway host"),
+    )
+
+    response = client.post(
+        "/api/fs/create", params={"profile": "remote-dev"},
+        json={"path": "/workspace/new.txt"},
+    )
+
+    assert response.status_code == 501
+    assert "not supported" in response.text
+
+
+def test_ssh_workspace_mutations_build_remote_only_operations():
+    class FakeEnvironment:
+        cwd = "/srv/repos"
+        _remote_home = "/home/dev"
+        timeout = 30
+
+        def __init__(self):
+            self.commands = []
+
+        def execute(self, command, **kwargs):
+            self.commands.append((command, kwargs))
+            return {"returncode": 0, "output": ""}
+
+    env = FakeEnvironment()
+    backend = ssh_workspace_fs.SshWorkspaceFs(env)
+
+    assert backend.create("project/new.txt", directory=False) == "/srv/repos/project/new.txt"
+    assert backend.create("/srv/repos/project/new-dir", directory=True) == "/srv/repos/project/new-dir"
+    assert backend.rename("/srv/repos/project/old.txt", "new.txt") == "/srv/repos/project/new.txt"
+    assert backend.delete("/srv/repos/project/old-dir", recursive=True) == "/srv/repos/project/old-dir"
+    assert "noclobber" in env.commands[0][0]
+    assert "mkdir --" in env.commands[1][0]
+    assert "python3 -c" in env.commands[2][0]
+    assert "renameat2" in env.commands[2][0]
+    assert "rm -rf --" in env.commands[3][0]
+    assert "fi" in env.commands[3][0]
+    assert all(kwargs.get("cwd") == "/srv/repos" for _, kwargs in env.commands)
+
+    with pytest.raises(ssh_workspace_fs.SshWorkspaceFsError, match="Invalid path"):
+        backend.create("/srv/repos/../outside.txt", directory=False)
+    with pytest.raises(ssh_workspace_fs.SshWorkspaceFsError, match="workspace root"):
+        backend.delete("/srv/repos", recursive=True)
+    assert len(env.commands) == 4
+
+
+def test_fs_mutations_require_explicit_profile_when_multiplexed(client, monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.setattr(secret_scope, "is_multiplex_active", lambda: True)
+    create = client.post("/api/fs/create", json={"path": "/srv/repos/new.txt"})
+    rename = client.post("/api/fs/rename", json={"path": "/srv/repos/old.txt", "name": "new.txt"})
+    delete = client.request("DELETE", "/api/fs/delete", json={"path": "/srv/repos/old.txt"})
+
+    assert [create.status_code, rename.status_code, delete.status_code] == [400, 400, 400]
+    assert all("explicit profile" in response.text for response in (create, rename, delete))

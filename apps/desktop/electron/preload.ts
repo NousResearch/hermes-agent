@@ -464,6 +464,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
+  createTextFileExclusive: filePath => ipcRenderer.invoke('hermes:fs:createTextExclusive', filePath),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),

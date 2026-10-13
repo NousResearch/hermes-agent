@@ -206,6 +206,99 @@ printf '__HERMES_FS_SIZE__:%s\\n' "$size"
                 process.terminate()
             process.wait()
 
+    def create(self, path: str, *, directory: bool) -> str:
+        target = self._mutation_path(path)
+        parent = posixpath.dirname(target) or "/"
+        command = self._safe_parent_function() + f"""
+parent_dir={shlex.quote(parent)}
+target={shlex.quote(target)}
+if [ ! -d "$parent_dir" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent_dir"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+""" + ("""
+if mkdir -- "$target" 2>/dev/null; then exit 0; fi
+if [ -e "$target" ] || [ -L "$target" ]; then printf '__HERMES_FS_ERROR__:EEXIST\\n'; else printf '__HERMES_FS_ERROR__:EACCES\\n'; fi
+exit 46
+""" if directory else """
+if ( set -o noclobber; : > "$target" ) 2>/dev/null; then exit 0; fi
+if [ -e "$target" ] || [ -L "$target" ]; then printf '__HERMES_FS_ERROR__:EEXIST\\n'; else printf '__HERMES_FS_ERROR__:EACCES\\n'; fi
+exit 46
+""")
+        result = self._execute(command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return target
+
+    def _mutation_path(self, path: str) -> str:
+        raw = str(path or "").strip()
+        if not raw or raw.lower().startswith("file:") or "\0" in raw:
+            raise SshWorkspaceFsError("EINVAL", "Invalid path")
+        if any(part in (".", "..") for part in raw.split("/")):
+            raise SshWorkspaceFsError("EINVAL", "Invalid path")
+        return self._normalize(raw)
+
+    @staticmethod
+    def _safe_parent_function() -> str:
+        return '''
+hermes_fs_safe_parent() {
+  local p=$1
+  while :; do
+    [ ! -L "$p" ] || return 1
+    [ "$p" = / ] && break
+    p=${p%/*}; [ -n "$p" ] || p=/
+  done
+}
+'''
+
+    def rename(self, path: str, name: str) -> str:
+        source = self._mutation_path(path)
+        if not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name:
+            raise SshWorkspaceFsError("EINVAL", "Invalid name")
+        destination = posixpath.join(posixpath.dirname(source), name)
+        if source == destination:
+            # Ensure a no-op isn't reported as success for a missing source.
+            command = f"p={shlex.quote(source)}; [ -e \"$p\" ] || [ -L \"$p\" ] || {{ printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; }}"
+        else:
+            worker = "import ctypes, errno, os, sys; src, dst = sys.argv[1:3]; libc = ctypes.CDLL(None, use_errno=True); fn = getattr(libc, 'renameat2', None); rc = fn(-100, ctypes.c_char_p(os.fsencode(src)), -100, ctypes.c_char_p(os.fsencode(dst)), 1) if fn else -1; e = ctypes.get_errno() if rc else 0; print('__HERMES_FS_ERROR__:' + ('EUNSUPPORTED' if not fn else 'EEXIST' if e == 17 else 'ENOENT' if e == 2 else 'EACCES' if e in (errno.EPERM, errno.EACCES) else 'EUNSUPPORTED' if e in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP) else 'EIO') if rc else ''); sys.exit(1 if rc else 0)"
+            command = self._safe_parent_function() + f"""
+src={shlex.quote(source)}
+dst={shlex.quote(destination)}
+parent={shlex.quote(posixpath.dirname(source) or '/')}
+if [ ! -e "$src" ] && [ ! -L "$src" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+python3 -c {shlex.quote(worker)} "$src" "$dst" || {{
+  rc=$?
+  [ "$rc" -eq 0 ] || {{ [ -n "$(command -v python3 2>/dev/null)" ] || printf '__HERMES_FS_ERROR__:EUNSUPPORTED\\n'; exit "$rc"; }}
+}}
+"""
+        result = self._execute(command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return destination
+
+    def delete(self, path: str, *, recursive: bool) -> str:
+        target = self._mutation_path(path)
+        if target == "/" or target == self.cwd or self.cwd.startswith(target.rstrip("/") + "/"):
+            raise SshWorkspaceFsError("EINVAL", "Cannot delete a workspace root or its ancestor")
+        parent = posixpath.dirname(target) or "/"
+        command = self._safe_parent_function() + f"""
+target={shlex.quote(target)}
+parent={shlex.quote(parent)}
+if [ ! -e "$target" ] && [ ! -L "$target" ]; then printf '__HERMES_FS_ERROR__:ENOENT\\n'; exit 44; fi
+if ! hermes_fs_safe_parent "$parent"; then printf '__HERMES_FS_ERROR__:EINVAL\\n'; exit 45; fi
+if [ -L "$target" ] || [ ! -d "$target" ]; then
+  rm -- "$target" || {{ printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }}
+  exit 0
+fi
+""" + ("""
+rm -rf -- "$target" || { printf '__HERMES_FS_ERROR__:EACCES\\n'; exit 46; }
+""" if recursive else """
+rmdir -- "$target" 2>/dev/null || { printf '__HERMES_FS_ERROR__:ENOTEMPTY\\n'; exit 47; }
+""")
+        result = self._execute(command)
+        if result.get("returncode") != 0:
+            raise SshWorkspaceFsError(self._error_code(result.get("output", "")))
+        return target
+
     def write_text(self, path: str, content: str, *, max_bytes: int) -> tuple[str, int]:
         target = self._normalize(path)
         encoded_size = len(content.encode("utf-8"))

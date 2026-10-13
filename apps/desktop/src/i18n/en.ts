@@ -7,6 +7,7 @@ import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enFileMenu } from './en_file_menu'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
@@ -356,27 +357,8 @@ export const en: Translations = {
     off: 'Off'
   },
 
-  fileMenu: {
-    revealFinder: 'Reveal in Finder',
-    revealExplorer: 'Reveal in File Explorer',
-    revealFileManager: 'Open containing folder',
-    revealInSidebar: 'Reveal in filetree',
-    copyPath: 'Copy path',
-    copyRelativePath: 'Copy relative path',
-    download: 'Download',
-    downloadSaved: 'Saved',
-    downloadFailed: 'Download failed',
-    rename: 'Rename…',
-    delete: 'Delete',
-    renameTitle: 'Rename',
-    renameLabel: 'New name',
-    deleteTitle: name => `Delete ${name}?`,
-    deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied',
-    revealMissing: 'That folder is not on this computer',
-    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
-  },
 
+  fileMenu: enFileMenu,
   boot: enBoot.boot,
 
   notifications: {

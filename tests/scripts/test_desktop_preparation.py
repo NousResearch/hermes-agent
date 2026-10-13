@@ -297,3 +297,27 @@ def test_clean_run_cannot_delete_the_outputs_of_a_build_that_holds_the_lock(tmp_
         prepare(request, clean=True)
 
     assert running.read_text(encoding="utf-8") == "output of the build that holds the lock"
+
+
+def test_snapshot_replaces_a_tree_that_bake_bytecode_made_read_only(tmp_path):
+    from scripts.bundles.payload import snapshot
+
+    source, commit = _project(tmp_path)
+    destination = tmp_path / "agent-payload" / "hermes-agent"
+    snapshot(source, commit, destination)
+    assert (destination / "pyproject.toml").is_file()
+
+    # bake_bytecode chmods every baked pyc 0o444 (bytecode.py).  On Windows
+    # that read-only bit blocks os.unlink, so a bare shutil.rmtree aborts the
+    # next prepare; on POSIX the unwritable parent blocks it the same way.
+    cache = destination / "acp_adapter" / "__pycache__"
+    cache.mkdir(parents=True)
+    pyc = cache / "auth.cpython-314.pyc"
+    pyc.write_bytes(b"baked")
+    pyc.chmod(0o444)
+    cache.chmod(0o555)
+
+    snapshot(source, commit, destination)
+
+    assert (destination / "pyproject.toml").is_file()
+    assert not pyc.exists()  # the read-only tree was replaced by the archive

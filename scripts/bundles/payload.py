@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -14,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from utils import rmtree_readonly
 
 
 # Snapshot dirs the sealed agent payload never reads. Tests, docs and CI
@@ -42,7 +43,9 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
             ["git", "archive", "--format=tar", "--output", str(archive), ref, "--", *pathspecs],
             cwd=repo, check=True)
         if destination.exists():
-            shutil.rmtree(destination)
+            # bake_bytecode chmods every baked pyc 0o444; on Windows that
+            # read-only bit blocks the unlink inside a bare rmtree.
+            rmtree_readonly(destination)
         destination.mkdir(parents=True)
         with tarfile.open(archive) as source:
             source.extractall(destination, filter="data")

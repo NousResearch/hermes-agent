@@ -870,6 +870,8 @@ function Stage-Repository {
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
         Log "Updating $InstallDir ($Branch)"
+        # A checkout cloned before longpaths was set: a deep path past MAX_PATH fails checkout.
+        Invoke-Native { git -C $InstallDir config core.longpaths true } | Out-Null
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
@@ -989,6 +991,10 @@ function Stage-Repository {
         # branch tip first fetches and rewrites every file the two differ in.
         $checkout = @()
         if ($Commit) { $checkout = @('--no-checkout') }
+        # Staging dir + deepest tracked path (~160) pass MAX_PATH (260) once LOCALAPPDATA
+        # is longer than ~55 characters (a ~33-character user name), and checkout dies with
+        # "Filename too long". --config lands before checkout and stays for `hermes update`.
+        $longPaths = @('--config', 'core.longpaths=true')
         try {
             $cloned = $false
             $deferred = $false
@@ -1000,7 +1006,7 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress @longPaths --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -1009,7 +1015,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress @longPaths --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }

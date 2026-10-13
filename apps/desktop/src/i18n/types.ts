@@ -3671,11 +3671,15 @@ export interface Translations extends NoticeTranslations {
       toggleRunningTimer: string
       toggleSessionTimer: string
       toggleTerminal: string
+      toggleTimeToFirstByte: string
+      toggleTimeToFirstToken?: string
       toggleTokensPerSecond: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string
       cacheHitRateTitle: string
+      timeToFirstByteTitle: string
+      timeToFirstTokenTitle?: string
       tokensPerSecondTitle: string
       agents: string
       closeAgents: string

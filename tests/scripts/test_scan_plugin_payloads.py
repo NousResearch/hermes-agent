@@ -94,6 +94,19 @@ def test_tarball_with_unknown_blob_member_fails(tmp_path):
     assert any("not reviewable source" in f for f in findings), findings
 
 
+@pytest.mark.parametrize("name, body, expect", [
+    ("words.tsv.gz", "haus\thäuser\n".encode(), None),       # gzipped UTF-8 data: reviewable
+    ("tool.py.gz", b"import os\n", "not plain data"),          # code may not hide compressed
+    ("words.txt.gz", b"\x7fELF" + b"\x00" * 40, "not text"),   # binary under a data name
+    ("payload.bin.gz", b"opaque", "not plain data"),
+])
+def test_single_compressed_file_is_judged_by_what_it_decompresses_to(tmp_path, name, body, expect):
+    import gzip
+    (tmp_path / name).write_bytes(gzip.compress(body))
+    findings = _scan(tmp_path)
+    assert (findings == []) if expect is None else any(expect in f for f in findings), findings
+
+
 def test_zip_hiding_a_binary_fails(tmp_path):
     arc = tmp_path / "bundle.zip"
     with zipfile.ZipFile(arc, "w") as zf:

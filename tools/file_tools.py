@@ -1132,9 +1132,26 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 f"Results truncated. Use offset={offset + limit} to see more, "
                 "or narrow with a more specific pattern or file_glob."
             )
+        if context and output_mode == "content" and _CREDENTIAL_PATTERN_WORD_RE.search(pattern):
+            # A credential-hunting grep with context lines pulls the neighbours of every hit into
+            # the result; the redactor masks what it recognizes, but a bare opaque value quoted in
+            # prose can pass. Advisory only: the call is answered, the agent is told how
+            # to do the same job without the surrounding lines.
+            result_dict["_warning"] = (
+                f"{result_dict['_warning']} " if result_dict.get("_warning") else ""
+            ) + (
+                "Credential-keyword pattern with context>0: lines around each match are returned "
+                "verbatim after redaction. Prefer output_mode='files_only' or 'count' first, then "
+                "context=0, and never grep documentation for live secret values."
+            )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+# Grep patterns that are looking for credentials: when such a search also asks for context lines
+# the advisory above is attached. Same keyword family as agent.redact's key matcher.
+_CREDENTIAL_PATTERN_WORD_RE = re.compile(r"token|passw|secret|api[_ -]?key|credential", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------

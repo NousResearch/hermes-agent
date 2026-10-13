@@ -548,8 +548,37 @@ stage_prerequisites() {
     log_success "prerequisites ok (git, curl)"
 }
 
+# The update channel this install chose (config.yaml update.installs.<id>.channel,
+# id = sha16 of the canonical install path, as hermes_cli.update_channel keys it).
+# Pre-Python reader of the block YAML Hermes writes; anything it cannot read prints
+# nothing, which keeps the plain branch behaviour.
+chosen_channel() {
+    local config="$HERMES_HOME/config.yaml" root id
+    [ -f "$config" ] || return 0
+    root="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 0
+    if command -v sha256sum >/dev/null 2>&1; then id="$(printf '%s' "$root" | sha256sum)"
+    elif command -v shasum >/dev/null 2>&1; then id="$(printf '%s' "$root" | shasum -a 256)"
+    else return 0; fi
+    awk -v id="${id:0:16}" -v q="'" '
+        function bare(s,  f) {
+            sub(/^[ \t]+/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t\r]+$/, "", s)
+            f = substr(s, 1, 1)
+            if (length(s) > 1 && (f == "\"" || f == q) && substr(s, length(s), 1) == f) s = substr(s, 2, length(s) - 2)
+            return s
+        }
+        /^[ \t]*(#|\r?$)/ { next }
+        {
+            match($0, /^ */); indent = RLENGTH; line = substr($0, indent + 1)
+            colon = index(line, ":"); if (!colon) next
+            while (depth && at[depth] >= indent) depth--
+            at[++depth] = indent; key[depth] = bare(substr(line, 1, colon - 1))
+            if (depth == 4 && key[1] == "update" && key[2] == "installs" && key[3] == id \
+                && key[4] == "channel") { print bare(substr(line, colon + 1)); exit }
+        }' "$config" | grep -E '^[a-z0-9]+(-[a-z0-9]+)*$' || :
+}
+
 stage_repository() {
-    local pinned=false
+    local pinned=false channel=""
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
     # initial commit yet", #40998). Move it aside -- never delete it, it may
@@ -561,7 +590,17 @@ stage_repository() {
         mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside" filesystem_error
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
-        log "Updating $INSTALL_DIR ($BRANCH)"
+        # A chosen channel (stable, a preview) owns where this checkout sits: `hermes update`
+        # moves it. Switching it to the installer's branch would leave it on main while its
+        # channel still says otherwise, and the next check would offer the release as an update.
+        # Only an explicit --commit pin outranks the choice.
+        [ -n "$INSTALL_COMMIT" ] || channel="$(chosen_channel)"
+        [ "$channel" != main ] || channel=""
+        if [ -n "$channel" ]; then
+            log "Repairing $INSTALL_DIR on the $channel update channel it chose"
+        else
+            log "Updating $INSTALL_DIR ($BRANCH)"
+        fi
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
@@ -600,6 +639,10 @@ stage_repository() {
                     log_warn "could not fetch the directory history; the next hermes update retries it"
                 fi
             fi
+        fi
+        if [ -n "$channel" ]; then
+            log "Keeping its checkout: \`hermes update\` moves it (\`hermes update --set-channel main\` follows main)"
+            return 0
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
             || fail "git fetch failed$(native_detail)" git_fetch_failed

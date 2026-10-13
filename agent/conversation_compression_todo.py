@@ -15,24 +15,31 @@ from typing import Any
 # Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
 # Length-prefixed item opener from TodoStore.format_for_injection:
-# ``<indent>- <marker> <id>. #<N>:<content> (<status>)`` — N is len(content) in characters.
+# ``<indent>- <marker> #<N>:<id>. #<M>:<content> (<status>)`` — N/M are character lengths.
 # No ^ anchor: Pattern.match(string, pos) still only lets ^ match at index 0,
 # so later items would never match. Line-start is enforced by the caller.
-_TASK_ITEM_OPEN_RE = re.compile(r"(?:  )*- (\[.\]) (\S+)\. #(\d+):")
+_TASK_ITEM_OPEN_RE = re.compile(r"(?:  )*- (\[.\]) #(\d+):")
+# Legacy (pre-length-prefix) opener: ``<indent>- <marker> <id>. `` — id is \S+ (old writer).
+_LEGACY_TASK_LINE_RE = re.compile(r"^(?:  )*- (\[.\]) \S")
+# After the length-prefixed id comes ``. #<M>:`` before content.
+_CONTENT_LEN_RE = re.compile(r"\. #(\d+):")
 
 
-def _consume_todo_snapshot_tasks(text: str) -> str:
+def _consume_length_prefixed_todo_tasks(text: str) -> str | None:
     """Consume complete length-prefixed rendered task items from the start of *text*.
 
     ``TodoStore.format_for_injection`` renders each item as
-    ``<indent>- <marker> <id>. #<N>:<content> (<status>)`` where ``content`` is exactly N characters
-    (newlines and status-looking suffixes allowed). Malformed or truncated items are not consumed:
-    the remainder starts at the failed attempt so surrounding user text stays intact.
+    ``<indent>- <marker> #<N>:<id>. #<M>:<content> (<status>)`` where ``id``/``content`` are
+    exactly N/M characters (whitespace, newlines, and status-looking suffixes allowed).
+    Returns the remainder after consumed items, or ``None`` if the first item is not
+    length-prefixed (caller should try a legacy fallback). Malformed/truncated items after a
+    successful start are not consumed: the remainder starts at the failed attempt.
     """
     from tools.todo_tool import _STATUS_MARKERS
 
     marker_to_status = {marker: status for status, marker in _STATUS_MARKERS.items()}
     pos = 0
+    consumed_any = False
     while pos < len(text):
         if pos > 0 and text[pos - 1] != "\n":
             break
@@ -42,9 +49,17 @@ def _consume_todo_snapshot_tasks(text: str) -> str:
         status = marker_to_status.get(match.group(1))
         if status is None:
             break
-        n = int(match.group(3))
-        content_start = match.end()
-        content_end = content_start + n
+        id_n = int(match.group(2))
+        id_start = match.end()
+        id_end = id_start + id_n
+        if id_end > len(text):
+            break
+        content_len_match = _CONTENT_LEN_RE.match(text, id_end)
+        if not content_len_match:
+            break
+        content_n = int(content_len_match.group(1))
+        content_start = content_len_match.end()
+        content_end = content_start + content_n
         if content_end > len(text):
             break
         expected_suffix = f" ({status})"
@@ -52,9 +67,47 @@ def _consume_todo_snapshot_tasks(text: str) -> str:
         if text[content_end:suffix_end] != expected_suffix:
             break
         pos = suffix_end
+        consumed_any = True
         if pos < len(text) and text[pos] == "\n":
             pos += 1
+    if not consumed_any:
+        return None
     return text[pos:]
+
+
+def _consume_legacy_todo_tasks(text: str) -> str:
+    """Consume pre-length-prefix task items: ``- <marker> <id>. <content> (<status>)``.
+
+    Content may span lines (including blanks); an item runs from its marker line to the first
+    line ending in the status suffix that matches its marker. Lines that open like a task but
+    never close with a status suffix (abbreviated fixtures / residue) are also consumed so they
+    are not promoted to human intent after the header is removed.
+    """
+    from tools.todo_tool import _STATUS_MARKERS
+
+    lines = text.split("\n") if text else []
+    count = 0
+    while count < len(lines):
+        match = _LEGACY_TASK_LINE_RE.match(lines[count])
+        status = next((s for s, m in _STATUS_MARKERS.items() if m == match.group(1)), None) if match else None
+        if status is None:
+            break
+        suffix = f" ({status})"
+        last = next((i for i in range(count, len(lines)) if lines[i].endswith(suffix)), None)
+        if last is None:
+            # Opener without a closing status suffix: still scaffolding, not human text.
+            count += 1
+            continue
+        count = last + 1
+    return "\n".join(lines[count:])
+
+
+def _consume_todo_snapshot_tasks(text: str) -> str:
+    """Consume rendered task items from the start of *text* (new format, then legacy)."""
+    length_prefixed = _consume_length_prefixed_todo_tasks(text)
+    if length_prefixed is not None:
+        return length_prefixed
+    return _consume_legacy_todo_tasks(text)
 
 
 def _cut_todo_snapshot_block(text: str) -> str:

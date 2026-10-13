@@ -24,8 +24,11 @@ NOTICE = _PRUNED_SKILL_RELOAD_NOTICE_HEADER + "\nreload skill_view(name='old-ski
 
 
 def _item_line(marker: str, item_id: str, content: str, status: str, depth: int = 0) -> str:
-    """Match TodoStore.format_for_injection length-prefixed rendering."""
-    return f"{'  ' * depth}- {marker} {item_id}. #{len(content)}:{content} ({status})"
+    """Match TodoStore.format_for_injection length-prefixed id+content rendering."""
+    return (
+        f"{'  ' * depth}- {marker} #{len(item_id)}:{item_id}. "
+        f"#{len(content)}:{content} ({status})"
+    )
 
 
 def _agent(*todos: dict) -> SimpleNamespace:
@@ -177,3 +180,73 @@ def test_strip_multiline_nested_tasks_and_notice_keep_later_turn():
     ])
     content = f"a\n\n{TODO_INJECTION_HEADER}\n{tasks}\n\n{NOTICE}\n\n{SECOND}"
     assert _strip_stale_todo_snapshot(content) == f"a\n\n{SECOND}"
+
+def test_legacy_unprefixed_snapshot_stripped_when_store_completed():
+    """F1: pre-#N: snapshots must still clean up (review #4258260151)."""
+    agent = _agent({"id": "t1", "content": "old task", "status": "completed"})
+    rows = [{
+        "role": "user",
+        "content": (
+            "human request\n\n"
+            + TODO_INJECTION_HEADER
+            + "\n- [ ] t1. old task (pending)"
+        ),
+    }]
+    _fold_todo_snapshot(agent, rows)
+    assert rows[0]["content"] == "human request"
+
+
+def test_legacy_unprefixed_snapshot_keeps_later_user_turn():
+    legacy = "- [ ] t1. old task (pending)"
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n{legacy}\n\n{SECOND}"
+    assert _strip_stale_todo_snapshot(content) == f"first request\n\n{SECOND}"
+
+
+def test_legacy_synthetic_only_row_clears_when_store_completed():
+    agent = _agent({"id": "t1", "content": "old task", "status": "completed"})
+    rows = [{
+        "role": "user",
+        "content": f"{TODO_INJECTION_HEADER}\n- [ ] t1. old task (pending)",
+        "_todo_snapshot_synthetic": True,
+    }]
+    _fold_todo_snapshot(agent, rows)
+    assert rows == []
+
+
+def test_whitespace_id_keeps_one_copy_across_repeated_folds():
+    """F2: IDs with spaces must round-trip (review #4258260170)."""
+    agent = _agent({"id": "release notes", "content": "ship the release", "status": "pending"})
+    rows = [{"role": "user", "content": "human request"}]
+    for _ in range(3):
+        _fold_todo_snapshot(agent, rows)
+    content = rows[0]["content"]
+    assert content.count("ship the release") == 1
+    assert content.count(TODO_INJECTION_HEADER) == 1
+    assert content == (
+        f"human request\n\n{TODO_INJECTION_HEADER}\n"
+        f"{_item_line('[ ]', 'release notes', 'ship the release', 'pending')}"
+    )
+
+
+def test_tab_and_newline_ids_round_trip_nested_and_complete():
+    tab_id = "release\tnotes"
+    nl_id = "release\nnotes"
+    agent = _agent(
+        {"id": tab_id, "content": "parent work", "status": "in_progress"},
+        {"id": nl_id, "content": "child work", "status": "pending", "parent": tab_id},
+    )
+    rows = [{"role": "user", "content": "human request"}]
+    _fold_todo_snapshot(agent, rows)
+    _fold_todo_snapshot(agent, rows)
+    content = rows[0]["content"]
+    assert content.count("parent work") == 1
+    assert content.count("child work") == 1
+    assert _item_line("[>]", tab_id, "parent work", "in_progress") in content
+    assert _item_line("[ ]", nl_id, "child work", "pending", depth=1) in content
+
+    agent._todo_store.write([
+        {"id": tab_id, "content": "parent work", "status": "completed"},
+        {"id": nl_id, "content": "child work", "status": "completed", "parent": tab_id},
+    ])
+    _fold_todo_snapshot(agent, rows)
+    assert rows[0]["content"] == "human request"

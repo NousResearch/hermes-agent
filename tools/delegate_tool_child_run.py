@@ -851,14 +851,34 @@ class _ChildRun:
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        # Interrupt bits are keyed by thread ident (tools.interrupt) and the child's
+        # _execution_thread_id outlives its turn, so a stop signalled after the worker
+        # returned would strand a bit that a later thread reusing the ident inherits.
+        # Serialize our stop signals with worker retirement under this lock.
+        worker_stop_lock = threading.Lock()
+        worker_finished = False
+
+        def _signal_child_stop_unless_finished() -> None:
+            with worker_stop_lock:
+                if not worker_finished:
+                    _signal_child_stop(child)
 
         def _run_with_thread_capture():
+            nonlocal worker_finished
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+            try:
+                with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                    return child.run_conversation(
+                        user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    )
+            finally:
+                from tools.interrupt import clear_current_thread_interrupt
+                with worker_stop_lock:
+                    worker_finished = True
+                    # Only the exiting worker retires its own bit: clearing it from the waiter
+                    # while tools still run would mask the cancellation.
+                    clear_current_thread_interrupt()
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.
@@ -887,7 +907,7 @@ class _ChildRun:
                 # here on purpose: the success path's `_merge_late_steer` (or the failure
                 # path below) is the linearization boundary, so a concurrent steer is never
                 # lost either way.
-                _signal_child_stop(child)
+                _signal_child_stop_unless_finished()
                 grace = _STALE_RESULT_GRACE_SECONDS
                 grace_done = threading.Event()
                 future.add_done_callback(lambda _f: grace_done.set())
@@ -906,7 +926,7 @@ class _ChildRun:
             executor.shutdown(wait=False)
 
         _late_pending_steer = self.close_steering()
-        _signal_child_stop(child)
+        _signal_child_stop_unless_finished()
         is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
         timeout_cause = stale_after if stale_after is not None else child_timeout

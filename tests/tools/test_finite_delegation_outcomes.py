@@ -14,7 +14,8 @@ import pytest
 from agent.interrupt_control import InterruptControlMixin
 from gateway import session_context as sc
 from tools import async_delegation, delegate_tool as dt
-from tools.delegate_tool_child_run import _attach_child
+from tools.delegate_tool_child_run import _ChildRun, _attach_child
+from tools.interrupt import is_thread_interrupted, set_interrupt
 from tools.process_registry import process_registry
 
 
@@ -238,3 +239,62 @@ def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, ma
     if api_history:
         assert event["origin_session_id"] == "history-session"
     assert all(child.closed.wait(2) for child in children)
+
+
+class _ThreadBoundChild(_Child):
+    """Signals a stop the way InterruptControlMixin does: on its execution thread's ident."""
+
+    _execution_thread_id = None
+
+    def run_conversation(self, **kwargs):
+        self._execution_thread_id = threading.get_ident()
+        if self.outcome != "late":
+            return super().run_conversation(**kwargs)
+        self.worker = threading.current_thread()
+        self.started.set()
+        try:
+            # Ignores the stop: finishes only once the test releases it, after the wait timed out.
+            assert self.allow_finish.wait(5), "late child was not released"
+            return {"final_response": "late evidence", "completed": True,
+                    "api_calls": 1, "messages": []}
+        finally:
+            self.finished.set()
+
+    def hard_interrupt(self, _reason=None, **_kwargs):
+        set_interrupt(True, self._execution_thread_id)
+        super().hard_interrupt(_reason)
+
+
+def test_stop_after_worker_returned_leaves_no_interrupt_bit(harness, monkeypatch):
+    """A timeout whose stop lands after the worker returned must not strand the worker's bit.
+
+    Interrupt bits are keyed by thread ident and outlive the thread, so a stranded bit
+    spuriously interrupts whichever later thread reuses the ident."""
+    parent, children, _dispatch = harness
+    monkeypatch.setattr(dt, "_get_child_timeout", lambda: 0.3)
+    late = _ThreadBoundChild("late")
+    close_steering = _ChildRun.close_steering
+
+    def close_after_worker_returned(self):
+        # Pin the losing interleaving: the wait timed out, then the worker returned
+        # before the failure path signalled its stop.
+        if self.child is late:
+            late.allow_finish.set()
+            assert late.finished.wait(5)
+        return close_steering(self)
+
+    monkeypatch.setattr(_ChildRun, "close_steering", close_after_worker_returned)
+    children.append(_ThreadBoundChild("completed"))
+    children.append(late)
+    try:
+        result = json.loads(dt.delegate_task(
+            tasks=[{"goal": f"Exercise child outcome {i}"} for i in range(2)],
+            background=True, parent_agent=parent,
+        ))
+        _joined(result, ["completed", "timeout"])
+        late.worker.join(5)
+        assert not late.worker.is_alive()
+        assert not is_thread_interrupted(late.worker.ident), "late stop stranded the worker's interrupt bit"
+    finally:
+        if late.worker is not None:
+            set_interrupt(False, late.worker.ident)

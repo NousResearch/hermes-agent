@@ -4,6 +4,7 @@ server shutdown and draining of the background MCP loop."""
 import logging
 import asyncio
 import os
+import threading
 import time
 from typing import Dict, Optional
 from tools.mcp_tool_common import _core
@@ -46,9 +47,21 @@ def _leader_start_time(pid: int) -> Optional[int]:
         return None
 
 
-def _snapshot_child_pids() -> set:
-    """Current direct-child PIDs: /proc on Linux, else psutil, else empty set."""
+def _snapshot_child_pids(*, calling_thread_only: bool = False) -> set:
+    """Current direct-child PIDs: /proc on Linux, else psutil, else empty set.
+
+    ``calling_thread_only`` (Linux) reads only the calling thread's ``children`` file. The stdio
+    spawn's before/after delta uses it: stdio_client() forks from the MCP loop thread, so a child
+    another gateway thread spawns inside that window (a cron worker or its ``systemd-run``
+    wrapper) is not attributed to the MCP server and later SIGTERMed as its orphan (#134611).
+    """
     my_pid = os.getpid()
+    if calling_thread_only:
+        try:
+            with open(f"/proc/{my_pid}/task/{threading.get_native_id()}/children", encoding="utf-8-sig") as f:
+                return {int(p) for p in f.read().split() if p.strip()}
+        except (FileNotFoundError, OSError, ValueError):
+            pass  # no /proc: fall through to the process-wide readings below
     # /proc/<pid>/task/<tid>/children is per-THREAD, and stdio_client() spawns from the MCP
     # loop thread, so union every task's children — reading only the main thread's file
     # returns an empty set on every Linux install.

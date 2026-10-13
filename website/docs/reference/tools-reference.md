@@ -205,6 +205,17 @@ Enabled only when a profile's own config names it (`platform_toolsets.cli`). Onl
 |------|-------------|----------------------|
 | `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
+## `peer_messaging` toolset
+
+Inspired by Muse Code's inter-session messaging. Discovery and sending are off by default — enable via `hermes tools` → Peer Messaging. Receiving is independent of that selection: an enabled sender can message another session in the same Hermes home, and the recipient checks its mailbox on its next activity even without these tools enabled. Idle sessions are not automatically started.
+
+Messages retain the sending session's attribution and use the existing user-role steering transport. Peer-written text does not grant new human permission or override the user's instructions. Delivery is best-effort: a successful send means queued, not read or completed. The mailbox is consumed into memory before transcript persistence, so a receiver crash in that interval can lose the message. This primitive does not provide acknowledgment, retry, or exactly-once execution.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `peer_sessions` | List the user's other recently active Hermes sessions on this machine (session id, title, source, cwd, last activity). Local-only discovery over the session store. | — |
+| `peer_send` | Send a message to another of the user's Hermes sessions. Delivered via a local filesystem mailbox under the Hermes home (never the network); the peer receives it mid-turn over the steer channel if running, else at the start of its next turn. | — |
+
 ## `skills` toolset
 
 | Tool | Description | Requires environment |
@@ -401,5 +412,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

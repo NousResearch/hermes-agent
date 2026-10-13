@@ -504,6 +504,9 @@ def recover_from_overflow(
         # overflow from: explicit error messages, generic 400 + large session heuristic (#1630), and server
         # disconnect + large session pattern (#2153).
         classified.reason == FailoverReason.context_overflow
+        # Local-inference KV-cache/allocation OOM: same recovery — a smaller context is a smaller
+        # KV cache. NOT billing, despite the "limit exceeded" wording.
+        or classified.reason == FailoverReason.local_oom
         or wrapped_output_cap_budget is not None
     )
     if st.is_context_length_error:

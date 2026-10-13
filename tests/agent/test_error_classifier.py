@@ -782,7 +782,7 @@ class TestClassifyApiError:
 
     @pytest.mark.parametrize("message, status_code, body", [
         # 0.5.6 prefill guard: a memory peak in BYTES whose remediation tail says "Reduce context
-        # length" — the phrase that used to route it into the compress loop.
+        # length" — a local-engine OOM that must compress the context, not back off.
         ("Prefill memory guard rejected request: Prefill would require ~13.87 GB peak, "
          "dynamic ceiling is 13.50 GB. Reduce context length or lower memory_guard_tier.", 400, None),
         # 0.5.7 rewording ("predicted peak would require"); cap names survive the verb change.
@@ -798,14 +798,15 @@ class TestClassifyApiError:
         # _by_status runs before _by_error_code).
         ("Request failed.", 400, {"error": {"message": "Request failed.", "code": "prefill_memory_exceeded"}}),
     ])
-    def test_memory_ceiling_rejection_is_overloaded_not_overflow(self, message, status_code, body):
+    def test_engine_memory_rejection_compresses_as_local_oom(self, message, status_code, body):
         kwargs = {"status_code": status_code} if status_code is not None else {}
         if body is not None:
             kwargs["body"] = body
         result = classify_api_error(MockAPIError(message, **kwargs), provider="omlx")
-        assert result.reason == FailoverReason.overloaded
-        assert result.should_compress is False
+        assert result.reason == FailoverReason.local_oom
+        assert result.should_compress is True
         assert result.should_rotate_credential is False
+        assert result.retryable is True
 
     def test_genuine_context_overflow_still_compresses(self):
         """Guard against over-reach: a real window overflow must keep its

@@ -864,7 +864,7 @@ class TestNativeEnvironmentContracts:
         seed = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "USERPROFILE": r"C:\Users\testuser",  # win32 home resolution, HOME alone is not enough (#137196)
+            "USERPROFILE": r"C:\Users\testuser",  # ntpath resolves ~ via USERPROFILE, not HOME (#137196)
             "PYTHONPATH": os.pathsep.join([venv_sp, "/home/user/my-lib"]),
         }
         with patch.dict(os.environ, seed, clear=True):
@@ -1287,7 +1287,7 @@ class TestPythonhomeSanitized:
         seed = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "USERPROFILE": r"C:\Users\testuser",  # win32 home resolution, HOME alone is not enough (#137196)
+            "USERPROFILE": r"C:\Users\testuser",  # ntpath resolves ~ via USERPROFILE, not HOME (#137196)
             "PYTHONHOME": "/opt/hermes-venv",
         }
         with patch.dict(os.environ, seed, clear=True):
@@ -1534,7 +1534,7 @@ class TestSanePathIncludesHomebrew:
         from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", list)
-        minimal_env = {"PATH": "/some/custom/bin", "USERPROFILE": r"C:\Users\testuser"}  # win32 home resolution (#137196)
+        minimal_env = {"PATH": "/some/custom/bin", "USERPROFILE": r"C:\Users\testuser"}  # ntpath resolves ~ via USERPROFILE, not HOME (#137196)
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)

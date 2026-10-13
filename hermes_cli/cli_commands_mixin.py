@@ -303,13 +303,12 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
         _skin = get_active_skin()
         label = _skin.get_branding("response_label", "☤ Hermes")
         _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
-        label, _resp_color, _resp_text = "☤ Hermes", "#CD7F32", "#FFF8DC"
+        label, _resp_color = "☤ Hermes", "#CD7F32"
     rich_console.print(Panel(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
         title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
-        border_style=_resp_color, style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 4),
+        border_style=_resp_color, box=rich_box.HORIZONTALS, padding=(1, 4),  # body: terminal fg
         width=cli._scrollback_box_width()))
 
 

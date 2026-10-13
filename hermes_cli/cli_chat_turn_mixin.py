@@ -690,11 +690,9 @@ class CLIChatTurnMixin:
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "☤ Hermes")
                 _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
-                _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
             except Exception:
                 label = "☤ Hermes"
                 _resp_color = _maybe_remap_for_light_mode("#CD7F32")
-                _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
             is_error_response = turn.result and (turn.result.get("failed") or turn.result.get("partial"))
             # An interrupted reply that streamed before a tool-call boundary reset the segment
@@ -720,7 +718,7 @@ class CLIChatTurnMixin:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),
                     title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
-                    style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
+                    box=rich_box.HORIZONTALS, padding=(1, 0),  # body inherits the terminal foreground
                     width=self._scrollback_box_width(),
                 ))
 

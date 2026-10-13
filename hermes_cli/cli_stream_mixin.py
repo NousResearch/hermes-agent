@@ -395,11 +395,10 @@ class CLIStreamMixin:
             return
 
     def _emit_stream_line(self, printed_line: str) -> None:
-        """Print one response line with the skin's true-color text escape (if any)."""
-        from cli import _RST, _STREAM_PAD, _cprint
-        _tc = getattr(self, "_stream_text_ansi", "")
-        _cprint(
-            f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+        """Print one response line in the terminal's own foreground. No skin color escape, so prose
+        stays readable on light and dark themes, including after a theme switch mid-session."""
+        from cli import _STREAM_PAD, _cprint
+        _cprint(f"{_STREAM_PAD}{printed_line}")
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
@@ -440,15 +439,8 @@ class CLIStreamMixin:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "☤ Hermes")
-                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
                 label = "☤ Hermes"
-                _text_hex = "#FFF8DC"
-            try:  # true-color escape so streamed text matches the Rich Panel appearance
-                _r, _g, _b = (int(_text_hex[i:i + 2], 16) for i in (1, 3, 5))
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
@@ -530,7 +522,6 @@ class CLIStreamMixin:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
-        self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._stream_last_was_newline = True

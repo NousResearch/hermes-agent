@@ -19,6 +19,7 @@ Contract asserted here, through the real ledger and job store:
 import hashlib
 import itertools
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,15 @@ SHUTDOWN_REASON = (
 )
 
 EVIDENCE = "pipeline report: finished 14:22, exit 0\n"
+CRLF_EVIDENCE = EVIDENCE.replace("\n", "\r\n")
+
+# Digests of the DECLARED fixture bytes (reproduced independently), keyed by the newline the fixture
+# text carries. Production hashes the bytes it reads off disk, so these are what a correct reconcile
+# records on every platform — including one whose text mode would translate the write.
+EVIDENCE_SHA256 = {
+    "lf": "d0227bb2c1807d8e0c78cb1f3140a5869c15711b12fbdc9873622f8bf9178cfe",
+    "crlf": "ac2c0048ae8d846317e24c2d76176a7146ba6eba4f3714142dad406924cb8a9e",
+}
 
 
 def _profile(tmp_path):
@@ -43,10 +53,21 @@ def _ledger(monkeypatch, tmp_path, home):
     return executions
 
 
-def _evidence_file(tmp_path, text=EVIDENCE):
-    path = tmp_path / "pipeline-report.txt"
-    path.write_text(text, encoding="utf-8")
+def _evidence_file(tmp_path, text=EVIDENCE, *, name="pipeline-report.txt"):
+    """Write the fixture with its bytes DECLARED: the file holds exactly ``text.encode("utf-8")``.
+
+    A text-mode write defers the newline to the host, so the same ``text`` lands as CRLF bytes on
+    native Windows while a pre-write oracle still describes the LF literal — the file and the
+    assertion would then disagree on a platform this suite is expected to run on.
+    """
+    path = tmp_path / name
+    path.write_bytes(text.encode("utf-8"))
     return path
+
+
+def _evidence_digest(path):
+    """The digest production records: sha256 over the evidence FILE's actual bytes, read back."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _abandoned(executions, monkeypatch, job_id, *, generation):
@@ -99,13 +120,49 @@ def test_reconcile_closes_an_unknown_attempt_with_its_evidence(monkeypatch, tmp_
 
     assert reconciled["status"] == "completed"
     assert reconciled["reconciled_evidence"] == str(evidence)
-    assert reconciled["reconciled_evidence_sha256"] == hashlib.sha256(
-        EVIDENCE.encode("utf-8")).hexdigest()
+    # The oracle is the FILE's bytes, re-read — the same thing production hashed.
+    assert reconciled["reconciled_evidence_sha256"] == _evidence_digest(evidence)
     assert reconciled["reconciled_note"] == "pipeline exited 0"
     assert reconciled["reconciled_at"]
     assert reconciled["reconciled_by"]  # provenance names the caller, even if it is "custom"
     assert reconciled["error"] is None
     assert executions.get_execution(abandoned["id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    ("newline", "text", "expected"),
+    [
+        ("lf", EVIDENCE, EVIDENCE_SHA256["lf"]),
+        ("crlf", CRLF_EVIDENCE, EVIDENCE_SHA256["crlf"]),
+    ],
+)
+def test_reconcile_records_the_digest_of_the_bytes_it_read(
+    monkeypatch, tmp_path, capsys, newline, text, expected
+):
+    """The oracle is the file's bytes, not the pre-write text: LF and CRLF evidence reconcile to
+    their own true digest, through the ledger and through the real CLI verb, on any host."""
+    import argparse
+
+    import cron.jobs as jobs
+    from hermes_cli.cron import _CRON_SUBCOMMANDS
+
+    home = _profile(tmp_path)
+    with jobs.use_cron_store(home):
+        executions = _ledger(monkeypatch, tmp_path, home)
+        evidence = _evidence_file(tmp_path, text, name=f"pipeline-report-{newline}.txt")
+        assert _evidence_digest(evidence) == expected  # the declared bytes are the ones on disk
+
+        ledger_row = _abandoned(executions, monkeypatch, "job-ledger", generation=1)
+        reconciled = executions.reconcile_execution(
+            ledger_row["id"], status="completed", evidence=str(evidence))
+        assert reconciled["reconciled_evidence_sha256"] == expected
+
+        # Same evidence through the operator surface, which prints the digest a human compares by eye.
+        cli_row = _abandoned(executions, monkeypatch, "job-cli", generation=2)
+        assert _CRON_SUBCOMMANDS["reconcile"](argparse.Namespace(
+            execution=cli_row["id"], status="completed", evidence=str(evidence),
+            note="pipeline exited 0")) == 0
+        assert expected in capsys.readouterr().out
 
 
 def test_reconcile_refuses_every_state_but_unknown(monkeypatch, tmp_path):
@@ -234,7 +291,7 @@ def test_cron_reconcile_cli_closes_the_row_and_shows_the_provenance(
     assert exit_code == 0
     assert closed["status"] == "completed"
     assert abandoned["id"] in output
-    assert hashlib.sha256(EVIDENCE.encode("utf-8")).hexdigest() in output
+    assert _evidence_digest(evidence) in output
     # The row stays readable afterwards: history shows it was closed from evidence, not by luck.
     assert "reconciled" in listing
 

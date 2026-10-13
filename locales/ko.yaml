@@ -435,7 +435,6 @@ gateway:
     last_activity: "**최종 활동:** {timestamp}"
     model: "**모델:** `{model}`"
     model_provider: "**모델:** `{model}` ({provider})"
-    free_tier: "Nous · 무료 요금제 · nous/welcome · /login 명령으로 로그인"
     context: "**컨텍스트:** {used} / {total} ({pct}%)"
     context_used: "**컨텍스트:** ~{used} 토큰"
     tokens: "**누적 청구 토큰:** {tokens} _(현재 컨텍스트 크기가 아닙니다. `/context`를 사용하세요)_"
@@ -779,8 +778,6 @@ gateway:
   plan:
     ack_task: "계획 중: {task}"
     ack_conversation: "이 대화의 컨텍스트로 계획을 세우고 있어요…"
-  initiate_setup:
-    ack: "설정을 시작하는 중…"
   init:
     start_failed: "/init을 시작할 수 없었어요 — 다시 시도해 주세요."
     ack_update: "프로젝트 스캔 결과로 AGENTS.md를 업데이트하고 있어요…"
@@ -843,7 +840,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ 게이트웨이가 성공적으로 재시작되었어요. 세션은 계속 이어져요."
-    free_tier_line: "추론: Nous 무료 등급 (nous/welcome). 더 많이 사용하려면 로그인하세요: /login"
     online: "♻️ 게이트웨이 온라인 — Hermes가 돌아왔고 준비되었어요."
     db_corrupt: "⚠️ 세션 데이터베이스 손상이 감지되었어요. 메시지가 저장되지 않을 수 있어요. 복구 방법:\n1. `hermes {profile_arg}doctor --fix` 실행\n2. 게이트웨이를 중지한 뒤 다음으로 복구:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (복구 가능하다고 나오면) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 복구는 먼저 손상된 파일의 스냅샷을 만들어요. 실행 중인 state.db에 `sqlite3 ... \\\".recover\\\"`를 실행하지 마세요. 취약한 sqlite3 CLI가 손상을 더 키울 수 있어요\n3. {backups_dir}/의 백업에서 복원\n정리된 진단 정보는 `hermes {profile_arg}doctor`로 확인하세요."
     db_fts_corrupt: "⚠️ 세션 데이터베이스가 검색 인덱스(FTS5)에 한정된 손상 오류를 보고했어요. 메시지 테이블은 손상되지 않았어요. 수리될 때까지 메시지가 저장되지 않을 수 있어요: `hermes {profile_arg}doctor --fix`를 실행한 뒤 게이트웨이를 재시작하세요. `hermes {profile_arg}doctor`가 손상을 확인하지 않는 한 복구 도구를 실행하거나 백업을 복원하지 마세요."
@@ -1558,8 +1554,6 @@ slash:
     description: "이 세션에서 프롬프트를 일정 간격으로 반복 실행"
   plan:
     description: "실행 없이 마크다운 구현 계획을 .hermes/plans/에 작성"
-  initiate-setup:
-    description: "첫 설정 실행: 사용자에 대해 알아보고 Hermes를 사용자에게 맞게 설정합니다"
   moa:
     description: "기본 Mixture of Agents 프리셋으로 프롬프트 하나를 실행한 뒤 원래 모델 복원"
   subgoal:
@@ -2919,8 +2913,6 @@ cli:
     plan:
       planning: "📋 계획 수립 중: {task}"
       from_conversation: "📋 이 대화의 컨텍스트로 계획을 세우는 중..."
-    initiate_setup:
-      starting: "🧭 설정을 시작하는 중..."
     init:
       updating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 업데이트하는 중..."
       generating: "⚡ 프로젝트 스캔 결과로 AGENTS.md를 생성하는 중..."

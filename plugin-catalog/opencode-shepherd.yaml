@@ -1,0 +1,22 @@
+# Community catalog entry: opencode-shepherd
+#
+# Owner-submitted: the PR author (okazakee) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the plugin is skills-only and
+# static, and the standalone CLI it documents is installed by the operator,
+# never fetched by the plugin itself.
+name: opencode-shepherd
+repo: https://github.com/okazakee/opencode-shepherd
+sha: "77a129099939259e7bf3c6b26d7e972c4818d3a3"   # tag v0.2.4
+description: "Watch over opencode sessions from anywhere: alerts for stopped turns, questions and permissions, plus a dependency-free CLI to reply."
+maintainer: okazakee
+tier: community
+category: automation
+requires_hermes: ">=0.21"
+version: "0.2.4"
+docs_url: https://github.com/okazakee/opencode-shepherd#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

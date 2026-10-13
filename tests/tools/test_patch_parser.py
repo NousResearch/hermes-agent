@@ -1300,6 +1300,31 @@ class TestHunkTargetPrecedence:
         assert final == "a = 0\nb = 1\nc = 0\nd = 1\ne = 0\n"
 
 
+class TestPlannerEscapeDrift:
+    """Escape drift is corrected before the planner selects a site, so the corrected text keeps
+    the patch's order and the result reports the correction."""
+
+    def test_a_drifted_hunk_after_an_anchor_edits_the_site_after_it(self, tmp_path):
+        source = "def first():\n    x = 'a'\n\ndef second():\n    x = 'a'\n"
+        body = "@@\n def second():\n@@\n-    x = \\'a\\'\n+    x = \\'b\\'"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is True, result.error
+        assert final == "def first():\n    x = 'a'\n\ndef second():\n    x = 'b'\n"
+        assert "escape-drift auto-corrected" in (result.note or "")
+
+    def test_an_ambiguous_drift_refuses_before_any_write(self, tmp_path):
+        source = 'a = 1\npat = r"\\d+"\n'
+        body = '@@\n-a = 1\n+a = 2\n@@\n-pat = r"\\\\d+"\n+pat = r"\\\\w+"'
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "intentional backslashes" in (result.error or "")
+        assert fo.writes == [] and final == source
+
+
 class TestMoveThenUpdateSameFile:
     """A rename-then-edit patch must validate and apply (was rejected).
 

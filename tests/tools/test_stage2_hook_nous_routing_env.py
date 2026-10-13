@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,6 @@ def _assignments(path: Path, name: str) -> list[str]:
     return [ln for ln in path.read_text().splitlines() if ln.startswith(f"{name}=")]
 
 
-@pytest.mark.platforms("posix")
 def test_container_values_reach_home_and_every_profile_env(stage2_text: str, tmp_path: Path) -> None:
     """All three overrides land in $HERMES_HOME/.env and each profiles/*/.env (created 0600 when
     missing), unrelated secrets survive, and the runtime tokenizer reads the marked line back."""
@@ -85,10 +85,10 @@ def test_container_values_reach_home_and_every_profile_env(stage2_text: str, tmp
         assert len(_assignments(env_file, "HERMES_PORTAL_BASE_URL")) == 1, env_file
     assert load_env_file(home / ".env")["API_SERVER_KEY"] == "abc"
     assert load_env_file(home / "profiles" / "ops" / ".env")["SLACK_BOT_TOKEN"] == "xoxb-x"
-    assert ((home / "profiles" / "work" / ".env").stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # win32 chmod cannot express 0600 (POSIX file-mode semantics)
+        assert ((home / "profiles" / "work" / ".env").stat().st_mode & 0o777) == 0o600
 
 
-@pytest.mark.platforms("posix")
 def test_container_wins_over_stale_line_then_idempotent_then_removed_when_unset(stage2_text: str, tmp_path: Path) -> None:
     """Boot 1: a stale line is replaced (one assignment). Boot 2 (same value): the volume is not rewritten.
     Boot 3 (variable gone): the stage2-written line is removed while hand-set lines stay. A read-only file
@@ -123,7 +123,7 @@ def test_container_wins_over_stale_line_then_idempotent_then_removed_when_unset(
     assert parsed["OTHER"] == "1"
     assert "Removed HERMES_PORTAL_BASE_URL" in third.stdout
 
-    if os.geteuid() != 0:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:  # no geteuid on Windows
         env_file.chmod(0o444)
         frozen = env_file.read_text()
         readonly = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL})

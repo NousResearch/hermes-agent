@@ -2,6 +2,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as notifications from '@/store/notifications'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
 
@@ -18,6 +19,9 @@ import {
   setOnboardingModel,
   submitOnboardingCode
 } from './onboarding'
+
+// Onboarding's due check answered "not due": first-run surfaces are free to show.
+markOnboardingDecided()
 
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
   return {

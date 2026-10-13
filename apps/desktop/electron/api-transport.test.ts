@@ -413,3 +413,104 @@ describe('htmlResponseError', () => {
     ).toMatch(/authentication proxy/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Keep-alive pool TTL regression: a pooled connection that dies SILENTLY
+// while idle (no FIN reaches the client — edge/session drop, sleep-wake) must
+// not be reused. When a proxy kills idle pool sockets without a visible
+// close, the next non-idempotent POST (the ws-ticket mint) is written into
+// the zombie and surfaces as a timeout the client refuses to retry by design.
+// A black-hole proxy models this faithfully: first response served normally,
+// upstream then destroyed, client socket kept deaf/mute so the client pool
+// still believes it is ESTABLISHED.
+// ---------------------------------------------------------------------------
+import net from 'node:net'
+
+import { KEEPALIVE_TTL_MS, ttlKeepAlive } from './api-transport'
+
+describe('keep-alive pool TTL (silent socket death)', () => {
+  function blackholeProxy(): Promise<{ port: number; close(): void }> {
+    const backend = net.createServer(sock => {
+      let buf = ''
+      sock.on('data', d => {
+        buf += d.toString('latin1')
+        if (buf.includes('\r\n\r\n')) {
+          sock.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: keep-alive\r\n\r\n{"ok":true}')
+          buf = ''
+        }
+      })
+    })
+    const proxy = net.createServer(cli => {
+      let dead = false
+      cli.on('data', d => {
+        if (dead) {
+          return // black hole: swallow writes to the dead upstream
+        }
+        up.write(d)
+      })
+      const up = backend.address() ? net.connect((backend.address() as AddressInfo).port) : null!
+      up.on('data', d => {
+        cli.write(d)
+        if (d.toString('latin1').includes('\r\n\r\n')) {
+          up.destroy()
+          dead = true
+        }
+      })
+      cli.on('error', () => {})
+      up.on('error', () => {})
+    })
+    return new Promise(resolve => {
+      backend.listen(0, '127.0.0.1', () => {
+        proxy.listen(0, '127.0.0.1', () => {
+          resolve({
+            port: (proxy.address() as AddressInfo).port,
+            close: () => {
+              proxy.close()
+              backend.close()
+            }
+          })
+        })
+      })
+    })
+  }
+
+  function postOnce(agent: http.Agent, port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/auth/ws-ticket', agent, timeout: 2000 }, res => {
+        res.resume()
+        res.on('end', () => resolve())
+      })
+      req.on('timeout', () => req.destroy(new Error('timeout')))
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
+  it('TTL agent recovers where the plain pool times out', async () => {
+    const px = await blackholeProxy()
+    const plain = new http.Agent({ keepAlive: true })
+    const ttl = new (ttlKeepAlive(http.Agent, 500))({ keepAlive: true })
+    try {
+      // control: plain pool reuses the silently-dead socket and times out
+      await postOnce(plain, px.port)
+      await new Promise(r => setTimeout(r, 1500))
+      await expect(postOnce(plain, px.port)).rejects.toThrow(/timeout|ECONNRESET|socket hang up/)
+
+      // head: TTL pool prunes the zombie first, POST reaches a fresh socket
+      await postOnce(ttl, px.port)
+      await new Promise(r => setTimeout(r, 1500))
+      await postOnce(ttl, px.port)
+    } finally {
+      px.close()
+      plain.destroy()
+      ttl.destroy()
+    }
+  }, 30_000)
+
+  it('exports a TTL comfortably below measured idle-close windows', () => {
+    // servers here hold idle h1 for minutes; the observed zombie window was
+    // ~40-90s. 15s prunes zombies long before reuse while keeping warm pools.
+    expect(KEEPALIVE_TTL_MS).toBeGreaterThan(0)
+    expect(KEEPALIVE_TTL_MS).toBeLessThanOrEqual(30_000)
+  })
+})

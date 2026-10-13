@@ -3852,7 +3852,7 @@ tips:
   t310: "provider_routing.require_parameters: true يوجّه فقط إلى المزوّدين الذين يدعمون كل معامل في طلبك."
   t311: "HERMES_TUI_RESUME=1 يُعيد الاتصال تلقائيًا بأحدث جلسة TUI عند الإطلاق — مفيد بعد انقطاع SSH."
   t312: "HERMES_TUI_THEME=light|dark|<hex> يفرض سمة TUI على الطرفيات التي لا تضبط COLORFGBG."
-  t313: "Ctrl+G أو Ctrl+X Ctrl+E في TUI يفتح مخزن الإدخال في $EDITOR للمطالبات الطويلة متعددة الأسطر."
+  t313: "Ctrl+G في TUI يفتح مخزن الإدخال في $EDITOR للمطالبات الطويلة متعددة الأسطر."
   t314: "يعرض TUI صيغ LaTeX في السطر — يصبح $E=mc^2$ رموزًا رياضية بـ Unicode بدلًا من TeX الخام."
   t315: "hermes dashboard يشغّل واجهة ويب محلية على 127.0.0.1:9119 — لا تخرج أي بيانات من localhost."
   t316: "hermes dashboard يضمّن واجهة Hermes TUI كاملة في متصفحك عبر xterm.js وطرفية PTY فوق WebSocket."

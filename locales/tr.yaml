@@ -3852,7 +3852,7 @@ tips:
   t310: "provider_routing.require_parameters: true, yalnızca isteğinizdeki her parametreyi destekleyen sağlayıcılara yönlendirir."
   t311: "HERMES_TUI_RESUME=1, başlatıldığında en son TUI oturumuna otomatik olarak yeniden bağlanır — SSH kopmalarından sonra işe yarar."
   t312: "HERMES_TUI_THEME=light|dark|<hex>, COLORFGBG ayarlamayan terminallerde TUI temasını zorla belirler."
-  t313: "TUI'de Ctrl+G veya Ctrl+X Ctrl+E, uzun çok satırlı istemler için giriş arabelleğini $EDITOR içinde açar."
+  t313: "TUI'de Ctrl+G uzun çok satırlı istemler için giriş arabelleğini $EDITOR içinde açar."
   t314: "TUI, LaTeX'i satır içinde işler — $E=mc^2$ ham TeX yerine Unicode matematik olarak görünür."
   t315: "hermes dashboard, 127.0.0.1:9119 adresinde yerel bir web arayüzü başlatır — localhost dışına hiçbir veri çıkmaz."
   t316: "hermes dashboard, xterm.js ve bir WebSocket PTY aracılığıyla tam Hermes TUI'sini tarayıcınıza gömer."

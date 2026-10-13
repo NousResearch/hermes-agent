@@ -3852,7 +3852,7 @@ tips:
   t310: "provider_routing.require_parameters: true는 요청의 모든 파라미터를 지원하는 제공자에게만 라우팅해요."
   t311: "HERMES_TUI_RESUME=1은 실행 시 가장 최근 TUI 세션에 자동으로 다시 연결해요 — SSH가 끊긴 뒤에 유용해요."
   t312: "HERMES_TUI_THEME=light|dark|<hex>는 COLORFGBG를 설정하지 않는 터미널에서 TUI 테마를 강제로 지정해요."
-  t313: "TUI에서 Ctrl+G 또는 Ctrl+X Ctrl+E를 누르면 긴 여러 줄 프롬프트를 위해 입력 버퍼가 $EDITOR로 열려요."
+  t313: "TUI에서 Ctrl+G 누르면 긴 여러 줄 프롬프트를 위해 입력 버퍼가 $EDITOR로 열려요."
   t314: "TUI는 LaTeX를 인라인으로 렌더링해요 — $E=mc^2$가 원본 TeX 대신 유니코드 수식으로 표시돼요."
   t315: "hermes dashboard는 127.0.0.1:9119에서 로컬 웹 UI를 실행해요 — 데이터가 localhost 밖으로 전혀 나가지 않아요."
   t316: "hermes dashboard는 xterm.js와 WebSocket PTY를 통해 브라우저 안에 전체 Hermes TUI를 내장해요."

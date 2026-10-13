@@ -3852,7 +3852,7 @@ tips:
   t310: "provider_routing.require_parameters: true は、リクエストのすべてのパラメーターに対応するプロバイダーだけにルーティングします。"
   t311: "HERMES_TUI_RESUME=1 は起動時に最新の TUI セッションへ自動で再接続します。SSH が切れた後に便利です。"
   t312: "HERMES_TUI_THEME=light|dark|<hex> は、COLORFGBG を設定しないターミナルで TUI のテーマを強制します。"
-  t313: "TUI で Ctrl+G または Ctrl+X Ctrl+E を押すと、入力バッファを $EDITOR で開けます。長い複数行のプロンプトに便利です。"
+  t313: "TUI で Ctrl+G を押すと、入力バッファを $EDITOR で開けます。長い複数行のプロンプトに便利です。"
   t314: "TUI は LaTeX をインラインで描画します。$E=mc^2$ は生の TeX ではなく Unicode の数式として表示されます。"
   t315: "hermes dashboard は 127.0.0.1:9119 でローカル Web UI を起動します。データは localhost の外に一切出ません。"
   t316: "hermes dashboard は xterm.js と WebSocket PTY を使い、Hermes の TUI をそのままブラウザに埋め込みます。"

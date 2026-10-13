@@ -3852,7 +3852,7 @@ tips:
   t310: "provider_routing.require_parameters: true 只路由到支持你请求中每个参数的提供方。"
   t311: "HERMES_TUI_RESUME=1 启动时自动重新连接最近的 TUI 会话——SSH 掉线后很方便。"
   t312: "HERMES_TUI_THEME=light|dark|<hex> 在不设置 COLORFGBG 的终端上强制指定 TUI 主题。"
-  t313: "在 TUI 中按 Ctrl+G 或 Ctrl+X Ctrl+E，可在 $EDITOR 中编辑输入缓冲区，适合长的多行提示词。"
+  t313: "在 TUI 中按 Ctrl+G 可在 $EDITOR 中编辑输入缓冲区，适合长的多行提示词。"
   t314: "TUI 会内联渲染 LaTeX——$E=mc^2$ 会显示为 Unicode 数学符号，而不是原始 TeX。"
   t315: "hermes dashboard 在 127.0.0.1:9119 启动本地 Web 界面——数据完全不离开本机。"
   t316: "hermes dashboard 通过 xterm.js 和 WebSocket PTY 在浏览器中嵌入完整的 Hermes TUI。"

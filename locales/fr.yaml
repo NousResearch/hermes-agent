@@ -4177,7 +4177,7 @@ tips:
   t310: "provider_routing.require_parameters: true ne route que vers les fournisseurs prenant en charge chaque paramètre de votre requête."
   t311: "HERMES_TUI_RESUME=1 se rattache automatiquement à la session TUI la plus récente au lancement — pratique après une coupure SSH."
   t312: "HERMES_TUI_THEME=light|dark|<hex> force le thème de la TUI sur les terminaux qui ne définissent pas COLORFGBG."
-  t313: "Ctrl+G ou Ctrl+X Ctrl+E dans la TUI ouvre le tampon de saisie dans $EDITOR pour les longs prompts multilignes."
+  t313: "Ctrl+G dans la TUI ouvre le tampon de saisie dans $EDITOR pour les longs prompts multilignes."
   t314: "La TUI affiche le LaTeX en ligne — $E=mc^2$ devient des maths Unicode au lieu de TeX brut."
   t315: "hermes dashboard lance une interface web locale sur 127.0.0.1:9119 — aucune donnée ne quitte localhost."
   t316: "hermes dashboard intègre la TUI Hermes complète dans votre navigateur via xterm.js et un PTY WebSocket."

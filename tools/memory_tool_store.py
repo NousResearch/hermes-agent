@@ -384,7 +384,8 @@ class MemoryStore:
             return idx if idx is not None else _error(_stale_entry_message(matched_entry), "stale_entry")
         idx, ambiguous = _find_unique_match(entries, old_text)
         if ambiguous:
-            return _error(f"Multiple entries matched '{old_text}'. Be more specific.", "ambiguous",
+            return _error(f"Multiple entries matched '{old_text}'. Be more specific — or pass the "
+                          f"target entry's full text, which is never ambiguous.", "ambiguous",
                           matches=[entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
                                    for i in _substring_matches(entries, old_text)])
         if idx is None:
@@ -447,7 +448,8 @@ class MemoryStore:
         else:
             idx, ambiguous = _find_unique_match(working, old_text)
             if ambiguous:
-                return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None, "ambiguous"
+                return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific, "
+                        f"or pass the target entry's full text, which is never ambiguous."), None, "ambiguous"
             if idx is None:
                 miss = _no_match_error(working, old_text, act)
                 return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match"

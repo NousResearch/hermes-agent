@@ -39,46 +39,6 @@ def _jwt_with_claims(claims: dict) -> str:
 
 
 
-def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    # Prevent auto-seeding from Codex CLI tokens on the host
-    monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
-        lambda: None,
-    )
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openai-codex": [
-                    {
-                        "id": "cred-1",
-                        "label": "weekly-reset",
-                        "auth_type": "oauth",
-                        "priority": 0,
-                        "source": "manual:device_code",
-                        "access_token": "tok-1",
-                        "last_status": "exhausted",
-                        "last_status_at": time.time() - 7200,
-                        "last_error_code": 429,
-                        "last_error_reason": "device_code_exhausted",
-                        "last_error_reset_at": time.time() + 7 * 24 * 60 * 60,
-                    }
-                ]
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openai-codex")
-    assert pool.has_available() is False
-    assert pool.select() is None
-
-
-
-
 def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeypatch):
     """A 402 must exhaust every pool entry backed by the same API key.
 

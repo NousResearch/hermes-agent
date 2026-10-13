@@ -207,14 +207,14 @@ class TestAuxiliaryClientWiring:
         """_build_codex_client builds the OpenAI client used for compression /
         vision / title generation when routed through Codex. Must emit codex
         headers."""
-        from agent import auxiliary_client
+        from agent import auxiliary_client, auxiliary_model_scope
         token = _make_codex_jwt("acct-aux-try-codex")
 
         # Force _select_pool_entry to return "no pool" so we fall through to
         # the auth.json token.
         monkeypatch.setattr(
-            auxiliary_client, "_select_pool_entry",
-            lambda provider: (False, None),
+            auxiliary_model_scope, "_select_pool_entry",
+            lambda provider, model=None: (False, None),
         )
         monkeypatch.setattr(
             auxiliary_client, "_read_codex_singleton_token",
@@ -232,11 +232,11 @@ class TestAuxiliaryClientWiring:
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
         """The ``raw_codex=True`` branch (used by the main agent loop for direct
         responses.stream() access) must also emit codex headers."""
-        from agent import auxiliary_client
+        from agent import auxiliary_client, auxiliary_model_scope
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
-            auxiliary_client, "_select_pool_entry",
-            lambda provider: (False, None),
+            auxiliary_model_scope, "_select_pool_entry",
+            lambda provider, model=None: (False, None),
         )
         monkeypatch.setattr(
             auxiliary_client, "_read_codex_singleton_token",

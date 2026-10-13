@@ -32,5 +32,8 @@ def test_exhausted_pool_skips_rotation():
     assert _pool_may_recover_from_rate_limit(p) is False
 
 
+def test_pool_recovery_checks_the_active_model():
+    pool = _pool(entries=3)
 
-
+    assert _pool_may_recover_from_rate_limit(pool, model="gpt-6.1-sol") is True
+    pool.has_available.assert_called_once_with(model="gpt-6.1-sol")

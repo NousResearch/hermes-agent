@@ -284,6 +284,8 @@ def _apply_limits(rows: list[dict]) -> None:
             row["limit"] = {"scope": "account", "resets_at": iso(state["resets_at"])}
         else:
             row["limit"] = {"scope": "models", "models": {m: iso(at) for m, at in state["models"].items()}}
+            if state.get("not_entitled"):
+                row["limit"]["not_entitled"] = list(state["not_entitled"])
 
 
 def _apply_usage(rows: list[dict]) -> None:
@@ -380,7 +382,8 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
     import time
 
     from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
-    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+    from agent.credential_pool import STATUS_DEAD, load_pool
+    from agent.credential_pool_cooldowns import _exhausted_until
 
     try:
         pool = load_pool(slug)

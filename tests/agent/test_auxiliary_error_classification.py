@@ -90,3 +90,31 @@ def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, b
     if benches_pool:
         assert pool.rotate_calls[0]["status_code"] == 429
         assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
+
+
+def test_aux_billing_429_on_a_model_scoped_pool_benches_the_credential_not_the_model(tmp_path, monkeypatch):
+    """An Anthropic 429 "out of extra usage" from an aux call is billing: the spent credential
+    must not keep serving the main model because only the aux model was cooled down."""
+    import json
+
+    from agent.credential_pool import load_pool
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    (home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"anthropic": [{
+        "id": "a1", "label": "a1", "auth_type": "api_key", "priority": 0, "source": "manual",
+        "access_token": "sk-ant-api-test",
+    }]}}), encoding="utf-8")
+    monkeypatch.setattr(ac, "_evict_cached_clients", lambda provider: None)
+
+    exc = _Err("Error code: 429 - {'error': {'message': 'You are out of extra usage. Add more at claude.ai/settings'}}", 429)
+    assert ac._is_payment_error(exc)
+    ac._recover_provider_pool("anthropic", exc, failed_api_key="sk-ant-api-test", model="claude-haiku-4-5")
+
+    (entry,) = load_pool("anthropic").entries()
+    assert entry.last_status == "exhausted"
+    assert entry.failure_reason == "billing"
+    assert not entry.model_cooldowns

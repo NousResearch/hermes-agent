@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
+from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_BENCH_SECONDS
 from agent.error_classifier import FailoverReason, classify_api_error
 
 MODEL = "gpt-5.3-codex"
@@ -75,10 +76,24 @@ def test_entitlement_400_benches_only_that_model_and_rotates(pool):
     first = pool.entries()[0]
     assert first.last_status is None  # credential-wide state untouched: other models stay usable
     assert set(first.model_cooldowns) == {MODEL}
-    # An entitlement is a plan property, not a window: no hourly re-probe, only reset clears it.
-    assert first.model_cooldowns[MODEL] > time.time() + 24 * 3600
+    # An entitlement rejection is bounded: it cannot poison the credential indefinitely, and reset still clears it.
+    assert time.time() + 24 * 3600 < first.model_cooldowns[MODEL] <= time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
     assert pool.select(model=OTHER_MODEL).id == "cred-0"
     assert pool.reset_statuses() >= 1 and not pool.entries()[0].model_cooldowns
+
+
+def test_rehydrates_legacy_entitlement_cooldown_with_new_bound():
+    from agent.credential_pool import PooledCredential
+
+    old_deadline = time.time() + 365 * 24 * 3600
+    entry = PooledCredential.from_dict("openai-codex", {
+        "id": "legacy", "label": "legacy", "auth_type": "oauth", "priority": 0,
+        "source": "manual", "access_token": "tok", "model_cooldowns": {MODEL: old_deadline},
+    })
+
+    assert entry.model_cooldowns[MODEL] <= time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+    assert entry.model_cooldowns[MODEL] > time.time() + 24 * 3600
+
 
 
 def test_all_entries_rejecting_falls_back_to_session_marker(pool):
@@ -100,3 +115,23 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def test_limit_state_marks_entitlement_benches_as_not_entitled_not_a_countdown(pool):
+    """A model the plan does not include must read "not entitled"; a rate-limit window keeps its reset."""
+    from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_KEY
+
+    for _ in TOKENS:
+        pool.mark_exhausted_and_rotate(
+            status_code=400, failure_reason="model_entitlement", model=MODEL,
+            error_context={"message": "not supported when using Codex with a ChatGPT account"})
+    pool.mark_exhausted_and_rotate(status_code=429, failure_reason="rate_limit", model=OTHER_MODEL)
+
+    state = pool.limit_state([MODEL, OTHER_MODEL])
+    assert MODEL in state["models"]
+    assert state["not_entitled"] == [MODEL]
+    # The marker survives a reload through the store, as the picker reads a fresh pool.
+    from agent.credential_pool import load_pool
+    reloaded = load_pool("openai-codex")
+    assert all(MODEL in e.extra.get(MODEL_ENTITLEMENT_KEY, {}) for e in reloaded.entries())
+    assert reloaded.limit_state([MODEL])["not_entitled"] == [MODEL]

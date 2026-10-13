@@ -420,7 +420,7 @@ def _oauth_freshness(entry: dict[str, Any]) -> float:
     A rotation always issues a later-expiring access token, so ``expires_at`` ordering identifies
     the live copy; ``last_refresh`` and the JWT ``exp`` claim are fallbacks.
     """
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool_cooldowns import _parse_absolute_timestamp
     stamps = [entry.get(k) for k in ("expires_at_ms", "expires_at", "last_refresh")]
     best = max((ts for ts in map(_parse_absolute_timestamp, stamps) if ts), default=0.0)
     if best == 0.0:

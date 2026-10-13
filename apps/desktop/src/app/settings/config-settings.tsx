@@ -29,7 +29,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
+import type { ConfigFieldSchema, ConfigSaveResponse, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -144,6 +144,8 @@ function ConfigSettingsInner({
   })
 
   const schema = schemaResponse?.fields ?? null
+  // Managed-scope pinned leaves: rendered read-only below (#135859).
+  const { keys: managedKeys, source: managedSource } = useMemo(() => managedScopeOf(schemaResponse), [schemaResponse])
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
@@ -232,6 +234,8 @@ function ConfigSettingsInner({
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
           }
+
+          notifyManagedRejected(result, c.managedRejectedNotice, c.managedRejectedTitle)
 
           // The saved snapshot becomes the new baseline, so the next autosave
           // diffs against what's actually on disk instead of the page-load
@@ -443,6 +447,8 @@ function ConfigSettingsInner({
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
+  const managedFieldHint = managedHintFor(c.managedFieldHint, managedSource)
+
   const showEmptyState =
     visibleFields.length === 0 &&
     (subpage === undefined
@@ -516,6 +522,8 @@ function ConfigSettingsInner({
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
+                managed={managedKeys.has(key)}
+                managedHint={managedFieldHint}
                 onChange={value => updateConfig(setNested(config, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
@@ -537,9 +545,28 @@ function ConfigSettingsInner({
   )
 }
 
+function managedScopeOf(schemaResponse: { managed_keys?: string[]; managed_source?: null | string } | undefined) {
+  return { keys: new Set(schemaResponse?.managed_keys ?? []), source: schemaResponse?.managed_source ?? null }
+}
+
+/** The save landed minus the pinned leaves; say so instead of a silent
+ *  success while the managed values snap back (#135859). */
+function notifyManagedRejected(result: ConfigSaveResponse, notice: string, title: string) {
+  if (result.managed_rejected?.length) {
+    notify({
+      kind: 'warning',
+      message: notice.replace('{keys}', result.managed_rejected.join(', ')),
+      title
+    })
+  }
+}
+
+function managedHintFor(hint: string, source: null | string) {
+  return hint.replace('{source}', source ? ` (${source})` : '')
+}
+
 /** Free-form MB cap for Desktop's data-URL attach/preview path (main-process). */
-function AttachmentSizeSetting() {
-  const { t } = useI18n()
+function AttachmentSizeSetting() {  const { t } = useI18n()
   const c = t.settings.config
   const stored = useStore($dataUrlReadMaxMb)
   const [draft, setDraft] = useState(String(stored))

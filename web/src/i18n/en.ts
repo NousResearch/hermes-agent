@@ -519,6 +519,8 @@ export const en: Translations = {
     failedToLoadRaw: "Failed to load raw config",
     configImported: "Config imported — review and save",
     invalidJson: "Invalid JSON file",
+    managedFieldHint: "Managed by your administrator{source} — read-only",
+    managedRejectedToast: "Saved, but these settings are managed by your administrator and were not changed: {keys}",
     categories: {
       general: "General",
       agent: "Agent",

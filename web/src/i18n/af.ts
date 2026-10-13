@@ -408,6 +408,8 @@ export const af: Translations = {
     failedToLoadRaw: "Kon nie rou konfigurasie laai nie",
     configImported: "Konfigurasie ingevoer — kontroleer en stoor",
     invalidJson: "Ongeldige JSON-lêer",
+    managedFieldHint: "Bestuur deur u administrateur{source} — leesalleen",
+    managedRejectedToast: "Gestoor, maar hierdie instellings word deur u administrateur bestuur en is nie verander nie: {keys}",
     categories: {
       general: "Algemeen",
       agent: "Agent",

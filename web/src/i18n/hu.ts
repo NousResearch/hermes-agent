@@ -408,6 +408,8 @@ export const hu: Translations = {
     failedToLoadRaw: "Nem sikerült betölteni a nyers konfigurációt",
     configImported: "Konfiguráció importálva — ellenőrizze és mentse",
     invalidJson: "Érvénytelen JSON-fájl",
+    managedFieldHint: "A rendszergazda kezeli{source} — írásvédett",
+    managedRejectedToast: "Mentve, de ezeket a beállításokat a rendszergazda kezeli, és nem lettek módosítva: {keys}",
     categories: {
       general: "Általános",
       agent: "Ügynök",

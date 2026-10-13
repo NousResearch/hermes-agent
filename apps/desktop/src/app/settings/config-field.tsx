@@ -37,7 +37,9 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
+  descriptionExtra,
+  managed = false,
+  managedHint
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -46,6 +48,10 @@ export function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
   descriptionExtra?: ReactNode
+  /** Rendered inert with a lock hint: the managed scope pins this key (#135859). */
+  managed?: boolean
+  /** Already-localized reason (includes the managed source path). */
+  managedHint?: string
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -75,29 +81,32 @@ export function ConfigField({
       ? rawDescription
       : undefined
 
-  const descriptionNode: ReactNode = descriptionExtra ? (
-    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-      {description}
-      {descriptionExtra}
-    </span>
-  ) : (
-    description
-  )
+  const managedNote = managedNoteFor(managed, managedHint)
+
+  const descriptionNode = composeDescriptionNode(description, descriptionExtra, managedNote)
 
   // Every config row is addressable by its canonical schema key, so a tour can
   // point at one setting (`[data-tour="field-model"]`) without hunting through
   // the section for an nth-child path. See lib/tour.
   const dataTour = `field-${schemaKey}`
 
+  // Managed-scope pinned leaf (#135859): render the control inert instead of
+  // editable-but-silently-dropped. ``fieldset disabled`` covers the native
+  // inputs and the radix buttons; ``pointer-events-none`` covers the custom
+  // editors with no disabled-aware element.
+  const wrapManaged = (control: ReactNode) => (
+    <ManagedControl managed={managed}>{control}</ManagedControl>
+  )
+
   const row = (action: ReactNode) => (
-    <ListRow action={action} data-tour={dataTour} description={descriptionNode} title={label} />
+    <ListRow action={wrapManaged(action)} data-tour={dataTour} description={descriptionNode} title={label} />
   )
 
   // Editors too big for the control column (textareas, structured lists) take
   // the full width under the description.
   const wideRow = (editor: ReactNode) => (
     <ListRow
-      below={<div className="mt-3">{editor}</div>}
+      below={<div className="mt-3">{wrapManaged(editor)}</div>}
       data-tour={dataTour}
       description={descriptionNode}
       title={label}
@@ -113,7 +122,7 @@ export function ConfigField({
   }
 
   if (schema.type === 'boolean') {
-    return (
+    return wrapManaged(
       <ToggleRow
         checked={Boolean(value)}
         data-tour={dataTour}
@@ -247,6 +256,45 @@ export function ConfigField({
           value={String(value ?? '')}
         />
       )
+}
+
+/** Lock-noted hint line for a managed-scope pinned field (#135859). */
+function managedNoteFor(managed: boolean, managedHint: string | undefined) {
+  return managed && managedHint ? (
+    <span className="inline-flex items-center gap-1 text-(--ui-text-tertiary)">{managedHint}</span>
+  ) : null
+}
+
+function composeDescriptionNode(
+  description: ReactNode,
+  descriptionExtra: ReactNode,
+  managedNote: ReactNode
+): ReactNode {
+  return descriptionExtra || managedNote ? (
+    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      {description}
+      {descriptionExtra}
+      {managedNote}
+    </span>
+  ) : (
+    description
+  )
+}
+
+/** Wraps a field's control in an inert shell when the managed scope pins the
+ *  key (#135859): ``fieldset disabled`` covers the native inputs and the radix
+ *  buttons; ``pointer-events-none`` covers the custom editors with no
+ *  disabled-aware element. */
+function ManagedControl({ managed, children }: { managed: boolean; children: ReactNode }) {
+  if (!managed) {
+    return <>{children}</>
+  }
+
+  return (
+    <fieldset className="m-0 border-0 p-0" disabled>
+      <div className="pointer-events-none opacity-60">{children}</div>
+    </fieldset>
+  )
 }
 
 function ListField({

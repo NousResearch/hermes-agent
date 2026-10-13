@@ -1,4 +1,5 @@
 import type {
+  ConfigSaveResponse,
   ConfigSchemaResponse,
   CustomEndpointsResponse,
   CustomEndpointUpdate,
@@ -180,8 +181,8 @@ export function saveHermesConfig(
   config: HermesConfigRecord,
   profile?: ProfileScope,
   { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
-): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+): Promise<ConfigSaveResponse> {
+  return window.hermesDesktop.api<ConfigSaveResponse>({
     ...resolveConfigWriteScope(config, profile),
     path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',
@@ -192,8 +193,8 @@ export function saveHermesConfig(
 /** Capability-scoped counterpart of saveHermesConfig — writes the config of
  *  the profile/connection the Capabilities scope selector points at (possibly
  *  on another registered gateway), mirroring getHermesConfigRecord. */
-export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<ConfigSaveResponse> {
+  return window.hermesDesktop.api<ConfigSaveResponse>({
     ...resolveConfigWriteScope(config, profile),
     path: '/api/config',
     method: 'PUT',

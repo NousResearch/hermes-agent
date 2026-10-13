@@ -407,6 +407,8 @@ export const ja: Translations = {
     failedToLoadRaw: "生の設定の読み込みに失敗しました",
     configImported: "設定をインポートしました — 確認して保存してください",
     invalidJson: "無効な JSON ファイル",
+    managedFieldHint: "管理者により管理されています{source} — 読み取り専用",
+    managedRejectedToast: "保存されましたが、これらの設定は管理者により管理されているため変更されませんでした: {keys}",
     categories: {
       general: "一般",
       agent: "エージェント",

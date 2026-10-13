@@ -407,6 +407,8 @@ export const zhHant: Translations = {
     failedToLoadRaw: "載入原始設定失敗",
     configImported: "設定已匯入 — 請檢視後儲存",
     invalidJson: "無效的 JSON 檔案",
+    managedFieldHint: "由管理員管理{source} — 唯讀",
+    managedRejectedToast: "已儲存，但以下設定由管理員管理，未被變更：{keys}",
     categories: {
       general: "一般",
       agent: "代理",

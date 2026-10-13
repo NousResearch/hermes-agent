@@ -408,6 +408,8 @@ export const ru: Translations = {
     failedToLoadRaw: "Не удалось загрузить исходную конфигурацию",
     configImported: "Конфигурация импортирована — проверьте и сохраните",
     invalidJson: "Некорректный JSON-файл",
+    managedFieldHint: "Управляется администратором{source} — только чтение",
+    managedRejectedToast: "Сохранено, но эти параметры управляются администратором и не были изменены: {keys}",
     categories: {
       general: "Общие",
       agent: "Агент",

@@ -407,6 +407,8 @@ export const ko: Translations = {
     failedToLoadRaw: "원본 설정 로드에 실패했습니다",
     configImported: "설정을 가져왔습니다 — 검토 후 저장하세요",
     invalidJson: "잘못된 JSON 파일입니다",
+    managedFieldHint: "관리자가 관리합니다{source} — 읽기 전용",
+    managedRejectedToast: "저장되었지만 이 설정은 관리자가 관리하므로 변경되지 않았습니다: {keys}",
     categories: {
       general: "일반",
       agent: "에이전트",

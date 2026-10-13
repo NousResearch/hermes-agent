@@ -109,6 +109,8 @@ export default function ConfigPage() {
     Record<string, unknown>
   > | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
+  const [managedKeys, setManagedKeys] = useState<Set<string>>(new Set());
+  const [managedSource, setManagedSource] = useState<string | null>(null);
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
     null,
   );
@@ -181,6 +183,9 @@ export default function ConfigPage() {
         delete fields["memory.provider"];
         setSchema(fields);
         setCategoryOrder(resp.category_order ?? []);
+        // Managed-scope pinned leaves: rendered read-only below (#135859).
+        setManagedKeys(new Set(resp.managed_keys ?? []));
+        setManagedSource(resp.managed_source ?? null);
       })
       .catch(() => {});
     api
@@ -281,8 +286,20 @@ export default function ConfigPage() {
     if (!config) return;
     setSaving(true);
     try {
-      await api.saveConfig(config);
-      showToast(t.config.configSaved, "success");
+      const resp = await api.saveConfig(config);
+      if (resp.managed_rejected?.length) {
+        // The save landed minus the pinned leaves; say so instead of a bare
+        // success while the managed values silently snap back (#135859).
+        showToast(
+          t.config.managedRejectedToast.replace(
+            "{keys}",
+            resp.managed_rejected.join(", "),
+          ),
+          "error",
+        );
+      } else {
+        showToast(t.config.configSaved, "success");
+      }
     } catch (e) {
       showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
     } finally {
@@ -383,6 +400,10 @@ export default function ConfigPage() {
   ) => {
     let lastSection = "";
     let lastCat = "";
+    const managedHint = t.config.managedFieldHint.replace(
+      "{source}",
+      managedSource ? ` (${managedSource})` : "",
+    );
     return fields.map(([key, s]) => {
       const parts = key.split(".");
       const section = parts.length > 1 ? parts[0] : "";
@@ -424,6 +445,8 @@ export default function ConfigPage() {
               schema={s}
               value={getNestedValue(config, key)}
               onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              managed={managedKeys.has(key)}
+              managedHint={managedHint}
             />
           </div>
         </div>

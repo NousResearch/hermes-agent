@@ -409,6 +409,8 @@ export const pt: Translations = {
     failedToLoadRaw: "Falha ao carregar configuração em bruto",
     configImported: "Configuração importada — reveja e guarde",
     invalidJson: "Ficheiro JSON inválido",
+    managedFieldHint: "Gerenciado pelo seu administrador{source} — somente leitura",
+    managedRejectedToast: "Salvo, mas estas configurações são gerenciadas pelo seu administrador e não foram alteradas: {keys}",
     categories: {
       general: "Geral",
       agent: "Agente",

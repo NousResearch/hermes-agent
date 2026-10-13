@@ -11,6 +11,7 @@ import type {
   ManagedFileWriteResponse,
 } from "./api-files";
 import { dashboardServingProfile } from "./profile-bootstrap";
+import { appendProfileParam, appendQueryParam, pluginPath, profileQuery } from "./api-url";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -254,11 +255,6 @@ export async function fetchJSON<T>(
   return res.json();
 }
 
-/** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
-function pluginPath(name: string): string {
-  return name.split("/").map(encodeURIComponent).join("/");
-}
-
 /**
  * Fetch a single-use ticket for a WebSocket upgrade in gated mode.
  *
@@ -357,24 +353,6 @@ export async function buildWsUrl(
     params,
     path,
   });
-}
-
-/** Build a ``?profile=<name>`` query suffix, or "" when unset.
- *
- * Used by the skills/toolsets endpoints so the dashboard can manage a
- * profile other than the one the server process runs under. */
-function profileQuery(profile?: string): string {
-  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
-}
-
-function appendProfileParam(url: string, profile?: string): string {
-  if (!profile || url.includes("profile=")) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
-}
-
-function appendQueryParam(url: string, key: string, value?: string): string {
-  if (!value) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
 }
 
 export interface SessionQueryOptions {
@@ -604,7 +582,13 @@ export const api = {
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getSchema: () =>
+    fetchJSON<{
+      fields: Record<string, unknown>;
+      category_order: string[];
+      managed_keys?: string[];
+      managed_source?: string | null;
+    }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
   getModelOptions: (
@@ -659,7 +643,7 @@ export const api = {
       body: JSON.stringify(answer),
     }),
   saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
+    fetchJSON<{ ok: boolean; managed_rejected?: string[] }>(appendProfileParam("/api/config", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),

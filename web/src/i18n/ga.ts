@@ -416,6 +416,8 @@ export const ga: Translations = {
     failedToLoadRaw: "Theip ar luchtú na cumraíochta amh",
     configImported: "Cumraíocht iompórtáilte — athbhreithnigh agus sábháil",
     invalidJson: "Comhad JSON neamhbhailí",
+    managedFieldHint: "Bainistithe ag do riarthóir{source} — inléite amháin",
+    managedRejectedToast: "Sábháilte, ach sainíoctar na socruithe seo ag do riarthóir agus níor athraíodh iad: {keys}",
     categories: {
       general: "Ginearálta",
       agent: "Agent",

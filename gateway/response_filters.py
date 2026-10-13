@@ -6,8 +6,11 @@ not what should be persisted in conversation history.
 
 from __future__ import annotations
 
+import logging
 import unicodedata
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Exact whole-response markers meaning "the agent intentionally chose not to
 # reply". Keep small and explicit; arbitrary empty output remains an
@@ -99,6 +102,15 @@ def is_autonomous_silence_response(response: Any) -> bool:
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
     """Silence markers suppress delivery only for successful agent turns."""
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+
+
+def is_intentional_silence_or_false(agent_result: dict | None, response: Any) -> bool:
+    """Best-effort ``is_intentional_silence_agent_result`` for delivery paths: never raises."""
+    try:
+        return is_intentional_silence_agent_result(agent_result, response)
+    except Exception:
+        logger.debug("intentional-silence check failed", exc_info=True)
+        return False
 
 
 def display_kind_for_event(event: Any) -> str | None:

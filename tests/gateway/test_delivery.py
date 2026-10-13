@@ -281,6 +281,7 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
                 "telegram_reply_to_message_id": "9001",
                 "thread_id": "32344",
                 "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": "32344",
             },
         }
     ]

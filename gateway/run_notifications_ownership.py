@@ -229,3 +229,17 @@ class GatewayNotificationOwnershipMixin:
                 "Async-delegation completion %s: owner not confirmed after admission; %s.", delegation_id,
                 "offered again" if requeued else "not offered again (result remains queryable)",
             )
+
+    def _completion_identity_seen(self, identity, *, claim: bool = False) -> bool:
+        """True when ``identity`` is inflight or already delivered this gateway lifecycle.
+
+        With ``claim`` an unseen identity is atomically marked inflight (same lock hold).
+        """
+        with self._completion_delivery_lock:
+            seen = (
+                identity in self._completion_deliveries_inflight
+                or identity in self._completion_deliveries_delivered
+            )
+            if claim and not seen:
+                self._completion_deliveries_inflight.add(identity)
+            return seen

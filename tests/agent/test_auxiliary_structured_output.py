@@ -137,3 +137,29 @@ def test_rejection_memo_is_per_model_and_ignores_schema_validation_errors():
     after = _build_call_kwargs("openai", "gpt-5-mini", messages,
                                extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url="https://api.openai.com/v1")
     assert after["extra_body"]["response_format"] == _JSON_SCHEMA  # ... but never feeds the memo
+
+
+def test_bare_model_echo_400_feeds_per_model_memo():
+    """OpenCode's Zen/Go relay answers a ``json_schema`` it cannot serve with a 400 whose whole body is
+    a ``{"model": ...}`` echo (#121973): no marker wording, so the echo itself must count as a
+    capability rejection — memoised for that model only, never for sibling models on the same relay
+    (glm-5 on opencode-go serves json_schema fine)."""
+    messages = [{"role": "user", "content": "hi"}]
+    opencode_go = "https://opencode.ai/zen/go/v1"
+    echo_400 = _Rejects400("Error code: 400 - {'model': 'deepseek-v4.1-flash'}")
+    assert structured_output.is_capability_rejection(echo_400)
+    assert _is_structured_output_rejection(echo_400)  # drives the one-shot retry without the field ...
+    structured_output.remember_structured_output_rejection(
+        "opencode-go", opencode_go,
+        {"model": "deepseek-v4.1-flash", "extra_body": {"response_format": dict(_JSON_SCHEMA)}}, echo_400)
+    rejected = _build_call_kwargs("opencode-go", "deepseek-v4.1-flash", messages,
+                                  extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=opencode_go)
+    sibling = _build_call_kwargs("opencode-go", "glm-5", messages,
+                                 extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=opencode_go)
+    assert "response_format" not in rejected.get("extra_body", {})  # ... and feeds the per-model memo
+    assert sibling["extra_body"]["response_format"] == _JSON_SCHEMA
+
+    # A 400 that carries a real error struct still says nothing about capability.
+    structured_output._REJECTED_ROUTES.clear()
+    not_found = _Rejects400("Error code: 400 - {'error': {'message': 'Model not found'}}")
+    assert not structured_output.is_capability_rejection(not_found)

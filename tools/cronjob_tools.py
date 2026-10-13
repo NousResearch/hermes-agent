@@ -696,7 +696,7 @@ def _action_create(a: dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
-            pinned=bool(a["pinned"]),
+            pinned=bool(a["pinned"]), tz=_normalize_optional_job_value(a.get("tz")),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -932,6 +932,8 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
+    if a.get("tz") is not None:
+        updates["tz"] = _normalize_optional_job_value(a["tz"]) or ""
     return None
 
 
@@ -1014,7 +1016,8 @@ def cronjob(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    tz: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1083,8 +1086,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "schedule": {
                 "type": "string",
-                "type": "string",
                 "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+            },
+            "tz": {
+                "type": "string",
+                "description": "Optional IANA timezone name for the schedule (e.g. 'America/New_York'). When set, cron expressions evaluate against this timezone's wall clock, adapting across Daylight Saving Time transitions independently of the local profile timezone. On update, '' clears."
             },
             "name": {
                 "type": "string",

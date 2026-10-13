@@ -303,3 +303,103 @@ def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
     skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
     assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
+
+
+def _bot_chat_profile(tmp_path, live_session_id="live"):
+    """state.db with a titled Bot Chat plus a live consumer lease: the canonical owner (#118635)."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_state import SessionDB
+    from tools import bot_live_delivery as mailbox
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="chat", source="cli")
+    db.set_session_title("chat", "Bot Chat")
+    lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=tmp_path,
+        metadata=dict(live_session_id=live_session_id, bot_live_delivery_consumer=True))
+    assert refusal is None and lease is not None
+    return db, lease, mailbox.find_canonical_live_owner(tmp_path)
+
+
+def _restart_owner(tmp_path):
+    """Release the canonical lease and re-acquire it as a restart would: fresh lease/live ids."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+
+    lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=tmp_path,
+        metadata=dict(live_session_id="live2", bot_live_delivery_consumer=True))
+    assert refusal is None and lease is not None
+    return lease
+
+
+def test_admission_refuses_a_non_canonical_owner(tmp_path):
+    """A lease no consumer polls would strand the ticket forever; admission must fail fast (#118635)."""
+    from tools import bot_live_delivery as mailbox
+
+    db, lease, owner = _bot_chat_profile(tmp_path)
+    try:
+        sibling = dict(owner, lease_id="s" * 32, live_session_id="sibling-live")
+        with pytest.raises(ValueError, match="canonical live Bot Chat lease"):
+            mailbox.deliver_to_live_owner(tmp_path, sibling, "silent dead drop")
+        assert not any(mailbox._root(tmp_path).glob("*.json"))
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_admission_replay_survives_owner_restart(tmp_path):
+    """An already-pinned ticket still replays after the canonical lease rotates (#118635)."""
+    from tools import bot_live_delivery as mailbox
+
+    db, lease, owner = _bot_chat_profile(tmp_path)
+    try:
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "retry me", delivery_id="b" * 32)
+        lease.release()
+        lease = _restart_owner(tmp_path)
+        replay = mailbox.deliver_to_live_owner(tmp_path, owner, "retry me", delivery_id="b" * 32)
+        assert replay == admitted
+        assert mailbox.read_delivery_result(tmp_path, "b" * 32) == admitted
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_queued_ticket_follows_the_restarted_owner(tmp_path):
+    """A queued ticket stranded by the owner's restart is re-pinned to the returning lease (#118635)."""
+    from tools import bot_live_delivery as mailbox
+
+    db, lease, owner = _bot_chat_profile(tmp_path)
+    try:
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "after restart")
+        lease.release()
+        lease = _restart_owner(tmp_path)
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None and current["lease_id"] != owner["lease_id"]
+        claimed = mailbox.claim_pending_delivery(tmp_path, current)
+        assert claimed is not None and claimed["delivery_id"] == admitted["delivery_id"]
+        assert claimed["owner"] == current
+        assert claimed["repinned_from"] == owner
+        assert mailbox.claim_pending_delivery(tmp_path, current) is None
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_sibling_session_cannot_take_the_restarted_owners_ticket(tmp_path):
+    """Only the canonical owner re-pins its stranded backlog; a sibling lease never inherits it (#118635)."""
+    from tools import bot_live_delivery as mailbox
+
+    db, lease, owner = _bot_chat_profile(tmp_path)
+    try:
+        mailbox.deliver_to_live_owner(tmp_path, owner, "not yours", delivery_id="a" * 32)
+        lease.release()
+        lease = _restart_owner(tmp_path)
+        for sibling in (dict(owner, session_id="other", lease_id="s" * 32, live_session_id="sib-a"),
+                        dict(owner, lease_id="s" * 32, live_session_id="sib-b")):
+            assert mailbox.claim_pending_delivery(tmp_path, sibling) is None
+        assert mailbox.read_delivery_result(tmp_path, "a" * 32)["status"] == "queued"
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert mailbox.claim_pending_delivery(tmp_path, current) is not None
+    finally:
+        lease.release()
+        db.close()

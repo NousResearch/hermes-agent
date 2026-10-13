@@ -263,6 +263,13 @@ jobs:
       - name: Keep every AGENTS.md under its truncation cap
         run: python scripts/ci/check_agents_md_size.py
 
+      # The store-root resolver is written once (scripts/bootstrap/store_root.sh + .ps1) and
+      # spliced into install.sh / install.ps1 by gen-bootstrap-resolver.py, so both installers
+      # answer "where is the PM store" from one source. Editing a copy without regenerating
+      # splits them again and a store staged by one half is invisible to the other.
+      - name: Keep the generated bootstrap resolver in sync with its canonical source
+        run: python scripts/gen-bootstrap-resolver.py --check
+
       # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
       # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
       # process serves many profiles; every pattern leaked the launch profile at least once. Printed

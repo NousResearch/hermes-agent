@@ -54,11 +54,11 @@ class _ClientToolEntry:
     call_id: str
     session_key: str  # == run_id
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
     event: threading.Event = field(default_factory=threading.Event)
     result: Optional[str] = None
 
-    def signature(self) -> Dict[str, object]:
+    def signature(self) -> dict[str, object]:
         return {
             "call_id": self.call_id,
             "run_id": self.session_key,
@@ -75,9 +75,9 @@ _lock = threading.RLock()
 # registry would let a result POSTed to run B resolve run A's pending call
 # (and would let a second run's registration clobber the first's entry,
 # stranding that agent thread until timeout).
-_entries: Dict[Tuple[str, str], _ClientToolEntry] = {}
+_entries: dict[tuple[str, str], _ClientToolEntry] = {}
 # session_key (run_id) → list[call_id]  (FIFO; for session cleanup)
-_session_index: Dict[str, List[str]] = {}
+_session_index: dict[str, list[str]] = {}
 
 
 # =========================================================================
@@ -88,7 +88,7 @@ def register(
     call_id: str,
     session_key: str,
     name: str,
-    arguments: Optional[Dict[str, Any]],
+    arguments: Optional[dict[str, Any]],
 ) -> _ClientToolEntry:
     """Register a pending client-tool call and return the entry.
 
@@ -125,7 +125,7 @@ def wait_for_result(session_key: str, call_id: str, timeout: float) -> Optional[
 
     try:
         from tools.environments.base import touch_activity_if_due
-    except Exception:  # pragma: no cover - optional
+    except ImportError:  # pragma: no cover - optional
         touch_activity_if_due = None
 
     deadline = time.monotonic() + max(timeout, 0.0)
@@ -238,6 +238,7 @@ def get_client_tool_timeout() -> int:
         api_cfg = cfg.get("api_server", {}) or {}
         return int(api_cfg.get("gateway_timeout", 300))
     except Exception:
+        logger.debug("client-tool timeout lookup failed; using 300s", exc_info=True)
         return 300
 
 
@@ -249,7 +250,7 @@ def get_client_tool_timeout() -> int:
 # ``tool_call.request`` event onto the run's SSE queue.  The callback runs
 # on the agent thread and schedules the put on the event loop.
 
-_notify_cbs: Dict[str, Callable[[_ClientToolEntry], None]] = {}
+_notify_cbs: dict[str, Callable[[_ClientToolEntry], None]] = {}
 
 
 def register_notify(session_key: str, cb: Callable[[_ClientToolEntry], None]) -> None:

@@ -25,19 +25,33 @@ def _clean_state():
     ctg._notify_cbs.clear()
 
 
+class _EnteredEvent(threading.Event):
+    """The entry's Event, also reporting when a waiter has started blocking on it."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+
+    def wait(self, timeout=None):
+        self.entered.set()
+        return super().wait(timeout)
+
+
 def test_register_then_resolve_roundtrip():
     run_id = "run_test1"
     ctg.register("call_1", run_id, "set_timer", {"minutes": 5})
 
     out = {}
+    started = threading.Event()
 
     def _agent_thread():
+        started.set()
         out["result"] = ctg.wait_for_result(run_id, "call_1", timeout=5.0)
 
     t = threading.Thread(target=_agent_thread)
     t.start()
-    # Let the waiter enter its poll loop, then resolve from the "HTTP" side.
-    time.sleep(0.2)
+    # The waiter is running; resolve from the "HTTP" side.
+    assert started.wait(timeout=5.0)
     assert ctg.has_pending(run_id) is True
     assert ctg.resolve_client_tool(run_id, "call_1", '{"ok": true}') is True
     t.join(timeout=3.0)
@@ -60,8 +74,12 @@ def test_timeout_returns_none():
 
 def test_clear_session_cancels_with_error_result():
     run_id = "run_test3"
-    ctg.register("call_3a", run_id, "set_timer", {"minutes": 1})
-    ctg.register("call_3b", run_id, "set_alarm", {"hour": 7})
+    entries = [
+        ctg.register("call_3a", run_id, "set_timer", {"minutes": 1}),
+        ctg.register("call_3b", run_id, "set_alarm", {"hour": 7}),
+    ]
+    for entry in entries:
+        entry.event = _EnteredEvent()
 
     out = {}
 
@@ -72,7 +90,9 @@ def test_clear_session_cancels_with_error_result():
                for c in ("call_3a", "call_3b")]
     for t in threads:
         t.start()
-    time.sleep(0.2)
+    # Cancel only once both waiters are blocked on their entry.
+    for entry in entries:
+        assert entry.event.entered.wait(timeout=5.0)
 
     cancelled = ctg.clear_session(run_id)
     assert cancelled == 2
@@ -107,13 +127,15 @@ def test_resolve_from_wrong_run_does_not_unblock():
     ctg.register("call_b_only", run_b, "get_location", {})
 
     out = {}
+    started = threading.Event()
 
     def _agent_thread():
+        started.set()
         out["result"] = ctg.wait_for_result(run_a, "call_shared", timeout=2.0)
 
     t = threading.Thread(target=_agent_thread)
     t.start()
-    time.sleep(0.2)
+    assert started.wait(timeout=5.0)
 
     # The wrong-run POST is rejected and leaves run_a still waiting.
     assert ctg.resolve_client_tool(run_b, "call_shared", '{"hijacked": true}') is False
@@ -138,22 +160,25 @@ def test_duplicate_call_id_across_runs_are_independent():
     assert entry_a is not entry_b
 
     out = {}
+    started = threading.Barrier(3)
 
     def _agent_thread(run_id):
+        started.wait(timeout=5.0)
         out[run_id] = ctg.wait_for_result(run_id, "call_same", timeout=3.0)
 
     threads = [threading.Thread(target=_agent_thread, args=(r,))
                for r in (run_a, run_b)]
     for t in threads:
         t.start()
-    time.sleep(0.2)
+    started.wait(timeout=5.0)  # both waiters are running
 
     assert ctg.has_pending(run_a) is True
     assert ctg.has_pending(run_b) is True
 
     # Resolving one leaves the other pending with its own payload.
     assert ctg.resolve_client_tool(run_a, "call_same", '{"which": "a"}') is True
-    time.sleep(0.2)
+    threads[0].join(timeout=3.0)  # run_a's waiter has unwound
+    assert out[run_a] == '{"which": "a"}'
     assert ctg.has_pending(run_b) is True
     assert ctg.resolve_client_tool(run_b, "call_same", '{"which": "b"}') is True
 
@@ -184,13 +209,15 @@ def test_double_resolve_is_rejected():
     ctg.register("call_d", run_id, "set_timer", {"minutes": 1})
 
     out = {}
+    started = threading.Event()
 
     def _agent_thread():
+        started.set()
         out["result"] = ctg.wait_for_result(run_id, "call_d", timeout=3.0)
 
     t = threading.Thread(target=_agent_thread)
     t.start()
-    time.sleep(0.2)
+    assert started.wait(timeout=5.0)
 
     assert ctg.resolve_client_tool(run_id, "call_d", '{"first": true}') is True
     t.join(timeout=3.0)

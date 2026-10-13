@@ -981,6 +981,11 @@ function WhatsAppOnboardingPanel({
               disabled={phase === "waiting" || phase === "applying"}
               placeholder="15551234567,15557654321"
             />
+            {hasSavedAllowedUsers && (
+              <span className="text-xs text-muted-foreground">
+                A saved allowlist is already stored for this profile. Leave this blank to keep it.
+              </span>
+            )}
           </div>
         </div>
 

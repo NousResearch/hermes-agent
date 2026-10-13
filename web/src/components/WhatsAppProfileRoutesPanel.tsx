@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -13,13 +12,21 @@ import { cn, themedBody } from "@/lib/utils";
 import {
   buildWhatsAppRouteRow,
   extractProfileRoutes,
+  formatProfileRouteOption,
+  formatWhatsAppLastSeen,
   persistWhatsAppProfileRoutes,
   resolveHostProfileName,
+  unassignedWhatsAppChats,
   validateWhatsAppRouteChatId,
   validateWhatsAppRouteName,
   validateWhatsAppRouteProfile,
+  whatsappChatKind,
+  whatsappChatLabel,
   whatsappProfileRoutesFromList,
+  whatsappRouteCountsByProfile,
+  whatsappRouteNameForChat,
   type WhatsAppProfileRouteRow,
+  type WhatsAppSeenChatView,
 } from "@/lib/whatsapp-profile-routes";
 
 type RouteModalState =
@@ -37,6 +44,7 @@ export function WhatsAppProfileRoutesPanel({
   const [hostProfile, setHostProfile] = useState("default");
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const [routes, setRoutes] = useState<WhatsAppProfileRouteRow[]>([]);
+  const [seenChats, setSeenChats] = useState<WhatsAppSeenChatView[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [modal, setModal] = useState<RouteModalState | null>(null);
@@ -46,6 +54,16 @@ export function WhatsAppProfileRoutesPanel({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const installedSet = useMemo(() => new Set(profileNames), [profileNames]);
+  const routeCounts = useMemo(() => whatsappRouteCountsByProfile(routes), [routes]);
+  const seenById = useMemo(() => {
+    const map = new Map<string, WhatsAppSeenChatView>();
+    for (const chat of seenChats) map.set(chat.chat_id, chat);
+    return map;
+  }, [seenChats]);
+  const unassignedChats = useMemo(
+    () => unassignedWhatsAppChats(seenChats, routes),
+    [seenChats, routes],
+  );
   const managementProfile = getManagementProfile();
   const viewingSecondary =
     Boolean(managementProfile) && managementProfile !== hostProfile;
@@ -57,8 +75,12 @@ export function WhatsAppProfileRoutesPanel({
       const host = resolveHostProfileName(profiles);
       setHostProfile(host);
       setProfileNames(profiles.map((p) => p.name));
-      const config = await api.getConfig(host);
+      const [config, seen] = await Promise.all([
+        api.getConfig(host),
+        api.getWhatsAppSeenChats().catch(() => ({ chats: [] as WhatsAppSeenChatView[] })),
+      ]);
       setRoutes(whatsappProfileRoutesFromList(extractProfileRoutes(config)));
+      setSeenChats(seen.chats ?? []);
     } catch (e) {
       showToast(
         copy?.loadFailed ?? `Could not load WhatsApp routes: ${errorMessage(e)}`,
@@ -81,7 +103,7 @@ export function WhatsAppProfileRoutesPanel({
 
   const openAdd = () => {
     setDraftName("");
-    setDraftChatId("");
+    setDraftChatId(unassignedChats[0]?.chat_id ?? "");
     setDraftProfile(profileNames[0] ?? "");
     setFieldErrors({});
     setModal({ mode: "add" });
@@ -98,20 +120,46 @@ export function WhatsAppProfileRoutesPanel({
 
   const validateDraft = (): WhatsAppProfileRouteRow | null => {
     const errors: Record<string, string> = {};
-    const nameErr = validateWhatsAppRouteName(draftName);
-    if (nameErr) errors.name = nameErr;
     const chatErr = validateWhatsAppRouteChatId(draftChatId);
     if (chatErr) errors.chat_id = chatErr;
+    else if (
+      modal?.mode === "add" &&
+      !unassignedChats.some((chat) => chat.chat_id === draftChatId)
+    ) {
+      errors.chat_id =
+        copy?.fieldChatEmpty ??
+        "Choose a chat the bridge has already seen.";
+    }
+    const duplicate = routes.some(
+      (row, index) =>
+        row.chat_id.trim().toLowerCase() === draftChatId.trim().toLowerCase() &&
+        !(modal?.mode === "edit" && index === modal.index),
+    );
+    if (!errors.chat_id && duplicate) {
+      errors.chat_id = "That chat already has a route.";
+    }
+    const seen = seenById.get(draftChatId);
+    const label = whatsappChatLabel(draftChatId, seen?.name);
+    const taken = new Set(
+      routes
+        .filter((_, index) => !(modal?.mode === "edit" && index === modal.index))
+        .map((row) => row.name),
+    );
+    const name =
+      modal?.mode === "edit" && draftName.trim()
+        ? draftName.trim()
+        : whatsappRouteNameForChat(label, draftChatId, taken);
+    const nameErr = validateWhatsAppRouteName(name);
+    if (nameErr) errors.name = nameErr;
     const profileErr = validateWhatsAppRouteProfile(draftProfile, installedSet);
     if (profileErr) errors.profile = profileErr;
     if (Object.keys(errors).length > 0) {
       setFieldErrors(errors);
       return null;
     }
-    const preserve =
-      modal?.mode === "edit" ? modal.preserve : null;
+    const preserve = modal?.mode === "edit" ? modal.preserve : null;
     return buildWhatsAppRouteRow(
-      { name: draftName, chat_id: draftChatId, profile: draftProfile },
+      { name, chat_id: draftChatId, profile: draftProfile },
       preserve,
     );
   };
@@ -189,25 +237,37 @@ export function WhatsAppProfileRoutesPanel({
             <table className="w-full min-w-[420px] border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border text-left text-muted-foreground">
-                  <th className="py-2 pr-3 font-medium">{copy?.colName ?? "Name"}</th>
-                  <th className="py-2 pr-3 font-medium">{copy?.colChatId ?? "Chat id"}</th>
+                  <th className="py-2 pr-3 font-medium">{copy?.colChat ?? "Chat"}</th>
+                  <th className="py-2 pr-3 font-medium">{copy?.colKind ?? "Kind"}</th>
                   <th className="py-2 pr-3 font-medium">{copy?.colProfile ?? "Profile"}</th>
+                  <th className="py-2 pr-3 font-medium">{copy?.colLastSeen ?? "Last seen"}</th>
                   <th className="py-2 w-24" />
                 </tr>
               </thead>
               <tbody>
                 {routes.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-4 text-muted-foreground">
-                      {copy?.empty ?? "No WhatsApp routes yet. Add a group JID or DM target."}
+                    <td colSpan={5} className="py-4 text-muted-foreground">
+                      {copy?.empty ??
+                        "No WhatsApp routes yet. Add a chat the bridge has already seen."}
                     </td>
                   </tr>
                 ) : (
-                  routes.map((row, index) => (
-                    <tr key={`${row.name}-${index}`} className="border-b border-border/60">
-                      <td className="py-2 pr-3 font-medium">{row.name}</td>
-                      <td className="py-2 pr-3 font-courier break-all">{row.chat_id}</td>
+                  routes.map((row, index) => {
+                    const seen = seenById.get(row.chat_id);
+                    const kind = whatsappChatKind(row.chat_id, seen?.kind);
+                    const label = whatsappChatLabel(row.chat_id, seen?.name);
+                    const lastSeen = formatWhatsAppLastSeen(seen?.last_seen);
+                    return (
+                    <tr key={`${row.chat_id}-${index}`} className="border-b border-border/60">
+                      <td className="py-2 pr-3 font-medium" title={row.chat_id}>
+                        {label}
+                      </td>
+                      <td className="py-2 pr-3">
+                        {kind === "group" ? (copy?.kindGroup ?? "Group") : (copy?.kindPerson ?? "Person")}
+                      </td>
                       <td className="py-2 pr-3 font-courier">{row.profile}</td>
+                      <td className="py-2 pr-3 text-muted-foreground">{lastSeen || "—"}</td>
                       <td className="py-2">
                         <div className="flex gap-1">
                           <Button
@@ -230,7 +290,8 @@ export function WhatsAppProfileRoutesPanel({
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -299,47 +360,37 @@ export function WhatsAppProfileRoutesPanel({
             </header>
             <div className="grid gap-4 overflow-y-auto p-5">
               <div className="grid gap-1.5">
-                <Label htmlFor="wa-route-name">{copy?.fieldName ?? "Name"} *</Label>
-                <Input
-                  id="wa-route-name"
-                  value={draftName}
-                  aria-invalid={Boolean(fieldErrors.name)}
-                  onChange={(e) => {
-                    setDraftName(e.target.value);
-                    setFieldErrors((prev) => {
-                      if (!prev.name) return prev;
-                      const next = { ...prev };
-                      delete next.name;
-                      return next;
-                    });
-                  }}
-                />
-                {fieldErrors.name && (
-                  <span className="text-xs text-destructive">{fieldErrors.name}</span>
+                <Label htmlFor="wa-route-chat">{copy?.fieldChat ?? "Chat"} *</Label>
+                {modal.mode === "edit" ? (
+                  <p className="text-sm" title={draftChatId}>
+                    {whatsappChatLabel(draftChatId, seenById.get(draftChatId)?.name)}
+                  </p>
+                ) : unassignedChats.length === 0 ? (
+                  <p id="wa-route-chat" className="text-xs text-muted-foreground">
+                    {copy?.fieldChatEmpty ??
+                      "No unassigned chats yet. The bridge adds a chat here after it receives a message."}
+                  </p>
+                ) : (
+                  <Select
+                    id="wa-route-chat"
+                    value={draftChatId}
+                    onValueChange={(value) => {
+                      setDraftChatId(value);
+                      setFieldErrors((prev) => {
+                        if (!prev.chat_id) return prev;
+                        const next = { ...prev };
+                        delete next.chat_id;
+                        return next;
+                      });
+                    }}
+                  >
+                    {unassignedChats.map((chat) => (
+                      <SelectOption key={chat.chat_id} value={chat.chat_id}>
+                        {whatsappChatLabel(chat.chat_id, chat.name)}
+                      </SelectOption>
+                    ))}
+                  </Select>
                 )}
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="wa-route-chat">{copy?.fieldChatId ?? "Chat id"} *</Label>
-                <Input
-                  id="wa-route-chat"
-                  className="font-courier"
-                  placeholder="120363…@g.us or 15551234567"
-                  value={draftChatId}
-                  aria-invalid={Boolean(fieldErrors.chat_id)}
-                  onChange={(e) => {
-                    setDraftChatId(e.target.value);
-                    setFieldErrors((prev) => {
-                      if (!prev.chat_id) return prev;
-                      const next = { ...prev };
-                      delete next.chat_id;
-                      return next;
-                    });
-                  }}
-                />
-                <span className="text-xs text-muted-foreground">
-                  {copy?.fieldChatIdHint ??
-                    "Groups must end with @g.us. DMs may use a phone number or user JID."}
-                </span>
                 {fieldErrors.chat_id && (
                   <span className="text-xs text-destructive">{fieldErrors.chat_id}</span>
                 )}
@@ -361,10 +412,14 @@ export function WhatsAppProfileRoutesPanel({
                 >
                   {profileNames.map((name) => (
                     <SelectOption key={name} value={name}>
-                      {name}
+                      {formatProfileRouteOption(name, routeCounts.get(name) ?? 0)}
                     </SelectOption>
                   ))}
                 </Select>
+                <span className="text-xs text-muted-foreground">
+                  {copy?.fieldProfileCountHint ??
+                    "The number is how many WhatsApp chats already route to that profile."}
+                </span>
                 {fieldErrors.profile && (
                   <span className="text-xs text-destructive">{fieldErrors.profile}</span>
                 )}
@@ -373,7 +428,12 @@ export function WhatsAppProfileRoutesPanel({
                 <Button ghost size="sm" onClick={closeModal}>
                   {t.common.cancel}
                 </Button>
-                <Button size="sm" className="uppercase" onClick={applyModal}>
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={applyModal}
+                  disabled={modal.mode === "add" && unassignedChats.length === 0}
+                >
                   {copy?.modalApply ?? "Apply"}
                 </Button>
               </div>

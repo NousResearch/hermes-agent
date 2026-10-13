@@ -1016,6 +1016,8 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getWhatsAppSeenChats: () =>
+    fetchJSON<WhatsAppSeenChatsResponse>("/api/messaging/whatsapp/seen-chats"),
   getWhatsAppOnboardingStatus: (pairingId: string) =>
     fetchJSON<WhatsAppOnboardingStatusResponse>(
       `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
@@ -2182,6 +2184,17 @@ export interface TelegramOnboardingApplyResponse {
   restart_action?: string;
   restart_pid?: number | null;
   restart_error?: string;
+}
+
+export interface WhatsAppSeenChat {
+  chat_id: string;
+  name: string | null;
+  kind: "group" | "dm" | string;
+  last_seen: number | null;
+}
+
+export interface WhatsAppSeenChatsResponse {
+  chats: WhatsAppSeenChat[];
 }
 
 export interface WhatsAppOnboardingStartResponse {

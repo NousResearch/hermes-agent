@@ -555,6 +555,25 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
     return pairing_id
 
 
+@router.get("/api/messaging/whatsapp/seen-chats")
+def list_whatsapp_seen_chats():
+    """Chats the WhatsApp bridge has already seen, with display names when known.
+
+    Reads the channel directory and session rows on every installed profile.
+    Does not start the bridge or restart the gateway.
+    """
+    from hermes_cli.profiles import list_profiles
+    from hermes_cli.whatsapp_seen_chats import collect_whatsapp_seen_chats
+
+    try:
+        homes = [item.path for item in list_profiles(lazy_skill_count=True)]
+        chats = collect_whatsapp_seen_chats(homes)
+    except Exception as exc:
+        _log.exception("GET /api/messaging/whatsapp/seen-chats failed")
+        raise HTTPException(status_code=500, detail="Could not list WhatsApp chats.") from exc
+    return {"chats": chats}
+
+
 @router.post("/api/messaging/whatsapp/onboarding/start")
 async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
     mode = _normalize_whatsapp_onboarding_mode(body.mode)

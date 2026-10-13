@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  formatProfileRouteOption,
+  formatWhatsAppLastSeen,
   mergeWhatsAppProfileRoutes,
   persistWhatsAppProfileRoutes,
+  unassignedWhatsAppChats,
   validateWhatsAppRouteChatId,
+  whatsappChatLabel,
   whatsappProfileRoutesFromList,
+  whatsappRouteCountsByProfile,
+  whatsappRouteNameForChat,
 } from "./whatsapp-profile-routes";
 
 describe("whatsapp profile_routes merge", () => {
@@ -43,6 +49,53 @@ describe("whatsapp profile_routes merge", () => {
     ];
     expect(whatsappProfileRoutesFromList(routes)).toHaveLength(1);
     expect(whatsappProfileRoutesFromList(routes)[0].chat_id).toBe("9@g.us");
+  });
+});
+
+describe("whatsappRouteCountsByProfile", () => {
+  it("counts chats per profile and labels unused profiles as zero", () => {
+    const counts = whatsappRouteCountsByProfile([
+      { profile: "cmp_market" },
+      { profile: " cmp_market " },
+      { profile: "jbq_orchestrator" },
+      { profile: "" },
+    ]);
+    expect(counts.get("cmp_market")).toBe(2);
+    expect(counts.get("jbq_orchestrator")).toBe(1);
+    expect(formatProfileRouteOption("cmp_market", counts.get("cmp_market") ?? 0)).toBe(
+      "cmp_market (2)",
+    );
+    expect(formatProfileRouteOption("default", counts.get("default") ?? 0)).toBe("default (0)");
+  });
+});
+
+describe("whatsapp chat labels", () => {
+  it("shows a group name and hides the JID", () => {
+    expect(whatsappChatLabel("120363@g.us", "Job Quest")).toBe("Job Quest");
+    expect(whatsappChatLabel("120363@g.us", "120363@g.us")).toBe("Unnamed group");
+    expect(whatsappChatLabel("1555@s.whatsapp.net", "")).toBe("Unnamed contact");
+  });
+
+  it("offers only chats that are not already routed", () => {
+    const seen = [
+      { chat_id: "120363@g.us", name: "Job Quest" },
+      { chat_id: "999@g.us", name: "Reportes" },
+    ];
+    expect(unassignedWhatsAppChats(seen, [{ chat_id: "120363@g.us" }])).toEqual([
+      { chat_id: "999@g.us", name: "Reportes" },
+    ]);
+  });
+
+  it("builds a unique internal route name from the display label", () => {
+    const taken = new Set(["job-quest"]);
+    expect(whatsappRouteNameForChat("Job Quest", "120363abcd@g.us", taken)).toBe(
+      "job-quest-bcdgus",
+    );
+  });
+
+  it("formats last seen as a local timestamp", () => {
+    const formatted = formatWhatsAppLastSeen(Date.UTC(2026, 8, 18, 17, 5) / 1000);
+    expect(formatted).toMatch(/^2026-09-18 \d{2}:\d{2}$/);
   });
 });
 

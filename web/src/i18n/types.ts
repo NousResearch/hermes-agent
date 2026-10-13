@@ -151,7 +151,12 @@ export interface Translations {
       ingressOwnedByHost: string;
       colName: string;
       colChatId: string;
+      colChat: string;
+      colKind: string;
       colProfile: string;
+      colLastSeen: string;
+      kindGroup: string;
+      kindPerson: string;
       empty: string;
       addRoute: string;
       saveRoutes: string;
@@ -166,6 +171,9 @@ export interface Translations {
       fieldChatId: string;
       fieldChatIdHint: string;
       fieldProfile: string;
+      fieldProfileCountHint: string;
+      fieldChat: string;
+      fieldChatEmpty: string;
       modalApply: string;
     };
   };

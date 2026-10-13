@@ -85,6 +85,83 @@ export function validateWhatsAppRouteChatId(chatId: string): string | null {
   return null;
 }
 
+/** How many WhatsApp chats already target each profile, including unsaved table rows. */
+export function whatsappRouteCountsByProfile(
+  routes: { profile: string }[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of routes) {
+    const profile = row.profile.trim();
+    if (!profile) continue;
+    counts.set(profile, (counts.get(profile) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function formatProfileRouteOption(name: string, count: number): string {
+  return `${name} (${count})`;
+}
+
+export interface WhatsAppSeenChatView {
+  chat_id: string;
+  name?: string | null;
+  kind?: string | null;
+  last_seen?: number | null;
+}
+
+export function whatsappChatKind(chatId: string, kind?: string | null): "group" | "dm" {
+  if (kind === "group") return "group";
+  if (chatId.toLowerCase().endsWith("@g.us")) return "group";
+  return "dm";
+}
+
+export function whatsappChatLabel(chatId: string, name?: string | null): string {
+  const trimmed = name?.trim() ?? "";
+  if (trimmed && trimmed !== chatId) return trimmed;
+  return chatId.toLowerCase().endsWith("@g.us") ? "Unnamed group" : "Unnamed contact";
+}
+
+export function formatWhatsAppLastSeen(unix: number | null | undefined): string {
+  if (unix == null || !Number.isFinite(unix) || unix <= 0) return "";
+  const date = new Date(unix * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function unassignedWhatsAppChats<T extends { chat_id: string }>(
+  seen: T[],
+  routes: { chat_id: string }[],
+): T[] {
+  const used = new Set(routes.map((row) => row.chat_id.trim().toLowerCase()));
+  return seen.filter((chat) => {
+    const chatId = chat.chat_id.trim().toLowerCase();
+    return Boolean(chatId) && !used.has(chatId);
+  });
+}
+
+export function whatsappRouteNameForChat(
+  label: string,
+  chatId: string,
+  taken: Set<string>,
+): string {
+  const slug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  const base = slug || "whatsapp-chat";
+  if (!taken.has(base)) return base;
+  const tail = chatId.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(-6) || "chat";
+  let candidate = `${base}-${tail}`.slice(0, 48);
+  let suffix = 2;
+  while (taken.has(candidate)) {
+    candidate = `${base}-${tail}-${suffix}`.slice(0, 48);
+    suffix += 1;
+  }
+  return candidate;
+}
+
 export function validateWhatsAppRouteProfile(
   profile: string,
   installedNames: Set<string>,

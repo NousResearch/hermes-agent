@@ -21,8 +21,7 @@ from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
-    _ws_request_is_allowed,
+    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -160,14 +159,31 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
 
 async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
-    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
+    4403 when chat is disabled or the request isn't allowed, 4401 on bad auth.
+
+    Every refusal logs its reason the way :func:`_ws_gate` does — the close
+    fires before ``accept()``, so the browser only ever sees a generic 1006
+    and the log line is the only diagnostic (#138057)."""
+    path = ws.url.path
+    peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _log.info("%s refused: embedded chat disabled peer=%s", path, peer)
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws):
+    auth_reason, cred = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s",
+                     path, auth_reason, _ws_auth_mode(), cred, peer)
         await ws.close(code=4401)
         return False
-    if not _ws_request_is_allowed(ws):
+    host_origin_reason = _ws_host_origin_reason(ws)
+    if host_origin_reason is not None:
+        _log.warning("%s refused: %s peer=%s", path, host_origin_reason, peer)
+        await ws.close(code=4403)
+        return False
+    client_reason = _ws_client_reason(ws)
+    if client_reason is not None:
+        _log.warning("%s refused: %s peer=%s", path, client_reason, peer)
         await ws.close(code=4403)
         return False
     return True

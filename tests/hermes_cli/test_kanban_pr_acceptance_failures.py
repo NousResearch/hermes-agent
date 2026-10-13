@@ -29,6 +29,7 @@ def _receipt(monkeypatch, *, stdout="", stderr=""):
 @pytest.mark.parametrize("stderr,expected,detail_snip", [
     ("gh: HTTP 403: API rate limit exceeded for 1.2.3.4", "rate_limited", "rate limit"),
     ("To get started with GitHub CLI, please run: gh auth login", "auth", "no login"),
+    ('Post "https://api.github.com/graphql": dial tcp 127.0.0.1:9: connect: connection refused', "network", "network"),
 ])
 def test_stderr_classifies_without_persisting_stderr(monkeypatch, stderr, expected, detail_snip):
     token = "ghp_" + "q" * 36
@@ -53,3 +54,17 @@ def test_graphql_not_found_repository_is_auth(monkeypatch):
     assert "acme/repo" in receipt["detail"]
     assert "the ambient gh login" in receipt["detail"]
     assert "Could not resolve" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("error_type,path,repository,expected", [
+    ("NOT_FOUND", ["repository", "pullRequest"], {"pullRequest": None}, "missing"),
+    ("FORBIDDEN", ["repository"], None, "auth"),
+    ("BAD_CREDENTIALS", [], None, "auth"),
+])
+def test_graphql_target_refusals_are_actionable(monkeypatch, error_type, path, repository, expected):
+    body = {"data": {"repository": repository},
+            "errors": [{"type": error_type, "path": path, "message": "private provider detail"}]}
+    stderr = "gh: Bad credentials" if error_type == "BAD_CREDENTIALS" else "gh: private provider detail"
+    receipt, _calls = _receipt(monkeypatch, stdout=json.dumps(body), stderr=stderr)
+    assert receipt["classification"] == expected
+    assert "private provider detail" not in json.dumps(receipt)

@@ -88,7 +88,7 @@ are typed, and stderr is never stored: `capability` (no `gh` binary),
 `auth` (identity: HTTP 401/403/404, exit 4, GraphQL bad credentials, or a
 repository GraphQL reports NOT_FOUND because the login cannot read it),
 `rate_limited` (a 403 that says rate limit — not an identity failure),
-`network` (timeout), `provider_error` (any other `gh` exit, fixed rc sentence).
+`network` (timeout or connection failure), `provider_error` (any other `gh` exit, fixed rc sentence).
 Generic `infra` remains only the final net for non-`gh` failures. No extra
 worker is spawned.
 

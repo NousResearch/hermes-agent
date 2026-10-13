@@ -6,25 +6,39 @@ import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { reportTerminalShell } from './terminals'
+import { createTerminal, reportTerminalShell } from './terminals'
 import { useAgentTerminal } from './use-agent-terminal'
 import { useTerminalSession } from './use-terminal-session'
 
 // Absolute-stacked so inactive tabs keep layout size (a display:none host goes
 // 0×0 and renders garbled on re-show); visibility toggles which one is seen.
-const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0'
+const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-terminal-surface-background) px-2 pb-2 pt-0'
+
+// xterm host. The screen/viewport overrides matter for the DOM renderer (the
+// WebGL fast-path paints the canvas from ITheme.background instead) — both
+// resolve to the same token, so the two renderers can't disagree.
+const HOST_CLASS =
+  'h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)!'
 
 interface TerminalInstanceProps {
   id: string
   cwd: string
   active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  restoreCwd?: string
   reviveBuffer?: string
 }
 
 /** One persistent xterm+PTY. Every open tab stays mounted (so its shell and
  *  scrollback survive tab switches); only the active one is shown. */
-export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, reviveBuffer }: TerminalInstanceProps) {
+export function TerminalInstance({
+  id,
+  active,
+  cwd,
+  onAddSelectionToChat,
+  restoreCwd,
+  reviveBuffer
+}: TerminalInstanceProps) {
   const { t } = useI18n()
 
   const { addSelectionToChat, hostRef, selection, selectionStyle, status } = useTerminalSession({
@@ -32,6 +46,7 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, revive
     cwd,
     active,
     onAddSelectionToChat,
+    restoreCwd,
     reviveBuffer,
     onShell: shell => reportTerminalShell(id, shell)
   })
@@ -39,7 +54,11 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, revive
   return (
     <div
       className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}
-      // Focus-scope marker so isFocusWithin('[data-terminal]') can route ⌘W here.
+      // Focus-scope markers. The shared [data-terminal] routes close-tab
+      // commands here; [data-interactive-terminal] marks the surface as a live
+      // PTY, so the close-tab rung re-delivers the chord's control byte to
+      // the shell instead of closing the pane and killing it (#65457).
+      data-interactive-terminal=""
       data-terminal=""
     >
       {status === 'starting' && (
@@ -72,10 +91,7 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat, revive
       )}
       {/* Outer div paints the terminal inset; inner div is the xterm host so the
           canvas sizes to the content area and p-2 stays as terminal padding. */}
-      <div
-        className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
-        ref={hostRef}
-      />
+      <div className={HOST_CLASS} ref={hostRef} />
     </div>
   )
 }
@@ -89,19 +105,28 @@ interface AgentTerminalInstanceProps {
 /** Read-only mirror of an agent background process — a write-only xterm streamed
  *  live from the backend output (no PTY, no input). */
 export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInstanceProps) {
+  const { t } = useI18n()
   const { hostRef } = useAgentTerminal({ active, id, procId })
 
   return (
     <div
       className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}
       // Same focus-scope marker as the user terminal so isFocusWithin('[data-terminal]')
-      // routes ⌘W here and closes the focused agent tab (not a preview).
+      // routes ⌘W here and closes the focused agent tab (not a preview). No
+      // [data-interactive-terminal]: this mirror has no PTY input, so the
+      // close-tab chord keeps its close meaning here.
       data-terminal=""
     >
-      <div
-        className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
-        ref={hostRef}
-      />
+      <div className="flex shrink-0 flex-wrap items-center gap-2 py-2 text-xs text-(--ui-text-secondary)">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{t.rightSidebar.terminalReadOnly}</p>
+          <p>{t.rightSidebar.terminalReadOnlyHelp}</p>
+        </div>
+        <Button onClick={() => createTerminal()} size="sm" type="button" variant="secondary">
+          {t.rightSidebar.terminalOpenInteractive}
+        </Button>
+      </div>
+      <div className={HOST_CLASS} ref={hostRef} />
     </div>
   )
 }

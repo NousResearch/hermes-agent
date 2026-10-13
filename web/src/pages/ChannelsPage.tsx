@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Bot,
   Check,
   CheckCircle2,
   ExternalLink,
@@ -33,8 +34,10 @@ import type {
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
+import { AllowlistInput } from "@/components/AllowlistInput";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -57,6 +60,7 @@ function stateBadge(state: string) {
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
+const TELEGRAM_BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
 const SLACK_MEMBER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
 const SLACK_TOKEN_PREFIXES: Record<string, string> = {
   SLACK_BOT_TOKEN: "xoxb-",
@@ -66,6 +70,21 @@ const SLACK_TOKEN_PREFIXES: Record<string, string> = {
 function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
+
+  if (field.key === "TELEGRAM_BOT_TOKEN" && !TELEGRAM_BOT_TOKEN_RE.test(trimmed)) {
+    return "Paste the complete token from @BotFather (for example, 123456789:ABC…).";
+  }
+
+  if (field.key === "TELEGRAM_ALLOWED_USERS") {
+    const invalid = trimmed
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .find((part) => !TELEGRAM_USER_ID_RE.test(part));
+    if (invalid) {
+      return `${invalid} is not a numeric Telegram user ID.`;
+    }
+  }
 
   const expectedPrefix = SLACK_TOKEN_PREFIXES[field.key];
   if (expectedPrefix && !trimmed.startsWith(expectedPrefix)) {
@@ -149,7 +168,7 @@ export default function ChannelsPage() {
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
-      .catch((e) => showToast(`Error: ${e}`, "error"));
+      .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
   }, [showToast]);
 
   useEffect(() => {
@@ -159,7 +178,8 @@ export default function ChannelsPage() {
   const openConfig = (platform: MessagingPlatform) => {
     const initial: Record<string, string> = {};
     platform.env_vars.forEach((v) => {
-      initial[v.key] = "";
+      // Allowlists open with their saved entries (they are IDs, not secrets).
+      initial[v.key] = v.is_list ? v.value || "" : "";
     });
     setDraftEnv(initial);
     setFieldErrors({});
@@ -171,10 +191,19 @@ export default function ChannelsPage() {
     // Only send fields the user actually filled in — leaving a field blank
     // preserves the existing value rather than clobbering it.
     const env: Record<string, string> = {};
-    Object.entries(draftEnv).forEach(([k, v]) => {
-      if (v.trim()) env[k] = v.trim();
+    const clearEnv: string[] = [];
+    editing.env_vars.forEach((field) => {
+      const v = (draftEnv[field.key] || "").trim();
+      if (field.is_list) {
+        // Allowlists are prefilled, so an unchanged one is not an edit and an emptied one is a clear.
+        if (v === (field.value || "")) return;
+        if (v) env[field.key] = v;
+        else if (field.is_set) clearEnv.push(field.key);
+      } else if (v) {
+        env[field.key] = v;
+      }
     });
-    if (Object.keys(env).length === 0) {
+    if (Object.keys(env).length === 0 && clearEnv.length === 0) {
       showToast("Nothing to save — fill in at least one field.", "error");
       return;
     }
@@ -197,14 +226,24 @@ export default function ChannelsPage() {
     }
     setSaving(true);
     try {
-      const body: MessagingPlatformUpdate = { env, enabled: true };
-      await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      const body: MessagingPlatformUpdate = {
+        env,
+        enabled: true,
+        ...(clearEnv.length ? { clear_env: clearEnv } : {}),
+      };
+      const result = await api.updateMessagingPlatform(editing.id, body);
+      showToast(
+        result.hot_served
+          ? `${editing.name} saved; the running gateway is connecting`
+          : `${editing.name} saved`,
+        "success",
+      );
       setEditing(null);
-      setRestartNeeded(true);
+      if (!result.hot_served) setRestartNeeded(true);
       await load();
+      if (result.hot_served) setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`Failed to save: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -214,7 +253,7 @@ export default function ChannelsPage() {
     const next = !platform.enabled;
     setTogglingId(platform.id);
     try {
-      await api.updateMessagingPlatform(platform.id, { enabled: next });
+      const result = await api.updateMessagingPlatform(platform.id, { enabled: next });
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
@@ -222,9 +261,10 @@ export default function ChannelsPage() {
             : p,
         ),
       );
-      setRestartNeeded(true);
+      if (result.hot_served) setTimeout(() => void load(), 4000);
+      else setRestartNeeded(true);
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
     } finally {
       setTogglingId(null);
     }
@@ -236,7 +276,7 @@ export default function ChannelsPage() {
       const res = await api.testMessagingPlatform(platform.id);
       showToast(`${platform.name}: ${res.message}`, res.ok ? "success" : "error");
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(`Could not test the channel: ${errorMessage(e)}`, "error");
     } finally {
       setTestingId(null);
     }
@@ -251,7 +291,7 @@ export default function ChannelsPage() {
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${e}`, "error");
+      showToast(`Failed to restart: ${errorMessage(e)}`, "error");
     } finally {
       setRestarting(false);
     }
@@ -336,7 +376,11 @@ export default function ChannelsPage() {
       {editing && (
         <div
           ref={editModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+          className={cn(
+            "fixed inset-0 z-[100] flex min-h-dvh items-start justify-center overflow-y-auto bg-background/85 px-4",
+            "pb-[calc(1rem+env(safe-area-inset-bottom))] pt-[calc(1rem+env(safe-area-inset-top))]",
+            "sm:items-center sm:p-4",
+          )}
           onClick={(e) => e.target === e.currentTarget && setEditing(null)}
           role="dialog"
           aria-modal="true"
@@ -345,7 +389,7 @@ export default function ChannelsPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
+              "relative flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col border border-border bg-card shadow-2xl sm:max-h-[90dvh]",
             )}
           >
             <Button
@@ -363,7 +407,9 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Configure {editing.name}
+                {editing.id === "telegram"
+                  ? "Use your own Telegram bot"
+                  : `Configure ${editing.name}`}
               </h2>
               {editing.docs_url && (
                 <a
@@ -372,12 +418,56 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  Setup guide <ExternalLink className="h-3 w-3" />
+                  {editing.id === "telegram" ? "BotFather guide" : "Setup guide"}
+                  <ExternalLink className="h-3 w-3" />
                 </a>
               )}
             </header>
 
-            <div className="p-5 grid gap-4 overflow-y-auto">
+            <div className="grid gap-4 overflow-y-auto overscroll-contain p-4 sm:p-5">
+              {editing.id === "telegram" && (
+                <div className="grid gap-3 text-sm text-muted-foreground">
+                  <p>
+                    Connect a bot you already own, or create one in Telegram before
+                    filling in this form.
+                  </p>
+                  <ol className="grid list-decimal gap-1.5 pl-5">
+                    <li>
+                      Open <span className="text-foreground">@BotFather</span>, send
+                      <code className="mx-1 font-courier text-xs">/newbot</code>, and
+                      follow its prompts.
+                    </li>
+                    <li>Copy the complete bot token BotFather gives you.</li>
+                    <li>
+                      Message <span className="text-foreground">@userinfobot</span> to
+                      find your numeric Telegram user ID, then add it below for
+                      immediate access.
+                    </li>
+                  </ol>
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
+                    <a
+                      href="https://t.me/BotFather"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:underline"
+                    >
+                      Open @BotFather <ExternalLink className="h-3 w-3" />
+                    </a>
+                    <a
+                      href="https://t.me/userinfobot"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:underline"
+                    >
+                      Find my user ID <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                  <p className="text-xs">
+                    You can leave allowed users blank. Hermes will then send new DM
+                    users a code that you approve from the Pairing page.
+                  </p>
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
                 {editing.description}
               </p>
@@ -404,9 +494,27 @@ export default function ChannelsPage() {
                       {field.description}
                     </span>
                   )}
+                  {field.is_list ? (
+                    <AllowlistInput
+                      id={`field-${field.key}`}
+                      label={field.prompt || field.key}
+                      value={draftEnv[field.key] ?? ""}
+                      invalid={Boolean(fieldErrors[field.key])}
+                      onChange={(nextValue) => {
+                        setDraftEnv((prev) => ({ ...prev, [field.key]: nextValue }));
+                        setFieldErrors((prev) => {
+                          if (!prev[field.key]) return prev;
+                          const next = { ...prev };
+                          delete next[field.key];
+                          return next;
+                        });
+                      }}
+                    />
+                  ) : (
                   <Input
                     id={`field-${field.key}`}
                     type={field.is_password ? "password" : "text"}
+                    className="text-base leading-6 sm:text-xs sm:leading-4"
                     placeholder={
                       field.is_set
                         ? field.redacted_value || "•••••• (set — leave blank to keep)"
@@ -425,6 +533,7 @@ export default function ChannelsPage() {
                       });
                     }}
                   />
+                  )}
                   {fieldErrors[field.key] && (
                     <span className="text-xs text-destructive">
                       {fieldErrors[field.key]}
@@ -433,12 +542,17 @@ export default function ChannelsPage() {
                 </div>
               ))}
 
-              <div className="flex justify-end gap-2 pt-1">
-                <Button ghost size="sm" onClick={() => setEditing(null)}>
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+                <Button
+                  ghost
+                  size="sm"
+                  className="w-full sm:w-auto"
+                  onClick={() => setEditing(null)}
+                >
                   Cancel
                 </Button>
                 <Button
-                  className="uppercase"
+                  className="w-full uppercase sm:w-auto"
                   size="sm"
                   onClick={handleSave}
                   disabled={saving}
@@ -494,6 +608,12 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.ingress_url && (
+                        <span className="text-xs text-muted-foreground break-all">
+                          Callback URL (shared listener):{" "}
+                          <code className="font-mono">{platform.ingress_url}</code>
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -524,18 +644,21 @@ export default function ChannelsPage() {
                     >
                       Test
                     </Button>
-                    <Button
-                      size="sm"
-                      className="uppercase"
-                      onClick={() => openConfig(platform)}
-                      prefix={<Settings2 className="h-4 w-4" />}
-                    >
-                      Configure
-                    </Button>
+                    {platform.id !== "telegram" && (
+                      <Button
+                        size="sm"
+                        className="uppercase"
+                        onClick={() => openConfig(platform)}
+                        prefix={<Settings2 className="h-4 w-4" />}
+                      >
+                        Configure
+                      </Button>
+                    )}
                   </div>
                 </div>
                 {platform.id === "telegram" && (
                   <TelegramOnboardingPanel
+                    onManualSetup={() => openConfig(platform)}
                     onChanged={load}
                     onRestartNeeded={() => setRestartNeeded(true)}
                     platform={platform}
@@ -969,12 +1092,14 @@ function WhatsAppOnboardingPanel({
 }
 
 function TelegramOnboardingPanel({
+  onManualSetup,
   onChanged,
   onRestartNeeded,
   platform,
   setRestartNeeded,
   showToast,
 }: {
+  onManualSetup: () => void;
   onChanged: () => Promise<void>;
   onRestartNeeded: () => void;
   platform: MessagingPlatform;
@@ -1182,22 +1307,74 @@ function TelegramOnboardingPanel({
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          className="uppercase"
-          onClick={() => void start()}
-          disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
-          prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
-        >
-          {phase === "starting" ? "Starting…" : "Set up with QR"}
-        </Button>
-        {platform.configured && (
-          <span className="text-xs text-muted-foreground">
-            Existing Telegram credentials are configured.
-          </span>
-        )}
+      <div className="grid gap-1">
+        <span className="font-mondwest text-sm text-foreground">
+          Choose how to connect your Telegram bot
+        </span>
+        <span className="text-xs text-muted-foreground">
+          Both options connect a bot you control and save its credentials only to
+          this Hermes installation.
+        </span>
       </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 sm:divide-x sm:divide-border">
+        <div className="grid content-start gap-3 sm:pr-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium uppercase text-foreground">
+              Quick setup
+            </span>
+            <Badge tone="success">recommended</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Scan a QR code and confirm in Telegram. Hermes creates the bot and
+            detects your Telegram user ID automatically.
+          </p>
+          <Button
+            size="sm"
+            className="w-fit uppercase"
+            onClick={() => void start()}
+            disabled={phase !== "idle"}
+            prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+          >
+            {phase === "starting" ? "Starting…" : "Create with QR"}
+          </Button>
+        </div>
+
+        <div className="grid content-start gap-3 border-t border-border pt-4 sm:border-t-0 sm:pl-4 sm:pt-0">
+          <span className="text-xs font-medium uppercase text-foreground">
+            Use your own bot
+          </span>
+          <p className="text-xs text-muted-foreground">
+            Create a bot with @BotFather, or connect one you already have, by
+            entering its token and choosing who can use it.
+          </p>
+          <Button
+            size="sm"
+            outlined
+            className="w-fit uppercase"
+            onClick={onManualSetup}
+            disabled={phase !== "idle"}
+            prefix={<Bot className="h-4 w-4" />}
+          >
+            Manual setup
+          </Button>
+        </div>
+      </div>
+
+      {platform.configured && (
+        <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">
+          Telegram credentials are already configured. A new QR setup or bot token
+          will replace the current bot when you save.
+        </div>
+      )}
+
+      {phase !== "idle" && (
+        <div className="mt-4 border-t border-border pt-4">
+          <span className="text-xs text-muted-foreground">
+            Finish or cancel the current QR setup before switching methods.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

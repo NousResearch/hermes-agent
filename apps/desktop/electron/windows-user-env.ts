@@ -23,6 +23,7 @@ function parseRegQueryValue(stdout, name) {
   if (!stdout || !name) {
     return null
   }
+
   const typePattern = /^(\S+)\s+(?:REG_SZ|REG_EXPAND_SZ|REG_MULTI_SZ|REG_DWORD|REG_QWORD|REG_BINARY|REG_NONE)\s+(.*)$/
 
   for (const rawLine of String(stdout).split(/\r?\n/)) {
@@ -70,6 +71,7 @@ function readWindowsUserEnvVar(
   if (platform !== 'win32' || !name) {
     return null
   }
+
   let stdout
 
   try {
@@ -88,6 +90,7 @@ function readWindowsUserEnvVar(
   if (raw == null) {
     return null
   }
+
   const expanded = expandWindowsEnvRefs(raw, env).trim()
 
   return expanded || null

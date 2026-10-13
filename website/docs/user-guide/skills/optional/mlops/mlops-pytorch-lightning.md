@@ -1,14 +1,14 @@
 ---
-title: "Pytorch Lightning"
+title: "Pytorch Lightning — Clean training loops with built-in distributed support"
 sidebar_label: "Pytorch Lightning"
-description: "High-level PyTorch framework with Trainer class, automatic distributed training (DDP/FSDP/DeepSpeed), callbacks system, and minimal boilerplate"
+description: "Clean training loops with built-in distributed support"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Pytorch Lightning
 
-High-level PyTorch framework with Trainer class, automatic distributed training (DDP/FSDP/DeepSpeed), callbacks system, and minimal boilerplate. Scales from laptop to supercomputer with same code. Use when you want clean training loops with built-in best practices.
+Clean training loops with built-in distributed support.
 
 ## Skill metadata
 

@@ -1,0 +1,17 @@
+name: prompt-optimizer
+repo: https://github.com/Sahil-SS9/hermes-multichannel-prompt-optimizer
+sha: e83eba9a8e102ed255a5bfd20cc88ea50e3af28f
+description: Model-aware prompt rewriting with quality scoring, analytics, and coaching. Disclosure — the default auto mode rewrites every user message of 5+ words through your configured model (one extra LLM call per turn) before the agent sees it.
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Sahil-SS9/hermes-multichannel-prompt-optimizer
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_gateway_dispatch
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

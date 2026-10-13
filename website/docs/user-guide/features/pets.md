@@ -117,7 +117,7 @@ How generation works (a two-step, cost-bounded flow):
 
 ### Image backend
 
-Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+Generation uses the active [image-generation provider](./image-generation.md), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
 
 - Resolution order prefers Nous Portal → OpenAI → OpenRouter.
 - If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)
@@ -134,6 +134,31 @@ In the desktop app you can manage the pet two ways:
 
 Both adopt/toggle/resize the floating mascot in place — size changes apply
 instantly; adopting a new pet lights it up within a moment.
+
+### Roaming
+
+Settings → Appearance has a **Roam** toggle: when enabled, the pet wanders the
+window on its own while the agent is idle — walking surfaces, pausing, and
+hopping between spots. Roaming only runs while the pet is in-window, active,
+and the agent is at rest; any agent-driven state (working, celebrating)
+immediately takes over. The toggle is off by default and persists across
+restarts.
+
+### Alt+wheel resizing
+
+Hold **Alt** and scroll the mouse wheel over the pet to resize it in place —
+in the app window and on the popped-out overlay alike. The overlay zooms
+toward the cursor position and the resulting scale is persisted, so it
+survives restarts and stays in sync with the in-app pet.
+
+### Vibe reactions
+
+Say something nice to the agent — "good bot", "thank you", "ily", `<3`, or a
+heart emoji — and the pet reacts with floating hearts (desktop) or a heart
+flash (CLI/TUI). Detection is a curated, token-free lexicon matched locally on
+each user message (no model call); it fires on affection and gratitude aimed at
+the agent, not general positive sentiment. All surfaces — CLI pet, TUI, desktop
+floating pet, and the pop-out overlay — react off the same signal.
 
 ### Pop-out overlay
 
@@ -206,5 +231,6 @@ Common gotchas:
 
 ## See also
 
-- The [`petdex` skill](../skills/bundled/productivity/productivity-petdex.md)
-  lets the agent install and switch pets for you on request.
+- The [`hermes-agent` skill](../skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md)
+  lets the agent install and switch pets for you on request (see its
+  `references/petdex.md`).

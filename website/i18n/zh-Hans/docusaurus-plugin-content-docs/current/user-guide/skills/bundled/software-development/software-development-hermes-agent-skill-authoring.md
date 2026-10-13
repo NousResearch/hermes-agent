@@ -116,7 +116,7 @@ Named scenarios → concrete command sequences.
 skills/<category>/<skill-name>/SKILL.md
 ```
 
-仓库中现有的分类（通过 `ls skills/` 确认）：`autonomous-ai-agents`、`creative`、`data-science`、`devops`、`dogfood`、`email`、`gaming`、`github`、`leisure`、`mcp`、`media`、`mlops/*`、`note-taking`、`productivity`、`red-teaming`、`research`、`smart-home`、`social-media`、`software-development`。
+仓库中现有的分类（通过 `ls skills/` 确认）：`autonomous-ai-agents`、`creative`、`data-science`、`devops`、`email`、`gaming`、`github`、`leisure`、`mcp`、`media`、`mlops/*`、`note-taking`、`productivity`、`red-teaming`、`research`、`smart-home`、`social-media`、`software-development`。
 
 选择最接近的现有分类。不要随意创建新的顶级分类。
 
@@ -131,11 +131,12 @@ skills/<category>/<skill-name>/SKILL.md
 3. **起草**，使用 `write_file` 写入 `skills/<category>/<name>/SKILL.md`。
 4. **本地验证**：
    ```python
-   import yaml, re, pathlib
+   import re, pathlib
+   from ruamel.yaml import YAML
    content = pathlib.Path("skills/<category>/<name>/SKILL.md").read_text()
    assert content.startswith("---")
    m = re.search(r'\n---\s*\n', content[3:])
-   fm = yaml.safe_load(content[3:m.start()+3])
+   fm = YAML(typ="safe").load(content[3:m.start()+3])
    assert "name" in fm and "description" in fm
    assert len(fm["description"]) <= 1024
    assert len(content) <= 100_000

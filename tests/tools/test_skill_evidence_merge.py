@@ -29,9 +29,9 @@ Keep this byte-for-byte.
 def _stage_via_real_gate(action="patch", name="test-skill", evidence=None, skill_dir=None):
     """Stage an evidence write through the REAL _apply_skill_write_gate and return the payload.
 
-    Tests must not hand-build a staged payload: the frozen candidate is only honoured when it
-    carries this process's per-staging nonce, so a hand-made dict exercises the untrusted-caller
-    path instead of the replay path it means to test.
+    Tests must not hand-build a staged payload: the frozen candidate is only honoured on a trusted
+    replay (apply_skill_pending / a batch replaying its own ops), so a hand-made dict exercises the
+    untrusted-caller path instead of the replay path it means to test.
     """
     captured = {}
 
@@ -560,7 +560,7 @@ def test_approved_batch_evidence_replay_is_not_rejected_as_forged(tmp_path):
             None, None, None)
     assert result == "staged"
     assert captured["payload"]["operations"][0]["evidence_merge"]["_staged_by"], \
-        "staging must mint the token the ingress now trusts"
+        "staging must mint the provenance token stamped into the record"
 
     with patch.object(smt, "SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
@@ -590,3 +590,86 @@ def test_batch_rejects_forged_candidate_with_a_guessed_token(tmp_path):
 
     assert "must not carry internal staging keys" in str(result), result
     assert "success_count: 11" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_cross_process_batch_approval_survives_restart(tmp_path):
+    """An approved BATCH evidence write must apply even in a fresh interpreter (MAJOR-1).
+
+    The pending store is file-backed, so an approval record outlives the process that staged it.
+    Trust keyed off an in-memory token set made the replaying (fresh) process reject the writer's
+    own staging keys at ingress — the approved write died. The trust decision is now
+    process-agnostic: it keys off the per-request _skill_gate_bypass flag that apply_skill_pending
+    sets, so the frozen candidate is honoured (and digest-verified) regardless of which process
+    staged it.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    captured = {}
+
+    def fake_run(build):
+        class WA:
+            @staticmethod
+            def skill_pending_diff(rec):
+                return write_approval.skill_pending_diff(rec)
+
+            @staticmethod
+            def skill_gist(*a, **k):
+                return "gist"
+
+        captured["payload"], _ = build(WA)
+        return "staged"
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", side_effect=fake_run):
+        assert smb._skill_manage_batch(
+            [{"action": "patch", "name": "test-skill",
+              "evidence_merge": {"success_count": 1}}],
+            None, None, None) == "staged"
+
+    # Simulate a restart: the fresh interpreter's in-memory mint set is empty; only the file-backed
+    # approval record and the per-request trust flag carry the decision.
+    smt._STAGED_TOKENS.clear()
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        replay = smt.apply_skill_pending(captured["payload"])
+
+    body = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "success_count: 12" in body, f"approved batch write died after restart: {replay!r}"
+    assert "staging keys" not in str(replay), replay
+
+
+def test_cross_process_stale_flat_replay_is_rejected_not_remerged(tmp_path):
+    """A stale FLAT evidence replay must be rejected across processes (MAJOR-2).
+
+    The fall-through used to re-merge the public delta with a tautological digest check (both
+    sides read the current bytes under the same lock, so the check could never fail), silently
+    double-counting an approved delta on a skill that moved between staging and a cross-process
+    approval. The trust decision is now process-agnostic, so a trusted replay carrying a frozen
+    candidate enters the real digest check: if the source moved, the replay is rejected instead
+    of re-merged.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    payload = _stage_via_real_gate(evidence={"success_count": 2}, skill_dir=skill_dir)
+
+    # Meanwhile a concurrent writer applies the same delta: the source moved after the freeze.
+    (skill_dir / "SKILL.md").write_text(
+        BASE.replace("success_count: 11", "success_count: 13"), encoding="utf-8")
+
+    # Simulate the restart, then approve in the fresh interpreter.
+    smt._STAGED_TOKENS.clear()
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        result = smt.apply_skill_pending(payload)
+
+    parsed = json.loads(result) if isinstance(result, str) else result
+    assert parsed["success"] is False, result
+    assert "stale" in parsed["error"], result
+    body = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    # The stale delta must NOT have been double-counted: the concurrent writer already took the
+    # count to 13; the stale +2 must be refused, not merged again to 15.
+    assert "success_count: 13" in body, body[:300]
+    assert "success_count: 15" not in body

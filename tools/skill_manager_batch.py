@@ -103,6 +103,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
     from tools.skill_manager_tool import _validate_category
+    from tools.skill_manager_tool import _trusted_replay
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
@@ -133,15 +134,13 @@ def _validate_batch_ops(operations, default_name, tool_error):
             # writer's own staging keys (_source_digest/_staged_by/_candidate_content/_preview), so
             # rejecting them unconditionally made every approved BATCH evidence write fail — the
             # feature was dead whenever the write gate was on, via the advertised operations=[...]
-            # shape. A forged payload cannot pass: the candidate is honoured downstream only when
-            # _staged_by is a token this module minted (_act_patch, `_is_ours`), and an unminted
-            # token falls through to the public-delta re-merge. Rejecting here is about not
-            # silently accepting caller-supplied internals, not about the trust decision itself.
-            ours = False
-            if private:
-                from tools.skill_manager_tool import _is_ours
-                ours = _is_ours(op["evidence_merge"].get("_staged_by"))
-            if private and not ours:
+            # shape. A forged payload cannot pass: the candidate is honoured downstream only on a
+            # trusted replay (_trusted_replay), and an untrusted call is refused here while any
+            # unminted candidate falls through to the public-delta re-merge. The trust decision is
+            # process-agnostic (keyed off the per-request _skill_gate_bypass flag, not "did this
+            # process mint the token"), so an approved batch write survives a restart or a token
+            # eviction instead of dying at the ingress of the replaying process.
+            if private and not _trusted_replay():
                 return fail(i, f" (patch on '{nm}'): evidence_merge must not carry internal "
                                f"staging keys {private}; they are set by the writer, not the caller.")
         # evidence_merge is a third, mutually-exclusive patch shape: it must not ride along with

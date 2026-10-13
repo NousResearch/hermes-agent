@@ -761,13 +761,20 @@ def apply_skill_pending(payload: dict[str, Any]) -> str:
 
 
 
-# Tokens for candidates this process froze. A ContextVar cannot be used: staging and the later
-# approval replay are separate requests, so the value would be unset at replay time and a forged
-# payload would compare equal to nothing. Instead every staging pass mints a fresh random token,
-# records it here, and stamps it into the payload. A caller cannot guess a token (secrets, minted
-# per pass, never reused), and public ingress rejects the "_staged_by" key outright, so an injected
-# _candidate_content can never be written verbatim. The set is bounded and evicts oldest-first,
-# so an in-flight staged/approved payload keeps its token until it is the oldest, never all at once.
+# Provenance marker + leak guard for candidates this process froze. Every staging pass mints a
+# fresh random token and stamps it into the payload as `_staged_by`, so a record's origin is
+# auditable. The live token set is bounded (capped at _STAGED_TOKENS_MAX, oldest-first eviction)
+# so a long-running process with many staged-but-unapproved evidence writes cannot leak memory.
+#
+# The token is NOT the trust decision. Whether a replayed `_candidate_content` is honoured is made
+# process-agnostically in `_trusted_replay()`: it keys off the per-request `_skill_gate_bypass`
+# flag (set only by `apply_skill_pending` and the batch replay of already-staged ops), not off
+# "did this process mint this token". That is what lets an approved record survive a restart or a
+# token eviction (the pending store is file-backed, so the record outlives the staging process),
+# while a public caller can still never smuggle a frozen candidate: with the flag unset the
+# candidate is not honoured, the batch ingress rejects the internal staging keys, the flat
+# re-merge path strips them, and the `_source_digest` check refuses a stale replay that landed on
+# a skill that moved after the freeze.
 _STAGED_TOKENS: "OrderedDict[str, None]" = OrderedDict()
 _STAGED_TOKENS_MAX = 512
 
@@ -775,16 +782,22 @@ _STAGED_TOKENS_MAX = 512
 def _mint_staging_token() -> str:
     token = secrets.token_hex(16)
     if len(_STAGED_TOKENS) >= _STAGED_TOKENS_MAX:
-        # Evict the OLDEST token only. A bulk clear would drop every in-flight staged/approved
-        # payload's token at once: their frozen candidates would no longer be honoured and an
-        # approved batch write would be refused at ingress. Oldest-first keeps recent tokens live.
+        # Evict the OLDEST token only, never bulk-clear: a bulk clear would drop every in-flight
+        # staged/approved payload's provenance marker at once. Oldest-first keeps recent records
+        # auditable and bounds memory.
         _STAGED_TOKENS.popitem(last=False)
     _STAGED_TOKENS[token] = None
     return token
 
 
-def _is_ours(token: Optional[str]) -> bool:
-    return isinstance(token, str) and token in _STAGED_TOKENS
+def _trusted_replay() -> bool:
+    """Process-agnostic trust signal: honour a replayed ``_candidate_content`` only when this
+    request is a trusted replay/approval (``apply_skill_pending`` or the batch replay of
+    already-staged ops set ``_skill_gate_bypass``), never on a public call. See the note on
+    ``_STAGED_TOKENS`` for why the decision is keyed off the per-request flag rather than an
+    in-memory token set, and how the ``_source_digest`` check keeps stale cross-process replays
+    fail-closed instead of silently re-merging."""
+    return bool(_skill_gate_bypass.get())
 def _act_patch(a):
     """Three shapes: evidence_merge (additive evidence counters), old_string/new_string
     replacement (validated in _patch_skill so the tool and the helper give the same guidance),
@@ -801,14 +814,15 @@ def _act_patch(a):
             # Replay of an APPROVED candidate: write exactly what was previewed, and refuse if the
             # source moved since approval (a concurrent writer would be lost).
             #
-            # A set bypass token does NOT by itself mean "approved": the batch path also sets it
-            # while running its own already-staged ops, and a caller could otherwise hand us a
-            # frozen candidate and skip merge_evidence's fail-closed validation. So the candidate is
-            # honoured only when it carries a `_staged_by` token that this module issued. The
-            # module keeps a live set of the tokens it minted (ContextVars do not survive the
-            # staging -> approval -> replay round trip, which is a separate request), and a caller
-            # cannot guess one: tokens are minted per staging pass and never reused.
-            if "_candidate_content" in merged and _is_ours(merged.get("_staged_by")):
+            # A public caller (the bypass flag unset) can still never smuggle a frozen candidate:
+            # the batch ingress rejects the internal staging keys, and the re-merge path below
+            # strips every "_" key before merging. So the candidate is honoured ONLY on a trusted
+            # replay/approval — and that decision is made process-agnostically in _trusted_replay()
+            # (keyed off the per-request _skill_gate_bypass flag, not an in-memory token set), so an
+            # approved record survives a restart or a token eviction. The digest check below still
+            # refuses a stale replay that landed on a skill that moved after the freeze, so a
+            # cross-process replay degrades to a clean rejection, never a silent re-merge.
+            if "_candidate_content" in merged and _trusted_replay():
                 current = target.read_text(encoding="utf-8-sig")
                 if content_digest(current) != merged.get("_source_digest"):
                     return _err("Skill changed since approval; evidence_merge replay is stale and was rejected.")

@@ -763,8 +763,14 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
 
 
 _WINDOWS_NTSTATUS_NAMES = {
-    0xC0000142: "STATUS_DLL_INIT_FAILED",
+    0xC0000005: "STATUS_ACCESS_VIOLATION",
+    0xC000007B: "STATUS_INVALID_IMAGE_FORMAT",
     0xC000012D: "STATUS_COMMITMENT_LIMIT",
+    0xC0000135: "STATUS_DLL_NOT_FOUND",
+    0xC0000138: "STATUS_ORDINAL_NOT_FOUND",
+    0xC0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",
 }
 
 
@@ -777,10 +783,10 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
     there is no summary line and every count parses to 0. Without this the
     file is reported as "no tests ran (collection/import error)" under a
     summary that says ``0 failed`` — the wrong diagnosis in both places.
-    The same honesty covers Windows fault exits: loader failures
-    (STATUS_DLL_INIT_FAILED, STATUS_COMMITMENT_LIMIT, ...) surface as a
-    positive NTSTATUS rc, often with zero output — never a collection error
-    (#137198).
+    The same honesty covers Windows fault exits (#137198): loader failures
+    and native faults surface as an NTSTATUS in the child's exit code —
+    unsigned or sign-wrapped, often with zero output — never a collection
+    error.
     """
     fatal = next(
         (line.strip() for line in output.splitlines() if "Fatal Python error:" in line),
@@ -790,6 +796,15 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
         # The faulthandler banner is appended to the progress dots of the
         # last test; keep only the banner.
         fatal = fatal[fatal.index("Fatal Python error:"):]
+    status = rc & 0xFFFFFFFF
+    # An NTSTATUS error carries severity bits 0b11 at the top of the DWORD;
+    # no plain exit code does (pytest 0-5, shell 0-255, timeout 124). The
+    # status arrives unsigned or sign-wrapped, so normalize the sign and
+    # exclude the small negatives — real POSIX signals live in -1..-64.
+    if status & 0xC0000000 == 0xC0000000 and (rc >= 0 or rc < -0xFFFF):
+        name = _WINDOWS_NTSTATUS_NAMES.get(status)
+        label = f"{name} (0x{status:08x})" if name else f"NTSTATUS 0x{status:08x}"
+        return f"{fatal} ({label})" if fatal else label
     if rc < 0:
         import signal as _signal
 
@@ -798,13 +813,6 @@ def _describe_interpreter_crash(rc: int, output: str) -> Optional[str]:
         except ValueError:
             name = f"signal {-rc}"
         return f"{fatal} ({name})" if fatal else f"killed by {name}"
-    status = rc & 0xFFFFFFFF
-    if status & 0x80000000:
-        # Windows NTSTATUS: the severity bits are set, which no plain process
-        # exit code carries — the interpreter died, it did not report a result.
-        name = _WINDOWS_NTSTATUS_NAMES.get(status, f"NTSTATUS 0x{status:08x}")
-        label = name if name.startswith("NTSTATUS") else f"{name} (0x{status:08x})"
-        return f"{fatal} ({label})" if fatal else label
     return fatal
 
 
@@ -1148,7 +1156,7 @@ def _print_failure_report(
     no_tests_ran = [(f, s) for f, s in rest
                     if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
     if crashed_files:
-        print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
+        print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED (native fault or startup failure, not a collection error; the tests that did run are not counted) ===")
         for file, output, _s in crashed_files:
             print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
     if test_fail_files:

@@ -38,16 +38,26 @@ def test_ntstatus_no_output_exit_is_described_as_a_crash():
     assert commitment_limit is not None
     assert "STATUS_COMMITMENT_LIMIT" in commitment_limit
 
+    # A sign-wrapped DWORD (0xC000012D as a C int) must classify identically,
+    # not fall into the POSIX-signal branch.
+    signed = mod._describe_interpreter_crash(0xC000012D - (1 << 32), "")
+    assert signed is not None and "STATUS_COMMITMENT_LIMIT" in signed, signed
+
     # An unrecognized NTSTATUS is still a fault exit, never a collection error.
-    unknown = mod._describe_interpreter_crash(0xC0000005, "")
-    assert unknown is not None and "0xc0000005" in unknown
+    unknown = mod._describe_interpreter_crash(0xC000013A, "")
+    assert unknown is not None and "0xc000013a" in unknown
 
 
 def test_plain_nonzero_exit_stays_out_of_the_crash_classifier():
     """pytest's own failure exits keep their current bucket — the classifier
     only widens to fault-shaped codes, not to every nonzero rc."""
     mod = _load_runner()
-    assert mod._describe_interpreter_crash(2, "") is None
+    for rc in (1, 2, 3, 4, 5, 124, 255):
+        assert mod._describe_interpreter_crash(rc, "") is None, rc
+    # A real POSIX signal is a small negative; 0xFFFFFFF5 also carries the
+    # severity bits, so the classifier must separate them by magnitude.
+    sigsegv = mod._describe_interpreter_crash(-11, "")
+    assert sigsegv is not None and "SIGSEGV" in sigsegv, sigsegv
 
 
 def test_ntstatus_child_counts_as_crashed_not_no_ran(tmp_path, monkeypatch):

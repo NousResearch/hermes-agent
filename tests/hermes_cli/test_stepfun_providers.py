@@ -88,7 +88,7 @@ class TestStepfunCatalogs:
         from the Step Plan API must not shadow curated Standard-API models."""
         from unittest.mock import patch
 
-        import hermes_cli.auth  # noqa: F401  (patch target must be imported)
+        import hermes_cli.auth  # the patch target below must be imported
         from hermes_cli.models import provider_model_ids
 
         for pid, base_url, _k, _b, _m in STEPFUN_IDS:

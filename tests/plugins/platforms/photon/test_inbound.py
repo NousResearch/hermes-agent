@@ -67,6 +67,43 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_findmy_card_preserves_only_sdk_owned_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    from plugins.platforms.photon import adapter as module
+    source = (Path(module.__file__).parent / "sidecar/index.mjs").read_text()
+    content = source[source.index("async function normalizeContent(content) {"):source.index("// The iMessage SDK exposes")]
+    event = source[source.index("async function normalizeEvent(space, message) {"):source.index("function inboundStreamErrorMessage(e) {")]
+    script = content + event + r"""
+const assert = (await import('node:assert/strict')).default;
+const bundle='com.apple.messages.MSMessageExtensionBalloonPlugin:1234567890:com.apple.findmy.FindMyMessagesApp';
+const space={id:'own-chat',type:'dm'};
+const message={id:'own-message',direction:'inbound',sender:{id:'own-sender'},balloonBundleId:bundle,
+  content:{type:'custom',imessage_type:'unsupported-message',latitude:99,appleFindMyShare:true}};
+const normalized=await normalizeEvent(space,message);
+assert.deepEqual(normalized.content,{type:'custom',appleFindMyShare:true});
+for(const patch of [{balloonBundleId:undefined},{balloonBundleId:bundle+'\n'},
+  {balloonBundleId:bundle+'.spoof'},{balloonBundleId:bundle.replace('findmy','other')},
+  {direction:'outbound'},{content:{type:'text',text:bundle,appleFindMyShare:true}}]) {
+  const result=await normalizeEvent(space,{...message,...patch});
+  assert.equal(result.content.appleFindMyShare,undefined);
+}
+assert.equal(normalized.balloonBundleId,undefined);
+console.log(JSON.stringify(normalized));
+"""
+    result = subprocess.run(["node", "--input-type=module", "-e", script],
+                            check=True, capture_output=True, text=True, timeout=5)
+    raw = json.loads(result.stdout)
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    await adapter._dispatch_inbound(raw)
+    assert len(captured) == 1
+    assert captured[0].raw_message["content"] == {"type": "custom", "appleFindMyShare": True}
+    assert captured[0].raw_message["messageId"] == captured[0].message_id
+    assert captured[0].text == "[Photon content type not handled: custom]"
+    assert captured[0].media_urls == []
+
+
+@pytest.mark.asyncio
 async def test_dispatch_read_receipt_does_not_wake_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

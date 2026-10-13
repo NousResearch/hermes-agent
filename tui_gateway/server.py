@@ -2682,6 +2682,32 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    # Resolve the tier into request_overrides here: AIAgent stores
+    # ``service_tier`` but no transport reads that attribute —
+    # ``agent/transports/chat_completions.py`` emits it only from
+    # ``request_overrides``. Passing the tier alone left it stranded on the
+    # agent, so a tier set in config.yaml was reported in session info and
+    # then dropped on the wire unless the user flipped the runtime /fast
+    # toggle (the only other writer of request_overrides).
+    _effective_tier = (
+        service_tier_override if service_tier_override is not None else _load_service_tier()
+    )
+    _tier_overrides = None
+    # Only static tiers are bridged (parity with the CLI/gateway route builders):
+    # auto/cold are bounded windows applied per request by agent.fast_mode, and the
+    # resolver returns a pinned tier shape whenever the model supports it — so
+    # bridging them here would bill a fixed tier the user never chose.
+    from agent.fast_mode import STATIC_TIERS
+
+    if _effective_tier in STATIC_TIERS:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(
+                model, provider=runtime.get("provider"), base_url=runtime.get("base_url"),
+                tier=_effective_tier)
+        except Exception:
+            _tier_overrides = None
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -2691,7 +2717,7 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=_effective_tier,
         enabled_toolsets=_load_enabled_toolsets(platform),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
@@ -2706,8 +2732,11 @@ def _make_agent(
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
-        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
-        request_overrides=runtime.get("request_overrides"),
+        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway
+        # pass it, with the resolved tier's wire keys merged on top (#127015: whichever of the two
+        # landed second merges the dicts). The tier writes only its own top-level keys
+        # (service_tier / speed), so the entry's extra_body passes through untouched.
+        request_overrides={**(runtime.get("request_overrides") or {}), **(_tier_overrides or {})} or None,
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

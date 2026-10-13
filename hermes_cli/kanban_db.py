@@ -2344,12 +2344,13 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
 def release_stale_claims(
     conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
 ) -> int:
-    """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
+    """Reclaim ``running`` or ``ready`` tasks whose claim expired; returns the count reclaimed.
 
-    Every reclaim that actually releases a claim is a non-success attempt and
-    is booked through ``_record_task_failure`` (#111306): a claim that expired
-    without a worker ever spawning otherwise loops claim -> reclaim -> claim
-    with ``consecutive_failures`` stuck at 0, so the breaker never trips.
+    A reclaimed running claim is a non-success attempt and is booked through
+    ``_record_task_failure`` (#111306): a claim that expired without a worker
+    ever spawning otherwise loops claim -> reclaim -> claim with
+    ``consecutive_failures`` stuck at 0, so the breaker never trips. A ready
+    claim has already left its run and is released without charging it again.
     ``reclaim_task`` (operator path) deliberately resets the counter instead.
 
     A host-local worker that is still alive gets its claim *extended* instead
@@ -2374,26 +2375,30 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = _host_prefix()
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
+        "SELECT id, status, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL "
+        "WHERE status IN ('running', 'ready') AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
     for row in stale:
+        is_running = row["status"] == "running"
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
-        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
+        if (is_running and host_local and row["worker_pid"]
+                and _worker_alive(row["worker_pid"], started_at)
                 and not heartbeat_stale):
             _extend_live_stale_claim(conn, row, now)
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
+            row["worker_pid"] if is_running else None,
+            row["claim_lock"] if is_running else None,
+            signal_fn=signal_fn, started_at=started_at,
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2407,11 +2412,11 @@ def release_stale_claims(
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "WHERE id = ? AND status = ? AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ? "
                 # A worker that registered its own pid since the SELECT keeps its claim.
                 "AND worker_pid IS ?",
-                (retry_status, row["id"], row["claim_lock"], now, row["worker_pid"]),
+                (retry_status, row["id"], row["status"], row["claim_lock"], now, row["worker_pid"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -2433,12 +2438,13 @@ def release_stale_claims(
         # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
         # the run ended without a verdict, so it counts toward the breaker and a
         # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
-        _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
-            outcome="reclaimed", failure_limit=failure_limit,
-            release_claim=False, end_run=False,
-            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
-        )
+        if is_running:
+            _record_task_failure(
+                conn, row["id"], f"stale_lock={row['claim_lock']}",
+                outcome="reclaimed", failure_limit=failure_limit,
+                release_claim=False, end_run=False,
+                event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+            )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(

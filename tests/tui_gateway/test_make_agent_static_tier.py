@@ -62,3 +62,16 @@ def test_static_tier_on_a_route_without_fast_capacity_pins_nothing(monkeypatch):
                                   service_tier_override="priority")
     assert agent_kwargs["service_tier"] == "priority"
     assert "service_tier" not in agent_kwargs["request_overrides"]
+
+
+def test_fast_off_removes_build_time_pins_and_preserves_provider_body(monkeypatch):
+    agent_kwargs = _capture_build(monkeypatch, request_overrides={"extra_body": {"keep": 1}},
+                                  service_tier_override="priority")
+    agent = types.SimpleNamespace(**agent_kwargs)
+    session = {"agent": agent}
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda *_a: None)
+    monkeypatch.setattr(server, "_emit_session_info", lambda *_a: None)
+    server._set_fast(1, {"session_id": "sid"}, "fast", "off", session)
+    assert agent.service_tier is None
+    assert agent.request_overrides == {"extra_body": {"keep": 1}}
+    assert session["create_service_tier_override"] == ""

@@ -796,7 +796,7 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
         info = self._failed_platforms.get(platform)
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
-        if info is None or info.get("paused"):
+        if info is None or info.get("paused") or info.get("connecting"):
             return
         self._flag_reconnect_needs_attention(platform, info, now)
         if now < info["next_retry"]:
@@ -811,10 +811,14 @@ class GatewayAdapterLifecycleMixin:
             return
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
+        # Claim before the first await: concurrent watchers must not connect the same bot.
+        info["connecting"] = True
         try:
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
+            if self._failed_platforms.get(platform) is not info:
+                return
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
@@ -833,6 +837,8 @@ class GatewayAdapterLifecycleMixin:
                 if rearms < _MAX_PLUGIN_LOAD_REARMS and await self._run_in_executor_with_context(
                         get_plugin_manager().rearm_failed_platform, platform.value):
                     info["load_rearms"] = rearms + 1
+                if self._failed_platforms.get(platform) is not info:
+                    return
                 backoff = self._bump_reconnect_backoff(
                     platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
                 )
@@ -842,6 +848,9 @@ class GatewayAdapterLifecycleMixin:
             self._wire_adapter_handlers(adapter)
             # is_reconnect keeps the server-side update queue so offline-period messages are delivered.
             success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
+            if self._failed_platforms.get(platform) is not info:
+                await _dispose_unused_adapter(adapter)
+                return  # The attempt belongs to a retired outage, not a newly queued one.
             if success:
                 await self._install_reconnected_adapter(platform, adapter)
             elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
@@ -856,8 +865,8 @@ class GatewayAdapterLifecycleMixin:
                 # otherwise the resource owners it constructed in __init__ (ResponseStore for
                 # APIServerAdapter, etc.) leak 2 fds each. The gateway hits the 2560-fd limit after ~12h of
                 # failed reconnects at the 300s backoff cap (#37011).
-                await _dispose_unused_adapter(adapter)
                 del self._failed_platforms[platform]
+                await _dispose_unused_adapter(adapter)
             else:
                 # Retryable failures retry at the cap forever (never auto-pause). Same fd-leak dispose.
                 backoff = self._bump_reconnect_backoff(
@@ -872,15 +881,25 @@ class GatewayAdapterLifecycleMixin:
                 await _dispose_unused_adapter(adapter)
                 # Inbound it held during connect or salvaged in disconnect goes back to the predecessor.
                 hand_over_held_inbound(adapter, info.get("predecessor"))
-        except Exception as e:
-            if adapter is not None:
-                # An exception escaping connect leaves the adapter in the same unowned state.
+        except asyncio.CancelledError:
+            if adapter is not None and self.adapters.get(platform) is not adapter:
                 await _dispose_unused_adapter(adapter)
-                if self.adapters.get(platform) is not adapter:  # an installed adapter owns its queue
-                    hand_over_held_inbound(adapter, info.get("predecessor"))
+                hand_over_held_inbound(adapter, info.get("predecessor"))
+            raise
+        except Exception as e:
+            if adapter is not None and self.adapters.get(platform) is adapter:
+                logger.warning("Reconnect %s follow-up failed; keeping installed adapter: %s", platform.value, e)
+                return
+            if adapter is not None:
+                await _dispose_unused_adapter(adapter)
+                hand_over_held_inbound(adapter, info.get("predecessor"))
+            if self._failed_platforms.get(platform) is not info:
+                return
             # A reconnect exception is transient; keep retrying at the cap rather than auto-pausing.
             backoff = self._bump_reconnect_backoff(platform, info, attempt, None, str(e))
             logger.warning("Reconnect %s error: %s, next retry in %ds", platform.value, e, backoff)
+        finally:
+            info.pop("connecting", None)
 
     def _drop_from_reconnect_queue(self, platform, reason: str) -> None:
         logger.warning("Reconnect %s: %s, removing from retry queue", platform.value, reason)
@@ -888,12 +907,12 @@ class GatewayAdapterLifecycleMixin:
 
     def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
+        self._sync_voice_mode_state_to_adapter(adapter)
+        self._bind_voice_input_callback(adapter)
         self.adapters[platform] = adapter
         if platform == Platform.API_SERVER:
             from gateway.session_api_turn import recover_api_turns
             recover_api_turns(adapter)
-        self._sync_voice_mode_state_to_adapter(adapter)
-        self._bind_voice_input_callback(adapter)
 
     def _schedule_planned_restart_replay(self) -> None:
         """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
@@ -907,9 +926,17 @@ class GatewayAdapterLifecycleMixin:
 
     async def _install_reconnected_adapter(self, platform, adapter) -> None:
         """Publish a freshly reconnected primary adapter and replay what it missed while down."""
+        # No await between checking the queued outage and publishing its replacement.
+        info = self._failed_platforms.get(platform)
+        if info is None:
+            if self.adapters.get(platform) is not adapter:
+                from gateway.run import _dispose_unused_adapter
+                await _dispose_unused_adapter(adapter)
+            return
         self._publish_primary_adapter(platform, adapter)
         self.delivery_router.adapters = self.adapters
-        hand_over_held_inbound(self._failed_platforms.pop(platform).get("predecessor"), adapter)
+        self._failed_platforms.pop(platform)
+        hand_over_held_inbound(info.get("predecessor"), adapter)
         # connect() returning True does not mean the receive path is confirmed -- Telegram's degraded
         # reconnect returns True so the gateway stays up while its own ladder retries. Stamping "connected"
         # here would undo the adapter's accurate status.

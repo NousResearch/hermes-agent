@@ -1600,7 +1600,9 @@ class GatewayStartupMixin:
             )
         # Supervised: an escaping exception is restarted with backoff instead of stranding queued
         # platforms (the ensure hook only runs on a NEW fatal). ``on_spawn`` keeps the handle current.
-        self._spawn_reconnect_watcher()
+        # An early adapter fatal can already have spawned this watcher during startup.
+        # Preserve that owner instead of starting a second worker on the same retry queue.
+        self._ensure_reconnect_watcher_running()
         for method in self._POST_RECONNECT_WATCHERS:
             self._spawn_supervised(getattr(self, method), method[1:])
         from gateway.runtime_downgrade_exit import runtime_downgrade_watcher

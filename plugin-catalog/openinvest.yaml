@@ -1,6 +1,6 @@
 name: openinvest
 repo: https://github.com/longsizhuo/openInvest
-sha: 3e1a9d73d44aa38bc1a637f124e766ad70adcb2a
+sha: 3a0c81631ce5a473c16c90522ac707fb3f59c8fa
 subdir: plugin
 description: Self-hosted AI investment committee — skills for portfolio review, a decision ledger, and a
   4-role LLM committee (macro / quant / risk / CIO) that debates a symbol. Disclosure — the skills run the

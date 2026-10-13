@@ -127,6 +127,22 @@ def test_skipped_and_reordered_jobs_preserve_existing_comparison(jobs):
     assert 'class="stat-delta' in _mod._stats_cards(_mod.compute_stats(cur, bl))
 
 
+def test_workload_names_are_literal_in_each_output():
+    name = "build <linux> [click](https://example.test) `x`\n# heading"
+    cur = _timings([_job("tests", 80), _job(name, 10)])
+    bl = _timings([_job("tests", 60)])
+    html = _mod.generate_html(cur, bl)
+    assert "build &lt;linux&gt;" in html
+    assert "build <linux>" not in html
+    detail = _result(_mod.generate_review_status(cur, bl))["detail"]
+    for notice in (_mod.generate_summary(cur, bl).splitlines()[2], detail.splitlines()[0]):
+        assert "&lt;linux&gt;" in notice
+        assert r"\[click\]\(https://example\.test\)" in notice
+        assert r"\`x\`" in notice
+        assert r"\# heading" in notice
+        assert "[click](" not in notice
+
+
 def test_detail_shows_top_deltas():
     cur = _timings([_job("slow-job", 120.0), _job("fast-job", 30.0, start_s=120.0)])
     bl = _timings([_job("slow-job", 60.0), _job("fast-job", 60.0, start_s=60.0)])

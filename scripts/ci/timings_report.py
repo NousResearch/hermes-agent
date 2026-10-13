@@ -368,6 +368,12 @@ def _workload_note(jobs: list[dict], bl_jobs: list[dict]) -> str:
     )
 
 
+def _markdown_notice(text: str) -> str:
+    # Job names are data, not links, tags, or new Markdown blocks.
+    escaped = escape(text, quote=False).replace("\r", " ").replace("\n", " ")
+    return escaped.translate(str.maketrans({c: "\\" + c for c in "\\`*_{}[]()#+-.!|~"}))
+
+
 def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
     jobs_all = timings.get("jobs", [])
     jobs = [j for j in jobs_all if not is_skipped(j)]
@@ -884,7 +890,7 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
 
     lines = ["## CI Timing Summary\n"]
     if stats["workload_note"]:
-        lines.append(stats["workload_note"] + "\n")
+        lines.append(_markdown_notice(stats["workload_note"]) + "\n")
 
     # Global stats table
     lines.append("| Metric | Current | Baseline | Delta |")
@@ -971,7 +977,7 @@ def generate_review_status(
         summary = wall_str
 
     # Per-job delta detail (top 5 by absolute change)
-    detail_lines: list[str] = [stats["workload_note"]] if stats["workload_note"] else []
+    detail_lines: list[str] = [_markdown_notice(stats["workload_note"])] if stats["workload_note"] else []
     if baseline:
         bl_map = {j["name"]: j for j in baseline.get("jobs", [])}
         deltas: list[tuple[float, str, str]] = []

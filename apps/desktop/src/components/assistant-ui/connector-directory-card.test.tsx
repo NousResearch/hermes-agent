@@ -29,7 +29,10 @@ const REPLIES = new Map<string, object>([
   ['connectors.catalog', { connectors: [] }],
   [
     'connectors.list',
-    { available: true, connectors: [row('gmail', true), row('linear', false), row('notion', false), row('slack', false)] }
+    {
+      available: true,
+      connectors: [row('gmail', true), row('linear', false), row('notion', false), row('slack', false)]
+    }
   ],
   ['connectors.policy.get', { layers: [] }]
 ])
@@ -99,7 +102,11 @@ describe('ConnectorDirectoryCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(onContinue).toHaveBeenCalledWith({ connected: ['gmail'], newly_connected: [], suggested: ['slack', 'linear'] })
+    expect(onContinue).toHaveBeenCalledWith({
+      connected: ['gmail'],
+      newly_connected: [],
+      suggested: ['slack', 'linear']
+    })
   })
 
   it('collapses to one receipt line naming what the user connected once the call returns', () => {

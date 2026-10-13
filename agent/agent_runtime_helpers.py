@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from agent.client_lifecycle import build_primary_http_client, resolve_primary_follow_redirects
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
@@ -1158,6 +1159,7 @@ def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
     agent._anthropic_client = build_anthropic_client(
         rt["anthropic_api_key"], rt["anthropic_base_url"],
         timeout=get_provider_request_timeout(agent.provider, agent.model),
+        follow_redirects=resolve_primary_follow_redirects(agent, rt["anthropic_base_url"]),
     )
     agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
     agent.client = None
@@ -1967,7 +1969,7 @@ def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: s
         if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
     }
     if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
+        keepalive_http = build_primary_http_client(agent, base_url, httpx_verify)
         if keepalive_http is not None:
             safe_kwargs["http_client"] = keepalive_http
     client = GeminiNativeClient(**safe_kwargs)
@@ -1984,15 +1986,11 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         _validate_proxy_env_urls,
     )
     from agent.ssl_verify import resolve_httpx_verify
-    # Treat client_kwargs as read-only: callers pass agent._client_kwargs, and in-place mutation
-    # leaks into later requests (a torn-down httpx transport got reused).
-    # Callers pass agent._client_kwargs (or shallow copies of it) in; any in-place mutation leaks back into
-    # the stored dict and is reused on subsequent requests. #10933 hit this by injecting an httpx.Client
-    # transport that was torn down after the first request, so the next request wrapped a closed transport
-    # and raised "Cannot send a request, as the client has been closed" on every retry. The revert resolved
-    # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
-    # the same class of bug.
+    # Copy before HTTP-client injection: never persist a closed transport in agent._client_kwargs
+    # across reconstruction (#10933). Caller kwargs are read-only.
     client_kwargs = dict(client_kwargs)
+    # Redirect policy is Hermes config, never an SDK constructor argument.
+    client_kwargs.pop("follow_redirects", None)
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
@@ -2066,7 +2064,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
         )
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
+        keepalive_http = build_primary_http_client(agent, client_kwargs.get("base_url", ""), httpx_verify)
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Retries belong to the outer conversation loop (honors Retry-After); SDK retries would
@@ -2231,6 +2229,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
+            follow_redirects=resolve_primary_follow_redirects(agent, agent._anthropic_base_url),
         )
         agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None

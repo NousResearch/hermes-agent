@@ -339,7 +339,10 @@ def build_bearer_http_client(
         else:
             request.headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.Client(event_hooks={"request": [_inject_auth]}, **httpx_kwargs)
+    # Copy caller-owned lists; security hooks must run before minting credentials.
+    hooks = {name: list(callbacks) for name, callbacks in httpx_kwargs.pop("event_hooks", {}).items()}
+    hooks.setdefault("request", []).append(_inject_auth)
+    return httpx.Client(event_hooks=hooks, **httpx_kwargs)
 
 
 __all__ = [

@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { applyHudElectronOverlay } from './hud-overlay'
+import { applyHudElectronOverlay, hudHidesMainWindow } from './hud-overlay'
+
+test('macOS must not hide the main window when entering HUD mode', () => {
+  assert.equal(hudHidesMainWindow('darwin'), false)
+  assert.equal(hudHidesMainWindow('win32'), true)
+  assert.equal(hudHidesMainWindow('linux'), true)
+})
 
 test('macOS uses the floating window level and all-spaces visibility', () => {
   const calls: string[] = []

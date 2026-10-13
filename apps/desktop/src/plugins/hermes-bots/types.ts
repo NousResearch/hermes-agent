@@ -29,6 +29,10 @@ export interface ProfileRoute {
   mode: 'local' | 'remote'
   /** Electron's authoritative registry primary. Absent on older shells. */
   primary?: true
+  /** Present only on a local route whose profile carries a Bot Mode title
+   *  (`bot_title`). The relay's local-exclusion clause keys on it: a
+   *  non-primary "This device" that hosts bots must stay in the peer set. */
+  bot?: true
   profile: string
   targetProfile: string
 }

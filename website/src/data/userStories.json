@@ -1,5 +1,38 @@
 [
   {
+    "id": "adwhispr-skincare-competitor-research-use-case",
+    "source": "blog",
+    "author": "AdWhispr",
+    "url": "https://adwhispr.com/docs/guides/using-adwhispr-in-hermes-agent?utm_source=hermes&utm_medium=user_stories&utm_campaign=hermes_docs#a-skincare-brand-finds-the-ads-already-working",
+    "date": "2026-10-11",
+    "category": "research",
+    "headline": "Illustrative use case: a small skincare brand finds the ads already working in its market",
+    "quote": "Illustrative use case: a skincare brand gives Hermes its website. With AdWhispr, Hermes finds the competitors verified to be advertising right now, lists each one's longest-running ads first as the closest public sign of a winner, and summarizes the hooks, offers and formats they share.",
+    "size": "md"
+  },
+  {
+    "id": "adwhispr-clone-winning-video-use-case",
+    "source": "blog",
+    "author": "AdWhispr",
+    "url": "https://adwhispr.com/docs/guides/using-adwhispr-in-hermes-agent?utm_source=hermes&utm_medium=user_stories&utm_campaign=hermes_docs#a-store-owner-turns-a-competitor-s-winner-into-their-own-vid",
+    "date": "2026-10-11",
+    "category": "creative",
+    "headline": "Illustrative use case: a store owner turns a competitor's proven video ad into their own",
+    "quote": "Illustrative use case: a store owner picks a competitor video that has run for months. Hermes and AdWhispr write a scene by scene script for the owner's own product and voice, the owner edits it for free, and the paid render starts only after the owner approves it.",
+    "size": "md"
+  },
+  {
+    "id": "adwhispr-monday-ad-brief-use-case",
+    "source": "blog",
+    "author": "AdWhispr",
+    "url": "https://adwhispr.com/docs/guides/using-adwhispr-in-hermes-agent?utm_source=hermes&utm_medium=user_stories&utm_campaign=hermes_docs#a-monday-brief-while-you-run-the-business",
+    "date": "2026-10-11",
+    "category": "business-ops",
+    "headline": "Illustrative use case: a Monday advertising brief while the owner runs the business",
+    "quote": "Illustrative use case: a busy owner schedules a Hermes job that uses AdWhispr every Monday to report what competitors launched that week, how the owner's own campaigns spent and converted, and one recommended change. Campaign edits wait for the owner's confirmation.",
+    "size": "md"
+  },
+  {
     "id": "blog-razorpay-employee-agents",
     "source": "blog",
     "author": "Razorpay Engineering",

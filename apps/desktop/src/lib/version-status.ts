@@ -47,6 +47,8 @@ export interface VersionStatusInput {
   latestTag?: null | string
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
+  /** Tooltip sentence for a move back to an older release; replaces the update line. */
+  rollback?: string
   /** The apply reached the restart stage — labels `restart`, not `update`. */
   restarting: boolean
   /** Client only: short commit sha of the running build. */
@@ -76,6 +78,7 @@ export function resolveVersionStatus({
   latestTag = null,
   remote,
   restarting,
+  rollback,
   sha = null,
   target,
   updateAvailable,
@@ -111,9 +114,10 @@ export function resolveVersionStatus({
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    !busy && available && stable && latestTag && copy.releaseAvailable(latestTag),
+    !busy && available && rollback,
+    !busy && available && !rollback && stable && latestTag && copy.releaseAvailable(latestTag),
     !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && available && (stable ? !latestTag : behind <= 0) && copy.update,
+    !busy && available && !rollback && (stable ? !latestTag : behind <= 0) && copy.update,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on

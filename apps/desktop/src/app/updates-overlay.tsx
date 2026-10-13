@@ -30,7 +30,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
@@ -307,14 +307,20 @@ function IdleView({
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler. On a release-feed channel (stable), name the
   // release tag instead of commit vocabulary.
-  const { title, body } = resolveUpdateCopy({
-    target,
-    shownItems,
-    channel: status?.channel === 'stable' ? 'stable' : 'main',
-    latestTag: status?.latestTag ?? null,
-    mechanism: status?.mechanism,
-    copy: u
-  })
+  // A stable release this checkout already contains is a move back, never "a new update".
+  const rollbackTag = target === 'client' ? rollbackRelease(status) : null
+  const channelCopy = t.settings.about.channel
+
+  const { title, body } = rollbackTag
+    ? { title: channelCopy.rollbackTitle(rollbackTag), body: channelCopy.rollbackBody(rollbackTag) }
+    : resolveUpdateCopy({
+        target,
+        shownItems,
+        channel: status?.channel === 'stable' ? 'stable' : 'main',
+        latestTag: status?.latestTag ?? null,
+        mechanism: status?.mechanism,
+        copy: u
+      })
 
   const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 

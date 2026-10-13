@@ -61,6 +61,7 @@ import {
 } from '@/lib/icons'
 import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
+import { rollbackSentence } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { $repoWorktrees } from '@/store/coding-status'
@@ -610,6 +611,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       copy: t.shell.statusbar,
       latestTag: status?.latestTag,
       remote: backend,
+      rollback: backend ? undefined : rollbackSentence(status, t.settings.about.channel.rollbackBody),
       restarting: apply.stage === 'restart',
       sha: status?.currentSha?.slice(0, 7) ?? null,
       target: backend ? 'backend' : 'client',

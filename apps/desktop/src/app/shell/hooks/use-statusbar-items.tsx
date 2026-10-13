@@ -36,6 +36,7 @@ import {
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { rollbackSentence } from '@/lib/update-copy'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -389,6 +390,10 @@ export function useStatusbarItems({
       copy,
       latestTag: updateStatus?.latestTag,
       remote: connection?.mode === 'remote',
+      rollback: rollbackSentence(
+        { rollback: updateStatus?.rollback, sourceVersion: updateStatus?.sourceVersion },
+        t.settings.about.channel.rollbackBody
+      ),
       restarting: updateApply.stage === 'restart',
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
@@ -422,7 +427,10 @@ export function useStatusbarItems({
     updateStatus?.channel,
     updateStatus?.currentSha,
     updateStatus?.latestTag,
-    updateStatus?.updateAvailable
+    updateStatus?.rollback,
+    updateStatus?.sourceVersion,
+    updateStatus?.updateAvailable,
+    t.settings.about.channel.rollbackBody
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {

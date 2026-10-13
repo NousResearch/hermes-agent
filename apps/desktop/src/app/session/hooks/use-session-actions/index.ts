@@ -162,7 +162,7 @@ import {
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { branchCreateKey } from './branch-create-key'
-import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
+import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
@@ -648,16 +648,7 @@ export function useSessionActions({
   )
 
   const createBackendSessionForSend = useCallback(
-    async (
-      preview: string | null = null,
-      seedMessages?: SessionSeedMessage[],
-      // Create the session titled or at a pinned reasoning effort (guided
-      // onboarding mints its welcome chat this way). The owning profile is NOT
-      // an override — point $newChatProfile at it first (selectProfile-style)
-      // so the create lands on that profile's own backend and every later
-      // ambient RPC follows.
-      createOverrides?: SessionCreateOverrides
-    ): Promise<string | null> => {
+    async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
 
@@ -690,10 +681,7 @@ export function useSessionActions({
         const capturedProfile = $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
         const legacyProfileIntent = isLegacyNewChatProfile(capturedProfile)
 
-        const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
-          ...sessionCreateOverrideParams(createOverrides, seedMessages)
-        }
+        const params = await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)
 
         // Lease the owner socket for the whole create → owner-publication
         // sequence (#93602 primitive). The per-request lease inside

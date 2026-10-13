@@ -37,6 +37,7 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_output import completion_output, log_lines, output_tail
 
 logger = logging.getLogger(__name__)
 
@@ -516,24 +517,6 @@ def format_uptime_short(seconds: int) -> str:
 
 def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
-
-
-def _output_tail(session: "ProcessSession", n: int) -> str:
-    """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
-
-    return strip_ansi(session.output_buffer[-n:])
-
-
-def _completion_output(session: "ProcessSession") -> dict:
-    """``output`` sized by the session's ``completion_output_chars`` plus ``output_cut`` when trimmed.
-
-    Shared by the completion notification AND the wait/poll/kill snapshots: a bot in an api_server
-    or one-shot session cannot receive notifications and polls instead, so the polled result must
-    carry the same whole reply and the same cut marker (#115334)."""
-    limit = session.completion_output_chars or COMPLETION_OUTPUT_CHARS
-    cut = len(session.output_buffer) - limit
-    return {"output": _output_tail(session, limit), **({"output_cut": cut} if cut > 0 else {})}
 
 
 @dataclass
@@ -1630,7 +1613,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
                 # A consumer that relays the output (a bot DM's reply) must know it is not whole.
-                **_completion_output(session),
+                **completion_output(session),
                 # Stable producer identity across checkpoint recovery (unlike a
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
@@ -2032,7 +2015,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # Read with the preview under the lock the reader appends and exits under, so the
         # finalization check describes the output actually returned.
         with session._lock:
-            output_preview = _output_tail(session, 1000)
+            output_preview = output_tail(session, 1000)
             exited, finalizing = session.exited, self._reader_finalizing(session)
         result = {
             **self._status_head(session), "pid": session.pid,
@@ -2050,16 +2033,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         return result
 
     def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
-        """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
+        """Read the kept output log (a rolling tail) with optional pagination by lines."""
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
         with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+            lines, dropped = log_lines(session)
             exited, finalizing = session.exited, self._reader_finalizing(session)
-        lines = full_output.splitlines()
         total_lines = len(lines)
         # offset=None -> last N lines; an explicit offset=0 means the HEAD (don't
         # conflate the two via falsiness).
@@ -2076,7 +2056,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             observed_completion_output = total_lines == 0 or (bool(selected) and stop == total_lines)
         result = {
             **self._status_head(session), "output": "\n".join(selected),
-            "total_lines": total_lines, "showing": f"{len(selected)} lines"}
+            "total_lines": total_lines, "showing": f"{len(selected)} lines",
+            **({"truncated": True, "dropped_chars": dropped, "note": (
+                f"The first {dropped} characters of output were not kept (only the last "
+                f"{session.max_output_chars} are); line 0 is the first whole line after them.")}
+               if dropped else {})}
         if exited and observed_completion_output and not finalizing:
             self._completion_consumed.add(session_id)
         return result
@@ -2116,7 +2100,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 result = self._exit_snapshot(session, "exited")
             elif _is_interrupted():
                 result = {
-                    "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
+                    "status": "interrupted", "command": session.command, "output": output_tail(session, 1000),
                     "note": "User sent a new message -- wait interrupted"}
             elif _consume_yield(threading.current_thread().ident):
                 # A steer/redirect landed mid-turn: redirect() asks tool workers to YIELD so
@@ -2124,7 +2108,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 # process is untouched and still notify-tracked; the model should read the
                 # steer text and respond, not re-issue the wait (kimi-code#3697 class).
                 result = {
-                    "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
+                    "status": "interrupted", "command": session.command, "output": output_tail(session, 1000),
                     "process_running": True,
                     "note": ("User sent a new message -- wait released; the process is still "
                              "running and you will be notified on exit. Respond to the user now.")}
@@ -2137,7 +2121,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 break
             session._completion_event.wait(timeout=min(1.0, remaining))
         result = {
-            "status": "timeout", "command": session.command, "output": _output_tail(session, 1000),
+            "status": "timeout", "command": session.command, "output": output_tail(session, 1000),
             # Not a failure — models re-issued identical waits after misreading this as an error.
             "process_running": True}
         base_note = (
@@ -2157,7 +2141,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """Result dict for an exited session: exit metadata + the completion-sized output tail."""
         return {
             "status": status, "command": session.command,
-            **ProcessRegistry._exit_fields(session), **_completion_output(session)}
+            **ProcessRegistry._exit_fields(session), **completion_output(session)}
 
     def kill_process(
         self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
@@ -2235,7 +2219,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # Capture output, mark consumed, THEN expose ``exited`` to watcher tasks —
             # closes the delayed-notification race without losing the transcript.
             with session._lock:
-                output = _completion_output(session)
+                output = completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 session.exited = True
@@ -2291,7 +2275,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             if self._detached_host_fate(session.pid, session.host_start_time) != "running":
                 scope_stopped = self._stop_scope(session)
                 with session._lock:
-                    output = _completion_output(session)
+                    output = completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
                 # No waitable handle, so this is not a collected exit. Close the
@@ -2614,7 +2598,7 @@ PROCESS_SCHEMA = {
         "terminal(background=true)). "
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
-        "poll: status + new output. log: full output, paged. wait: block "
+        "poll: status + new output. log: output, paged (the last 200K chars are kept). wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "

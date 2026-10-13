@@ -343,6 +343,7 @@ export function linuxGpuChildDeathPath(options: {
   }
 
   const reason = String(options.details?.reason || '').toLowerCase()
+
   const sandboxSignature =
     options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT &&
     String(options.details?.signalName || '').toUpperCase() === 'SIGTERM'

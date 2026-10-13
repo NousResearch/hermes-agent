@@ -35,11 +35,14 @@ import { LazyShiki } from './shiki-highlighter'
 afterEach(cleanup)
 
 const MESSAGE = [
-  '# Deploy checklist', '',
-  'Run the migration before swapping traffic:', '',
+  '# Deploy checklist',
+  '',
+  'Run the migration before swapping traffic:',
+  '',
   '```bash',
   'psql -f migrate.sql',
-  '```', '',
+  '```',
+  '',
   'Then watch the logs until the pool is warm.'
 ].join('\n')
 
@@ -92,9 +95,7 @@ describe('a reply survives a failed shiki-block chunk load (#95995)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     try {
-      expect(() => render(<LazyShiki code="const a = 1" language="typescript" />)).toThrow(
-        'grammar tokenizer exploded'
-      )
+      expect(() => render(<LazyShiki code="const a = 1" language="typescript" />)).toThrow('grammar tokenizer exploded')
     } finally {
       spy.mockRestore()
       chunkError.message =

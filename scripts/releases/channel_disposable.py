@@ -6,7 +6,7 @@ production preview path (``channel`` input, unscoped production namespace). The
 local ``release.py --channel`` command no longer touches R2: it only dispatches
 this workflow, and this privileged step creates the channel and mints the
 immutable build request that the build legs consume via job outputs.
-"""  # noqa: E501
+"""
 from __future__ import annotations
 
 import hashlib

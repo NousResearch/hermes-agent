@@ -30,6 +30,7 @@ function hasDashboardBundle(dir) {
 function resolveDashboardWebDist(options: any = {}) {
   const env = options.env || process.env
   const override = env.HERMES_DESKTOP_DASHBOARD_WEB_DIST
+
   if (override && directoryExists(path.resolve(override))) {
     return path.resolve(override)
   }

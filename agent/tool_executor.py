@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -132,14 +133,14 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Long enough for an approval round-trip, short enough that one wedged dispatch can't starve the batch.
 _START_ORDER_GATE_TIMEOUT_S = 120.0
-# Fallback only; the effective bound derives from the turn's approval window (_authorization_gate_lock_timeout).
+# Fallback only; the effective bound derives from approvals.timeout (_authorization_gate_lock_timeout).
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
 def _authorization_gate_lock_timeout() -> float:
-    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (the turn's approval window +
-    margin — unbounded on CLI/TUI/Desktop — capped so it can't overflow Lock.acquire): never break serialization
-    while a prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
+    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
+    margin, capped so it can't overflow Lock.acquire): never break serialization while a
+    prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
     min()'d with the fallback so the gate never gives up early.
 
     Delegates to ``tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
@@ -302,7 +303,7 @@ class _ToolCallRef:
 
     def emit_cancelled(self, agent, start_time: float) -> str:
         """Synthesize the ``cancelled`` result for a KeyboardInterrupt mid-tool and emit its hook."""
-        message = "Tool execution cancelled by user interrupt"
+        message = f"Tool execution cancelled. {interrupt_skip_wording(agent)}"
         result = json.dumps({"error": message, "status": "cancelled"}, ensure_ascii=False)
         self.emit_post(
             agent, result, duration_ms=int((time.time() - start_time) * 1000),
@@ -330,18 +331,19 @@ def _append_skipped_tool_results(
     stop_on_flush_failure: bool = True,
 ) -> bool:
     """Append one ``tool`` result per unstarted call so the assistant tool-call turn never
-    lacks matching results (role alternation). ``content`` is formatted with ``{name}``;
+    lacks matching results (role alternation). ``{name}`` in ``content`` is substituted with
+    ``str.replace``, never ``str.format`` (a recorded reason may contain braces);
     ``hook_error_type`` also emits the terminal ``post_tool_call`` (status=cancelled) per
     call with ``hook_id`` overriding the hook's id; ``flush_stage`` flushes after each
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""
     for tc in tool_calls:
         name = _tc_name(tc)
-        result = content.format(name=name)
+        result = content.replace("{name}", name)
         messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
-                status="cancelled", error_type=hook_error_type, error_message="Tool execution skipped due to user interrupt",
+                status="cancelled", error_type=hook_error_type, error_message=f"Tool execution skipped. {interrupt_skip_wording(agent)}",
             )
         if flush_stage is not None:
             flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
@@ -707,7 +709,7 @@ def _dispatch_authorized_once(
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+        resolve = lambda: _pre_tool_block(agent, ref)
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
     block_body = None if block_message is None else {"error": block_message}
@@ -974,7 +976,12 @@ def _run_sequential_tool_execution_middleware(
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
             prepared.batch.close()
-            agent.interrupt("terminal batch tool did not complete")
+            if state == "timeout":
+                # Label the abort as the batch guard's own, not a user stop (#130207). No message:
+                # ``_interrupt_message`` is what gateway/CLI re-queue as the user's next turn. On the
+                # interrupted branch the stop is already published; re-interrupting would rebook it
+                # and null the user's queued message and redirect.
+                agent.interrupt(tool_reason="terminal batch timeout")
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
@@ -1166,15 +1173,18 @@ def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: s
     entirely and ride every later request inline. Image parts are left untouched (their size is
     governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
     parts = result.get("content") or []
-    bounded_parts, first_replacement = [], None
+    bounded_parts, first_replacement, spilled = [], None, 0
     for part in parts:
         text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
         if isinstance(text, str):
-            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+            # One spill file per part: a second oversized part under the same id would overwrite the first's file.
+            part_id = tool_call_id if not spilled else f"{tool_call_id}_part{spilled}"
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=part_id,
                                                  env=env, config=budget)
             if replaced != text:
                 part = {**part, "text": replaced}
                 first_replacement = first_replacement or replaced
+                spilled += 1
         bounded_parts.append(part)
     if first_replacement is None:
         return result
@@ -1344,7 +1354,7 @@ class _ConcurrentBatch:
             return None
         except KeyboardInterrupt:
             with contextlib.suppress(Exception):
-                agent.interrupt("keyboard interrupt")
+                agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
             result = ref.emit_cancelled(agent, start)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
@@ -1501,8 +1511,9 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
         tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
     elif agent._interrupt_requested:
-        function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
-        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
+        why = interrupt_skip_wording(agent)
+        function_result = f"[Tool execution cancelled — {ref.name} was skipped. {why}]"
+        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message=f"Tool execution cancelled. {why}")
         tool_duration, effect_disposition = 0.0, None
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
@@ -1561,7 +1572,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         _append_skipped_tool_results(
             agent, messages, tool_calls, effective_task_id,
-            content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
             hook_error_type="user_interrupt",
             flush_stage="cancelled tool result",
             stop_on_flush_failure=False,
@@ -1753,12 +1764,13 @@ def _run_sequential_call(
     except KeyboardInterrupt:
         if not dispatch.handles_keyboard_interrupt:
             raise
-        _spinner_result = ref.emit_cancelled(agent, tool_start_time)
+        # Publish the user-interrupt reason BEFORE emitting, so the hook sees it (as the concurrent path does).
         with contextlib.suppress(Exception):
-            agent.interrupt("keyboard interrupt")
+            agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
+        _spinner_result = ref.emit_cancelled(agent, tool_start_time)
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
-            content="[Tool execution cancelled — {name} was skipped due to keyboard interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
         )
         raise
     except Exception as tool_error:
@@ -1852,7 +1864,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i - 1:], effective_task_id,
                 notice="tool call(s)",
-                content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+                content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
                 hook_error_type="user_interrupt",
                 hook_id=lambda tc: getattr(tc, "id", "") or "",
                 flush_stage="cancelled tool result",
@@ -1885,7 +1897,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i:], effective_task_id,
                 notice="remaining tool call(s)",
-                content="[Tool execution skipped — {name} was not started. User sent a new message]",
+                content=f"[Tool execution skipped — {{name}} was not started. {interrupt_skip_wording(agent)}]",
                 flush_stage="skipped tool result",
             ):
                 return
@@ -1924,6 +1936,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
 
 __all__ = [
     "execute_tool_calls_concurrent",
-    "execute_tool_calls_sequential",
     "execute_tool_calls_segmented",
+    "execute_tool_calls_sequential",
 ]

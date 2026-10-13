@@ -30,6 +30,7 @@ import crypto from 'node:crypto'
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
 import { backendProfileArg } from './profile-id-guard'
+import { REMOTE_MARKER_GATE_PY } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -319,69 +320,37 @@ async function probeRemoteHermesHome(ssh) {
   }
 }
 
-const REMOTE_UPDATE_MARKER_PROBE = String.raw`
-import errno,os,re,sys
-from pathlib import Path
-
-home=Path(os.path.expanduser(sys.argv[1]))
-if home.parent.name=='profiles':home=home.parent.parent
-marker=home/'.hermes-update-in-progress'
-def clear():
-    try:marker.unlink()
-    except FileNotFoundError:pass
-    except OSError:pass
-    print('CLEAR');raise SystemExit
-try:
-    with marker.open('rb') as stream:raw=stream.read(257)
-except FileNotFoundError:
-    print('CLEAR');raise SystemExit
-except OSError:
-    print('UNCERTAIN');raise SystemExit
-if len(raw)>256:
-    print('UNCERTAIN');raise SystemExit
-match=re.fullmatch(rb'([1-9][0-9]*)\r?\n([0-9]+)(?:\r?\n)?',raw)
-if not match:
-    print('UNCERTAIN');raise SystemExit
-try:
-    owner=int(match.group(1));lease=int(match.group(2))
-    if owner<1 or owner>4294967295 or lease>9007199254740991:raise ValueError()
-except ValueError:
-    print('UNCERTAIN');raise SystemExit
-try:
-    os.kill(owner,0)
-except ProcessLookupError:
-    clear()
-except PermissionError:
-    print('LIVE:'+str(owner));raise SystemExit
-except OSError as error:
-    if error.errno==errno.ESRCH:clear()
-    elif error.errno==errno.EPERM:print('LIVE:'+str(owner));raise SystemExit
-    else:print('UNCERTAIN');raise SystemExit
-try:
-    cmd=open('/proc/%d/cmdline'%owner,'rb').read().replace(b'\0',b' ')
-except OSError:
-    cmd=b''
-if cmd and b'update' not in cmd:
-    clear()
-print('LIVE:'+str(owner))
-`
-
 /**
  * Refuse normal SSH reuse/spawn while the remote install is being mutated.
  *
- * This probe intentionally uses only the host's system Python and raw marker
- * bytes; it never imports or executes code from the changing Hermes checkout.
- * Absence or a well-formed, confirmed-dead owner is clear. Every parse, read,
- * probe, or transport uncertainty fails closed so a Desktop relaunch cannot
- * start `serve` beside an updater that survived the old app process.
+ * The probe uses only the host's system Python and the shared marker judge
+ * (remote-update-marker-programs.ts); it never imports the changing checkout.
+ * Absence or a confirmed-dead claim (owner and delegate) is clear, and a dead
+ * claim is unlinked under `<marker>.lock` unless the checkout lock is still
+ * held (HELD: a killed updater's child is still running). `hermesPath`, once
+ * located, adds its checkout to the probed ones. Every parse, read, lock, or
+ * transport uncertainty fails closed so a Desktop relaunch cannot start
+ * `serve` beside an updater that survived the old app process.
+ *
+ * The program travels on stdin (`python3 -`), not in argv. `ssh.exec` rides the
+ * POSIX ControlMaster mux socket, where ssh writes the session request and only
+ * then hands our stdio descriptors over with sendmsg(SCM_RIGHTS): a request
+ * still sitting in the socket buffer leaves no room for that descriptor message
+ * and the pass fails with EMSGSIZE ("mm_send_fd: sendmsg(0): Message too long",
+ * exit 255). macOS sizes a unix-stream buffer at 8 KB and the gate program is
+ * ~7.5 KB, so an inlined `python3 -c` landed a connect inside that window and
+ * every reconnect read a transport error as "could not prove it is clear".
+ * Python compiles the whole program before running it and the gate never reads
+ * stdin, so argv stays a few dozen bytes however the judge grows.
  */
-async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
-  const home = assertSafeRemoteHome(hermesHome)
+async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') {
+  const marker = expandRemotePath(`${remoteInstallRoot(hermesHome)}/.hermes-update-in-progress`)
+  const hermes = hermesPath ? ` '' ${expandRemotePath(hermesPath)}` : ''
   let observation = ''
 
   try {
     observation =
-      String(await ssh.exec(`python3 -c ${shq(REMOTE_UPDATE_MARKER_PROBE)} ${expandRemotePath(home)}`))
+      String(await ssh.exec(`python3 - ${marker}${hermes}`, { stdinData: REMOTE_MARKER_GATE_PY }))
         .trim()
         .split(/\r?\n/)
         .pop() || ''
@@ -401,7 +370,9 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome) {
   const error: any = new Error(
     live
       ? `Remote Hermes update process ${live[1]} is still running; SSH startup is paused.`
-      : 'The remote Hermes update marker is unreadable or malformed; refusing SSH startup.'
+      : observation === 'HELD'
+        ? 'A process the remote Hermes update started still holds the install; SSH startup is paused.'
+        : 'The remote Hermes update marker is unreadable, malformed, or locked; refusing SSH startup.'
   )
 
   error.kind = 'update-in-progress'
@@ -1003,32 +974,18 @@ finally:
   return `python3 -c ${shq(script)}`
 }
 
-// The updater's Python _MarkerMutex uses the marker's .mutex sidecar and an
-// advisory flock. Keep that same descriptor locked while the remote shell does
-// the marker check, spawns the backend, and publishes its initial lockfile.
-// Python keeps the descriptor close-on-exec by default and passes it explicitly
-// only to the intended outer shell; each detached child closes it before
-// execing Hermes. mutexPath is expandRemotePath() output — a complete shell
-// word ("$HOME"'/…' or '/abs/…') embedded raw so $HOME expands remotely; a
-// second shq() would hand python the quote characters as part of the path.
-function withRemoteUpdateMutex(command, mutexPath) {
-  const script = `
-import fcntl,os,subprocess,sys
-mutex_path=sys.argv[1]
-payload=sys.argv[2]
-parent=os.path.dirname(mutex_path)
-if parent:os.makedirs(parent,exist_ok=True)
-fd=os.open(mutex_path,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600)
-fcntl.flock(fd,fcntl.LOCK_EX)
-result=None
-try:
- result=subprocess.run(["sh","-c",payload,"hermes-update-mutex",str(fd)],pass_fds=(fd,),check=False)
-finally:
- os.close(fd)
-sys.exit(result.returncode if result is not None else 1)
-`.trim()
-
-  return `python3 -c ${shq(script)} ${mutexPath} ${shq(command)}`
+// Run `command` under the updaters' marker lock: REMOTE_MARKER_GATE_PY holds
+// `<marker>.lock` (the sidecar Python update_lock and marker.sh flock), clears a
+// dead claim while `hermes`'s checkout lock is free, and refuses (exit 75) a
+// live, unreadable, or checkout-held one, then keeps the
+// lock across the spawn and the initial lockfile publication. The descriptor
+// is close-on-exec and passed only to the outer shell; each detached child
+// closes it before execing Hermes. markerPath is expandRemotePath() output — a
+// complete shell word ("$HOME"'/…' or '/abs/…') embedded raw so $HOME expands
+// remotely; a second shq() would hand python the quote characters. `hermes`
+// is the same kind of word (expandRemotePath of the located executable).
+function withRemoteUpdateMutex(command, markerPath, hermes) {
+  return `python3 -c ${shq(REMOTE_MARKER_GATE_PY)} ${markerPath} ${shq(command)} ${hermes}`
 }
 
 /**
@@ -1157,6 +1114,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   // phantom profiles/0/ directory (#88842).
   const pinned = backendProfileArg(profile)
   const profileArgs = pinned ? `--profile ${shq(pinned)} ` : ''
+
   // The lockfile the spawn script publishes must carry the SAME normalized
   // profile as the argv: pidIsOurDashboard and the managed-update drain both
   // prove ownership by comparing the live `--profile` value against
@@ -1164,6 +1122,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   if (opts.lockMetadata && opts.lockMetadata.profile !== (pinned ?? '')) {
     opts.lockMetadata = { ...opts.lockMetadata, profile: pinned ?? '' }
   }
+
   const logPath = expandRemotePath(opts.logPath)
   const tokenFilePath = opts.tokenFilePath
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
@@ -1171,20 +1130,14 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
 
-  const updateMutex = expandRemotePath(
-    `${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress.mutex`
-  )
-
-  // The marker probe, ownership reservation, process creation, and initial
-  // lockfile publication must be one remote command. A second Desktop process
-  // can therefore never observe an empty lock and spawn before this one records
-  // its PID. The reservation is an atomic mkdir and is reclaimed only when its
-  // owning remote shell is dead.
-  const markerClear =
-    `marker_clear() { if [ ! -e ${marker} ]; then return 0; fi; ` +
-    `if [ ! -r ${marker} ]; then return 1; fi; ` +
-    `owner=$(IFS= read -r owner < ${marker} && printf '%s' "$owner"); ` +
-    `case "$owner" in ''|*[!0-9]*) return 1;; esac; if kill -0 "$owner" 2>/dev/null; then return 1; fi; return 0; }`
+  // The marker judge, ownership reservation, process creation, and initial
+  // lockfile publication are one remote command under the marker lock, so a
+  // second Desktop process never observes an empty lock and spawns before this
+  // one records its PID. The gate judges/clears the marker before the payload;
+  // a marker present after the spawn came from a writer that skipped the lock,
+  // so the child is reaped. The reservation is an atomic mkdir reclaimed only
+  // when its owning remote shell is dead.
+  const markerAbsent = `[ ! -e ${marker} ]`
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
@@ -1197,11 +1150,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   if (!opts.ownershipId || !opts.lockMetadata) {
     return withRemoteUpdateMutex(
-      `${markerClear}; marker_clear || exit 75; ` +
-        `mkdir -p "$(dirname ${logPath})" && ` +
+      `mkdir -p "$(dirname ${logPath})" && ` +
         `${detachedSpawn}; ` +
-        `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; echo "$child"`,
-      updateMutex
+        `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; echo "$child"`,
+      marker,
+      hermes
     )
   }
 
@@ -1230,9 +1183,9 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
       `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
       `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
-      `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
+      `mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +
-      `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
+      `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
       // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
       // on Ubuntu), which aborts the whole script on it with "Bad
       // substitution" AFTER the child was spawned, orphaning the backend and
@@ -1242,7 +1195,8 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `echo "$child"`,
-    updateMutex
+    marker,
+    hermes
   )
 }
 
@@ -1263,6 +1217,29 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .endsWith('YES')
 }
 
+function remoteProfileMissingError(output) {
+  const match = String(output || '').match(
+    /Error: Profile ['"]([^'"]+)['"] does not exist\.?(?: Create it with: ([^\n]+))?/i
+  )
+
+  if (!match) {
+    return null
+  }
+
+  const profile = match[1]
+  const createCommand = match[2]?.trim()
+
+  const err: any = new Error(
+    `The remote Hermes profile '${profile}' does not exist. ` +
+      `Select an existing remote profile${createCommand ? ` or create it with: ${createCommand}` : '.'}`
+  )
+
+  err.kind = 'remote-profile-missing'
+  err.profile = profile
+
+  return err
+}
+
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs(), isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
@@ -1270,18 +1247,24 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
   while (Date.now() < deadline) {
     assertBootstrapNotSuperseded(signal)
 
-    if (isAlive && !(await isAlive())) {
-      const err: any = new Error('Remote dashboard process exited before announcing its port.')
-      err.kind = 'spawn-failed'
-      throw err
-    }
-
     let tail
 
     try {
       tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
     } catch {
       tail = ''
+    }
+
+    if (isAlive && !(await isAlive())) {
+      const cause = remoteProfileMissingError(tail)
+
+      if (cause) {
+        throw cause
+      }
+
+      const err: any = new Error('Remote dashboard process exited before announcing its port.')
+      err.kind = 'spawn-failed'
+      throw err
     }
 
     const m = READY_RE.exec(String(tail || ''))
@@ -1611,7 +1594,7 @@ async function connect(deps) {
       }
 
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
       const localPort = await openForward(deps, lock.port)
 
       try {
@@ -1630,7 +1613,7 @@ async function connect(deps) {
         if (reuseClassification === 'authenticated-stale') {
           assertBootstrapNotSuperseded(signal)
           await cancelForwardSafe(deps, localPort, lock.port)
-          await assertRemoteInstallUpdateClear(ssh, hermesHome)
+          await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
           await cleanupStale(ssh, ownershipId, lock)
         } else if (reuseClassification === 'authenticated-ok') {
           const token = await adoptOwnedServedToken(
@@ -1674,13 +1657,13 @@ async function connect(deps) {
       }
     } else {
       assertBootstrapNotSuperseded(signal)
-      await assertRemoteInstallUpdateClear(ssh, hermesHome)
+      await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
       await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 
   assertBootstrapNotSuperseded(signal)
-  await assertRemoteInstallUpdateClear(ssh, hermesHome)
+  await assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   const spawnToken = mintToken()
 
   const spawned = await spawnRemoteDashboard(ssh, {
@@ -1690,7 +1673,7 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     guestOnboarding,
-    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
+    assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 
   if (spawned.existing) {
@@ -1741,9 +1724,13 @@ async function connect(deps) {
     // record. Inside the try: if this write itself fails, the catch still
     // kills the just-spawned process via the in-memory record.
     await writeLockfile(ssh, ownershipId, ownedSpawn)
+    // The spawn command returns the short-lived wrapper pid. The detached
+    // serve daemon can outlive that wrapper while it is still starting, so a
+    // wrapper liveness check races the READY line and rejects healthy boots.
+    // The bounded READY wait is the authoritative startup check; later
+    // requests verify the daemon through the established connection.
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
-      isAlive: () => remotePidAlive(ssh, pid),
       signal
     })
     assertBootstrapNotSuperseded(signal)

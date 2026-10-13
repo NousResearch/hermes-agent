@@ -1,50 +1,75 @@
-import type { Rectangle } from 'electron'
+import { type BrowserWindow, ipcMain, type Rectangle, screen } from 'electron'
 
-export interface GrowRequest {
-  bottom?: number
-  left?: number
-  minWidth?: number
-  right?: number
-  top?: number
+import type { WindowSizeMode } from './window-size-types'
+import { windowSize } from './window-state'
+
+interface WindowSizingOptions {
+  enabled: boolean
+  mainWindow: () => BrowserWindow | null
 }
 
-export interface GrowInputs {
-  bounds: { height: number; width: number }
-  frameWidth?: number
-  workArea: { height: number; width: number; x: number; y: number }
-  zoom?: number
+// The bounds this module last gave each window. window-state.json skips a
+// window still at them: app-chosen bounds are not where the user left the
+// window, and a saved onboarding size reopened the app as a 602x642 chat. A
+// user move or resize leaves them, so that placement is saved.
+type PlacedWindow = Pick<BrowserWindow, 'getNormalBounds' | 'isMaximized'>
+
+const appSized = new WeakMap<PlacedWindow, Rectangle>()
+
+export function markAppSized(win: PlacedWindow, bounds: Rectangle): void {
+  appSized.set(win, bounds)
 }
 
-const MAX_DELTA_PX = 4000
+export function isAppSized(win: PlacedWindow): boolean {
+  const given = appSized.get(win)
 
-const MAX_WORK_AREA = 0.92
+  if (!given || win.isMaximized()) {
+    return false
+  }
 
-export function growWindowBounds(
-  request: GrowRequest | null | undefined,
-  { bounds, frameWidth = 0, workArea, zoom = 1 }: GrowInputs
-) {
-  const dip = (value: number | undefined, round: (n: number) => number) =>
-    Math.max(0, Math.min(MAX_DELTA_PX, round((Number(value) || 0) * zoom)))
+  const bounds = win.getNormalBounds()
 
-  const toDip = (value?: number) => dip(value, Math.round)
-
-  const requestedMin = dip(request?.minWidth, Math.ceil)
-  const grown = bounds.width + toDip(request?.left) + toDip(request?.right)
-
-  const width = Math.min(
-    Math.max(grown, requestedMin ? requestedMin + frameWidth : 0),
-    Math.round(workArea.width * MAX_WORK_AREA)
-  )
-
-  const height = Math.min(
-    bounds.height + toDip(request?.top) + toDip(request?.bottom),
-    Math.round(workArea.height * MAX_WORK_AREA)
-  )
-
-  return centeredBounds(workArea, width, height)
+  return (['x', 'y', 'width', 'height'] as const).every(key => Math.abs(bounds[key] - given[key]) <= 1)
 }
 
-export function centeredBounds(workArea: Rectangle, width: number, height: number): Rectangle {
+// Onboarding sets the chat size outright. Normal grows each axis to the normal
+// size and never shrinks one the user already made bigger.
+function sizedBounds(mode: WindowSizeMode, bounds: Rectangle, workArea: Rectangle): Rectangle | null {
+  const target = windowSize(mode, workArea)
+
+  if (mode === 'onboarding') {
+    return centeredBounds(workArea, target.width, target.height)
+  }
+
+  const width = Math.max(bounds.width, target.width)
+  const height = Math.max(bounds.height, target.height)
+
+  return width === bounds.width && height === bounds.height ? null : centeredBounds(workArea, width, height)
+}
+
+export function registerWindowSizing({ enabled, mainWindow }: WindowSizingOptions): void {
+  ipcMain.on('hermes:window:size', (event, mode: WindowSizeMode) => {
+    const win = mainWindow()
+
+    if (!enabled || !win || win.isDestroyed() || event.sender !== win.webContents) {
+      return
+    }
+
+    if ((mode !== 'normal' && mode !== 'onboarding') || win.isMaximized() || win.isFullScreen()) {
+      return
+    }
+
+    const bounds = win.getBounds()
+    const next = sizedBounds(mode, bounds, screen.getDisplayMatching(bounds).workArea)
+
+    if (next) {
+      markAppSized(win, next)
+      win.setBounds(next, true)
+    }
+  })
+}
+
+function centeredBounds(workArea: Rectangle, width: number, height: number): Rectangle {
   return {
     height,
     width,

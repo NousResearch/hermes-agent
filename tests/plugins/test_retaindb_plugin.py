@@ -128,7 +128,7 @@ class TestWriteQueue:
         return _WriteQueue(client, db_path), client, db_path
 
     def test_flush_deletes_row_on_success(self, tmp_path):
-        q, client, db_path = self._make_queue(tmp_path)
+        q, _client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
         q.shutdown()  # blocks until drain
         # Row should be gone

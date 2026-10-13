@@ -81,7 +81,7 @@ class TestSkillViewDedup:
 
     def test_no_task_id_never_dedups(self, skills_home):
         args = {"name": "demo-dedup-skill"}
-        r1 = json.loads(_skill_view_with_bump(args, task_id=None))
+        json.loads(_skill_view_with_bump(args, task_id=None))
         r2 = json.loads(_skill_view_with_bump(args, task_id=None))
         assert "Step one" in r2.get("content", "")
 

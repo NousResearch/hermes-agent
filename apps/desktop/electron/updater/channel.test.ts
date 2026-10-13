@@ -186,6 +186,17 @@ test.each(['NODE_OPTIONS', 'PATH', 'HERMES_PYTHON'])(
   }
 )
 
+test('channel manifest drops retired bundle keys but rejects unknown names', async (): Promise<void> => {
+  const f = await fixture()
+  f.manifest.request.bundleEnv.HERMES_SKIP_INTRO = '1'
+  expect(decodeChannelManifest(JSON.stringify(f.manifest)).request.bundleEnv).toEqual({})
+
+  f.manifest.request.bundleEnv.HERMES_UNKNOWN = '1'
+  expect((): void => {
+    decodeChannelManifest(JSON.stringify(f.manifest))
+  }).toThrow('Invalid bundle environment name')
+})
+
 test('receiver kind mirrors the identity comparison between retired channel and destination', async (): Promise<void> => {
   const f = await retiredFixture()
 

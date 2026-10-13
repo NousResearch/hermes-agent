@@ -57,7 +57,6 @@ hermes plugins disable disk-cleanup
 |---|---|---|
 | `disk-cleanup` | hook + 斜杠命令 | 自动追踪临时文件并在会话结束时清理 |
 | `observability/langfuse` | hook | 将轮次 / LLM 调用 / 工具追踪到 [Langfuse](https://langfuse.com) |
-| `spotify` | 后端（7 个工具） | 原生 Spotify 播放、队列、搜索、播放列表、专辑、曲库 |
 | `google_meet` | 独立插件 | 加入 Meet 通话、实时字幕转录、可选实时双工音频 |
 | `image_gen/openai` | 图像后端 | OpenAI `gpt-image-2` 图像生成后端（FAL 的替代方案） |
 | `image_gen/openai-codex` | 图像后端 | 通过 Codex OAuth 使用 OpenAI 图像生成 |

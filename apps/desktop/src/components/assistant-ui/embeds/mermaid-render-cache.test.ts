@@ -251,16 +251,19 @@ describe('nextPaint', () => {
     const raf = globalThis.requestAnimationFrame
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       frames.push(callback)
+
       return frames.length
     })
 
     try {
       let admitted = false
+
       const cache = createMermaidRenderCache({
         maxEntries: 2,
         defer: nextPaint,
         render: async () => {
           admitted = true
+
           return '<svg>ok</svg>'
         }
       })
@@ -272,6 +275,7 @@ describe('nextPaint', () => {
       await expect(pending).resolves.toBe('<svg>ok</svg>')
     } finally {
       vi.unstubAllGlobals()
+
       if (raf) {
         globalThis.requestAnimationFrame = raf
       }

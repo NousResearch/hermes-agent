@@ -82,7 +82,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 // card answers that request when it is still open and falls back to the
 // `approval.respond` RPC when the prompt was restored from `approval.pending`.
 export interface ApprovalRequest extends KeyedPrompt {
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
@@ -345,13 +345,13 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
  * surface. Returns after the backend has the decision.
  */
 
-// #55433: `approval.respond` otherwise rides the generic 30s RPC deadline. During
-// a long LLM stream the gateway's WS writes can stall well past 30s while the
-// turn is still live and the approval is still pending (the backend holds a
-// Desktop approval until it is answered) — the client gave up with "request
-// timed out: approval.respond" on an answer the backend went on to apply. Give
-// the RPC a generous deadline (plus margin for the write to drain), and retry
-// once on a deadline failure:
+// #55433: the backend honors an answer for the whole `approvals.timeout` window
+// (default 300s), but `approval.respond` otherwise rides the generic 30s RPC
+// deadline. During a long LLM stream the gateway's WS writes can stall well past
+// 30s while the turn is still live and the approval is still pending — the
+// client gives up with "request timed out: approval.respond" long before the
+// backend would. Give the RPC a deadline that covers the backend window (300s
+// plus margin for the write to drain), and retry once on a deadline failure:
 // `resolve_gateway_approval` pops the queue entry before committing, so a
 // duplicate resolve is a harmless `resolved: 0`.
 export const APPROVAL_RESPOND_REQUEST_TIMEOUT_MS = 330_000

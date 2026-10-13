@@ -115,3 +115,26 @@ def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
         session.pop(pin)
     server._rebuild_session_agent("sid", session)
     assert seen[-1] == dict.fromkeys(carried)
+
+
+def test_rebuild_finishing_after_close_closes_the_replacement_and_its_handle(tmp_path, monkeypatch):
+    """session.close claiming the record while _make_agent runs already tore down the agent it saw:
+    the replacement must be closed (and its dedicated handle released), never installed (#49852)."""
+    from tui_gateway import server
+
+    closed: list[str] = []
+    handle = SimpleNamespace(close=lambda: closed.append("db"))
+    monkeypatch.setattr(server, "_open_profile_session_db", lambda _home: handle)
+    monkeypatch.setattr(server, "_config_model_target", lambda: "default-a")
+    session = {"agent": None, "session_key": "k", "profile_home": str(tmp_path / "worker")}
+
+    def make_agent(*_args, session_db=None, **_kwargs):
+        session["_closing"] = True  # _pop_session_by_id lands mid-build
+        return SimpleNamespace(_session_db=session_db, _owns_session_db=False,
+                               close=lambda: closed.append("agent"))
+
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    with pytest.raises(RuntimeError, match="closed"):
+        server._rebuild_session_agent("sid", session, session_id="k")
+    assert session["agent"] is None
+    assert closed == ["agent", "db"]

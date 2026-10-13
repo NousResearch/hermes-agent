@@ -165,7 +165,7 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
     monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
     monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
-    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
     monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"queued": True}})
     monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
 
@@ -188,7 +188,7 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
-                          restore=lambda: ([], [], []), display_prefix=lambda: [],
+                          restore=lambda: ([], [], []), display_prefix=list,
                           inline_images=True)
     if path == "eager":
         monkeypatch.setattr(server, "_profile_build_scope", lambda *a: nullcontext())
@@ -246,14 +246,14 @@ def test_late_rpc_from_closed_socket_keeps_orphan_reap_armed(monkeypatch, path, 
     monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
     monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
-    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
     monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"status": "queued"}})
     monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
     ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
                           defer_history=False, target="stored", profile=None,
                           profile_home=None, profile_resume_cwd=None, found={},
                           messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
-                          restore=lambda: ([], [], []), display_prefix=lambda: [],
+                          restore=lambda: ([], [], []), display_prefix=list,
                           inline_images=True)
     if path == "unpersisted":
         response = server._resume_live_unpersisted(ctx, sid, session)

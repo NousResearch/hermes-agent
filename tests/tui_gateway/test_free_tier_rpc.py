@@ -10,7 +10,7 @@ import time
 import pytest
 
 import tui_gateway.server as srv
-from hermes_cli import anon_auth
+from hermes_cli import anon_auth, free_tier_offer
 from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
 
@@ -77,6 +77,40 @@ def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest,
     assert status["available"] is False and status["notice_pending"] is False
 
 
+def test_status_carries_the_pending_browser_challenge_and_drops_it_once_cleared(guest):
+    """A client that connects after the ``free_tier.challenge`` event still learns there is a
+    window to open; once the challenge is worked, the field is gone."""
+    from hermes_cli import anon_challenge
+    assert "challenge" not in _call("free_tier.status")
+
+    challenge = anon_challenge.BrowserChallenge(
+        "https://portal.example.test/challenge?code=t", True, 600, 2, "A quick check first.")
+    anon_challenge._record(challenge, new_attempt=False)
+    try:
+        assert _call("free_tier.status")["challenge"] == challenge.as_payload()
+    finally:
+        anon_challenge._clear_pending()
+    assert "challenge" not in _call("free_tier.status")
+
+
+def test_window_outcomes_are_scoped_and_do_not_grant_auth(guest, tmp_path):
+    from hermes_cli import anon_challenge
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    a = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=a", True, 600, 2, "check")
+    b = anon_challenge.BrowserChallenge("https://portal.example.test/challenge?code=b", False, 600, 2, "check")
+    anon_challenge._record(a, new_attempt=False)
+    scope = set_hermes_home_override(tmp_path / "secondary")
+    try:
+        anon_challenge._record(b, new_attempt=False)
+        assert not anon_challenge.record_host_outcome(a.url, 0, "done")
+        assert anon_challenge.pending_challenge()["url"] == b.url
+    finally:
+        reset_hermes_home_override(scope)
+    assert _call("free_tier.status")["challenge"]["url"] == a.url
+    assert _call("free_tier.challenge_result", {"url": a.url, "outcome": "error"}) == {"accepted": True}
+    assert _call("free_tier.status")["challenge"]["url"] == a.url
+
+
 def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     import agent.billing_view as bv
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: pytest.fail("free tier must not call the portal"))
@@ -141,3 +175,28 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
     assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}
+
+
+def test_sign_in_offer_is_reported_then_claimed_once(guest, monkeypatch):
+    now = [10_000.0]
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: now[0])
+    assert "nudge_due_in" not in _call("free_tier.status")
+    assert _call("free_tier.claim_nudge") == {"claimed": False}
+
+    free_tier_offer.record_task_done()
+    assert _call("free_tier.status")["nudge_due_in"] == free_tier_offer.OFFER_DELAY_S
+    assert _call("free_tier.claim_nudge") == {"claimed": False}  # not due yet
+
+    now[0] += free_tier_offer.OFFER_DELAY_S
+    assert _call("free_tier.status")["nudge_due_in"] == 0
+    assert _call("free_tier.claim_nudge") == {"claimed": True}
+    assert _call("free_tier.claim_nudge") == {"claimed": False}
+    assert "nudge_due_in" not in _call("free_tier.status")  # nothing finished since the offer
+
+
+def test_sign_in_offer_is_moot_once_signed_in(guest, monkeypatch):
+    monkeypatch.setattr(free_tier_offer, "_clock", lambda: 10_000.0)
+    free_tier_offer.record_task_done()
+    monkeypatch.setattr(anon_auth, "has_guest", lambda: False)
+    assert "nudge_due_in" not in _call("free_tier.status")
+    assert _call("free_tier.claim_nudge") == {"claimed": False}

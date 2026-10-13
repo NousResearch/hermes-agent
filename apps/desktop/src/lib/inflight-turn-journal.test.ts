@@ -832,7 +832,7 @@ describe('mid-turn redirect corrections', () => {
 })
 
 describe('purgeInFlightTurnJournals', () => {
-  it('clears a busy session\'s journaled tail from localStorage (delete must reach the local copy)', () => {
+  it("clears a busy session's journaled tail from localStorage (delete must reach the local copy)", () => {
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)
 

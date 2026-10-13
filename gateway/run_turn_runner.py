@@ -26,14 +26,12 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
-from gateway.session import SessionSource
-from gateway.session_identity import replace_source
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
+    from gateway.run import GatewayRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -80,7 +78,7 @@ class _ExecApprovalDeclined(RuntimeError):
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
-    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+    def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
 
@@ -126,7 +124,7 @@ class TurnRunner:
 
     # ── progress_callback (agent thread → progress queue) ───────────────────────────────────
 
-    def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+    def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
@@ -330,8 +328,8 @@ class TurnRunner:
     class _TaskCardState:
         """Task-card rail state for ``_send_native_task_card_progress``."""
         adapter: Any
-        tasks: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
-        task_order: List[str] = dataclasses.field(default_factory=list)
+        tasks: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+        task_order: list[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
         # TERMINAL for the turn, distinct from native_failed: no later publication
@@ -348,7 +346,7 @@ class TurnRunner:
             text = re.sub(r"\s+", " ", str(value or "")).strip()
             return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
-        def visible_tasks(self) -> List[Dict[str, str]]:
+        def visible_tasks(self) -> list[dict[str, str]]:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
 
         def fallback_text(self) -> str:
@@ -359,7 +357,7 @@ class TurnRunner:
                      for task in self.visible_tasks()]
             return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
-        def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
+        def _upsert(self, call_id: str, title: str) -> dict[str, str]:
             if call_id not in self.tasks:
                 self.task_order.append(call_id)
             self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
@@ -548,7 +546,7 @@ class TurnRunner:
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
 
-    def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
+    def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
         len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
         try:
@@ -871,31 +869,8 @@ class TurnRunner:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
-            source = ctx.source
             runner = self._runner
-            # Native Discord only stamps auto-thread markers on the opening parent-channel event. A
-            # title retry arrives as an ordinary in-thread event; when the agent was rebuilt, there
-            # is no first-turn callback left to rename it. Recover only those immutable markers from
-            # this same thread's persisted origin, while keeping the live source's transport owner.
-            if (
-                getattr(source, "platform", None) == Platform.DISCORD
-                and getattr(source, "chat_type", None) == "thread"
-                and getattr(source, "thread_id", None)
-                and getattr(source, "delivered_via_upstream_relay", False) is not True
-                and not runner._is_discord_auto_thread_lane(source)
-            ):
-                with suppress(Exception):
-                    row = agent._session_db.get_session(session_id)
-                    origin = SessionSource.from_dict(json.loads((row or {}).get("origin_json") or "{}"))
-                    if (
-                        runner._is_discord_auto_thread_lane(origin)
-                        and str(origin.thread_id) == str(source.thread_id)
-                    ):
-                        source = replace_source(
-                            source,
-                            auto_thread_created=True,
-                            auto_thread_initial_name=origin.auto_thread_initial_name,
-                        )
+            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
@@ -1274,8 +1249,7 @@ class TurnRunner:
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):
-        """Per-message state — callbacks and reasoning config change every turn, so they aren't
-        baked into the cached agent."""
+        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
@@ -1297,6 +1271,7 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
@@ -1376,8 +1351,8 @@ class TurnRunner:
         last question — between two cards it only opens a bubble the next boundary closes."""
         from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
         from tools.clarify_gateway import CANCELLED, SKIPPED
-        answers: Dict[str, Any] = {}
-        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
+        answers: dict[str, Any] = {}
+        reply: dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
             question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"
@@ -1489,8 +1464,7 @@ class TurnRunner:
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
+        # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
@@ -1561,7 +1535,8 @@ class TurnRunner:
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
-            # Mark as approval prompt so WeCom routes through the control lane.
+            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",

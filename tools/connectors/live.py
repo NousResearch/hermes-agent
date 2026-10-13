@@ -20,7 +20,7 @@ class OperationAlreadyOpen(RuntimeError):
         self.existing = existing
 
 
-_open: Dict[Tuple[str, str], ConnectionOperation] = {}
+_open: dict[tuple[str, str], ConnectionOperation] = {}
 _lock = threading.Lock()
 
 
@@ -30,11 +30,11 @@ def _profile_key(profile_home: Optional[str]) -> str:
     return hermes_home_key(profile_home or get_process_hermes_home())
 
 
-def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
+def _key(session_key: str, profile_home: Optional[str]) -> tuple[str, str]:
     return _profile_key(profile_home), session_key
 
 
-def open(operation: ConnectionOperation) -> None:  # noqa: A001 - the verb is the API
+def open(operation: ConnectionOperation) -> None:
     operation.profile_key = hermes_home_key()
     key = (operation.profile_key, operation.session_key)
     with _lock:
@@ -63,12 +63,16 @@ def get_by_op_id(op_id: str, *, profile_home: Optional[str] = None) -> Optional[
                      if key == profile_key and operation.op_id == op_id and not operation.settled), None)
 
 
-def find_target(name: str, *, profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+def find_target(name: str, *, alias: Optional[str] = None, repair_id: Optional[str] = None,
+                profile_home: Optional[str] = None) -> Optional[ConnectionOperation]:
+    """The open operation connecting this account: the connector ``name`` and the same ``alias`` and
+    repaired account id, so an open operation for one account is never reused for another of the same app."""
     profile_key = _profile_key(profile_home)
     with _lock:
         return next((operation for (key, _), operation in _open.items()
                      if key == profile_key and not operation.settled
-                     and (target := operation.target(name)) is not None and target.kind == "connector"), None)
+                     and (target := operation.target(name)) is not None and target.kind == "connector"
+                     and target.alias == alias and target.repair_id == repair_id), None)
 
 
 def close(operation: ConnectionOperation) -> None:

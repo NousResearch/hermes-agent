@@ -1,3 +1,4 @@
+import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -69,6 +70,14 @@ export const arSettings = {
     resetConfirm: 'هل تريد إعادة كل الإعدادات إلى افتراضيات Hermes؟',
     exportFailed: 'فشل التصدير',
     resetFailed: 'فشلت إعادة الضبط',
+    pluginPages: {
+      blurb: 'خيارات تضيفها الإضافات المثبّتة. لكل إضافة صفحتها الخاصة، وبعضها يضيف صفحات فرعية.',
+      empty: 'لا توجد إضافة لها إعدادات بعد.',
+      manage: 'إدارة الإضافات',
+      agentSettings: 'إعدادات الوكيل',
+      pageCount: (n: number) => `${n} صفحات`,
+      missing: 'هذه الإضافة ليس لها صفحة إعدادات. ربما عُطّلت أو أُزيلت.'
+    },
     nav: {
       providers: 'المزودون',
       providerAccounts: 'الحسابات',
@@ -83,7 +92,8 @@ export const arSettings = {
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
-      vault: 'كلمات المرور وتسجيلات الدخول'
+      vault: 'كلمات المرور وتسجيلات الدخول',
+      plugins: 'الإضافات'
     },
     vault: {
       title: 'كلمات المرور وتسجيلات الدخول',
@@ -161,16 +171,10 @@ export const arSettings = {
     },
     plugins: {
       title: 'إضافات سطح المكتب',
-      blurb:
-        'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
-      count: n => `${n} مثبتة`,
       openFolder: 'فتح مجلد إضافات سطح المكتب',
       rescan: 'إعادة الفحص',
       reveal: 'إظهار في مدير الملفات',
-      enable: 'تفعيل',
-      disable: 'تعطيل',
       failed: 'فشل',
-      empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
       kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
       installModal: {
         installUncertain:
@@ -483,8 +487,7 @@ export const arSettings = {
       'codeExecution.mode': 'مدى تقييد تنفيذ الكود بالمشروع الحالي.',
       fileReadMaxChars: 'أقصى عدد أحرف يستطيع Hermes قراءته من ملف واحد في الطلب.',
       'approvals.mode': 'كيف يتعامل Hermes مع الأوامر التي تحتاج موافقة صريحة.',
-      'approvals.timeout':
-        'مدة انتظار طلبات الموافقة على منصات المراسلة قبل انتهاء المهلة. التطبيق والطرفية ينتظران حتى تجيب.',
+      'approvals.timeout': 'مدة انتظار طلبات الموافقة قبل انتهاء المهلة.',
       'security.redactSecrets': 'يخفي الأسرار المكتشفة من المحتوى المرئي للنموذج قدر الإمكان.',
       'checkpoints.enabled': 'ينشئ لقطات رجوع قبل تعديلات الملفات.',
       'memory.memoryEnabled': 'يحفظ ذكريات دائمة يمكن أن تساعد الجلسات القادمة.',
@@ -504,10 +507,17 @@ export const arSettings = {
         'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
-      updates: 'التحديثات'
+      updates: 'التحديثات',
+      channel: arUpdateChannel
     },
 
     config: {
+      developerTitle: 'المطوّر',
+      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
+      resetOnboardingDesc:
+        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
+      resetOnboardingAction: 'إعادة تعيين',
+      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
         'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
@@ -726,6 +736,8 @@ export const arSettings = {
       defaultsLabel: 'الافتراضيات',
       reasoning: 'الاستدلال',
       reasoningOff: 'إيقاف',
+      speed: 'السرعة',
+      speedStandard: 'قياسية',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',
       loadFailed: 'تعذر تحميل النماذج',
       restartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.',
@@ -740,6 +752,8 @@ export const arSettings = {
       change: 'تغيير',
       autoUseMain: 'تلقائي · استخدام النموذج الرئيسي',
       inheritMainEffort: 'وراثة · جهد النموذج الرئيسي',
+      inheritsFrom: task => `يرث من ${task}`,
+      followTask: task => `اتباع ${task}`,
       providerDefault: '(افتراضي المزوّد)',
       tasks: {
         vision: {
@@ -770,6 +784,7 @@ export const arSettings = {
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
+        voice_chat: { label: 'دردشة صوتية', hint: 'ردود الوضع الصوتي' },
         triage_specifier: {
           label: 'محدد الفرز',
           hint: 'توضيح مواصفات كانبان'

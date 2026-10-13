@@ -56,8 +56,13 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
     const nativeReceipt = `${receipt}.native-toolchain`
     if (!existsSync(nativeReceipt) || readFileSync(nativeReceipt, 'utf8') !== `${expected}${nativeKey}\n`) return false
   }
+  // Probe each locked entry's manifest, not its directory: a partial cleanup or
+  // snapshot restore can leave gutted directories behind, and product builders
+  // resolve tools through these manifests (#128935). npm itself never repairs
+  // such an entry — it trusts the hidden lockfile's claim that the package is
+  // installed — so only rejecting the receipt here routes the update to npm ci.
   return readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
-    .every(path => existsSync(join(source, path)))
+    .every(path => existsSync(join(source, path, 'package.json')))
 }
 
 // An interrupted Windows update can leave a nested .bin that npm ci's own rmdir

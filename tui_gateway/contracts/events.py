@@ -19,7 +19,7 @@ from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
-from .config_free_tier_control import SessionControlSnapshot
+from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
 
@@ -82,6 +82,11 @@ class SetupReadyPayload(OpenPayload):
 
 event("setup.ready", SetupReadyPayload,
       doc="The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.")
+
+
+event("free_tier.challenge", FreeTierChallengePayload,
+      doc="The account service wants a browser challenge cleared before the free-tier token exchange "
+          "(broadcast); the desktop loads ``url`` in a hidden window.")
 
 
 class ErrorPayload(Payload):
@@ -192,6 +197,8 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
+    response_reused: bool | None = None
     response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
@@ -658,6 +665,12 @@ class VoiceStatusPayload(Payload):
     state: str
 
 
+class VoicePartialPayload(Payload):
+    """``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``)."""
+
+    text: str
+
+
 class VoiceTranscriptPayload(Payload):
     """``methods_voice._vr_transcript`` / ``_deliver_fd_transcript`` / typed stop phrase in methods_prompt."""
 
@@ -676,6 +689,7 @@ class WakeDetectedPayload(Payload):
 
 
 event("voice.status", VoiceStatusPayload, doc="Voice recorder state changed.")
+event("voice.partial", VoicePartialPayload, doc="Live STT text so far while the user is still speaking.")
 event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced text (or a stop phrase / silence limit).")
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 
@@ -688,9 +702,9 @@ class PetChangedPayload(OpenPayload):
 
     enabled: bool
     slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
+    displayName: str | None = None
     scale: float | None = None
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
+    spritesheetRevision: str | None = None
 
 
 class PetGenerateProgressPayload(OpenPayload):
@@ -699,7 +713,7 @@ class PetGenerateProgressPayload(OpenPayload):
     token: str
     count: int
     index: int | None = None
-    dataUri: str | None = None  # noqa: N815 - wire key
+    dataUri: str | None = None
 
 
 class PetHatchProgressPayload(OpenPayload):
@@ -735,8 +749,8 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
     "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload", "MessageCompletePayload",
-    "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload", "LayoutApplyPayload",
+    "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
     "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
@@ -747,6 +761,6 @@ __all__ = [
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
-    "TurnStatus", "VoiceStatusPayload",
+    "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

@@ -96,7 +96,7 @@ def _run_phase_command(
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW)
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -137,6 +137,10 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
             pgid = getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
             pass
+    if pgid is not None and pgid != proc.pid:
+        # The child does not lead its own group, so it shares ours: killpg would
+        # signal the whole runner process tree. Signal the direct child only.
+        pgid = None
 
     def stop(sig: int, fallback: Callable[[], None]) -> None:
         if pgid is not None:
@@ -194,6 +198,7 @@ def _compose_live_state_reason(root: Path) -> str | None:
         result = subprocess.run(
             ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
             cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except FileNotFoundError:
         return None

@@ -1,15 +1,15 @@
 name: hindsight
 repo: https://github.com/vectorize-io/hindsight
-sha: eb6df499d35300e5b2f3f029b2e6adda04ed90f8
+sha: f843f173bb41f001e322cc83c917371639e47fbf
 subdir: hindsight-integrations/hermes
-version: "1.2.1"
+version: "1.2.2"
 description: "Hindsight long-term memory provider — knowledge graph, entity resolution and multi-strategy retrieval (recall/reflect/retain tools plus automatic per-turn capture). Maintained by Vectorize; cloud, local external and local embedded modes are available. `hermes memory setup` fetches its bank-template catalog from raw.githubusercontent.com (vectorize-io/hindsight main). Disclosure — in cloud mode (and local external) every turn's conversation, and every entry the agent adds or replaces in Hermes's built-in MEMORY/USER stores, is sent to api.hindsight.vectorize.io or the URL you configure, into every bank it writes to; local embedded mode starts a background Hindsight daemon (fetched with uvx, version-pinned, on first run when hindsight-api is not installed) and keeps its LLM settings in ~/.hindsight/profiles/<profile>.env; setup writes the keys you enter to the profile .env; repositories under folders you list in trusted_project_dirs may choose their bank with .hindsight/config.toml; `hermes memory setup` fetches its bank-template catalog from raw.githubusercontent.com (vectorize-io/hindsight main)."
 maintainer: vectorize-io
 tier: community
 category: memory
 requires_hermes: ">=0.21.4"
 docs_url: https://hindsight.vectorize.io/sdks/integrations/hermes
-image: https://raw.githubusercontent.com/vectorize-io/hindsight/d56c4acdf59c41957613d399094cdf8c489b060c/hindsight-integrations/hermes/docs/banner.png
+image: https://raw.githubusercontent.com/vectorize-io/hindsight/f843f173bb41f001e322cc83c917371639e47fbf/hindsight-integrations/hermes/docs/banner.png
 capabilities:
   provides_tools: []
   provides_hooks: []

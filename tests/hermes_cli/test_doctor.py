@@ -1404,15 +1404,15 @@ class TestDoctorLegacyCustomProvidersResidue:
     def test_orphan_entry_is_flagged_with_repair_instruction(self, tmp_path):
         out, finding = self._run(tmp_path, (
             "custom_providers:\n  - name: Local (8283)\n    base_url: http://127.0.0.1:8283/v1\n"
-            "providers:\n  other:\n    api: http://127.0.0.1:8290/v1\n"))
+            "providers:\n  other:\n    base_url: http://127.0.0.1:8290/v1\n"))
         assert "Local (8283)" in out
-        assert finding.manual_issues and "providers.<key>.api: http://127.0.0.1:8283/v1" in finding.manual_issues[0]
+        assert finding.manual_issues and "providers.<key>.base_url: http://127.0.0.1:8283/v1" in finding.manual_issues[0]
         assert finding.fixed == 0 and finding.issues == []  # warn-only: no --fix rewrite of config.yaml
 
     def test_twin_and_scalar_are_silent(self, tmp_path):
         out, finding = self._run(tmp_path, (
             "custom_providers:\n  - name: Local\n    base_url: http://127.0.0.1:8283/V1/\n"
-            "providers:\n  local:\n    api: http://127.0.0.1:8283/v1\n"))
+            "providers:\n  local:\n    base_url: http://127.0.0.1:8283/v1\n"))
         assert out == "" and finding.manual_issues == []
         out, finding = self._run(tmp_path, "custom_providers: oops\n")
         assert out == "" and finding.manual_issues == []

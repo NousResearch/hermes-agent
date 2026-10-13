@@ -482,7 +482,7 @@ def _drift_legacy_custom_providers(f: Finding, should_fix: bool, config_path) ->
         check_warn(f"Legacy custom_providers entry '{label}' has no providers: twin",
                    "(still read from the retired list store; every other surface edits providers:)")
         f.manual_issues.append(
-            f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.api: "
+            f"Move custom_providers entry '{label}' into config.yaml providers: as `providers.<key>.base_url: "
             f"{_endpoint_url(entry)}` and delete it from the list — the v12 list migration ran once and does not re-fire")
 
 

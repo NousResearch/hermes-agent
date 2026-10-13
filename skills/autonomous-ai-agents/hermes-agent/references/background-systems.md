@@ -36,7 +36,10 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
   job), `context_from` (chain job A's output into job B), `workdir`
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
   multi-platform delivery.
-- **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
+- **Invariants:** 10-minute idle watchdog per agent run (600s default,
+  `HERMES_CRON_TIMEOUT` overrides, `0` = unlimited — idle time, not
+  wall-clock, so a long-but-active job is never cut off), pre-run and
+  `no_agent` scripts bounded separately (3600s default), `.tick.lock` file
   prevents duplicate ticks across processes, cron sessions pass
   `skip_memory=True` by default, and cron deliveries are framed with a
   header/footer instead of being mirrored into the target gateway

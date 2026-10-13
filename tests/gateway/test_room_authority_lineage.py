@@ -402,6 +402,10 @@ def test_unstamped_room_generation_is_not_pruned(tmp_path):
         assert store.reserve(
             'old-scope', 'room:task-1:1', 'fp', 'run-done',
             {'status': 'completed', 'output': 'once'}, retention_until=1)[0] == 'created'
+        # reserve() without a room authority is a client key. A row written before the
+        # column existed has the migration default and must stay until a successor stamps it.
+        store._conn.execute("UPDATE run_idempotency SET client_replay=0 WHERE run_id='run-done'")
+        store._conn.commit()
         assert store.reserve(
             'api-key-scope', 'client-key', 'fp', 'other', {'status': 'queued'})[0] == 'created'
         row = store._conn.execute(
@@ -500,9 +504,85 @@ def test_unreadable_owner_start_does_not_count_as_dead(monkeypatch):
     from gateway.platforms.api_server_runs import _owner_alive
     monkeypatch.setattr('gateway.status._pid_exists', lambda pid: True)
     monkeypatch.setattr('gateway.status.get_process_start_time', lambda pid: None)
-    assert _owner_alive(os.getpid(), 99) is True
+    # Outside the 2s start-time tolerance, so a missing fingerprint is not a mismatch.
+    assert _owner_alive(os.getpid(), 10_000_000) is True
+
+    def _explode(_pid):
+        raise OSError("start time unreadable")
+
+    monkeypatch.setattr('gateway.status.get_process_start_time', _explode)
+    assert _owner_alive(os.getpid(), 10_000_000) is True
     monkeypatch.setattr('gateway.status._pid_exists', lambda pid: False)
-    assert _owner_alive(os.getpid(), 99) is False
+    assert _owner_alive(os.getpid(), 10_000_000) is False
+
+
+def test_gateway_change_and_epoch_gap_replay_an_unstamped_row(tmp_path):
+    """A pre-column row stays one generation across a takeover and a long epoch gap."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        original = _member_claims(authority_gateway_id='gateway-a')
+        scope = room_run_scope(original)
+        now = 1_700_000_000.0
+        store._conn.execute(
+            """INSERT INTO run_idempotency(
+                scope, idempotency_key, fingerprint, run_id, status_json,
+                owner_pid, owner_started, retention_until, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (scope, 'room:task-1:1', 'fp', 'run-live', '{"status":"running"}', 0, 0, 0, now, now))
+        store._conn.commit()
+        takeover = _member_claims(authority_gateway_id='gateway-b', authority_epoch=2)
+        assert store.observe_room_authority(
+            room_run_scope(takeover), room_authority(takeover),
+            room_authority(original), claims=takeover)
+        outcome, record = store.reserve(
+            room_run_scope(takeover), 'room:task-1:1', 'fp-2', 'run-again', {'status': 'queued'},
+            room_authority=room_authority(takeover))
+        assert outcome == 'reused' and record['run_id'] == 'run-live'
+        store.request_stop(room_run_scope(takeover), 'run-live', room_authority=room_authority(takeover))
+        assert store.stop_requested('run-live') is True
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+    finally:
+        store.close()
+
+    store = RunIdempotencyStore(str(tmp_path / 'gap.db'))
+    try:
+        original = _member_claims()
+        scope = room_run_scope(original)
+        now = 1_700_000_000.0
+        store._conn.execute(
+            """INSERT INTO run_idempotency(
+                scope, idempotency_key, fingerprint, run_id, status_json,
+                owner_pid, owner_started, retention_until, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (scope, 'room:task-1:1', 'fp', 'run-live', '{"status":"running"}', 0, 0, 0, now, now))
+        store._conn.commit()
+        jumped = _member_claims(authority_epoch=10)
+        assert store.observe_room_authority(
+            room_run_scope(jumped), room_authority(jumped), claims=jumped)
+        outcome, record = store.reserve(
+            room_run_scope(jumped), 'room:task-1:1', 'fp-2', 'run-again', {'status': 'queued'},
+            room_authority=room_authority(jumped))
+        assert outcome == 'reused' and record['run_id'] == 'run-live'
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_public_room_shaped_key_is_pruned(tmp_path):
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        assert store.reserve(
+            'api-scope', 'room:not-a-room:1', 'fp', 'run-public',
+            {'status': 'completed', 'output': 'secret'}, retention_until=1)[0] == 'created'
+        assert store.reserve(
+            'api-scope', 'ordinary-key', 'fp', 'run-other', {'status': 'queued'})[0] == 'created'
+        assert store._conn.execute(
+            "SELECT run_id FROM run_idempotency WHERE idempotency_key='room:not-a-room:1'"
+        ).fetchone() is None
+        assert store._conn.execute(
+            "SELECT run_id FROM run_idempotency WHERE run_id='run-other'").fetchone()[0] == 'run-other'
+    finally:
+        store.close()
 
 
 def test_unbound_invitation_does_not_reserve_peer_room(monkeypatch):

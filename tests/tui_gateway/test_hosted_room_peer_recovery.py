@@ -1,6 +1,7 @@
 """Focused RoomLink peer-recovery regressions."""
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+from tools.bot_relay import TurnBusyError
 from tui_gateway.hosted_room_driver import _stop_route_missing
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
@@ -775,6 +777,121 @@ def test_run_not_found_stop_settles_after_the_turn_budget(tmp_path: Path):
     assert driver.get_task(db, successor)["status"] == "running"
 
 
+def test_unanswered_stop_settles_after_the_turn_budget(tmp_path: Path):
+    """A stop the peer never answers cannot leave the room stopping."""
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+
+    def recover_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer timed out after the request was sent",
+            retryable=True, ambiguous=True, not_admitted=False)
+
+    def cancel_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer timed out after the request was sent",
+            retryable=True, ambiguous=True, not_admitted=False)
+
+    peer.recover_dispatch = recover_dispatch
+    peer.cancel_dispatch = cancel_dispatch
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 1000
+    service.runtime.indeterminate_defer_seconds = 5
+    service.runtime.turn_timeout_seconds = 30
+    queued, binding, lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 140.0
+    assert service.runtime._reconcile_indeterminate(binding, lease) is True
+    assert driver.get_task(db, queued["identity"])["status"] == "stopping"
+    now[0] = 140.0 + 30.0 + 1.0
+    assert service.runtime._retry_stopping_tasks(binding, lease) is False
+    settled = driver.get_task(db, queued["identity"])
+    assert settled["status"] == "failed"
+    assert settled["result"]["reason"] == "stop_deadline"
+    assert settled["result"]["retryable"] is False
+    successor = _next_turn(db, clock)
+    driver.start_task(
+        db, successor, service.runtime._leases["room-1"],
+        expected_cancel_generation=0, clock=clock)
+    assert driver.get_task(db, successor)["status"] == "running"
+
+
+def test_cancelled_stop_receipt_without_a_session_still_ends(tmp_path: Path):
+    """A stop receipt the home cannot resume does not leave the row stopping."""
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    peer.cancel_dispatch = lambda **_kwargs: {"run_id": "run-recovered", "status": "cancelled"}
+    peer.prepare = lambda **kwargs: None
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 1000
+    service.runtime.turn_timeout_seconds = 30
+    queued, binding, lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    stuck = service.runtime.cancel(queued["identity"], cancel_id="stop-1")
+    assert stuck["status"] == "stopping"
+    now[0] = 102.0 + 30.0 + 1.0
+    assert service.runtime._retry_stopping_tasks(binding, lease) is False
+    settled = driver.get_task(db, queued["identity"])
+    assert settled["status"] == "failed"
+    assert settled["result"]["reason"] == "stop_deadline"
+    assert settled["result"]["retryable"] is False
+
+
+def test_busy_lock_after_recovery_does_not_free_the_generation(tmp_path: Path):
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _RecoveringPeerClient()
+    peer.prepare = lambda **_kwargs: peer.session
+    peer.history = lambda **_kwargs: []
+    peer.status = lambda **_kwargs: {
+        "active": True, "status": "running", "task_id": "pending", "execution_generation": 1}
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 1000
+    service.runtime.indeterminate_defer_seconds = 5
+    service.runtime.turn_timeout_seconds = 30
+    queued, binding, lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+
+    def recover_dispatch(**_kwargs):
+        raise PeerRunsHTTPError(
+            "peer RoomLink endpoint is unreachable", retryable=True, not_admitted=True)
+
+    peer.recover_dispatch = recover_dispatch
+    now[0] = 108.0
+    service.runtime._reconcile_indeterminate(binding, lease)
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    peer.recover_dispatch = _RecoveringPeerClient.recover_dispatch.__get__(peer, _RecoveringPeerClient)
+
+    @contextmanager
+    def busy(_profile):
+        raise TurnBusyError("reviewer", 0.0)
+        yield
+
+    service.runtime.turn_lock = busy
+    with pytest.raises(TurnBusyError):
+        service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    assert driver.get_task(db, queued["identity"])["status"] == "indeterminate"
+    successor = _next_turn(db, clock)
+    with pytest.raises(driver.InvalidTaskTransitionError, match="prior task"):
+        driver.start_task(
+            db, successor, service.runtime._leases["room-1"],
+            expected_cancel_generation=0, clock=clock)
+
+
 def test_run_id_404_without_an_error_code_does_not_release(tmp_path: Path):
     now = [100.0]
 
@@ -793,6 +910,7 @@ def test_run_id_404_without_an_error_code_does_not_release(tmp_path: Path):
     service = _peer_room(db, peer)
     service.runtime.clock = clock
     service.runtime.lease_ttl_seconds = 120
+    service.runtime.turn_timeout_seconds = 30
     queued, _binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
     stuck = service.runtime.cancel(queued["identity"], cancel_id="stop-1")
     assert stuck["status"] == "stopping"
@@ -801,6 +919,13 @@ def test_run_id_404_without_an_error_code_does_not_release(tmp_path: Path):
         driver.start_task(
             db, successor, service.runtime._leases["room-1"],
             expected_cancel_generation=0, clock=clock)
+    now[0] = 102.0 + 30.0 + 1.0
+    assert service.runtime._retry_stopping_tasks(
+        service.bindings()[0], service.runtime._leases["room-1"]) is False
+    settled = driver.get_task(db, queued["identity"])
+    assert settled["status"] == "failed"
+    assert settled["result"]["reason"] == "stop_deadline"
+    assert settled["result"]["retryable"] is False
 
 
 def test_failed_stop_is_counted(tmp_path: Path):

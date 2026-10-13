@@ -475,11 +475,15 @@ class PeerRunsHTTPClient:
             try:
                 result = admit()
             except PeerRunsHTTPError as replay_error:
+                # A replay that is merely unreachable does not prove the first POST missed.
+                # A 429 is different: this server emits it only before reserve, so that
+                # retry did not admit the generation and must not enter the recovery hold.
+                rate_limited = replay_error.status_code == 429 and bool(replay_error.not_admitted)
                 raise PeerRunsHTTPError(
                     str(replay_error),
                     retryable=(first_error.retryable or replay_error.retryable),
-                    ambiguous=True,
-                    not_admitted=False,
+                    ambiguous=not rate_limited,
+                    not_admitted=rate_limited,
                     status_code=replay_error.status_code,
                     error_code=replay_error.error_code,
                 ) from replay_error
@@ -577,7 +581,13 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if status.get("body_discarded"):
+        # A fence stripped before body_discarded existed is completed with no reply keys.
+        # An empty string stored under output/error is a real empty body and stays put.
+        stripped = (
+            state in {"completed", "failed", "interrupted"}
+            and "body_discarded" not in status
+            and "output" not in status and "error" not in status and "usage" not in status)
+        if status.get("body_discarded") or stripped:
             # The generation key survived after the reply body was discarded. An empty
             # completed body would settle as a successful transcript. Say the receipt is gone.
             return [{

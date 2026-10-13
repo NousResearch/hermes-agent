@@ -35,7 +35,10 @@ _MIGRATIONS = {
     "acknowledged_at": "REAL",
     "stop_requested": "INTEGER NOT NULL DEFAULT 0",
     "room_authority_key": "TEXT",
-    "room_authority_epoch": "INTEGER"}
+    "room_authority_epoch": "INTEGER",
+    # Public Idempotency-Keys are not legacy room rows. Room reserves stamp an authority;
+    # a reserve without one is a client key and must stay eligible for prune.
+    "client_replay": "INTEGER NOT NULL DEFAULT 0"}
 
 
 def _encode_status(status: dict[str, Any]) -> str:
@@ -227,10 +230,10 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
-                "owner_pid,owner_started,retention_until,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "owner_pid,owner_started,retention_until,created_at,updated_at,client_replay"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
-                 retention_until, now, now))
+                 retention_until, now, now, 0 if room_authority is not None else 1))
             if room_authority is not None:
                 from gateway.platforms.api_server_run_authority import canonical
                 room_authority = canonical(self._conn, room_authority)
@@ -339,7 +342,7 @@ class RunIdempotencyStore:
         lock + transaction): a long or disconnected room turn may outlive the retention window."""
         stale = self._conn.execute(
             """SELECT scope, idempotency_key, run_id, status_json, stop_requested, room_authority_key,
-                      updated_at, retention_until, acknowledged_at
+                      updated_at, retention_until, acknowledged_at, client_replay
                  FROM run_idempotency
                 WHERE acknowledged_at <= ?
                    OR (retention_until > 0 AND retention_until <= ?)
@@ -348,11 +351,12 @@ class RunIdempotencyStore:
         ).fetchall()
         retired_keys = set()
         for (stale_scope, stale_key, stale_run, stale_status, stop_requested, authority_key,
-             updated_at, row_retention, acknowledged_at) in stale:
+             updated_at, row_retention, acknowledged_at, client_replay) in stale:
             # A room row written before room_authority_key existed cannot be fenced yet.
             # Deleting it makes the same generation admissible. Leave it until a successor
-            # observe stamps the predecessor scope.
-            if not authority_key and _room_generation_key(stale_key):
+            # observe stamps the predecessor scope. A client key that merely looks like
+            # ``room:{id}:{generation}`` is client_replay and follows the normal TTL.
+            if not authority_key and not client_replay and _room_generation_key(stale_key):
                 continue
             if authority_key:
                 retired_keys.add(authority_key)

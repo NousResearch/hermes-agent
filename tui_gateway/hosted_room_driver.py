@@ -305,7 +305,10 @@ class HostedRoomRuntime:
                     # generation is still admitted. The sweeper holds it.
                     self.wakeup()
             else:
-                self._restore_deferred_after_retry(binding, reopened, lease, exc)
+                # The peer transport returned before this error (including a busy profile lock).
+                # Leave the reopened indeterminate row. Restoring deferred would let the next
+                # turn start beside the generation recovery just found.
+                self.wakeup()
             raise
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
@@ -462,10 +465,16 @@ class HostedRoomRuntime:
                     self._complete_cancel(task)
                     continue
                 if not self._finish_stop(binding, task, lease):
+                    if self._stopping_expired(task):
+                        self._settle_expired_stop(binding, task, lease)
+                        continue
                     return True
             except Exception as exc:
                 if self._settle_stop_error(
                         binding, task, lease, exc, allow_missing_deadline=True) is not None:
+                    continue
+                if self._stopping_expired(task):
+                    self._settle_expired_stop(binding, task, lease, exc)
                     continue
                 self._record_error(_STOP_PENDING.format(exc=exc))
                 return True
@@ -736,11 +745,17 @@ class HostedRoomRuntime:
             if task["status"] == "stopping":
                 try:
                     lease = self._renew_lease_if_needed(lease)
+                    if self._stopping_expired(task):
+                        self._settle_expired_stop(binding, task, lease)
+                        return None
                     if self._finish_stop(binding, task, lease):
                         return None
                 except Exception as exc:
                     if self._settle_stop_error(
                             binding, task, lease, exc, allow_missing_deadline=True) is not None:
+                        return None
+                    if self._stopping_expired(task):
+                        self._settle_expired_stop(binding, task, lease, exc)
                         return None
                     self._record_error(_STOP_PENDING.format(exc=exc))
                 self._wake.wait(self.active_poll_interval_seconds)
@@ -953,6 +968,26 @@ class HostedRoomRuntime:
         """True once a stopping row has waited out the turn budget."""
         started = float(task.get("updated_at") or task.get("created_at") or self.clock())
         return self.clock() >= self.turn_timeout_seconds + started
+
+    def _settle_expired_stop(
+        self, binding: HostedRoomBinding | None, task: Mapping[str, Any], lease: state.DriverLease,
+        exc: BaseException | None = None,
+    ) -> dict[str, Any]:
+        """Finish a stopping row that has waited out the turn budget without a terminal stop.
+
+        Every stopping state ends here. A coded refusal keeps its reason. Anything else,
+        including a timeout or a run-id 404 whose body has no ``error.code``, is
+        ``stop_deadline``.
+        """
+        code = _refusal_code(exc) if exc is not None else None
+        if code is None:
+            code = "stop_deadline"
+            exc = exc or TimeoutError("stop deadline")
+        return self._fenced(
+            state.settle_stopping_task, binding, task, lease,
+            settlement_id=f"deadline:{task['identity'].task_id}:{int(task['execution_generation'])}",
+            status="failed",
+            result={"reason": code, "retryable": False, "error": str(exc)})
 
     def _settle_stop_refusal(
         self, binding: HostedRoomBinding | None, task: Mapping[str, Any], lease: state.DriverLease,
@@ -1170,8 +1205,11 @@ def _find_terminal_receipt(
             receipt_id = f"reply:{identity.task_id}:{execution_generation}"
         return _TerminalReceipt(
             status=cast(state.TerminalStatus, status), settlement_id=receipt_id,
-            result=_bounded_terminal_result(
-                {"message_id": receipt_id, "text": message.get("content", "")}))
+            result=_bounded_terminal_result({
+                "message_id": receipt_id,
+                "text": message.get("content", ""),
+                "error": message.get("error", ""),
+            }))
     return None
 
 

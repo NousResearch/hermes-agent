@@ -1212,6 +1212,54 @@ def test_cancel_dispatch_remembers_a_terminal_stop_receipt(status):
     assert client._runs[("task-1", 1)]["run_id"] == "run-stopped"
 
 
+def test_stop_receipt_marks_a_codeless_run_id_404():
+    """The run-id flag comes from the client, not from a test injecting it."""
+    from tui_gateway.hosted_room_driver import _stop_route_missing
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    client.prepare = lambda **_kwargs: {"session_id": "sess-1"}
+    client._runs[("task-1", 1)] = {
+        "run_id": "run-live", "session_id": "sess-1", "room_id": "room-1",
+        "target_profile": "default", "task_id": "task-1", "execution_generation": 1,
+    }
+
+    def request(path, **_kwargs):
+        assert path == "/v1/runs/run-live/stop"
+        raise PeerRunsHTTPError("<html>not found</html>", status_code=404)
+
+    client._request = request
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.stop_receipt(task_id="task-1", execution_generation=1, grant="signed.room.grant")
+    assert caught.value.error_code is None
+    assert caught.value.run_id_route is True
+    assert _stop_route_missing(caught.value) is False
+
+
+def test_second_attempt_not_admitted_is_not_cleared(monkeypatch):
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    calls = {"n": 0}
+
+    def request(path, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PeerRunsHTTPError("peer failed", status_code=500, ambiguous=True, retryable=True)
+        raise PeerRunsHTTPError(
+            "rate limited", status_code=429, error_code="rate_limited", not_admitted=True, retryable=True)
+
+    client._request = request
+    client._session_id = lambda *_args, **_kwargs: "sess-1"
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._admit_dispatch(_dispatch_checked(), grant="signed.room.grant")
+    assert caught.value.not_admitted is True
+    assert caught.value.ambiguous is False
+    assert caught.value.status_code == 429
+    assert caught.value.error_code == "rate_limited"
+
+
+def _dispatch_checked():
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    return HostedMemberDispatch.from_mapping(_dispatch())
+
+
 def test_admission_stop_keeps_run_not_found():
     from tui_gateway.hosted_room_driver import _stop_route_missing
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
@@ -1246,3 +1294,19 @@ def test_discarded_fence_is_not_a_successful_transcript():
     assert history[0]["status"] == "failed"
     assert history[0]["error"] == "receipt_body_discarded"
     assert history[0]["content"] == ""
+    from gateway.hosted_room_discussion import _failed_effects
+    from tui_gateway.hosted_room_driver import _find_terminal_receipt
+    from gateway.hosted_room_driver import TaskIdentity
+    receipt = _find_terminal_receipt(
+        history, TaskIdentity("room-1", "task-1", "thread-1", "turn-1"), 1)
+    assert receipt is not None
+    assert receipt.result["error"] == "receipt_body_discarded"
+    published, effects = _failed_effects(receipt.result)
+    assert published["error"] == "receipt_body_discarded"
+    assert effects == []
+    client._poll_receipt = lambda record, grant: {"status": "completed", "run_id": "run-done"}
+    stripped = client.history(
+        room_id="room-1", profile="default", session_id="sess-1", grant="signed.room.grant",
+        task_id="task-1", execution_generation=1)
+    assert stripped[0]["status"] == "failed"
+    assert stripped[0]["error"] == "receipt_body_discarded"

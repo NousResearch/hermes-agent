@@ -597,7 +597,7 @@ async def test_stop_of_deferred_peer_waits_for_exact_remote_acknowledgement(
 
 @pytest.mark.asyncio
 async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_path, monkeypatch):
-    """Retry may resolve the older run while a retained transport still watches the newer one."""
+    """A busy profile lock after recovery returned must not put that generation back to deferred."""
     from tools.bot_relay import TurnBusyError, acquire_turn_lock
 
     target, server, home = await _linked_home(tmp_path)
@@ -649,7 +649,9 @@ async def test_retry_of_deferred_task_does_not_steal_newer_turn_observation(tmp_
             try:
                 await asyncio.to_thread(home.retry_room_task, "room-1", task_id=a["identity"].task_id)
             except TurnBusyError:
-                assert driver.get_task(home.db_path, a["identity"])["status"] == "deferred"
+                # Recovery already returned. Restoring deferred would free the room while
+                # that generation is still admitted.
+                assert driver.get_task(home.db_path, a["identity"])["status"] == "indeterminate"
             release_b.set()
             assert await asyncio.to_thread(finished_b.wait, 5)
             deadline = asyncio.get_running_loop().time() + 5

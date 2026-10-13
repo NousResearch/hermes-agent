@@ -23,16 +23,39 @@ def room_namespace(claims):
     return hashlib.sha256("\0".join(str(claims[key]) for key in fields).encode()).hexdigest()
 
 
-# A successor grant can name any integer epoch. Stamp only a bounded lookback so a
-# skipped epoch still finds the live row, without walking an unbounded caller-supplied value.
-_PREDECESSOR_EPOCH_LOOKBACK = 8
+# A successor grant can name any integer epoch. Hash at most this many predecessor
+# epochs so a skipped epoch or an authority takeover still finds the live row, without
+# walking an unbounded caller-supplied value. The newest half and the oldest half are
+# both kept: a generation admitted at epoch 1 remains visible after a long gap.
+_PREDECESSOR_EPOCH_CAP = 64
+
+
+def _predecessor_epochs(epoch: int) -> list[int]:
+    """Epochs strictly below ``epoch``, capped so one grant cannot hash millions of scopes."""
+    if epoch <= 1:
+        return []
+    span = list(range(epoch - 1, 0, -1))
+    if len(span) <= _PREDECESSOR_EPOCH_CAP:
+        return span
+    half = _PREDECESSOR_EPOCH_CAP // 2
+    chosen = []
+    seen = set()
+    for older in span[:half] + list(range(1, half + 1)):
+        if older in seen or older < 1 or older >= epoch:
+            continue
+        seen.add(older)
+        chosen.append(older)
+    return chosen
 
 
 def predecessor_scopes(claims, previous=None, previous_home=None):
     """Scopes whose unstamped rows belong to this grant's lineage.
 
-    Returns ``(scope, epoch)`` pairs. The immediate previous epochs share every claim
-    except ``authority_epoch``. An explicit home move adds the named predecessor.
+    Returns ``(scope, epoch)`` pairs. Predecessor epochs share every claim except
+    ``authority_epoch``. A takeover also rebuilds those epochs under the previous
+    ``authority_gateway_id``: that id is not part of the canonical authority key, but
+    it is part of the scope hash a pre-column row was stored under. An explicit home
+    move adds the named predecessor as well.
     """
     if not isinstance(claims, dict) or "authority_epoch" not in claims:
         return []
@@ -53,9 +76,19 @@ def predecessor_scopes(claims, previous=None, previous_home=None):
         seen.add(scope)
         scopes.append((scope, int(prior_epoch)))
 
-    oldest = max(1, epoch - _PREDECESSOR_EPOCH_LOOKBACK)
-    for older in range(epoch - 1, oldest - 1, -1):
-        add({**claims, "authority_epoch": older}, older)
+    gateway_ids = []
+    for gateway_id in (
+        claims.get("authority_gateway_id"),
+        None if previous is None else previous[2],
+    ):
+        if gateway_id is None:
+            continue
+        text = str(gateway_id)
+        if text and text not in gateway_ids:
+            gateway_ids.append(text)
+    for gateway_id in gateway_ids:
+        for older in _predecessor_epochs(epoch):
+            add({**claims, "authority_epoch": older, "authority_gateway_id": gateway_id}, older)
     if previous is not None and previous_home:
         add({
             **claims,
@@ -120,6 +153,11 @@ def successor(conn, authority, previous):
     # A lost invitation reply may be retried: reissuing the exact current authority
     # does not advance or join anything, and still requires target-owner authorization.
     if current[0] == predecessor[0] and row == (authority[1], authority[2], authority[0]):
+        return current
+    # Rows written before room_authority_key existed have no watermark yet. The same
+    # lineage (home, member, target) may name its previous gateway and epoch so those
+    # scopes can be stamped. A different home still needs a stored watermark.
+    if row is None and current[0] == predecessor[0] and authority[1] > previous[1]:
         return current
     if row != (previous[1], previous[2], previous[0]) or authority[1] <= previous[1]:
         raise ValueError("previous room authority is not current")
@@ -227,6 +265,12 @@ def _fence_body(status_json):
     discarded = any(field in status for field in _FENCE_DROPPED_FIELDS)
     for field in _FENCE_DROPPED_FIELDS:
         status.pop(field, None)
+    # A fence written by an older strip removed the reply fields and did not set the
+    # marker. A completion that still carries an empty output/error keeps those keys.
+    if (not discarded and "body_discarded" not in status
+            and status.get("status") in {"completed", "failed", "interrupted"}
+            and "output" not in status and "error" not in status):
+        discarded = True
     if discarded:
         status["body_discarded"] = True
     encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))

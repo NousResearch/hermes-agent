@@ -90,6 +90,7 @@ import { groupMentionComponents, groupMentionText } from './group-mention-text'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
+  consumeGroupComposerDraft,
   dropGroupMainTab,
   groupChatMainTabs,
   groupComposerDraftKey,
@@ -102,6 +103,9 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
+import { $hostedRooms, sendHostedInput } from './hosted-room-client'
+import { HostedRoomAttachment, HostedRoomStatus } from './hosted-room-controls'
+import { hostedMembers, hostedTranscript, isHostedRoomKey } from './hosted-room-protocol'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
@@ -567,17 +571,33 @@ interface GroupChatWorkspaceProps {
   visible?: boolean
 }
 
-export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
-  const b = useBots()
+function useGroupWorkspaceRoom(group: string, legacyMembers: GroupMember[]) {
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
-  const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const hosted = useValue($hostedRooms)[group]
+  const isHosted = isHostedRoomKey(group)
+  const groupName = hosted?.name || group
+  const members = isHosted && hosted?.room ? hostedMembers(hosted.room) : legacyMembers
+  const projection = useMemo(() => hosted ? hostedTranscript(hosted) : null, [hosted])
 
-  const room: GroupChatRoom = rooms[group] || {
-    log: [],
-    running: false
-  }
+  const room: GroupChatRoom = isHosted
+    ? projection || { log: [], watermarks: {} }
+    : rooms[group] || { log: [], watermarks: {}, running: false }
 
-  const composerKey = groupComposerDraftKey(group, room)
+  const hostedDisabled = isHosted && (!hosted?.room || hosted.busy || Boolean(hosted.pending) || Boolean(hosted.error) || !hosted.capabilities?.driver)
+  const attachmentsEnabled = !isHosted || Boolean(hosted?.capabilities?.attachments)
+  const composerKey = isHosted ? group : groupComposerDraftKey(group, room)
+
+  return { hosted, isHosted, groupName, members, room, hostedDisabled, attachmentsEnabled, composerKey }
+}
+
+function transcriptMember(entry: GroupMessage, members: GroupMember[]) {
+  if (entry.from.kind === 'user') {return null}
+
+  return members.find(member => member.name === entry.from.name &&
+    (entry.from.source ? (member.connectionLabel || member.connectionId) === entry.from.source : !member.remoteSource)) || null
+}
+
+function useGroupWorkspaceDraft(composerKey: string) {
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
 
@@ -621,6 +641,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
     }))
+
+  return { composerKeyRef, setComposerDraft, updateComposerDraft, draft, replyDrafts, replyThread, pendingImages,
+    setDraft, setReplyDrafts, setReplyThread, setPendingImages }
+}
+
+export function GroupChatWorkspace({ group, members: legacyMembers, onBack, visible = true }: GroupChatWorkspaceProps) {
+  const b = useBots()
+  const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  const { hosted, isHosted, groupName, members, room, hostedDisabled, attachmentsEnabled, composerKey } = useGroupWorkspaceRoom(group, legacyMembers)
+
+  const { composerKeyRef, setComposerDraft, updateComposerDraft, draft, replyDrafts, replyThread, pendingImages,
+    setDraft, setReplyDrafts, setReplyThread, setPendingImages } = useGroupWorkspaceDraft(composerKey)
 
   // Browser Comment Mode can live in its own Electron pop-out on another
   // monitor. The ordinary composer bus is window-local and this room uses its
@@ -738,7 +770,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       channel?.removeEventListener('message', onBroadcast)
       channel?.close()
     }
-  }, [composerKey, group])
+  }, [composerKey, composerKeyRef, group, setComposerDraft])
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -808,7 +840,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const imagesFor = (thread: null | string) => pendingImages[thread ?? 'main'] || []
 
   const addImages = (thread: null | string, picked: Attachment[]) => {
-    if (!picked.length) {
+    if (!attachmentsEnabled || !picked.length) {
       return
     }
 
@@ -828,6 +860,19 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   // Ctrl/⌘-V a screenshot (or any file) into any composer in this room.
+  const collectAttachments = async (thread: null | string, pick: () => Promise<Attachment[]>) => {
+    if (!attachmentsEnabled) {return}
+    const key = composerKeyRef.current
+
+    try {
+      const picked = await pick()
+
+      if (composerKeyRef.current === key) {addImages(thread, picked)}
+    } catch (error) {
+      host.notify({ kind: 'error', message: String(error) })
+    }
+  }
+
   const pasteImages = (thread: null | string, event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...(event.clipboardData?.files || [])]
 
@@ -836,7 +881,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
 
     event.preventDefault()
-    void filesToGroupAttachments(files).then(picked => addImages(thread, picked))
+
+    void collectAttachments(thread, () => filesToGroupAttachments(files))
   }
 
   // Drag & drop anywhere on the room drops into the ACTIVE composer — the
@@ -853,7 +899,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
 
     event.preventDefault()
-    void filesToGroupAttachments(files).then(picked => addImages(replyThread, picked))
+
+    void collectAttachments(replyThread, () => filesToGroupAttachments(files))
   }
 
   // Collapsible Activity view: collapsed by default — opening it is always an
@@ -891,7 +938,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon name="organization" />
         </span>
       )}
-      <div className="min-w-0 flex-1 truncate text-sm font-semibold">{group}</div>
+      <div className="min-w-0 flex-1 truncate text-sm font-semibold">{groupName}</div>
       <Tip label={memberNames}>
         <span
           aria-label={availabilityLabel}
@@ -905,7 +952,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             : b.group.memberCount(members.length)}
         </span>
       </Tip>
-      <Tip label={b.group.settingsHint(group)}>
+      {!isHosted ? <><Tip label={b.group.settingsHint(group)}>
         <Button
           aria-label={b.group.settingsLabel(group)}
           className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
@@ -937,7 +984,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon name="trash" />
         </Button>
-      </Tip>
+      </Tip></> : null}
     </div>
   )
 
@@ -1057,7 +1104,28 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </div>
   )
 
+  const submitHosted = async (thread: string | null) => {
+    if (hostedDisabled) {return}
+    const key = composerKeyRef.current
+    const before = groupComposerDraftSnapshot(key)
+    const text = (thread ? before.replies[thread] : before.main)?.trim() || ''
+    const images = before.pendingAttachments?.[thread ?? 'main'] || []
+
+    if (!text && !images.length) {return}
+    await sendHostedInput(group, text, thread, images, () => {
+      const next = consumeGroupComposerDraft(key, before, thread)
+
+      if (composerKeyRef.current === key) {setComposerDraft(next)}
+    })
+  }
+
   const submit = () => {
+    if (isHosted) {
+      void submitHosted(null)
+
+      return
+    }
+
     const text = draft.trim()
     const images = imagesFor(null)
 
@@ -1091,6 +1159,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const submitReply = (thread: string) => {
+    if (isHosted) {
+      void submitHosted(thread)
+
+      return
+    }
+
     const text = (replyDrafts[thread] || '').trim()
     const images = imagesFor(thread)
 
@@ -1167,18 +1241,19 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     )
   }
 
-  const attachButton = (thread: null | string) => (
+  const attachButton = (thread: null | string) => !attachmentsEnabled ? null : (
     <Tip label={b.group.attachHint}>
-      <Button
-        aria-label={b.group.attachHint}
-        className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-        onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
-        size="sm"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="attach" />
-      </Button>
+    <Button
+      aria-label={b.group.attachHint}
+      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+      disabled={hostedDisabled}
+      onClick={() => void collectAttachments(thread, pickGroupAttachments)}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="attach" />
+    </Button>
     </Tip>
   )
 
@@ -1220,19 +1295,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
+    const meta = isHosted ? null : groupTranscriptSpeakerMeta(entry, members, allMeta)
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
     // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    const member = transcriptMember(entry, members)
 
     const display = isUser
       ? b.group.you
@@ -1243,7 +1312,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           meta
         )
 
-    const entryKey = `${entry.at}:${index}`
+    const entryKey = entry.id || `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey
 
     // Clicked: append the gateway name so same-named agents on
@@ -1339,7 +1408,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {Array.isArray(entry.images) && entry.images.length ? (
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {entry.images.map((img, imgIndex) =>
-                img.kind === 'pdf' || img.kind === 'file' ? (
+                isHosted && img.attachmentId ? (
+                  <HostedRoomAttachment attachment={img} eventId={entry.id || ''} key={`${group}:${entryKey}:${img.attachmentId}`} roomKey={group} />
+                ) : img.kind === 'pdf' || img.kind === 'file' ? (
                   <div
                     className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
                     key={`${entryKey}:img:${imgIndex}`}
@@ -1409,7 +1480,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               value={replyDrafts[id] || ''}
             />
             {attachButton(id)}
-            <Button disabled={!(replyDrafts[id] || '').trim() && !imagesFor(id).length} size="sm" type="submit">
+            <Button disabled={hostedDisabled || (!(replyDrafts[id] || '').trim() && !imagesFor(id).length)} size="sm" type="submit">
               {b.group.reply}
             </Button>
           </div>
@@ -1444,7 +1515,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }
       }}
       onDragOver={event => {
-        if ([...(event.dataTransfer?.types || [])].includes('Files')) {
+        if (attachmentsEnabled && [...(event.dataTransfer?.types || [])].includes('Files')) {
           event.preventDefault()
           setDragOver(true)
         }
@@ -1460,12 +1531,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         </div>
       ) : null}
       {header}
-      <GroupHoldStatus
+      {!isHosted ? <GroupHoldStatus
         holds={room.holds}
         memberLabel={member => displayName(member, botRosterMeta(member, allMeta))}
         members={members}
-      />
-      {activityPanel}
+      /> : null}
+      {isHosted ? <HostedRoomStatus roomKey={group} visible={visible} /> : activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {/* minmax(0,1fr): an implicit grid track is min-content sized, so one */}
         {/* unbreakable code line widened every entry to its own width and the */}
@@ -1478,7 +1549,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   {b.group.composerPlaceholder}
                 </div>
               ]}
-          {roomClarifies.map(entry => (
+          {!isHosted && roomClarifies.map(entry => (
             <GroupClarifyCard
               entry={entry}
               key={`clarify:${entry.thread || 'legacy'}:${entry.memberKey}:${entry.requestId}`}
@@ -1511,22 +1582,22 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {attachmentRow(null)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
-              aria-label={b.group.messageRoom(group)}
+              aria-label={b.group.messageRoom(groupName)}
               members={members}
               onChange={setDraft}
               onPaste={event => pasteImages(null, event)}
               onSubmitDraft={submit}
-              placeholder={b.group.newThreadPlaceholder(group)}
+              placeholder={b.group.newThreadPlaceholder(groupName)}
               value={draft}
             />
             {attachButton(null)}
-            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
+            <Button disabled={hostedDisabled || (!draft.trim() && !imagesFor(null).length)} size="sm" type="submit">
               {b.group.newThread}
             </Button>
           </div>
         </form>
       </div>
-      <GroupChatSettingsDialog
+      {!isHosted ? <><GroupChatSettingsDialog
         group={group}
         members={members}
         onClose={() => setSettingsOpen(false)}
@@ -1566,7 +1637,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         }}
         open={confirmDisband}
         title={b.group.disbandTitle}
-      />
+      /></> : null}
     </div>
   )
 }
@@ -1593,7 +1664,7 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const $visible = useMemo(
     () =>
       typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
+        ? host.paneVisibility(`plugin-workspace:${ID}:group:${isHostedRoomKey(group) ? encodeURIComponent(group) : slugifyProfileName(group)}`)
         : atom(true),
     [group]
   )
@@ -1633,8 +1704,8 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
-        title: group,
+      const close = host.openWorkspace(`${ID}:group:${isHostedRoomKey(group) ? encodeURIComponent(group) : slugifyProfileName(group)}`, {
+        title: $hostedRooms.get()[group]?.name || group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

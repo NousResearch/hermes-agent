@@ -31,6 +31,7 @@ import {
   formatFreshThreadRoomContext,
   GROUP_PROMPT_HEADER_PREFIX
 } from './group-round-prompt'
+import { isHostedRoomKey } from './hosted-room-protocol'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -281,11 +282,19 @@ interface GroupMemberSessionHandle {
  *  A's context. Rooms persisted before this keep ONE bare member pointer;
  *  the first thread to ask adopts it (below) so that history continues in a
  *  real thread instead of being orphaned by the upgrade. */
+function groupSessionLookupError(error: unknown, member: GroupMember) {
+  const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+
+  return new Error(`Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`)
+}
+
 export async function ensureGroupChatSession(
   group: string,
   member: GroupMember,
   thread: string
 ): Promise<GroupMemberSessionHandle> {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot create Desktop member sessions')}
+
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -377,10 +386,7 @@ export async function ensureGroupChatSession(
         }
       } catch (error: any) {
         if (error?.code !== 4007) {
-          const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
-          throw new Error(
-            `Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`
-          )
+          throw groupSessionLookupError(error, member)
         }
         /* genuinely doesn't exist (4007) — try the next target / fall through to create */
       }
@@ -871,6 +877,8 @@ export async function runGroupChatMemberTurn(
   thread: string,
   images?: Attachment[]
 ): Promise<null | string> {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot prompt members directly')}
+
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
   // socket that minted `runtime` can close between RPCs, the gateway reaps

@@ -17,7 +17,7 @@ const { $boardSlug, bindApi, boardsKey, useKanbanScope } = await import('./api')
 const { setConnection } = await import('@/store/session')
 const { queryClient } = await import('@/lib/query-client')
 
-const noopStorage = { get: <T>(_key: string, fallback: T) => fallback, remove: vi.fn(), set: vi.fn() }
+const noopStorage = { get: <T>(_key: string, fallback: T) => fallback, getRaw: () => null, remove: vi.fn(), set: vi.fn() }
 
 afterEach(() => {
   setConnection(null)
@@ -44,6 +44,7 @@ describe('kanban connection scope', () => {
     ])
 
     const storage = {
+      getRaw: (key: string) => stored.has(key) ? JSON.stringify(stored.get(key)) : null,
       get: <T>(key: string, fallback: T) => (stored.has(key) ? (stored.get(key) as T) : fallback),
       remove: vi.fn(),
       set: (key: string, value: unknown) => void stored.set(key, value)

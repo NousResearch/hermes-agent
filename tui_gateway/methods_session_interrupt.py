@@ -75,19 +75,21 @@ def _(rid, params: dict) -> dict:
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        attempt = None
         if expected := _str_param(params, "expected_hosted_task_id"):
             with session["history_lock"]:
-                task = session.get("_hosted_room_task")
-                if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
+                attempt = _hosted_attempt_matches(session, expected, params.get("expected_hosted_execution_generation"))
+                if attempt is None:
                     resume_wake = False
                     return _ok(rid, {"status": "not_interrupted", "interrupted": False})
+                _latch_turn_cancel(session, attempt)
         sid = str(params.get("session_id") or "")
         _note_user_input(session)
         if _session_uses_compute_host(session):
             with session["history_lock"]:
                 inflight_at_interrupt = session.get("inflight_turn")
             try:
-                _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
+                _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}", attempt=attempt)
             except Exception as exc:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; logged, and Stop recovers the session instead of failing
                 logger.warning("session.interrupt: compute-host interrupt failed for %s: %s", sid, exc)
                 _recover_unreachable_compute_host_turn(sid, session, inflight_at_interrupt)
@@ -95,13 +97,11 @@ def _(rid, params: dict) -> dict:
         # No agent wait: a turn parked on the deferred build already honors _turn_cancel_requested. Waiting here
         # failed Stop with 5032 once the build failed or outlived 30s (and started a build for a lazy session), so
         # the Desktop, which interrupts before session.close, could not delete such a session (#133262).
-        _interrupt_session_turn(sid, session)
+        _interrupt_session_turn(sid, session, attempt=attempt)
         # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
         # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
         # rotating session_key mid-turn).
-        with session["history_lock"]:
-            active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
-        _retire_turn_marker(session, active_marker_key)
+        _retire_attempt_turn_marker(session, attempt)
         return _ok(rid, {"status": "interrupted"})
     finally:
         if resume_wake:

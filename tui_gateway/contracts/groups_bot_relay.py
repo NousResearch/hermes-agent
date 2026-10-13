@@ -214,11 +214,13 @@ class RoomDriverStatus(Result):
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
     peer_routes: list[PeerRouteStatus]
+    holds: list[dict[str, JsonValue]] = []
 
 
 class GroupsStateResult(Result):
     room: Room
     driver_status: RoomDriverStatus | None = None
+    telegram_status: dict[str, JsonValue] | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
@@ -226,6 +228,90 @@ method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
 
 
 # ── groups.send / rename / log ────────────────────────────────────────────────────────────────
+
+
+class RoomAttachment(Result):
+    attachment_id: str
+    kind: str
+    name: str
+    size: int
+    mime: str
+
+
+class GroupsAttachmentPutParams(RoomParams):
+    upload_id: str
+    kind: str
+    name: str
+    mime: str
+    content_base64: str
+
+
+class GroupsAttachmentPutResult(Result):
+    attachment: RoomAttachment
+
+
+method("groups.attachment.put", params=GroupsAttachmentPutParams, result=GroupsAttachmentPutResult,
+       doc="Store bounded attachment bytes on the room authority gateway.")
+
+
+class GroupsAttachmentReadParams(RoomParams):
+    attachment_id: str
+    event_id: str
+    purpose: str
+
+
+class GroupsAttachmentReadResult(GroupsAttachmentPutResult):
+    content_base64: str
+
+
+method("groups.attachment.read", params=GroupsAttachmentReadParams, result=GroupsAttachmentReadResult,
+       doc="Read one published attachment as a room viewer.")
+
+
+class GroupsAttachmentListParams(RoomParams):
+    purpose: str
+    cursor: str | None = None
+    limit: int | None = None
+    query: str | None = None
+    producer_member_id: str | None = None
+
+
+class GroupsAttachmentListResult(Result):
+    items: list[dict[str, JsonValue]]
+    next_cursor: str | None
+    has_more: bool
+    snapshot_seq: int
+    latest_seq: int
+    authority: RoomAuthority
+
+
+method("groups.attachment.list", params=GroupsAttachmentListParams, result=GroupsAttachmentListResult,
+       doc="List published attachment metadata with an authority-bound cursor.")
+
+
+class GroupsTelegramResolveDeliveryParams(RoomParams):
+    event_id: str
+    chunk_index: int
+    attempt: int
+    decision: str
+    message_id: int | None = None
+    authority_gateway_id: str
+    authority_epoch: int
+
+
+class GroupsTelegramResolveDeliveryResult(Result):
+    room_id: str
+    event_id: str
+    chunk_index: int
+    attempt: int
+    decision: str
+    message_id: int | None
+    delivery: dict[str, JsonValue]
+
+
+method("groups.telegram.resolve_delivery", params=GroupsTelegramResolveDeliveryParams,
+       result=GroupsTelegramResolveDeliveryResult,
+       doc="Record external readback or authorize retry of one exact Telegram delivery attempt.")
 
 
 class GroupsSendParams(RoomParams):

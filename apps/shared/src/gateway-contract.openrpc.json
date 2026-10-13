@@ -1141,6 +1141,60 @@
       }
     },
     {
+      "name": "groups.attachment.list",
+      "summary": "List published attachment metadata with an authority-bound cursor.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentListResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.put",
+      "summary": "Store bounded attachment bytes on the room authority gateway.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentPutResult"
+        }
+      }
+    },
+    {
+      "name": "groups.attachment.read",
+      "summary": "Read one published attachment as a room viewer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsAttachmentReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsAttachmentReadResult"
+        }
+      }
+    },
+    {
       "name": "groups.capabilities",
       "summary": "Describe the hosted-room protocol implemented by this gateway.",
       "params": [
@@ -1443,6 +1497,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsStopResult"
+        }
+      }
+    },
+    {
+      "name": "groups.telegram.resolve_delivery",
+      "summary": "Record external readback or authorize retry of one exact Telegram delivery attempt.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsTelegramResolveDeliveryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsTelegramResolveDeliveryResult"
         }
       }
     },
@@ -14954,6 +15026,257 @@
         "title": "GroupsApproveResult",
         "type": "object"
       },
+      "GroupsAttachmentListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
+          "producer_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Producer Member Id"
+          }
+        },
+        "required": [
+          "room_id",
+          "purpose"
+        ],
+        "title": "GroupsAttachmentListParams",
+        "type": "object"
+      },
+      "GroupsAttachmentListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "snapshot_seq": {
+            "title": "Snapshot Seq",
+            "type": "integer"
+          },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
+          },
+          "authority": {
+            "$ref": "#/components/schemas/RoomAuthority"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more",
+          "snapshot_seq",
+          "latest_seq",
+          "authority"
+        ],
+        "title": "GroupsAttachmentListResult",
+        "type": "object"
+      },
+      "GroupsAttachmentPutParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          },
+          "content_base64": {
+            "title": "Content Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "upload_id",
+          "kind",
+          "name",
+          "mime",
+          "content_base64"
+        ],
+        "title": "GroupsAttachmentPutParams",
+        "type": "object"
+      },
+      "GroupsAttachmentPutResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/RoomAttachment"
+          }
+        },
+        "required": [
+          "attachment"
+        ],
+        "title": "GroupsAttachmentPutResult",
+        "type": "object"
+      },
+      "GroupsAttachmentReadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "attachment_id",
+          "event_id",
+          "purpose"
+        ],
+        "title": "GroupsAttachmentReadParams",
+        "type": "object"
+      },
+      "GroupsAttachmentReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/RoomAttachment"
+          },
+          "content_base64": {
+            "title": "Content Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment",
+          "content_base64"
+        ],
+        "title": "GroupsAttachmentReadResult",
+        "type": "object"
+      },
       "GroupsCapabilitiesParams": {
         "additionalProperties": false,
         "properties": {
@@ -16153,6 +16476,19 @@
               }
             ],
             "default": null
+          },
+          "telegram_status": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Telegram Status"
           }
         },
         "required": [
@@ -16211,6 +16547,126 @@
           "cancelled"
         ],
         "title": "GroupsStopResult",
+        "type": "object"
+      },
+      "GroupsTelegramResolveDeliveryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "chunk_index": {
+            "title": "Chunk Index",
+            "type": "integer"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message Id"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "chunk_index",
+          "attempt",
+          "decision",
+          "authority_gateway_id",
+          "authority_epoch"
+        ],
+        "title": "GroupsTelegramResolveDeliveryParams",
+        "type": "object"
+      },
+      "GroupsTelegramResolveDeliveryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "chunk_index": {
+            "title": "Chunk Index",
+            "type": "integer"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "delivery": {
+            "additionalProperties": true,
+            "title": "Delivery",
+            "type": "object"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "chunk_index",
+          "attempt",
+          "decision",
+          "message_id",
+          "delivery"
+        ],
+        "title": "GroupsTelegramResolveDeliveryResult",
         "type": "object"
       },
       "HandoffFailParams": {
@@ -28306,6 +28762,40 @@
         "title": "RoomActor",
         "type": "object"
       },
+      "RoomAttachment": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "mime": {
+            "title": "Mime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "kind",
+          "name",
+          "size",
+          "mime"
+        ],
+        "title": "RoomAttachment",
+        "type": "object"
+      },
       "RoomAuthority": {
         "additionalProperties": false,
         "properties": {
@@ -28361,6 +28851,15 @@
               "$ref": "#/components/schemas/PeerRouteStatus"
             },
             "title": "Peer Routes",
+            "type": "array"
+          },
+          "holds": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Holds",
             "type": "array"
           }
         },
@@ -31357,6 +31856,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "expected_hosted_execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Hosted Execution Generation"
           }
         },
         "required": [

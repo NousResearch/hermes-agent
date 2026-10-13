@@ -69,6 +69,24 @@ export function updateGroupComposerDraft(key: string, mutate: (draft: GroupCompo
   return next
 }
 
+/** Retire exactly the submitted fields once a durable pending input owns them.
+ * Other replies and newly edited text/files are independent of this handoff. */
+export function consumeGroupComposerDraft(key: string, snapshot: GroupComposerDraft, thread: null | string) {
+  const selected = thread ?? 'main'
+  const sentFiles = new Set(snapshot.pendingAttachments[selected] || [])
+
+  return updateGroupComposerDraft(key, current => ({
+    ...current,
+    main: !thread && current.main === snapshot.main ? '' : current.main,
+    replies: thread && current.replies[thread] === snapshot.replies[thread]
+      ? { ...current.replies, [thread]: '' } : current.replies,
+    pendingAttachments: {
+      ...current.pendingAttachments,
+      [selected]: (current.pendingAttachments[selected] || []).filter(file => !sentFiles.has(file))
+    }
+  }))
+}
+
 export function restoreGroupComposerDraft(key: string, expectedRevision: number, snapshot: GroupComposerDraft) {
   const current = groupComposerDraftSnapshot(key)
 

@@ -8,13 +8,9 @@ from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
-def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
+def test_refused_input_commits_failed_mailbox_receipt(monkeypatch, tmp_path):
+    from tui_gateway import server
     import contextlib
-    import contextvars
-    import logging
-    import time
-    from tui_gateway import prompt_turn
-    from tui_gateway.session_lifecycle import _start_session_work
     from tools import bot_live_delivery as mailbox
 
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
@@ -25,15 +21,16 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)
     retired = []
     noop = lambda *args, **kwargs: None
-    submit = rebind(prompt_turn._run_prompt_submit, {
-        "threading": threading, "time": time, "logger": logging.getLogger(__name__),
-        "_start_session_work": _start_session_work,
+    def admit(*args, notify_refusal, attempt):
+        assert notify_refusal is False  # Imported turns report through their mailbox receipt.
+        return [], agent
+
+    # Use native facade bindings so attempt helpers share the patched session state.
+    for name, value in {
         "_sessions_lock": threading.RLock(), "_sessions": {},
-        "_admit_prompt_turn": lambda *args: ([], agent),
+        "_admit_prompt_turn": admit,
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
-        "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
-        "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
         "_release_turn_scopes": noop, "_post_turn_housekeeping": noop,
@@ -46,11 +43,12 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_reopen_routed_session_row": noop,
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
-    })
+    }.items():
+        monkeypatch.setattr(server, name, value)
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
                                   error=outcome.get("error", ""))
-    assert submit(None, "live", session, "refused input", terminal_callback=terminal)
+    assert server._run_prompt_submit(None, "live", session, "refused input", terminal_callback=terminal)
     session["_run_thread"].join(timeout=5)
     assert not session["_run_thread"].is_alive()
     assert mailbox.read_delivery_result(tmp_path, queued["id"])["status"] == "failed"

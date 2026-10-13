@@ -30,6 +30,7 @@ import {
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
+import { isHostedRoomKey } from './hosted-room-protocol'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
@@ -545,6 +546,7 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *  `members` is the live roster when the caller has one (the workspace);
  *  falls back to the room's durable roster so a two-arg call still works. */
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms must stop through groups.stop')}
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const onTurn = room.turn || null
@@ -618,12 +620,18 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
+function groupThreadLog(group: string, thread: string) {
+  return (($groupChats.get()[group] || {}).log || []).filter((entry: GroupMessage) => groupThreadOf(entry) === thread)
+}
+
 export async function runGroupChatRounds(
   group: string,
   members: GroupMember[],
   thread: string,
   failedMembers = new Set<string>()
 ) {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms cannot run the Desktop coordinator')}
+
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -633,7 +641,7 @@ export async function runGroupChatRounds(
 
   // #129443: the driving send's explicit addresses, frozen for the whole
   // drive — mid-drive member handoffs stay the #94478 continuation's job.
-  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+  const startLog = groupThreadLog(group, thread)
 
   const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
 
@@ -680,9 +688,7 @@ export async function runGroupChatRounds(
         }
       }
 
-      const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
-        (e: GroupMessage) => groupThreadOf(e) === thread
-      )
+      const roomLog = groupThreadLog(group, thread)
 
       // Exclude members the harvest pass just above confirmed are STILL
       // running (their stranded marker survived harvest because
@@ -875,6 +881,7 @@ export function sendToGroupChat(
   thread?: null | string,
   images?: Attachment[]
 ): null | string {
+  if (isHostedRoomKey(group)) {throw new Error('Hosted rooms must send through groups.send')}
   const trimmed = String(text || '').trim()
 
   if (rejectGroupSlashCommand(trimmed)) {

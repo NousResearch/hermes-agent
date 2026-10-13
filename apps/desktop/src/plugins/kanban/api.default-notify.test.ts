@@ -41,7 +41,7 @@ describe('default board event notifications', () => {
     let frame!: (data: unknown) => void
     dispose = bindApi(
       (async (path: string) => (path === '/boards' ? { current: 'drawer-board' } : { latest_event_id: 100 })) as never,
-      { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
+      { get: (_key, fallback) => fallback, getRaw: () => null, set: vi.fn(), remove: vi.fn() },
       (_path, callback) => {
         frame = callback
 
@@ -83,7 +83,7 @@ describe('default board event notifications', () => {
     })
 
     const socket = vi.fn(() => vi.fn())
-    dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() }, socket)
+    dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, getRaw: () => null, set: vi.fn(), remove: vi.fn() }, socket)
     await vi.waitFor(() => expect(socket).toHaveBeenCalledWith('/events?since=20', expect.any(Function)))
     expect(doors.notify).not.toHaveBeenCalled()
   })
@@ -97,7 +97,7 @@ describe('default board event notifications', () => {
 
     const rest = vi.fn(async (path: string) => (path === '/boards' ? boards : { latest_event_id: 30 }))
     const socket = vi.fn(() => vi.fn())
-    dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() }, socket)
+    dispose = bindApi(rest as never, { get: (_key, fallback) => fallback, getRaw: () => null, set: vi.fn(), remove: vi.fn() }, socket)
 
     if (change === 'selection') {
       $boardSlug.set('chosen')
@@ -120,6 +120,7 @@ describe('default board event notifications', () => {
       rest as never,
       {
         get: <T>(key: string, fallback: T) => (key === 'boardSlug' ? ('chosen' as T) : fallback),
+        getRaw: (key: string) => key === 'boardSlug' ? JSON.stringify('chosen') : null,
         set: vi.fn(),
         remove: vi.fn()
       },
@@ -152,7 +153,7 @@ describe('default board event notifications', () => {
       throw new Error(`Unexpected REST call: ${path}`)
     })
 
-    const storage = { get: <T>(_key: string, fallback: T) => fallback, set: vi.fn(), remove: vi.fn() }
+    const storage = { get: <T>(_key: string, fallback: T) => fallback, getRaw: () => null, set: vi.fn(), remove: vi.fn() }
     dispose = bindApi(rest as never, storage, socket)
     await vi.waitFor(() => expect(callbacks).toHaveLength(1))
     expect(socket).toHaveBeenCalledWith('/events?board=default&since=100', expect.any(Function))

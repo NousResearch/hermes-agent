@@ -180,6 +180,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_observed_media import TelegramObservedMediaMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -511,7 +512,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramObservedMediaMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -594,6 +595,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._update_receipt_flush: Optional[asyncio.Task] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
+        self._hosted_room_ingress_active: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
@@ -2906,6 +2908,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         (``filters.COMMAND``, ``CallbackQueryHandler``), so a plugin handler appended after connect
         would never fire. Move whatever a late factory added ahead of the first core handler of its
         group, keeping the plugin handlers' own relative order."""
+        from .hosted_room_ingress import wire
+        self._hosted_room_ingress_active = False
+        self._hosted_room_ingress_active = wire(native, self)
         handlers = getattr(native, "handlers", None)
         core_ids = getattr(self, "_core_handler_ids", None)
         if not isinstance(handlers, dict) or not core_ids:
@@ -3069,14 +3074,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 # same builder for the next attempt and discard the old one.
                 if rebuild_app and _attempt < _max_connect - 1:
                     old_app = self._app
-                    self._app = builder.build()
-                    self._bot = self._app.bot
-                    # Same order as connect(): plugin handlers first (the wired-set is keyed per app, so
-                    # the rebuilt app gets them again), then core and the observer in lockstep.
-                    self._wire_plugin_handlers(self._app)
-                    self._register_handlers(self._app)
                     with contextlib.suppress(Exception):
                         await _shutdown_abandoned_app(old_app)
+                    self._app = builder.build()
+                    self._bot = self._app.bot
+                    # Same order as connect(): plugin handlers BEFORE core, or a rebuilt app keeps
+                    # only core handlers and every plugin-owned route silently disappears for the
+                    # rest of the process.
+                    self._wire_plugin_handlers(self._app)
+                    self._register_handlers(self._app)  # keep core and observer handlers in lockstep
 
     def _cold_boot_drop_pending(self, *, is_reconnect: bool) -> bool:
         """Whether THIS connection asks Telegram to discard its queued updates.
@@ -3084,7 +3090,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         A watcher reconnect always preserves them (#46621); a cold boot follows
         ``platforms.telegram.extra.drop_pending_on_cold_boot`` (default true). The decision is logged
         on every cold boot — a command that never ran is otherwise invisible (#71811)."""
-        drop_pending = self._drop_pending_on_cold_boot if not is_reconnect else False
+        drop_pending = (self._drop_pending_on_cold_boot and not is_reconnect
+                        and not getattr(self, "_hosted_room_ingress_active", False))
         if not is_reconnect:
             logger.info(
                 "[%s] Cold boot: %s Telegram updates queued while offline "
@@ -3155,7 +3162,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Connect via long polling, or a webhook server if ``TELEGRAM_WEBHOOK_URL`` is set.
 
         ``is_reconnect``: False = cold boot (drop the Bot API queue unless
-        ``extra.drop_pending_on_cold_boot`` is false); True = watcher reconnect (preserve
+        ``extra.drop_pending_on_cold_boot`` is false or hosted-room ingress is active);
+        True = watcher reconnect (preserve
         queued updates, else every message sent during the outage is lost). Webhook env:
         TELEGRAM_WEBHOOK_URL, TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST,
         TELEGRAM_WEBHOOK_SECRET."""
@@ -6217,29 +6225,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return MessageType.DOCUMENT
 
     _CACHED_KIND_TO_MESSAGE_TYPE = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO}
-
-    async def _download_observed_media(self, msg: Any, what: str):
-        """Download ``msg``'s attachment into the media cache (bounded by ``_max_doc_bytes``). Returns ``(status, cached)``:
-        ``"none"``, ``"oversized"`` (cached = raw file_size), ``"failed"``, ``"unreadable"`` or ``"ok"``."""
-        from gateway.platforms.base import cache_media_bytes_async
-        source, filename, mime, kind = self._observed_media_source(msg)
-        if source is None:
-            return "none", None
-        file_size = getattr(source, "file_size", None)
-        if not (0 < self._int_or_zero(file_size) <= getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)):
-            return "oversized", file_size
-        try:
-            file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
-            if not filename:
-                filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = await cache_media_bytes_async(data, filename=filename, mime_type=mime, default_kind=kind)
-        except Exception as exc:
-            logger.warning("[Telegram] Failed to cache %s: %s", what, _redact_telegram_error_text(exc), exc_info=True)
-            return "failed", None
-        if cached is None:
-            return "unreadable", None
-        return "ok", cached
 
     async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
         """Cache an unmentioned group attachment and annotate the observed text; oversized or unsupported

@@ -4,6 +4,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+import json
 
 from gateway.platforms import api_server
 
@@ -86,3 +87,48 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="no longer current"):
         adapter._room_grant_claims(request, permission="status")
+
+
+@pytest.mark.asyncio
+async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
+    from gateway import hosted_rooms
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
+
+    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
+    request = object()
+    claims = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "gateway-home",
+        "authority_epoch": 3,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-target",
+        "target_profile": "worker",
+    }
+    adapter._room_grant_claims = MagicMock(return_value=claims)
+    monkeypatch.setattr(
+        hosted_rooms,
+        "local_authority_gateway_id",
+        lambda: "install-target",
+    )
+    profile_token = api_server._api_request_profile.set("worker")
+    try:
+        response = await adapter._handle_room_member_capabilities(request)
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["object"] == "hermes.room_member.capabilities"
+    assert body["target_profile"] == "worker"
+    assert body["catalog"]["attachments"] is True
+    adapter._room_grant_claims.assert_called_once_with(
+        request,
+        permission="status",
+    )

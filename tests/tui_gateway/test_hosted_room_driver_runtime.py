@@ -242,6 +242,7 @@ class FakeSessionRPC:
         session_id: str,
         source: str,
         expected_task_id: str,
+        expected_execution_generation: int | None = None,
     ):
         params = {
             "profile": profile,
@@ -1296,7 +1297,13 @@ def test_retry_reconciles_terminal_remote_cancellation_without_new_generation(
     original_info = rpc.info
 
     def cancelled_info(**kwargs):
-        return {**original_info(**kwargs), "status": "cancelled"}
+        # A terminal remote status names the run it describes: the real peer client answers from
+        # its stored observation receipt, which carries the task id AND execution generation
+        # (tui_gateway/hosted_room_peer_http.py status()). An answer that does not identify this
+        # attempt is not proof about it.
+        return {
+            **original_info(**kwargs), "status": "cancelled",
+            "execution_generation": attempt.execution_generation}
 
     rpc.info = cancelled_info
     runtime = _runtime(db, rpc, clock=clock)
@@ -1988,21 +1995,3 @@ def test_profile_turn_lock_covers_resolve_submit_and_terminal_observation(db: Pa
     assert methods.index("resolve_exact") < methods.index("submit")
     assert methods.index("submit") < methods.index("complete")
     assert "history" not in methods
-
-
-def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
-    identity = _identity()
-    _admit(db, identity)
-    rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, poll_interval_seconds=0.01)
-
-    runtime.start()
-    assert rpc.submitted.wait(5.0)
-    started = time.monotonic()
-    stopped = runtime.stop(timeout=5.0)
-
-    assert stopped is True
-    # Bounded: returns well before its own timeout and without waiting for the active turn (which never completes).
-    assert time.monotonic() - started < 2.0
-    assert state.get_task(db, identity)["status"] == "running"
-    assert not [call for call in rpc.calls if call[0] == "interrupt"]

@@ -54,6 +54,10 @@ jobs:
         with:
           command: npm ci
 
+      - name: Install pinned Playwright Chromium
+        working-directory: apps/desktop
+        run: npx playwright install --with-deps chromium
+
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so
       # dist/ is always fresh — no separate build step needed here.

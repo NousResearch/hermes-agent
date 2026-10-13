@@ -38,6 +38,7 @@ import { groupChatMemberBots } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
+import { HostedRoomDirectory } from './hosted-room-controls'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
@@ -492,6 +493,7 @@ export function BotsPane() {
         gatewayFilter,
         setGatewayFilter
       })}
+      <HostedRoomDirectory onOpen={openGroupChat} />
       {renderRosterContent({
         b,
         staleNotice,

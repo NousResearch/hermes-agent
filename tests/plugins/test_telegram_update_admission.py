@@ -417,6 +417,9 @@ async def _check_error_cancel_before_entry(monkeypatch, adapter, app, delivered)
         await app.process_update(update(app.bot))
         await app.stop()
     assert len(scheduled) == 1 and not effects
+    # PTB stop joins tasks; their done callbacks release admission on the next loop turn.
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: not adapter._inflight_update_ids, what="cancelled error task released admission")
     assert not adapter._inflight_update_ids and not adapter._seen_update_ids
     # The cancelled PTB task never awaited the callback coroutine: it must be closed too.
     try:

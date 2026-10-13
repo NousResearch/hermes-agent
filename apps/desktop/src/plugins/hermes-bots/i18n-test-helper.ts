@@ -1,5 +1,5 @@
 /**
- * Resolve a Bot Mode message key against the plugin's own `en` bundle.
+ * Resolve Bot Mode message keys against the plugin's own locale bundles.
  *
  * Tests that render Bot Mode components stub `usePluginI18n` with this instead
  * of registering the bundle for real: registration normally happens in

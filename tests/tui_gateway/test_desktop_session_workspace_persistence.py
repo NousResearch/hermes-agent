@@ -45,7 +45,7 @@ def test_desktop_explicit_cwd_persists_when_local_probe_cannot_see_it(monkeypatc
         assert session["cwd"] == str(workspace)
         assert session["explicit_cwd"] is True
 
-        assert server._persist_session_row_for_submit("rid", session) is None
+        assert server._persist_session_row_for_submit("rid", session) == (None, False)
         assert db.get_session(stored_id)["cwd"] == str(workspace)
     finally:
         if sid:
@@ -76,7 +76,7 @@ def test_desktop_inherited_cwd_persists_only_when_the_resolution_adopted_it(
         assert session["cwd"] == container_cwd
         assert session["explicit_cwd"] is True
 
-        assert server._persist_session_row_for_submit("rid", session) is None
+        assert server._persist_session_row_for_submit("rid", session) == (None, False)
         assert db.get_session(stored_id)["cwd"] == container_cwd
     finally:
         if sid:
@@ -103,7 +103,7 @@ def test_desktop_launch_fallback_cwd_still_persists_nothing(monkeypatch, tmp_pat
         session = server._sessions[sid]
         assert session["explicit_cwd"] is False
 
-        assert server._persist_session_row_for_submit("rid", session) is None
+        assert server._persist_session_row_for_submit("rid", session) == (None, False)
         assert db.get_session(stored_id)["cwd"] is None
     finally:
         if sid:

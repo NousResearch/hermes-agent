@@ -500,6 +500,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    room_persist_user_message: str | None = None
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
 
     @property
@@ -643,10 +644,13 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     idempotency_scope = idempotency_fingerprint = ""
     if idempotency_key:
         idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
+        # Room images can expand to tens of MB; keep serialization and hashing
+        # off the request thread without changing persisted fingerprint semantics.
+        # JSON encoding still contends for the GIL; this is not a latency bound.
+        idempotency_fingerprint = await asyncio.to_thread(lambda: hashlib.sha256(json.dumps(
             {"body": body, "gateway_session_key": gateway_session_key or ""},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+        ).encode()).hexdigest())
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -738,6 +742,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        room_persist_user_message=(body.get("_room_persist_user_message") if self._room_grant_token(request) else None),
         turn_author=turn_author)
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
@@ -829,7 +834,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+                task_id=effective_task_id, **author_kwargs,
+                **({"persist_user_message": run.room_persist_user_message}
+                   if run.room_persist_user_message is not None else {}))
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)

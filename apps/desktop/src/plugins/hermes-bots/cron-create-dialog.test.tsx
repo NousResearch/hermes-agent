@@ -64,8 +64,10 @@ beforeEach(() => {
   $botMeta.set({})
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
+  // Radix restores focus in a queued task; drain it before jsdom destroys its Event realm.
+  await new Promise<void>(resolve => setTimeout(resolve, 0))
 })
 
 describe('the dialog names the bot, never its object', () => {

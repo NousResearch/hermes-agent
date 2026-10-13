@@ -18,6 +18,7 @@ const BOARD = (latest_event_id: number) => ({
 
 const storage = (slug = ''): PluginStorage => ({
   get: <T>(key: string, fallback: T) => (key === 'boardSlug' ? (slug as T) : fallback),
+  getRaw: (key: string) => key === 'boardSlug' ? JSON.stringify(slug) : null,
   remove: vi.fn(),
   set: vi.fn()
 })
@@ -129,6 +130,7 @@ describe('kanban event cursor', () => {
       },
       {
         get: <T>(key: string, fallback: T) => (key.startsWith('boardSlug') ? ('ship' as T) : fallback),
+        getRaw: (key: string) => key.startsWith('boardSlug') ? JSON.stringify('ship') : null,
         remove: vi.fn(),
         set: vi.fn()
       },

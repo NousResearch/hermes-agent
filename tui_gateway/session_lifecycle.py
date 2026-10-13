@@ -21,7 +21,7 @@ def _session_turn_admission(session: dict):
         yield admitted
 
 
-def _start_session_work(target, *, name: str, session: dict | None = None):
+def _start_session_work(target, *, name: str, session: dict | None = None, attempt: tuple | None = None):
     """Reserve before spawning; release only after the worker (including cleanup) has unwound."""
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.backend_retirement import retirement
@@ -38,7 +38,9 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
     try:
         thread = spawn_context_thread(run, name=name)
         if session is not None:
-            session["_run_thread"] = thread
+            if not _publish_attempt_run_thread(session, attempt, thread):
+                retirement.release()
+                return None
         thread.start()
         return thread
     except BaseException:
@@ -684,78 +686,284 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
+# -- immutable per-turn coordinates -------------------------------------------
+# One accepted turn is identified by a monotonic per-session sequence plus, for a hosted room
+# turn, the exact task and execution generation it was accepted for. The value is a plain tuple
+# so it can be compared by value and carried across threads without any of it being reconstructed
+# from the session record, which by then may belong to a later attempt.
+
+
+def _new_turn_attempt(session: dict, hosted_task: dict | None = None) -> tuple:
+    """Mint and publish this session's next turn coordinate. Call under ``history_lock``."""
+    seq = int(session.get("_turn_seq", 0)) + 1
+    session["_turn_seq"] = seq
+    task = hosted_task if isinstance(hosted_task, dict) else {}
+    attempt = (seq, str(task.get("task_id") or ""), int(task.get("execution_generation") or 0))
+    session["_turn_attempt"] = attempt
+    # This submit is now accepted and owes its room exactly one terminal receipt, so it gets its
+    # own pending entry to carry the outcome (see `_pending_attempt_outcomes`).
+    _pending_attempt_outcomes(session)[attempt] = None
+    session["_turn_cancel_requested"] = False
+    session["_turn_cancel_attempt"] = None
+    return attempt
+
+
+def _pending_attempt_outcomes(session: dict) -> dict:
+    """This record's accepted-but-not-yet-terminal attempts, each mapped to its retired outcome.
+
+    One entry per accepted submit still owing a receipt: `_new_turn_attempt` registers it, a Stop
+    that retires it writes the outcome on THAT attempt's own entry, and the attempt's own terminal
+    handling reads the outcome and then removes the entry (`_settle_attempt`).  It is a live
+    pending set, not a history and not a single slot: any number of retired submits can be in
+    flight at once, and the map is empty again once each of them has reported."""
+    outcomes = session.get("_pending_attempt_outcomes")
+    if not isinstance(outcomes, dict):
+        outcomes = session["_pending_attempt_outcomes"] = {}
+    return outcomes
+
+
+def _current_turn_attempt(session: dict) -> tuple | None:
+    return session.get("_turn_attempt")
+
+
+def _turn_attempt_is_current(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt`` is still the session's accepted turn (``None`` means "whatever runs")."""
+    return attempt is None or session.get("_turn_attempt") == attempt
+
+
+def _hosted_attempt_matches(session: dict, task_id: str, execution_generation: Any) -> tuple | None:
+    """The running attempt when it is exactly this hosted task/generation, else ``None``.
+
+    Task ids repeat across generations, so a stale generation must not stop the next turn.
+    Call under ``history_lock``.
+    """
+    task = session.get("_hosted_room_task")
+    if not session.get("running") or not isinstance(task, dict) or task.get("task_id") != task_id:
+        return None
+    if execution_generation is not None and int(
+            task.get("execution_generation") or 0) != int(execution_generation):
+        return None
+    return session.get("_turn_attempt")
+
+
+def _retire_attempt_turn_marker(session: dict, attempt: tuple | None, *keys: str) -> bool:
+    """Clear one attempt's crash marker, serialized against a successor being admitted.
+
+    ``_retire_turn_marker`` always also clears the record's *current* ``session_key``, and a later
+    turn on the same session reuses that durable key, so the deletion itself -- not just the
+    bookkeeping pop -- has to happen under the lock that admission takes. Returns whether the
+    marker was retired."""
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return False  # a successor owns this record: its marker is not ours to delete
+        active = str(session.pop("_active_turn_marker_key", "") or "")
+        _retire_turn_marker(session, *(key for key in (*keys, active) if key))
+        return True
+
+
+def _latch_turn_cancel(session: dict, attempt: tuple | None = None) -> None:
+    """Latch cancellation for one exact attempt. Call under ``history_lock``."""
+    session["_turn_cancel_requested"] = True
+    target = attempt if attempt is not None else session.get("_turn_attempt")
+    session["_turn_cancel_attempt"] = target
+    # The flag and its single slot are reset by the next mint — their unqualified readers
+    # (auto-continue, queue drain, the compute-host bridge) all take them to mean "the CURRENT turn
+    # was cancelled" — so the outcome is also written on this attempt's OWN pending entry, which no
+    # later attempt can overwrite.  A retired submit still in flight has to report `cancelled`, not
+    # the retryable `failed`.  A stop for an attempt that already reported has nothing to retain.
+    outcomes = _pending_attempt_outcomes(session)
+    if target in outcomes:
+        outcomes[target] = "cancelled"
+
+
+def _turn_cancel_latched(session: dict, attempt: tuple | None) -> bool:
+    """Whether a cancellation is latched for ``attempt`` (an unqualified latch covers any turn)."""
+    if not session.get("_turn_cancel_requested"):
+        return False
+    latched = session.get("_turn_cancel_attempt")
+    return latched is None or attempt is None or latched == attempt
+
+
+def _attempt_was_cancelled(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt`` was stopped — still true once a successor replaced it on the record.
+
+    A submit retired mid-flight learns its outcome here: ``failed`` and ``cancelled`` are not
+    interchangeable to the room (one is retryable, the other is the user's decision)."""
+    return _turn_cancel_latched(session, attempt) or (
+        _pending_attempt_outcomes(session).get(attempt) == "cancelled")
+
+
+# -- run ownership -------------------------------------------------------------
+# An accepted turn runs across two threads: the readiness waiter `prompt.submit` starts, and the
+# runner `_run_prompt_submit` publishes and starts before that waiter exits. So "the thread I saw
+# is dead" is NOT proof the turn stopped, and "no thread is alive" is not either during the
+# handoff. The claim below is published with the runner handle, in the same critical section, and
+# is released only by the attempt's own terminal handling.
+
+
+def _publish_attempt_run_thread(session: dict, attempt: tuple | None, thread) -> bool:
+    """Publish ``thread`` as the record's runner for ``attempt``; returns whether it may start.
+
+    The currency check and the write are one critical section: between minting an attempt and
+    starting its thread, a Stop can retire it and a successor can be genuinely admitted on the
+    same record, and the obsolete submit must never replace the successor's live handle."""
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return False  # a successor owns this record: its runner is not ours to replace
+        session["_run_thread"] = thread
+        if attempt is not None:
+            session["_turn_attempt_live"] = attempt
+        return True
+
+
+def _attempt_run_is_live(session: dict, attempt: tuple | None) -> bool:
+    """Whether ``attempt``'s accepted run still has an owner. Call under ``history_lock``.
+
+    The claim is authoritative — it spans the waiter→runner handoff, including the instant after a
+    handle is published and before that thread is started. A still-alive published thread is the
+    fallback for synthesized turns (auto-continue, wake-ups) that never mint an attempt."""
+    live = session.get("_turn_attempt_live")
+    if live is not None and (attempt is None or live == attempt):
+        return True
+    thread = session.get("_run_thread")
+    return bool(thread is not None and thread.is_alive())
+
+
+def _settle_attempt(session: dict, attempt: tuple | None) -> None:
+    """Release ``attempt``'s run claim and pending entry: it is over and owes nothing more.
+
+    Call under ``history_lock``, and only AFTER the terminal handling has read the outcome — this
+    is the single cleanup point that keeps `_pending_attempt_outcomes` from growing.  Idempotent,
+    and it never touches a successor's claim or entry."""
+    if attempt is None:
+        return
+    if session.get("_turn_attempt_live") == attempt:
+        session["_turn_attempt_live"] = None
+    _pending_attempt_outcomes(session).pop(attempt, None)
+
+
+# -- interrupt exclusion -------------------------------------------------------
+# A hard interrupt is NOT non-blocking: the real agent waits on the compression commit fence,
+# which an in-flight commit holds with no timeout. It therefore runs outside every session lock,
+# and the exclusion admission needs — a successor must not clear the interrupt or reuse the agent
+# while an earlier attempt's stop is still landing on it — is carried by this claim, which is
+# waited on with no lock held.
+_INTERRUPT_HANDOFF_WAIT = 30.0
+
+
+def _claim_attempt_interrupt(session: dict, attempt: tuple | None) -> tuple:
+    """Register a hard interrupt in flight for ``attempt``. Call under ``history_lock``."""
+    claims = session.get("_turn_interrupt_claims")
+    if not isinstance(claims, list):
+        claims = session["_turn_interrupt_claims"] = []
+    claim = (attempt, threading.Event())
+    claims.append(claim)
+    return claim
+
+
+def _release_attempt_interrupt(session: dict, claim: tuple | None) -> None:
+    """Retire an interrupt claim and wake whatever is waiting on it."""
+    if claim is None:
+        return
+    with session["history_lock"]:
+        claims = session.get("_turn_interrupt_claims")
+        if isinstance(claims, list) and claim in claims:
+            claims.remove(claim)
+    claim[1].set()
+
+
+def _await_foreign_attempt_interrupts(
+    session: dict, attempt: tuple | None, timeout: float = _INTERRUPT_HANDOFF_WAIT) -> bool:
+    """Block — holding NO lock — until no interrupt for a different attempt is still landing.
+
+    ``False`` when one is still in flight at the deadline; the caller must then refuse rather than
+    admit a turn onto an agent another attempt's stop is about to interrupt."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with session["history_lock"]:
+            pending = [
+                claim for claim in session.get("_turn_interrupt_claims") or []
+                if claim[0] != attempt]
+        if not pending:
+            return True
+        if (remaining := deadline - time.monotonic()) <= 0:
+            return False
+        for _stopped_attempt, done in pending:
+            done.wait(max(0.0, remaining))
+            remaining = deadline - time.monotonic()
+
+
 def _interrupt_session_turn(
-    sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
-) -> bool:
+    sid: str, session: dict, *, request_id: str | None = None, attempt: tuple | None = None,
+    orphan: bool = False) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
 
-    ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
-    caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
-    """
+    ``attempt`` names the exact turn this stop was raised for. Observation and the state it acts on are taken
+    together under the history lock, so a stop whose turn already finished cannot interrupt, dequeue or deny
+    approvals for the attempt that replaced it."""
     use_compute_host = _session_uses_compute_host(session)
-    # A manual compaction holds `running` with no run thread and its own finally releases it: Stop must not
-    # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
-    compressing = bool(session.get("_manual_compress_active"))
-    should_interrupt = bool(session.get("running")) and not compressing
-    run_thread_alive = False
+    with session["history_lock"]:
+        if not _turn_attempt_is_current(session, attempt):
+            return use_compute_host  # the observed turn is gone; its successor is not ours to touch
+        target = attempt if attempt is not None else session.get("_turn_attempt")
+        compressing = bool(session.get("_manual_compress_active"))
+        should_interrupt = bool(session.get("running")) and not compressing
+        # Captured with the attempt: the record's agent may be replaced after this block.
+        agent = session.get("agent")
+        session_key = str(session.get("session_key") or "")
+        _latch_turn_cancel(session, target)
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+        # Claimed while this attempt is still proven current and held across the blocking interrupt
+        # below: it is what excludes a successor from clearing the interrupt or reusing this same
+        # agent while our stop is still landing on it. The lock cannot do that job — see below.
+        claim = None if use_compute_host else _claim_attempt_interrupt(session, target)
     if use_compute_host:
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
             _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
     else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
-    with session["history_lock"]:
-        session["_turn_cancel_requested"] = True
-        session["queued_prompt"] = None
-        session.pop("queued_prompts", None)
-        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt:
-        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
-        # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
-        # resources. Observer-only; dispatch failures never break the interrupt.
-        # Every caller (session.interrupt RPC, orphan/idle reapers, lease takeover) is off-turn, so bind the
-        # SESSION's profile as _finalize_session does or an observer's get_hermes_home() names the launch
-        # profile (#125063). hydrate_secrets=False: observer-only, /stop must stay fast.
+        from agent.interrupt_compat import request_hard_interrupt
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            with _session_profile_runtime_scope(session, hydrate_secrets=False):
-                _invoke_hook(
-                    "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                    reason="user_stop", invalidation_reason="session_interrupt",
-                )
-        except Exception:
-            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
-    if not use_compute_host:
-        if should_interrupt:
-            from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
-        # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
-        # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
-        # interrupted completion with its partial output.
-        with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(
-                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
-                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
-        if not run_thread_alive and not compressing:
+            _notify_attempt_interrupted(sid, session, agent, should_interrupt, local=True)
+            if should_interrupt:
+                # OUTSIDE every session lock. The real agent's hard interrupt waits on
+                # `CompressionCommitFence.cancel_before_commit`, which an in-flight commit holds
+                # with no timeout, so running it under `history_lock` would block this session's
+                # readers, its finalizer and its admission for the whole commit. The claim taken
+                # above keeps the stop exclusive instead; this is not a check-unlock-act window.
+                request_hard_interrupt(agent)
+            # Read outside the lock, and re-read from the RECORD rather than from a handle captured
+            # before the interrupt: an accepted turn hands off from its readiness waiter to its
+            # real runner, so an earlier capture can be dead while the model turn runs.
+            published = session.get("_run_thread")
+            run_thread_alive = published is not None and published.is_alive()
+            # The effects this stop authorizes are applied under the same lock a successor must
+            # take to be admitted, so no attempt can slip in between the check and them. Each is
+            # non-blocking and never re-enters this lock: `_clear_pending` takes only
+            # `_prompt_lock` (whose holders never wait on a session) and approval resolution takes
+            # only the approval registry lock and signals events.
             with session["history_lock"]:
-                if session.get("running"):
-                    session["running"] = False
-                    _clear_inflight_turn(session)
-    # Sibling of the #102895 finalize-path fix above: an explicit /stop (or the WS-orphan reaper's
-    # interrupt-at-grace) must also reach a background memory/skill review, not just the foreground
-    # turn. The review fork is invisible to `should_interrupt`/`run_thread_alive` above (both gated
-    # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
-    # post-turn review is still running (the common case: the main turn already finished) would see
-    # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
-    # and in-process turns) since the review is always local to this process.
-    if (agent_for_review := session.get("agent")) is not None:
-        with contextlib.suppress(Exception):
-            from agent.background_review import cancel_background_review_for_live_turn
-            cancel_background_review_for_live_turn(
-                agent_for_review, message="session interrupted", tool_reason="session interrupted")
+                if _turn_attempt_is_current(session, target):
+                    if (not run_thread_alive and not _attempt_run_is_live(session, target)
+                            and session.get("running") and not compressing):
+                        session["running"] = False
+                        _clear_inflight_turn(session)
+                    _clear_pending(sid)
+                    with contextlib.suppress(Exception):
+                        _announce_cancelled_gateway_approvals(
+                            session, "ws_orphan_reap" if orphan else "interrupt", session_id=sid)
+                        from tools.approval import resolve_gateway_approval
+                        resolve_gateway_approval(session_key, "deny", resolve_all=True)
+        finally:
+            _release_attempt_interrupt(session, claim)
+        return use_compute_host
+    # Compute-host turns keep their out-of-band control channel (a child-process RPC, so never
+    # under the lock); hosted room attempts are refused on that transport upstream.
+    _notify_attempt_interrupted(sid, session, agent, should_interrupt, local=False)
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         # Deny-resolve every pending approval so no agent thread blocks on the queue. The
@@ -765,8 +973,32 @@ def _interrupt_session_turn(
         reason = "ws_orphan_reap" if orphan else "interrupt"
         _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
         from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        resolve_gateway_approval(session_key, "deny", resolve_all=True)
     return use_compute_host
+
+
+def _notify_attempt_interrupted(sid, session, agent, should_interrupt, *, local):
+    """Stop off-turn work while the caller still holds the attempt's interrupt claim."""
+    if should_interrupt:
+        try:
+            from hermes_cli.plugins import invoke_hook
+            with _session_profile_runtime_scope(session, hydrate_secrets=False):
+                invoke_hook(
+                    "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                    reason="user_stop", invalidation_reason="session_interrupt")
+        except Exception:
+            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+    if local:
+        with contextlib.suppress(Exception):
+            from tools.async_delegation import interrupt_for_session
+            interrupt_for_session(
+                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
+                parent_session_id=str(getattr(agent, "session_id", "") or ""))
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            from agent.background_review import cancel_background_review_for_live_turn
+            cancel_background_review_for_live_turn(
+                agent, message="session interrupted", tool_reason="session interrupted")
 
 
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:
@@ -915,7 +1147,7 @@ def _schedule_ws_orphan_reap(
                 return
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
-        reschedule_delay = interrupt_session = session = None
+        reschedule_delay = interrupt_session = interrupt_attempt = session = None
         with _session_resume_lock, _sessions_lock:
             # Keep ownership through interrupt I/O and continuation registration. A cancelled
             # callback may already be dispatched, but cannot act on a later detachment.
@@ -963,13 +1195,14 @@ def _schedule_ws_orphan_reap(
                     if not current.get("_client_gone_interrupt_requested"):
                         current["_client_gone_interrupt_requested"] = True
                         interrupt_session = current
+                        interrupt_attempt = _current_turn_attempt(current)
                     reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
             if reschedule_delay is None:
                 _pending_ws_reaps.pop(sid, None)
         if interrupt_session is not None:
             try:
                 isolated = _interrupt_session_turn(
-                    sid, interrupt_session, request_id=f"client-gone-{sid}", orphan=True)
+                    sid, interrupt_session, request_id=f"client-gone-{sid}", attempt=interrupt_attempt, orphan=True)
                 logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
             except Exception:
                 logger.exception("client_gone interrupt failed sid=%s", sid)

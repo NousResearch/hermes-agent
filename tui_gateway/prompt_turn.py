@@ -115,11 +115,17 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None, display_kind: str | None = None,
+    display_metadata: dict | None = None, *, attempt: tuple | None = None,
+    notify_refusal: bool = False
+) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
-    bypass that once let a second backend run a duplicate turn."""
+    bypass that once let a second backend run a duplicate turn.
+
+    This is also the last point before a model sees the prompt: a cancellation latched for
+    ``attempt`` refuses admission here, and the interrupt it latched is never cleared. A refusal
+    only ever touches state still belonging to ``attempt``."""
     held_lease = session.get("active_session_lease")
     # When the session already holds its lease this is a cheap dict check. See #94778.
     if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
@@ -128,14 +134,51 @@ def _admit_prompt_turn(
             session.get("session_key") or sid,
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
-            session["running"] = False
-            session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                session.pop("_submit_user_row", None)
         _emit("error", sid, {"message": str(ownership_refusal)})
         return None
+    if not _await_foreign_attempt_interrupts(session, attempt):
+        # Waited on with no lock held (a hard interrupt can be parked on a compression commit),
+        # then failed CLOSED: admitting now would clear an interrupt raised for another attempt and
+        # hand the model a turn that stop is still about to cancel.
+        logger.info(
+            "Refusing turn for session %s: an earlier attempt's stop is still landing",
+            session.get("session_key") or sid)
+        with session["history_lock"]:
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                if notify_refusal and not _attempt_was_cancelled(session, attempt):
+                    message = (
+                        "The turn was refused before it started: "
+                        "an earlier attempt's stop is still landing")
+                    _fail_inflight_turn(session, message)
+                    # UI errors are session-scoped: emit before a successor can own the record.
+                    _emit("error", sid, {"message": message})
+                else:
+                    _clear_inflight_turn(session)
+        return None
     with session["history_lock"]:
-        if session.get("_closing") or (
-            queued_prompt_generation is not None
-            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+        if not _turn_attempt_is_current(session, attempt):
+            return None  # a later turn owns this record; leave its state alone
+        if _turn_cancel_latched(session, attempt):
+            # Stop reached this attempt before the model did: refuse without clearing the
+            # interrupt that is holding it.
+            session["running"] = False
+            _clear_inflight_turn(session)
+            return None
+        if session.get("_closing"):
+            # The session is going away: leave no live in-flight frame behind for this attempt.
+            session["running"] = False
+            _clear_inflight_turn(session)
+            session.pop("_submit_user_row", None)
+            if session.get("active_session_lease") is not held_lease:
+                _release_active_session_slot(session)
+            return None
+        if (queued_prompt_generation is not None
+                and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
+            # A newer queued prompt owns the record's in-flight snapshot; only stop this turn.
             session["running"] = False
             session.pop("_submit_user_row", None)
             if session.get("_closing") and session.get("active_session_lease") is not held_lease:
@@ -1074,6 +1117,19 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
     _clear_session_context(scopes.session_tokens)
 
 
+def _report_refused_attempt(session: dict, attempt: tuple | None, callback) -> None:
+    """One terminal receipt for an accepted turn that admission or the handoff refused."""
+    with session["history_lock"]:
+        cancelled = _attempt_was_cancelled(session, attempt)
+        _settle_attempt(session, attempt)  # this attempt is over whether or not it reports
+    if callback is None:
+        return
+    with contextlib.suppress(Exception):
+        callback(
+            {"status": "cancelled", "text": ""} if cancelled else
+            {"status": "failed", "text": "", "error": "the turn was refused before it started"})
+
+
 def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
     """Best-effort tail AFTER the turn settled: a slow trim must not hold the bookend (#131740)."""
     try:  # while the profile HERMES_HOME override is still active (session's own config)
@@ -1123,7 +1179,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, attempt: tuple | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1133,8 +1189,10 @@ def _run_prompt_submit(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
-        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
+        attempt=attempt, notify_refusal=attempt is not None and terminal_callback is None)
     if admitted is None:
+        _report_refused_attempt(session, attempt, terminal_callback)
         return False
     images, agent = admitted
     from gateway.warning_notifications import diagnostic_turn_muted
@@ -1209,12 +1267,15 @@ def _run_prompt_submit(
                 # A stale interim closure must not fire during a later turn.
                 st.agent.interim_assistant_callback = None
                 with session["history_lock"]:
-                    session["running"] = False
-                    session["last_active"] = time.time()
-                    session.pop("_turn_user_input", None)  # per turn: never leaks into the next one
-                    if not st.error_retained:
-                        _clear_inflight_turn(session)
-                    _release_hosted_room_turn_slot(session)
+                    finishing_own_turn = _turn_attempt_is_current(session, attempt)
+                    _settle_attempt(session, attempt)
+                    if finishing_own_turn:
+                        session["running"] = False
+                        session["last_active"] = time.time()
+                        session.pop("_turn_user_input", None)
+                        if not st.error_retained:
+                            _clear_inflight_turn(session)
+                        _release_hosted_room_turn_slot(session)
                 # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
                 # agent.session_id is re-read because compression may have rotated it (an
                 # accepted/finished pair whose id changed IS a rotation trace).
@@ -1230,12 +1291,12 @@ def _run_prompt_submit(
                     st.error_detail)
                 # Backstop for turns that never reached a terminal frame.
                 if st.receipt_committed:
-                    _retire_turn_marker(session, st.marker_key)
+                    _retire_attempt_turn_marker(session, attempt, st.marker_key)
                     with session["history_lock"]:
-                        if session.get("_active_turn_marker_key") == st.marker_key:
-                            session.pop("_active_turn_marker_key", None)
-                        session.pop("_hosted_room_task", None)
-                session.pop("_auto_continue_scheduled", None)
+                        if _turn_attempt_is_current(session, attempt):
+                            session.pop("_hosted_room_task", None)
+                if finishing_own_turn:
+                    session.pop("_auto_continue_scheduled", None)
                 _emit_settled_session_info(sid, session, st.agent)
             finally:
                 _post_turn_housekeeping(sid, session, st)
@@ -1259,10 +1320,14 @@ def _run_prompt_submit(
             # still run its turn, but its stamp stays (#106459).
             if registered is session:
                 _reopen_routed_session_row(routing_db, sid, session)
-            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
+            can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session, attempt=attempt) is not None
     if not can_start:
+        # Accepted at submit, refused at the handoff: still owes this attempt one receipt.
         with session["history_lock"]:
-            session["running"] = False
+            if _turn_attempt_is_current(session, attempt):
+                session["running"] = False
+                _clear_inflight_turn(session)
+        _report_refused_attempt(session, attempt, terminal_callback)
     return can_start
 
 

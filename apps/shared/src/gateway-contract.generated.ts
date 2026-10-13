@@ -1582,6 +1582,7 @@ export interface GroupsStateParams {
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
+  telegram_status?: Record<string, unknown> | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}`` or the driver's approval action (``kind: approval`` + run/session/approval context). */
 export interface RoomDriverStatus {
@@ -1591,11 +1592,83 @@ export interface RoomDriverStatus {
   counts: Record<string, number>
   pending_actions: Record<string, unknown>[]
   peer_routes: PeerRouteStatus[]
+  holds?: Record<string, unknown>[]
 }
 export interface PeerRouteStatus {
   room_id: string
   member_id: string
   status: string
+}
+export interface GroupsAttachmentPutParams {
+  profile?: string | null
+  room_id: string
+  upload_id: string
+  kind: string
+  name: string
+  mime: string
+  content_base64: string
+}
+export interface GroupsAttachmentPutResult {
+  attachment: RoomAttachment
+}
+export interface RoomAttachment {
+  attachment_id: string
+  kind: string
+  name: string
+  size: number
+  mime: string
+}
+export interface GroupsAttachmentReadParams {
+  profile?: string | null
+  room_id: string
+  attachment_id: string
+  event_id: string
+  purpose: string
+}
+export interface GroupsAttachmentReadResult {
+  attachment: RoomAttachment
+  content_base64: string
+}
+export interface GroupsAttachmentListParams {
+  profile?: string | null
+  room_id: string
+  purpose: string
+  cursor?: string | null
+  limit?: number | null
+  query?: string | null
+  producer_member_id?: string | null
+}
+export interface GroupsAttachmentListResult {
+  items: Record<string, unknown>[]
+  next_cursor: string | null
+  has_more: boolean
+  snapshot_seq: number
+  latest_seq: number
+  authority: RoomAuthority
+}
+export interface RoomAuthority {
+  gateway_id: string
+  epoch: number
+}
+export interface GroupsTelegramResolveDeliveryParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  chunk_index: number
+  attempt: number
+  decision: string
+  message_id?: number | null
+  authority_gateway_id: string
+  authority_epoch: number
+}
+export interface GroupsTelegramResolveDeliveryResult {
+  room_id: string
+  event_id: string
+  chunk_index: number
+  attempt: number
+  decision: string
+  message_id: number | null
+  delivery: Record<string, unknown>
 }
 export interface GroupsSendParams {
   profile?: string | null
@@ -1632,10 +1705,6 @@ export interface GroupsLogResult {
   latest_seq: number
   has_more: boolean
   authority: RoomAuthority
-}
-export interface RoomAuthority {
-  gateway_id: string
-  epoch: number
 }
 export interface GroupsDisbandParams {
   profile?: string | null
@@ -3511,6 +3580,7 @@ export interface SessionInterruptParams {
   session_id: string
   profile?: string | null
   expected_hosted_task_id?: string | null
+  expected_hosted_execution_generation?: number | null
 }
 export interface SessionInterruptResult {
   status: InterruptStatus
@@ -5158,6 +5228,12 @@ export interface RpcMethods {
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
+  /** List published attachment metadata with an authority-bound cursor. */
+  'groups.attachment.list': { params: GroupsAttachmentListParams; result: GroupsAttachmentListResult }
+  /** Store bounded attachment bytes on the room authority gateway. */
+  'groups.attachment.put': { params: GroupsAttachmentPutParams; result: GroupsAttachmentPutResult }
+  /** Read one published attachment as a room viewer. */
+  'groups.attachment.read': { params: GroupsAttachmentReadParams; result: GroupsAttachmentReadResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
@@ -5192,6 +5268,8 @@ export interface RpcMethods {
   'groups.state': { params: GroupsStateParams; result: GroupsStateResult }
   /** Durably cancel queued or running work for one hosted room. */
   'groups.stop': { params: GroupsStopParams; result: GroupsStopResult }
+  /** Record external readback or authorize retry of one exact Telegram delivery attempt. */
+  'groups.telegram.resolve_delivery': { params: GroupsTelegramResolveDeliveryParams; result: GroupsTelegramResolveDeliveryResult }
   /** Fail a not-yet-claimed handoff (client poll timeout); CAS against the watcher. */
   'handoff.fail': { params: HandoffFailParams; result: HandoffFailResult }
   /** Queue a handoff to a messaging platform's home channel; the gateway watcher claims it. */
@@ -5612,6 +5690,9 @@ export const RPC_METHODS = [
   'free_tier.status',
   'gateway.capabilities',
   'groups.approve',
+  'groups.attachment.list',
+  'groups.attachment.put',
+  'groups.attachment.read',
   'groups.capabilities',
   'groups.create',
   'groups.demote',
@@ -5629,6 +5710,7 @@ export const RPC_METHODS = [
   'groups.send',
   'groups.state',
   'groups.stop',
+  'groups.telegram.resolve_delivery',
   'handoff.fail',
   'handoff.request',
   'handoff.state',

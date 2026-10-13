@@ -68,7 +68,13 @@ class TestSplitDisplayGenerationProjectsOnce:
         from pathlib import Path
         db = SessionDB(Path(tmp_path) / "state.db")
         _carry_and_split(db, "chat", "same reply")
-        assert _reply_count(db, "chat", "same reply") == 2
+        # The planted split is real on disk: the copy sits in its own display_order group…
+        assert db._read_all(
+            "SELECT COUNT(DISTINCT display_order) AS n FROM messages WHERE session_id = ? "
+            "AND role = 'assistant' AND (active = 1 OR compacted = 1)", ("chat",))[0]["n"] == 2
+        # …but an indexed read no longer projects it twice: _ensure_display_order folds
+        # drifted generations before GROUP BY display_order (#128296).
+        assert _reply_count(db, "chat", "same reply") == 1
         _compact_again(db, "chat", "same reply")
 
         assert _reply_count(db, "chat", "same reply") == 1
@@ -82,7 +88,7 @@ class TestSplitDisplayGenerationProjectsOnce:
         from pathlib import Path
         db = SessionDB(Path(tmp_path) / "state.db")
         _carry_and_split(db, "chat", "")
-        assert _reply_count(db, "chat", "") == 2
+        assert _reply_count(db, "chat", "") == 1
         _compact_again(db, "chat", "")
 
         assert _reply_count(db, "chat", "") == 1

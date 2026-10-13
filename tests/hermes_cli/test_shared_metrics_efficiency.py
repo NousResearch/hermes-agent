@@ -245,3 +245,109 @@ def test_v3_schema_accepts_exactly_the_contract_values():
             if "enum" in spec:
                 assert set(spec["enum"]) == set(expected[field_name]), (metric, field_name)
         assert set(dims) == set(expected) | ({"model", "provider"} & set(dims)), metric
+
+
+@pytest.mark.parametrize(
+    "definition,metric,field,dimensions",
+    [
+        (
+            "tool_enabled_unused_counter",
+            contract.TOOL_ENABLED_UNUSED_METRIC,
+            "toolset",
+            {"used": "yes"},
+        ),
+        (
+            "tool_unavailable_counter",
+            contract.TOOL_UNAVAILABLE_METRIC,
+            "tool_name",
+            ROUTE,
+        ),
+    ],
+)
+def test_schema_accepts_new_builtin_registry_values(
+    monkeypatch, definition, metric, field, dimensions
+):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        (
+            Path(contract.__file__).parent
+            / "schemas/hermes.shared_metrics.v4.schema.json"
+        ).read_text()
+    )
+    allowed = contract._COUNTER_DIMENSION_VALUES[metric]
+    monkeypatch.setitem(
+        contract._COUNTER_DIMENSION_VALUES,
+        metric,
+        {
+            **allowed,
+            field: allowed[field] | {"new_builtin"},
+        },
+    )
+    validator = jsonschema.Draft202012Validator({
+        "$defs": schema["$defs"],
+        "$ref": f"#/$defs/{definition}",
+    })
+
+    for value in sorted(allowed[field] | {"new_builtin"}):
+        dims = {**dimensions, field: value}
+        assert contract.counter_dimensions_are_valid(metric, dims)
+        assert (
+            list(
+                validator.iter_errors({
+                    "name": metric,
+                    "type": "counter",
+                    "dimensions": dims,
+                    "value": 1,
+                })
+            )
+            == []
+        )
+
+    assert not contract.counter_dimensions_are_valid(
+        metric, {**dimensions, field: "private_plugin"}
+    )
+
+
+@pytest.mark.parametrize(
+    "definition,metric,field,dimensions",
+    [
+        (
+            "tool_enabled_unused_counter",
+            contract.TOOL_ENABLED_UNUSED_METRIC,
+            "toolset",
+            {"used": "yes"},
+        ),
+        (
+            "tool_unavailable_counter",
+            contract.TOOL_UNAVAILABLE_METRIC,
+            "tool_name",
+            ROUTE,
+        ),
+    ],
+)
+@pytest.mark.parametrize("value", ["", "Bad Identifier", "../private", "x" * 65])
+def test_schema_rejects_invalid_registry_identifiers(
+    definition, metric, field, dimensions, value
+):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        (
+            Path(contract.__file__).parent
+            / "schemas/hermes.shared_metrics.v4.schema.json"
+        ).read_text()
+    )
+    validator = jsonschema.Draft202012Validator({
+        "$defs": schema["$defs"],
+        "$ref": f"#/$defs/{definition}",
+    })
+    dims = {**dimensions, field: value}
+
+    assert not contract.counter_dimensions_are_valid(metric, dims)
+    assert list(
+        validator.iter_errors({
+            "name": metric,
+            "type": "counter",
+            "dimensions": dims,
+            "value": 1,
+        })
+    )

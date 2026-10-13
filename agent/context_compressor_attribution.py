@@ -41,7 +41,7 @@ class AuxRouteAttributionMixin:
         # CURRENT attempt's failure mode, not a stale prior one (#72636).
         self._last_attempt_failure_class: Optional[str] = None
 
-    def _prepare_aux_route_attribution(self, call_kwargs: Dict[str, Any]) -> None:
+    def _prepare_aux_route_attribution(self, call_kwargs: dict[str, Any]) -> None:
         """Reset the attempt and capture its effective route before client construction.
 
         Resolve the same arguments dispatch consumes, AFTER stall pins and main-runtime
@@ -107,7 +107,7 @@ class AuxRouteAttributionMixin:
         self._last_aux_call_model = model or ""
         self._last_aux_call_base_url = _safe_base or ""
 
-    def _aux_route_label(self, route: Dict[str, str]) -> str:
+    def _aux_route_label(self, route: dict[str, str]) -> str:
         """Route label for summary diagnostics.
 
         Keep the same wire → effective config → static precedence as failure identity.
@@ -120,7 +120,7 @@ class AuxRouteAttributionMixin:
                  or self._last_aux_config_model or self.summary_model or self.model)
         return f"(provider={provider} model={model})"
 
-    def _summary_failure_identity(self) -> Tuple[str, str, str]:
+    def _summary_failure_identity(self) -> tuple[str, str, str]:
         """(provider, model, base_url) identifying the failed aux summary call.
 
         ``summary_model`` is permanently empty in production, so the static fields alone
@@ -157,9 +157,9 @@ class AuxRouteAttributionMixin:
             self._last_attempt_failure_class = failure_class
 
     def _record_aux_compression_call(
-        self, *, prompt_messages: List[Dict[str, Any]], max_tokens: int | None, duration_ms: int,
+        self, *, prompt_messages: list[dict[str, Any]], max_tokens: int | None, duration_ms: int,
         aux_provider: str | None = None, aux_model: str | None = None,
-        effective_aux_context: int | None = None, phase_timings: Dict[str, Any] | None = None,
+        effective_aux_context: int | None = None, phase_timings: dict[str, Any] | None = None,
     ) -> None:
         from agent.context_compressor import _safe_int
 

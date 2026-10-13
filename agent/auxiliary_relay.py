@@ -19,7 +19,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 logger = logging.getLogger(__name__)
 
 
-_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_relay_call", default=None)
 )
 
@@ -70,8 +70,8 @@ def _set_relay_auxiliary_route(
     api_mode: str | None,
     *,
     route_callback: Optional[Callable[[str, Optional[str], str], None]] = None,
-    route_info: Optional[Dict[str, str]] = None,
-    main_runtime: Optional[Dict[str, Any]] = None,
+    route_info: Optional[dict[str, str]] = None,
+    main_runtime: Optional[dict[str, Any]] = None,
 ) -> None:
     from agent.auxiliary_client import _extract_url_query_params
 
@@ -102,7 +102,7 @@ def _set_relay_auxiliary_route(
 def _wire_provider_name(
     provider: str | None,
     base_url: str,
-    main_runtime: Optional[Dict[str, Any]],
+    main_runtime: Optional[dict[str, Any]],
 ) -> str:
     """Return the concrete provider label for one physical wire attempt."""
     from agent.auxiliary_client import _normalize_aux_provider, base_url_hostname
@@ -144,7 +144,7 @@ def _wire_provider_name(
 
 def _notify_relay_auxiliary_route(
     client: Any,
-    kwargs: Dict[str, Any],
+    kwargs: dict[str, Any],
     provider: str | None,
 ) -> None:
     """Publish the latest physical route without affecting request success."""
@@ -175,7 +175,7 @@ def _notify_relay_auxiliary_route(
 
 
 def _record_route_info(
-    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str]
+    route_info: Optional[dict[str, str]], provider: Optional[str], model: Optional[str]
 ) -> None:
     """Expose the concrete route selected for one auxiliary call."""
     if route_info is not None:

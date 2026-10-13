@@ -830,7 +830,7 @@ class GatewayModelCommandsMixin:
         # the next turn reads, and the eligibility check must see that turn's route.
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
-        self._service_tier = self._resolve_session_service_tier(session_key=session_key)
+        self._service_tier = self._resolve_session_service_tier(source=source, session_key=session_key)
         user_config = _load_gateway_config()
         try:
             # Off the loop: credential resolution can refresh an OAuth token, as the turn does.

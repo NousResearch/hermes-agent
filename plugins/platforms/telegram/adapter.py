@@ -180,7 +180,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, direct_topic_retry_kwargs, private_chat, topic_gone
-from plugins.platforms.telegram.telegram_entities import expand_link_entities, rich_message_filter, rich_message_text
+from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
 from plugins.platforms.telegram.telegram_intake import effective_update_message
@@ -6798,15 +6798,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, Teleg
 
     def _reply_context(self, message: Message) -> tuple:
         """``(reply_to_id, reply_to_text)`` for the replied-to message: Telegram's native partial quote
-        first, then text/caption, rich echo, then the sent index."""
+        first, then text/caption (hidden link URLs inlined), rich echo, then the sent index."""
         if not message.reply_to_message:
             return None, None
         reply_to_id = str(message.reply_to_message.message_id)
         quote = getattr(message, "quote", None)
-        quote_text = getattr(quote, "text", None) if quote is not None else None
+        quote_text = expand_quote_link_entities(quote, message.reply_to_message) if quote is not None else None
         if quote_text:
             return reply_to_id, quote_text
-        reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+        reply_to_text = expand_link_entities(message.reply_to_message) or None
         if not reply_to_text:
             reply_to_text = rich_message_text(message.reply_to_message) or None
         if not reply_to_text:

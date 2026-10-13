@@ -385,7 +385,9 @@ export function useStatusbarItems({
       applyMessage: updateApply.message,
       behind: updateStatus?.behind ?? 0,
       branch: updateStatus?.branch,
+      channel: updateStatus?.channel === 'stable' ? 'stable' : 'main',
       copy,
+      latestTag: updateStatus?.latestTag,
       remote: connection?.mode === 'remote',
       restarting: updateApply.stage === 'restart',
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
@@ -417,7 +419,9 @@ export function useStatusbarItems({
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
+    updateStatus?.channel,
     updateStatus?.currentSha,
+    updateStatus?.latestTag,
     updateStatus?.updateAvailable
   ])
 

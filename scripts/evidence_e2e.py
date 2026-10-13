@@ -1,9 +1,9 @@
 """End-to-end proof of the product claim, through the real tool stack.
 
-The unit tests prove the merge arithmetic. They do NOT prove the thing the
-project exists for:
+The unit tests prove the merge arithmetic (the frozen candidate's counts). They do not prove the
+end-to-end path: registry dispatch -> write gate -> guarded write -> disk.
 
-    a skill records whether it worked, and that record SURVIVES later edits.
+    a skill records whether it worked, and that record survives later unrelated body edits.
 
 This exercises the real path — registry dispatch -> write gate -> guarded write
 -> disk — against a temp HERMES_HOME, then applies an unrelated body edit and

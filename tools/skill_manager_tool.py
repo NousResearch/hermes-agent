@@ -10,6 +10,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 import contextvars as _ctxvars
 import hashlib
 import json
+from collections import OrderedDict
 from contextlib import ExitStack, suppress
 import logging
 import secrets
@@ -677,7 +678,12 @@ def _run_write_gate(build_staging):
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
-    payload, gist = build_staging(wa)
+    try:
+        payload, gist = build_staging(wa)
+    except ValueError as exc:
+        # A staging failure (the skill vanished, or an evidence_merge won't merge) is a tool
+        # error, not a raw exception: the caller gets JSON and no doomed write is staged.
+        return tool_error(str(exc), success=False)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
@@ -760,16 +766,20 @@ def apply_skill_pending(payload: dict[str, Any]) -> str:
 # payload would compare equal to nothing. Instead every staging pass mints a fresh random token,
 # records it here, and stamps it into the payload. A caller cannot guess a token (secrets, minted
 # per pass, never reused), and public ingress rejects the "_staged_by" key outright, so an injected
-# _candidate_content can never be written verbatim. The set is bounded, and cleared when the cap is reached.
-_STAGED_TOKENS: "set[str]" = set()
+# _candidate_content can never be written verbatim. The set is bounded and evicts oldest-first,
+# so an in-flight staged/approved payload keeps its token until it is the oldest, never all at once.
+_STAGED_TOKENS: "OrderedDict[str, None]" = OrderedDict()
 _STAGED_TOKENS_MAX = 512
 
 
 def _mint_staging_token() -> str:
     token = secrets.token_hex(16)
     if len(_STAGED_TOKENS) >= _STAGED_TOKENS_MAX:
-        _STAGED_TOKENS.clear()
-    _STAGED_TOKENS.add(token)
+        # Evict the OLDEST token only. A bulk clear would drop every in-flight staged/approved
+        # payload's token at once: their frozen candidates would no longer be honoured and an
+        # approved batch write would be refused at ingress. Oldest-first keeps recent tokens live.
+        _STAGED_TOKENS.popitem(last=False)
+    _STAGED_TOKENS[token] = None
     return token
 
 

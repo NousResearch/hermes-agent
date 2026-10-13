@@ -333,9 +333,12 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                     public_delta = {k: v for k, v in evidence.items() if not k.startswith("_")}
                     candidate = _merge_evidence(current, public_delta)
                 except _EvidenceMergeError as exc:
-                    return ({"action": "batch", "operations": operations,
-                             "error": f"operations[{len(staged_ops)}] ({op['action']} on '{nm}'): "
-                                       f"evidence_merge rejected: {exc}"}, gist)
+                    # Raise, don't stage: build_staging can't express this, and the flat-path
+                    # mirror refuses the write. A raw exception (not a JSON string) lets the shared
+                    # gate catch it and return a clean tool error, so nothing doomed is staged.
+                    raise ValueError(
+                        f"operations[{len(staged_ops)}] ({op['action']} on '{nm}'): "
+                        f"evidence_merge rejected: {exc}")
                 staged_ops.append({**op, "evidence_merge": {
                     **evidence,
                     "_source_digest": _content_digest(current),

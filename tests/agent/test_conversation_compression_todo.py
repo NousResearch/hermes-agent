@@ -1,0 +1,94 @@
+"""A user turn merged after a todo snapshot survives the next compaction boundary (#137652).
+
+``_fold_todo_snapshot`` appends the live todo list to the trailing user row. If that turn ends without an
+assistant reply (API error, ``/stop``), the next user message makes a ``user;user`` run, and the pre-call
+repair ``_merge_consecutive_users`` joins it onto the row that already carries the snapshot. The stale-snapshot
+strip at the next boundary used to cut from ``TODO_INJECTION_HEADER`` to the end of the content, deleting
+that later user message. Only the snapshot block (header, task lines, optional reload notice) is stale.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from agent.agent_runtime_helpers import _merge_consecutive_users
+from agent.conversation_compression import (
+    _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+    _fold_todo_snapshot,
+    _strip_stale_todo_snapshot,
+)
+from tools.todo_tool import TODO_INJECTION_HEADER, TodoStore
+
+SECOND = "SECOND MESSAGE: please also update the docs"
+NOTICE = _PRUNED_SKILL_RELOAD_NOTICE_HEADER + "\nreload skill_view(name='old-skill') first."
+
+
+def _agent(*todos: dict) -> SimpleNamespace:
+    store = TodoStore()
+    store.write(list(todos))
+    return SimpleNamespace(_todo_store=store, _repair_message_sequence=lambda rows: None)
+
+
+def test_issue_repro_merged_user_turn_survives_second_boundary():
+    agent = _agent({"id": "1", "content": "ship the release", "status": "in_progress"})
+    rows = [{"role": "user", "content": "first request"}]
+    _fold_todo_snapshot(agent, rows)
+    rows.append({"role": "user", "content": SECOND})
+    rows, repairs = _merge_consecutive_users(rows)
+    assert repairs == 1 and len(rows) == 1
+
+    _fold_todo_snapshot(agent, rows)
+
+    content = rows[-1]["content"]
+    assert content.startswith("first request\n\n" + SECOND + "\n\n" + TODO_INJECTION_HEADER)
+    assert content.count(TODO_INJECTION_HEADER) == 1
+    assert content.endswith("- [>] 1. ship the release (in_progress)")
+
+
+def test_refreshed_snapshot_replaces_stale_tasks_without_dropping_text():
+    agent = _agent({"id": "1", "content": "old task", "status": "in_progress"})
+    rows = [{"role": "user", "content": "first request"}]
+    _fold_todo_snapshot(agent, rows)
+    rows.append({"role": "user", "content": SECOND})
+    rows, _ = _merge_consecutive_users(rows)
+    agent._todo_store.write([{"id": "2", "content": "new task", "status": "pending"}])
+
+    _fold_todo_snapshot(agent, rows)
+
+    content = rows[-1]["content"]
+    assert SECOND in content and "first request" in content
+    assert "old task" not in content and "new task" in content
+    assert content.count(TODO_INJECTION_HEADER) == 1
+
+
+def test_strip_keeps_text_after_snapshot_and_reload_notice():
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)\n- [>] t2. b (in_progress)\n\n{NOTICE}\n\n{SECOND}"
+    assert _strip_stale_todo_snapshot(content) == f"first request\n\n{SECOND}"
+
+
+def test_strip_keeps_text_after_snapshot_without_notice_and_nested_tasks():
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n- [>] p. parent (in_progress)\n  - [ ] c. child (pending)\n\n{SECOND}"
+    assert _strip_stale_todo_snapshot(content) == f"first request\n\n{SECOND}"
+
+
+def test_strip_keeps_text_when_snapshot_leads_the_row():
+    content = f"{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)\n\n{SECOND}"
+    assert _strip_stale_todo_snapshot(content) == SECOND
+
+
+def test_strip_removes_every_stacked_snapshot_but_keeps_each_turn():
+    block = f"{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)"
+    content = f"a\n\n{block}\n\nb\n\n{block}\n\n{NOTICE}\n\nc"
+    assert _strip_stale_todo_snapshot(content) == "a\n\nb\n\nc"
+
+
+def test_trailing_snapshot_and_notice_still_strip_to_prefix():
+    content = f"real user words\n\n{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)\n\n{NOTICE}"
+    assert _strip_stale_todo_snapshot(content) == "real user words"
+    assert _strip_stale_todo_snapshot(f"{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)") == ""
+
+
+def test_list_part_keeps_text_after_snapshot():
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    content = [{"type": "text", "text": f"words\n\n{TODO_INJECTION_HEADER}\n- [ ] t1. old (pending)\n\n{SECOND}"}, image]
+    assert _strip_stale_todo_snapshot(content) == [{"type": "text", "text": f"words\n\n{SECOND}"}, image]

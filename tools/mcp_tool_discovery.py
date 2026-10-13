@@ -391,7 +391,10 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
             else:
                 _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
-        _loop._signal_reconnect(srv)
+        auth_park = getattr(srv, "_auth_park", None)
+        # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
+        if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
+            _loop._signal_reconnect(srv)
     return new_servers
 
 

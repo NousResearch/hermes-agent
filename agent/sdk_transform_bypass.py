@@ -15,6 +15,7 @@ the bulk fields there skips the walk and yields the same request bytes.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 # Bulk request fields carrying the conversation payload, per API family. Everything
@@ -60,7 +61,7 @@ def bypass_sdk_request_transform(
     bypassed = {key: ([] if keep_slots else value) if key in moved else value
                 for key, value in request_kwargs.items() if keep_slots or key not in moved}
     extra_body = bypassed.get("extra_body")
-    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    merged = dict(extra_body) if isinstance(extra_body, Mapping) else {}
     # An explicit caller-provided extra_body entry keeps precedence (SDK post-transform merge).
     bypassed["extra_body"] = {**merged, **{f: v for f, v in moved.items() if f not in merged}}
     return bypassed

@@ -239,6 +239,8 @@ class CLIAgentSetupMixin:
         _model_at_entry = self.model
         self._credentials_rate_limited = False
         self._credentials_terminal = False
+        invocation_binding = getattr(self, "_invocation_binding", None)
+        strict_kwargs = {"invocation_binding": invocation_binding} if invocation_binding is not None else {}
         try:
             # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
             # api_mode) must see the model this CLI will actually send, not config's `default`,
@@ -246,10 +248,11 @@ class CLIAgentSetupMixin:
             # sent model cannot use (#112600).
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url, target_model=self.model or None)
+                explicit_base_url=self._explicit_base_url, target_model=self.model or None, **strict_kwargs)
         except Exception as exc:
             _primary_exc = exc
-        if _primary_exc is not None:
+        # Strict mode never falls back: a fallback runtime is another provider or account.
+        if _primary_exc is not None and invocation_binding is None:
             runtime = self._resolve_fallback_runtime(_primary_exc)
             if runtime is not None:
                 _primary_exc = None
@@ -697,7 +700,9 @@ class CLIAgentSetupMixin:
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
-                reaction_callback=self._on_reaction)
+                reaction_callback=self._on_reaction,
+                **({"invocation_binding": self._invocation_binding}
+                   if getattr(self, "_invocation_binding", None) is not None else {}))
             # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.

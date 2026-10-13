@@ -258,6 +258,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    add("--invocation-binding", metavar="PATH", default=SUPPRESS, help=(
+        "Strict mode: pin this run to the credential, provider, model and wire reasoning effort named in a "
+        "controller-written nonsecret JSON file. Every request is verified; any mismatch fails closed "
+        "(no rotation, refresh swap or fallback). Never reports a verified serving account."))
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")

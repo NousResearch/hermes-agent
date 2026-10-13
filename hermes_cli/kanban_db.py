@@ -3949,14 +3949,11 @@ def board_stats(conn: sqlite3.Connection) -> dict:
 
     by_assignee = _counts_by_assignee(conn)
 
-    oldest_row = conn.execute(
-        "SELECT MIN(created_at) AS ts FROM tasks WHERE status = 'ready'"
-    ).fetchone()
+    # By value, not SQL MIN(): SQLite orders a text stamp (#97455) above every INTEGER.
+    ready = [t for (raw,) in conn.execute("SELECT created_at FROM tasks WHERE status = 'ready'")
+             if (t := _to_epoch(raw)) is not None]
     now = int(time.time())
-    oldest_ready_age = (
-        (now - int(oldest_row["ts"]))
-        if oldest_row and oldest_row["ts"] is not None else None
-    )
+    oldest_ready_age = now - min(ready) if ready else None
 
     return {
         "by_status": by_status,

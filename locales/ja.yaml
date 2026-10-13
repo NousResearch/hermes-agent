@@ -435,7 +435,6 @@ gateway:
     last_activity: "**最終アクティビティ:** {timestamp}"
     model: "**モデル:** `{model}`"
     model_provider: "**モデル:** `{model}` ({provider})"
-    free_tier: "Nous · 無料プラン · nous/welcome · /login でログイン"
     context: "**コンテキスト:** {used} / {total} ({pct}%)"
     context_used: "**コンテキスト:** ~{used} トークン"
     tokens: "**累計請求トークン:** {tokens} _(現在のコンテキストサイズではありません。`/context` を使用してください)_"
@@ -779,8 +778,6 @@ gateway:
   plan:
     ack_task: "計画中: {task}"
     ack_conversation: "この会話のコンテキストから計画を作成しています…"
-  initiate_setup:
-    ack: "セットアップを開始しています…"
   init:
     start_failed: "/init を開始できませんでした — もう一度お試しください。"
     ack_update: "プロジェクトスキャンから AGENTS.md を更新しています…"
@@ -843,7 +840,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ ゲートウェイの再起動に成功しました。セッションは継続します。"
-    free_tier_line: "推論: Nous 無料プラン (nous/welcome)。さらに利用するにはログイン: /login"
     online: "♻️ ゲートウェイがオンラインです — Hermes が復帰し、準備完了です。"
     db_corrupt: "⚠️ セッションデータベースの破損を検出しました。メッセージが永続化されない可能性があります。復旧オプション:\n1. `hermes {profile_arg}doctor --fix` を実行\n2. ゲートウェイを停止し、次で復旧:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (復旧可能と報告された場合) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 復旧は先に破損ファイルのスナップショットを取ります。稼働中の state.db に対して `sqlite3 ... \".recover\"` を実行しないでください。脆弱な sqlite3 CLI はさらに破損させる可能性があります\n3. {backups_dir}/ のバックアップから復元\nサニタイズ済みの診断情報は `hermes {profile_arg}doctor` で確認できます。"
     db_fts_corrupt: "⚠️ セッションデータベースが検索インデックス (FTS5) に限定された破損エラーを報告しました。メッセージテーブルは損傷していません。修復されるまでメッセージが永続化されない可能性があります: `hermes {profile_arg}doctor --fix` を実行し、ゲートウェイを再起動してください。`hermes {profile_arg}doctor` が損傷を確認しない限り、復旧ツールの実行やバックアップからの復元は行わないでください。"
@@ -1558,8 +1554,6 @@ slash:
     description: "このセッションでプロンプトを一定間隔で繰り返し実行"
   plan:
     description: "何も実行せずに markdown の実装計画を .hermes/plans/ に書き出す"
-  initiate-setup:
-    description: "初回セットアップを実行: あなたについて知り、Hermes をあなたに合わせて設定します"
   moa:
     description: "デフォルトの Mixture of Agents プリセットでプロンプトを 1 回実行し、元のモデルに戻す"
   subgoal:
@@ -2919,8 +2913,6 @@ cli:
     plan:
       planning: "📋 計画中: {task}"
       from_conversation: "📋 この会話のコンテキストから計画を作成しています..."
-    initiate_setup:
-      starting: "🧭 セットアップを開始しています..."
     init:
       updating: "⚡ プロジェクトのスキャン結果から AGENTS.md を更新しています..."
       generating: "⚡ プロジェクトのスキャン結果から AGENTS.md を生成しています..."

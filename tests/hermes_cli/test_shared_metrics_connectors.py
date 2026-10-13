@@ -39,6 +39,9 @@ _BASE = {"session_id": "s1", "task_id": "t1", "turn_id": "turn-1", "api_request_
     ("SOMETHING_NEW", "backend", "connector_backend"),  # an unlisted code falls back to its family
     ("SOMETHING_NEW", "product", "tool_error"),
     ("TOOL_NOT_FOUND", "product", "tool_error"),
+    ("FILE_NOT_ALLOWED", "product", "not_allowed"),
+    ("FILE_TOO_LARGE", "product", "invalid_arguments"),
+    ("FILE_UPLOAD_FAILED", "backend", "connector_backend"),
 ])
 def test_a_failed_connector_entry_is_classed_by_its_gateway_code(code, family, expected):
     result = json.dumps({"error": {"code": code, "family": family, "message": "private text"}})
@@ -48,11 +51,12 @@ def test_a_failed_connector_entry_is_classed_by_its_gateway_code(code, family, e
     assert expected in contract.TOOL_ERROR_CLASSES
 
 
-def test_every_classed_code_is_a_gateway_execute_code():
-    from tools.connectors.gateway.wire import EXECUTE_ERROR_CODES
+def test_every_classed_code_is_a_known_product_code():
+    from tools.connectors.gateway.wire import EXECUTE_ERROR_CODES, FILE_ERROR_FAMILIES
 
-    assert set(contract._CONNECTOR_CODE_CLASSES) <= set(EXECUTE_ERROR_CODES)
-    assert all(EXECUTE_ERROR_CODES[code][0] == "product" for code in contract._CONNECTOR_CODE_CLASSES)
+    families = {**{code: family for code, (family, _status) in EXECUTE_ERROR_CODES.items()}, **FILE_ERROR_FAMILIES}
+    assert set(contract._CONNECTOR_CODE_CLASSES) <= set(families)
+    assert all(families[code] == "product" for code in contract._CONNECTOR_CODE_CLASSES)
 
 
 def test_connector_and_bridge_calls_are_named_without_a_slug():

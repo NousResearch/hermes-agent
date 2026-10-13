@@ -17,7 +17,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
-import { answerParkedCard } from '@/store/parked-card-answers'
+import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -271,15 +271,18 @@ export function useComposerSubmit({
     return true
   }
 
-  // True when the draft was consumed as a parked card's answer.
-  const answerParkedCardWithDraft = (text: string, payloadPresent: boolean) => {
+  // 'answered': the draft was a parked card's answer. 'yielded': a card closed for it, so it runs as
+  // the next turn.
+  const answerParkedCardWithDraft = (text: string, payloadPresent: boolean): 'answered' | 'yielded' | null => {
     // A card parked on this session owns the turn: the agent is blocked inside
     // its tool batch, so a steer or queued follow-up would sit undelivered until
     // the card's own timeout. Plain text answers the card instead (a clarify
     // takes it as its next question's answer) and is not sent again.
     //
     // A slash command or attachments cannot be an answer: the card is skipped
-    // and the draft routes normally. The skip is fire-and-forget, not awaited:
+    // and the draft routes normally. An onboarding setup card the message
+    // moves past instead closes as unanswered and its turn ends there, so the
+    // message runs as the next turn. The skip is fire-and-forget, not awaited:
     // it clears the card synchronously and both RPCs ride the same socket in
     // call order, so the gateway resolves the clarify before it sees the
     // follow-up. Awaiting first would leave the draft live for a tick, long
@@ -290,20 +293,29 @@ export function useComposerSubmit({
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
     const routable = payloadPresent && !queueEdit && !isSideQuestion
+    const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
 
-    if (
-      routable &&
-      !attachments.length &&
-      !SLASH_COMMAND_RE.test(text.trim()) &&
-      answerParkedCard(sessionId ?? '', text.trim())
-    ) {
+    // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
+    const answeredScope = draftScopeRef.current
+
+    const restore = () => {
+      stashAt(answeredScope, text, [])
+
+      if (draftScopeRef.current === answeredScope) {
+        loadIntoComposer(text, [])
+      }
+    }
+
+    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       focusInput()
 
-      return true
+      return 'answered'
     }
+
+    const yielded = routable && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
 
     if (routable && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
@@ -314,7 +326,12 @@ export function useComposerSubmit({
       void skipConnectionRequest(sessionId)
     }
 
-    return false
+    // And for the onboarding chat's setup and theme cards.
+    if (routable) {
+      skipParkedCards(sessionId ?? '')
+    }
+
+    return yielded ? 'yielded' : null
   }
 
   const submitDraft = () => {
@@ -347,7 +364,9 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (answerParkedCardWithDraft(text, payloadPresent)) {
+    const parked = answerParkedCardWithDraft(text, payloadPresent)
+
+    if (parked === 'answered') {
       return
     }
 
@@ -357,8 +376,9 @@ export function useComposerSubmit({
     // sit undelivered behind the blocked prompt, and stopping the turn to force
     // it through resolves the prompt to empty and ends the turn as "Operation
     // interrupted." — the message looks eaten. Queue the words as the next turn
-    // instead; the prompt stays answerable and the queue drains on settle.
-    const blockingPrompt = !queueEdit && hasBlockingPromptRequest(sessionId)
+    // instead; the prompt stays answerable and the queue drains on settle. A
+    // setup card that just closed for this message ends its turn the same way.
+    const blockingPrompt = !queueEdit && (parked === 'yielded' || hasBlockingPromptRequest(sessionId))
 
     if (queueEdit) {
       exitQueuedEdit('save')

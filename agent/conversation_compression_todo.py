@@ -14,28 +14,45 @@ from typing import Any
 # couple them: tell the model to reload pruned skills BEFORE acting on tasks.
 # Lives after TODO_INJECTION_HEADER so it strips with the snapshot next time.
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
-# One rendered todo item opener: ``<indent>- <marker> <id>. `` (see TodoStore.format_for_injection).
-_TASK_LINE_RE = re.compile(r"^(?:  )*- (\[.\]) \S")
+# Length-prefixed item opener from TodoStore.format_for_injection:
+# ``<indent>- <marker> <id>. #<N>:<content> (<status>)`` — N is len(content) in characters.
+_TASK_ITEM_OPEN_RE = re.compile(r"^(?:  )*- (\[.\]) (\S+)\. #(\d+):")
 
 
-def _todo_snapshot_task_lines_end(lines: list[str]) -> int:
-    """Return how many leading *lines* belong to rendered task items.
-    ``TodoStore.format_for_injection`` renders each item as ``<indent>- <marker> <id>. <content> (<status>)``.
-    Content may span lines (including blank ones), so an item runs from its marker line to the first line ending
-    in the status suffix that matches its marker. Anything that does not open an item ends the task list."""
+def _consume_todo_snapshot_tasks(text: str) -> str:
+    """Consume complete length-prefixed rendered task items from the start of *text*.
+
+    ``TodoStore.format_for_injection`` renders each item as
+    ``<indent>- <marker> <id>. #<N>:<content> (<status>)`` where ``content`` is exactly N characters
+    (newlines and status-looking suffixes allowed). Malformed or truncated items are not consumed:
+    the remainder starts at the failed attempt so surrounding user text stays intact.
+    """
     from tools.todo_tool import _STATUS_MARKERS
-    count = 0
-    while count < len(lines):
-        match = _TASK_LINE_RE.match(lines[count])
-        status = next((s for s, m in _STATUS_MARKERS.items() if m == match.group(1)), None) if match else None
+
+    marker_to_status = {marker: status for status, marker in _STATUS_MARKERS.items()}
+    pos = 0
+    while pos < len(text):
+        if pos > 0 and text[pos - 1] != "\n":
+            break
+        match = _TASK_ITEM_OPEN_RE.match(text, pos)
+        if not match:
+            break
+        status = marker_to_status.get(match.group(1))
         if status is None:
-            return count
-        suffix = f" ({status})"
-        last = next((i for i in range(count, len(lines)) if lines[i].endswith(suffix)), None)
-        if last is None:
-            return count
-        count = last + 1
-    return count
+            break
+        n = int(match.group(3))
+        content_start = match.end()
+        content_end = content_start + n
+        if content_end > len(text):
+            break
+        expected_suffix = f" ({status})"
+        suffix_end = content_end + len(expected_suffix)
+        if text[content_end:suffix_end] != expected_suffix:
+            break
+        pos = suffix_end
+        if pos < len(text) and text[pos] == "\n":
+            pos += 1
+    return text[pos:]
 
 
 def _cut_todo_snapshot_block(text: str) -> str:
@@ -49,8 +66,9 @@ def _cut_todo_snapshot_block(text: str) -> str:
     if idx == -1:
         return text
     head = text[:idx].rstrip()
-    lines = text[idx + len(TODO_INJECTION_HEADER):].lstrip("\n").split("\n")
-    lines = lines[_todo_snapshot_task_lines_end(lines):]
+    remainder = text[idx + len(TODO_INJECTION_HEADER):].lstrip("\n")
+    remainder = _consume_todo_snapshot_tasks(remainder)
+    lines = remainder.split("\n") if remainder else []
     while lines and not lines[0].strip():
         lines.pop(0)
     if lines and lines[0].startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER):

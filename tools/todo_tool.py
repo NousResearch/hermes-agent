@@ -119,8 +119,11 @@ class TodoStore:
             keep = item["status"] in _ACTIVE_STATUSES or has_active_kid
             if keep:
                 marker = _STATUS_MARKERS.get(item["status"], "[?]")
+                content = item["content"]
+                # Length-prefix content so the compression stripper can consume exactly
+                # N chars even when content embeds newlines or a `` (status)`` suffix.
                 out.append(f"{'  ' * depth}- {marker} {item['id']}. "
-                           f"{item['content']} ({item['status']})")
+                           f"#{len(content)}:{content} ({item['status']})")
                 out.extend(kid_lines)
             return keep
 

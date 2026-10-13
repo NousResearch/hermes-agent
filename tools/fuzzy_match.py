@@ -585,14 +585,14 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str, *,
     at the LLM's sent indent, silently corrupting multi-line replacements when the file
     base differs from ``old_string``.  A blank-line guard also returned ``new_string``
     unchanged even when every non-blank line needed reindent.  Both are fixed here.
-    
+
     Non-blank ``new_string`` lines are aligned to the corresponding file-region lines by
     stripped content (via :class:`difflib.SequenceMatcher`), inheriting each file line's
     actual whitespace.  Genuine insertions (present in ``new_string`` but absent from the
     file) inherit the nearest file depth so nested lines sit at a sensible level rather
     than column 0.  Blank lines inherit whitespace from the nearest non-blank line above
     or below, preserving their position in the structure.
-    
+
     No-op cases that return ``new_string`` unchanged:
     * ``new_string`` is empty
     * ``old_first`` or ``file_first`` is ``None``

@@ -165,11 +165,14 @@ class TestCompactionFlags:
         db.copy_transcript_for_branch("tip", "child")
 
         child_model, child_display = db.get_resume_conversations("child")
-        # The child's model context is the tip's: the resume marker + summary + live tail —
-        # the compacted root never re-inflates into it.
+        tip_model, _ = db.get_resume_conversations("tip")
+        # The child's model context IS the tip's, verbatim: summary + live tail, never re-inflating
+        # the compacted root. The resume preamble is a gateway-layer concern (prepended at resume
+        # time, never stored in a projection), so the projection itself carries no marker row.
         assert [m.get("content") for m in child_model] == [
-            "(Conversation resumed — prior context follows below.)",
             "summary of earlier turns", "question 2", "let me check 2", "answer 2"]
+        assert [m.get("content") for m in child_model] == [m.get("content") for m in tip_model]
+        assert child_model[0].get("_compressed_summary") is True  # summary flag copied, not re-derived
         assert "question 1" in json.dumps([m.get("content") for m in child_display])
         # The child's tool turn survived the compaction mapping (absorbed result row).
         assert any(m.get("_absorbed_row_ids") for m in child_model)

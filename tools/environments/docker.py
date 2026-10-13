@@ -927,6 +927,47 @@ class DockerEnvironment(BaseEnvironment):
             nonzero="docker inspect /workspace source returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
 
+    def _container_has_live_exec(self, task_label: str, container_id: str,
+                                 workspace_source: Optional[str]) -> bool:
+        """Whether the container is executing (or holds) live work a removal would kill.
+
+        Two signals, because the in-flight counter is process-local and the removal is
+        not:
+
+        * a lease file under the sandbox dir, written by the holder's
+          ``_run_foreground`` for the workspace the bind is settled on — this is what a
+          SECOND Hermes process can see;
+        * the container's own exec instances: ``docker top`` lists every process the
+          container is running, and a ``sleep infinity``-only container has exactly the
+          PID 1 (plus the ``docker exec``-spawned shells of in-flight commands).
+
+        A container with live execs is somebody's sandbox right now — removing it to
+        settle this session's mount is the cross-process half of the exit-137 class
+        the review rejected. Fails CLOSED: an inspection failure reads as "busy".
+        """
+        # Signal 1: the lease file (cross-process).
+        try:
+            from tools.terminal_tool import _container_lease_held
+            if _container_lease_held(task_label, workspace_source):
+                return True
+        except Exception:  # noqa: BLE001 — a lease read failure must not block attach
+            pass
+        # Signal 2: the container is actually running processes beyond its init.
+        result = _docker_query(
+            [self._docker_exe, "top", container_id, "-eo", "pid,comm"],
+            timeout=10,
+            fail="docker top failed for %s: %s", fail_args=(container_id[:12],),
+            nonzero="docker top returned %d for %s: %s")
+        if result is None:
+            return True
+        pids = [
+            ln.split(None, 1)[0]
+            for ln in result.stdout.splitlines()[1:] if ln.strip()
+        ]
+        # ``sleep infinity`` PID 1 plus one ``sh -c`` per live exec; anything beyond
+        # PID 1 + its reaper means a command is executing.
+        return len(pids) > 2
+
     def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
@@ -935,7 +976,16 @@ class DockerEnvironment(BaseEnvironment):
         ``--network=none`` in extra args doesn't churn containers every startup.
         Workspace guard: a container whose ``/workspace`` is backed by a DIFFERENT host
         directory than this session's mount source is removed and recreated, so a sibling
-        session's workspace (or a legacy ``$HOME`` bind) can never be adopted."""
+        session's workspace (or a legacy ``$HOME`` bind) can never be adopted.
+
+        The removal is conditional on the container being IDLE. ``docker rm -f``
+        kills every exec in the container, so removing a live sibling's container
+        to settle this session's mount is the cross-process half of the exit-137
+        class: the in-flight counter in ``terminal_tool`` is process-local and
+        invisible here, so liveness is decided from a lease file plus the
+        container's own process table (``_container_has_live_exec``). A busy
+        container is left alone and attach fails — the caller then creates its
+        own container rather than killing the sibling's."""
         existing = self._find_reusable_container(task_label, profile_name, egress_label)
         if existing is None:
             return False
@@ -992,6 +1042,21 @@ class DockerEnvironment(BaseEnvironment):
         if wanted_source:
             actual_source = self._container_workspace_source(container_id)
             if _norm_mount_source(actual_source) != _norm_mount_source(wanted_source):
+                # Removing is what settles the mount — and it kills every exec in the
+                # container. Only an IDLE container may be removed; a live one belongs
+                # to a sibling session whose command must not be SIGKILLed to satisfy
+                # this request. Attach then fails and the caller creates its own.
+                if self._container_has_live_exec(
+                    task_label, container_id, actual_source,
+                ):
+                    logger.warning(
+                        "Existing container %s mounts /workspace from %r but this "
+                        "session needs %r — it is BUSY (a command is executing), so "
+                        "it is left alone and attach is refused; a fresh container "
+                        "will be created (task=%s, profile=%s).",
+                        container_id[:12], actual_source, wanted_source,
+                        task_label, profile_name)
+                    return False
                 logger.warning(
                     "Existing container %s mounts /workspace from %r but this session "
                     "needs %r — removing it and starting fresh (task=%s, profile=%s).",

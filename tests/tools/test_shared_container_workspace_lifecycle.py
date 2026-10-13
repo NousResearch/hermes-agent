@@ -141,6 +141,96 @@ class TestSharedContainerAdoptsTheSessionWorkspace:
         assert used == []
         assert _which(env) == "workspace-a"
 
+    def test_busy_sibling_is_never_handed_the_foreign_bind(
+        self, shared_docker_env, tmp_path, monkeypatch,
+    ):
+        """P1a, end to end against a real daemon: session A holds an in-flight command
+        on workspace A; session B explicitly requests workspace B. B must be REFUSED
+        (retryable conflict) — never handed A's bind, and A's command must survive.
+
+        Drives the real ``terminal_tool`` entry point in a thread for A (holding the
+        in-flight marker across a ``sleep``) and a plain call for B. Both sessions pin
+        the same profile key so they genuinely contend for ONE container.
+        """
+        import json
+        import threading
+        import time
+
+        ws_a = _make_workspace(tmp_path, "workspace-a")
+        ws_b = _make_workspace(tmp_path, "workspace-b")
+
+        monkeypatch.setattr(
+            terminal_tool, "_resolve_container_task_id", lambda task_id: "profile:work",
+        )
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle.get_active_env",
+            lambda tid: terminal_tool._active_environments.get("profile:work"),
+        )
+
+        # A creates the shared env and starts a long command inside it.
+        os.environ["HERMES_SESSION_KEY"] = "sess-a"
+        terminal_tool.register_task_env_overrides(
+            "sess-a", {"cwd": ws_a, "cwd_source": "session"},
+        )
+
+        a_finished = threading.Event()
+        a_result = {}
+
+        def _run_a():
+            a_result["out"] = terminal_tool.terminal_tool(
+                "sleep 5", task_id="sess-a", timeout=60,
+            )
+            a_finished.set()
+
+        t = threading.Thread(target=_run_a)
+        t.start()
+        # Wait until A's command is actually executing in the container.
+        deadline = time.time() + 30
+        env_a = None
+        while time.time() < deadline:
+            with terminal_tool._env_lock:
+                env_a = terminal_tool._active_environments.get("profile:work")
+            if env_a is not None and terminal_tool._env_has_executions_in_flight(env_a):
+                break
+            time.sleep(0.1)
+        assert env_a is not None, "A never created the shared env"
+        assert terminal_tool._env_has_executions_in_flight(env_a), (
+            "A's command never reached env.execute"
+        )
+
+        try:
+            # B asks for a different workspace while A is busy.
+            os.environ["HERMES_SESSION_KEY"] = "sess-b"
+            terminal_tool.register_task_env_overrides(
+                "sess-b", {"cwd": ws_b, "cwd_source": "session"},
+            )
+            out_b = terminal_tool.terminal_tool(
+                "cat /workspace/WHICH", task_id="sess-b",
+            )
+            parsed = json.loads(out_b)
+            assert parsed.get("status") == "workspace_conflict", (
+                f"B was not refused with a retryable conflict: {parsed}"
+            )
+            # B must never have observed A's sentinel: the command did not run in the
+            # container at all.
+            assert parsed.get("output", "").strip() not in (
+                "workspace-a", "workspace-b",
+            )
+        finally:
+            a_finished.wait(timeout=60)
+            t.join(timeout=60)
+
+        # A's command survived the whole episode.
+        parsed_a = json.loads(a_result["out"])
+        assert parsed_a.get("exit_code") == 0, f"A's command was killed: {parsed_a}"
+
+        # And once A is done, B's retry succeeds on its own workspace.
+        os.environ["HERMES_SESSION_KEY"] = "sess-b"
+        out_b2 = terminal_tool.terminal_tool("cat /workspace/WHICH", task_id="sess-b")
+        parsed_b2 = json.loads(out_b2)
+        assert parsed_b2.get("exit_code") == 0, f"B's retry failed: {parsed_b2}"
+        assert parsed_b2.get("output", "").strip() == "workspace-b"
+
 
 @pytest.fixture
 def cross_process_docker(tmp_path, monkeypatch):

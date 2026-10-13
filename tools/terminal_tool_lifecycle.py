@@ -181,6 +181,45 @@ def get_active_env(task_id: str):
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
+def _workspace_conflict_error(
+    env: Any, task_id: Optional[str], effective_task_id: str, host_cwd: Optional[str],
+):
+    """The retryable refusal for a live shared env that cannot be released.
+
+    Returns a ``WorkspaceConflictError`` (imported lazily to keep the module
+    import-cycle-free). Single builder for both raise sites in
+    :func:`ensure_task_env`, so the exception reason and the structured result
+    envelope can never drift apart.
+    """
+    from tools.terminal_tool import WorkspaceConflictError, _error_json
+
+    mounted = getattr(env, "host_cwd", None) or "<no /workspace bind>"
+    reason = (
+        f"The shared sandbox for this profile is busy on another workspace "
+        f"({mounted}); refusing to reuse it."
+    )
+    return WorkspaceConflictError(
+        reason,
+        _error_json(
+            f"The shared sandbox for this profile is busy on another workspace "
+            f"({mounted}); refusing to run in it. This call was not executed. "
+            "Retry the command — it will run once the other session's command "
+            "finishes.",
+            exit_code=-1,
+            status="workspace_conflict",
+            retry_hint=(
+                "The profile-scoped shared container is currently executing a "
+                "command in a different workspace. Retry this call; it is safe to "
+                "run as soon as the other command completes."
+            ),
+            task_id=task_id,
+            effective_task_id=effective_task_id[:24],
+            mounted_workspace=mounted,
+            requested_workspace=host_cwd,
+        ),
+    )
+
+
 def ensure_task_env(task_id: Optional[str] = None):
     """Lazily create and cache the sandbox env for *task_id* if none is active.
 
@@ -188,6 +227,12 @@ def ensure_task_env(task_id: Optional[str] = None):
     paths) bring the sandbox up on demand with the same machinery as the
     terminal tool. No-op on local. Returns the env, or ``None`` when local or
     when creation fails (best-effort; the caller's fail-closed path stays intact).
+
+    Raises :class:`WorkspaceConflictError` when this session has an explicit
+    workspace, the profile-scoped shared env is mounted on a different one, and
+    that env cannot be released without killing an in-flight command. The caller
+    must not fall back to the foreign bind — that is the #119170 exposure under
+    contention; it should retry later.
 
     :func:`terminal_tool` creates the environment on the first terminal command, but nothing else did — so
     under a non-local backend (ssh, docker, …) a session whose first action is ``vision_analyze`` on a
@@ -197,9 +242,10 @@ def ensure_task_env(task_id: Optional[str] = None):
     """
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _get_env_config, _last_activity, _live_env_mount_agrees, _release_active_env,
-        _resolve_container_task_id, _resolve_task_host_cwd, _select_image,
-        _start_cleanup_thread, resolve_task_overrides,
+        _get_env_config, _last_activity, _live_env_mount_agrees,
+        _release_active_env, _resolve_container_task_id, _resolve_task_host_cwd,
+        _select_image, _session_workspace_mount_source, _start_cleanup_thread,
+        resolve_task_overrides, WorkspaceConflictError,
     )
     config = _get_env_config()
     env_type = config["env_type"]
@@ -215,12 +261,20 @@ def ensure_task_env(task_id: Optional[str] = None):
             _last_activity[effective_task_id] = time.time()
         return existing
     if existing is not None:
-        # Deferred release: a bring-up never kills an in-flight execution, and a session
-        # with no workspace of its own has no bind to repair — both keep the live env.
-        if not _release_active_env(effective_task_id, task_id, host_cwd, in_use=False):
-            with _env_lock:
-                _last_activity[effective_task_id] = time.time()
-            return existing
+        if _session_workspace_mount_source(task_id) is not None:
+            # This caller explicitly attached a workspace and the live shared env is
+            # mounted on a different one. Releasing is the repair, but a release that
+            # would kill an in-flight command (or that fails) must NOT hand this caller
+            # the foreign bind — that is the #119170 exposure under contention.
+            released = _release_active_env(
+                effective_task_id, task_id, host_cwd, in_use=False,
+            )
+            if not released:
+                raise _workspace_conflict_error(
+                    existing, task_id, effective_task_id, host_cwd,
+                )
+        else:
+            _release_active_env(effective_task_id, task_id, host_cwd)
 
     image = _select_image(env_type, resolve_task_overrides(task_id), config)
 
@@ -234,12 +288,16 @@ def ensure_task_env(task_id: Optional[str] = None):
         if existing is not None and _live_env_mount_agrees(existing, host_cwd):
             return existing
         if existing is not None:
-            # Same deferral as above: a bring-up keeps the live env whenever the release
-            # does not apply (in-flight execution, or no workspace to repair).
-            if not _release_active_env(effective_task_id, task_id, host_cwd, in_use=False):
-                with _env_lock:
-                    _last_activity[effective_task_id] = time.time()
-                return existing
+            if _session_workspace_mount_source(task_id) is not None:
+                released = _release_active_env(
+                    effective_task_id, task_id, host_cwd, in_use=False,
+                )
+                if not released:
+                    raise _workspace_conflict_error(
+                        existing, task_id, effective_task_id, host_cwd,
+                    )
+            else:
+                _release_active_env(effective_task_id, task_id, host_cwd)
         try:
             new_env = _create_configured_env(
                 config, env_type, image=image, cwd=config["cwd"],
@@ -279,11 +337,8 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 def cleanup_all_environments():
-    """Clean up ALL active environments (process exit). Use with caution."""
-    from tools.environments.base import kill_live_foreground_processes
+    """Clean up ALL active environments. Use with caution."""
     from tools.terminal_tool import _active_environments
-    # A command still running when the host exits would outlive it in its own process group.
-    kill_live_foreground_processes()
     cleaned = 0
     for task_id in list(_active_environments.keys()):
         try:

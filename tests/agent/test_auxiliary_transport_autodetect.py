@@ -96,7 +96,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
     # sk-kimi- prefix triggers /coding endpoint auto-detection
     monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-faketesttoken123")
 
-    client, model = resolve_provider_client("kimi-coding", "kimi-for-coding")
+    client, _model = resolve_provider_client("kimi-coding", "kimi-for-coding")
     assert client is not None, "Should resolve a client"
     assert isinstance(client, AnthropicAuxiliaryClient), (
         "Kimi Coding Plan endpoint (api.kimi.com/coding) speaks Anthropic "

@@ -162,10 +162,21 @@ def refresh_nous_auth_keepalive_once(
         )
         if pool_result is not None:
             return pool_result
-        if not get_provider_auth_state("nous"):
+        state = get_provider_auth_state("nous")
+        if not state:
+            return False
+        # Mid-life twin of start_nous_auth_keepalive's guard (a guest minted after the thread
+        # started): its tokens are minted on demand, and an inference mint here would put a guest
+        # who only uses connectors through the free-inference challenge every tick.
+        from hermes_cli.anon_auth import is_guest_state
+        if is_guest_state(state):
             return False
         try:
-            resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
+            # Nobody is waiting on a keepalive tick: a free-tier browser challenge is announced to the
+            # desktop (so it can clear before a token is needed) but never waited on here.
+            from hermes_cli.anon_challenge import background_caller
+            with background_caller():
+                resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
             logger.debug("Nous auth keepalive: refreshed singleton auth state")
             return True
         except Exception as exc:

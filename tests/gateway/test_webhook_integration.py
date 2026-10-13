@@ -138,7 +138,8 @@ class TestGitHubPRWebhook:
         assert "Add webhook adapter" in event.text
         assert event.source.chat_type == "webhook"
         assert event.source.platform == Platform.WEBHOOK
-        assert "github-pr" in event.source.chat_id
+        assert event.source.user_id == "webhook:github-pr"
+        assert event.source.chat_id in adapter._delivery_info
         assert event.message_id == "gh-delivery-001"
 
 
@@ -185,9 +186,9 @@ class TestCrossPlatformDelivery:
             )
             assert resp.status == 202
 
-        # The adapter should have stored delivery info
-        chat_id = "webhook:alerts:alert-001"
-        assert chat_id in adapter._delivery_info
+        # The adapter should have stored delivery info under the event's opaque session identity.
+        assert len(adapter._delivery_info) == 1
+        chat_id = next(iter(adapter._delivery_info))
 
         # Now call send() as if the agent has finished
         result = await adapter.send(chat_id, "I've acknowledged the alert.")

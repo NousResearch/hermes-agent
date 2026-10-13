@@ -194,7 +194,7 @@ def _relay_compute_host_response(frame: dict) -> bool:
     return True
 
 
-def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
     located = _compute_host_request_session(request_id)
@@ -314,6 +314,13 @@ def _send_compute_host_control(
     return _get_compute_host_supervisor().control(
         sid, route_name=route_name, payload=frame, wait=wait, timeout=timeout,
         on_late_ack=on_late_ack)
+
+
+def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
+    """``_err`` for a ``control.error``/``error`` ack, else None."""
+    if ack.get("type") in {"control.error", "error"}:
+        return _err(rid, code, str(ack.get("message") or default))
+    return None
 
 
 def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:

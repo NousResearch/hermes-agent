@@ -12,7 +12,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class UnlockRequired(Exception):
     """The backend is locked for this session; the surface must prompt for the master password."""
 
-    def __init__(self, backend: "LoginBackend"):
+    def __init__(self, backend: LoginBackend):
         super().__init__(f"{backend.display_name} is locked")
         self.backend = backend
 
@@ -60,7 +60,7 @@ class LoginBackend(ABC):
         return bool(origin) and origin in allowed
 
     @abstractmethod
-    def list_items(self) -> List[VaultItemMeta]:
+    def list_items(self) -> list[VaultItemMeta]:
         """Metadata only. Locked external backends return [] (the agent sees a lock hint instead)."""
 
     @abstractmethod
@@ -78,42 +78,42 @@ class LoginBackend(ABC):
         explicitly request manual entry while retaining destination checks."""
         return None
 
-    def resolve_secret(self, handle: str) -> Dict[str, str]:
+    def resolve_secret(self, handle: str) -> dict[str, str]:
         """Full payload of a payment/address item (server-side only). External managers list only
         logins, so the base returns the password-only shape."""
         return {"password": self.resolve_password(handle)}
 
 
-def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: str, timeout: float,
+def run_with_stdin_secret(argv: Sequence[str], *, env: dict[str, str], secret: str, timeout: float,
                           label: str) -> subprocess.CompletedProcess:
     """Run a manager CLI feeding *secret* on stdin (never argv, never env). Spawn/timeout → RuntimeError."""
     try:
-        return subprocess.run(  # noqa: S603 — argv list, no shell
+        return subprocess.run(
             list(argv), env=env, input=secret + "\n", capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
-def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env: str, secret: str, timeout: float,
+def run_with_secret_env(argv: Sequence[str], *, env: dict[str, str], secret_env: str, secret: str, timeout: float,
                         label: str) -> subprocess.CompletedProcess:
     """Run a manager CLI whose non-interactive contract reads the secret from a named env var.
     The variable is set on the child's environment only (never argv, never our process)."""
     child_env = dict(env)
     child_env[secret_env] = secret
     try:
-        return subprocess.run(  # noqa: S603 — argv list, no shell
+        return subprocess.run(
             list(argv), env=child_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout)
+            encoding="utf-8", errors="replace", timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
     except OSError as exc:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
-def _cfg() -> Dict:
+def _cfg() -> dict:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}
     return cfg if isinstance(cfg, dict) else {}
@@ -146,7 +146,7 @@ def is_installed(name: str) -> bool:
         return False
     try:
         return cls.is_available(deepcopy(section) if isinstance(section, dict) else {}) is True
-    except Exception:  # noqa: BLE001 — a broken plugin must not break vault discovery
+    except Exception:  # health: allow BLE001 -- plugin probe errors may contain credentials; skip with a fixed diagnostic
         logger.warning("Login backend '%s' availability check failed; skipping", name)
         return False
 
@@ -162,18 +162,18 @@ def is_enabled(name: str) -> bool:
     return is_installed(name)
 
 
-def enabled_backends() -> List[LoginBackend]:
+def enabled_backends() -> list[LoginBackend]:
     """Local first, then available external managers enabled for this profile."""
     from agent.vault_backends.local import LocalLoginBackend
 
     cfg = _cfg()
-    out: List[LoginBackend] = [LocalLoginBackend()]
+    out: list[LoginBackend] = [LocalLoginBackend()]
     for cls in external_backend_classes():
         if is_enabled(cls.name):
             section = cfg.get(cls.name) or {}
             try:
                 out.append(cls(deepcopy(section) if isinstance(section, dict) else {}))
-            except Exception:
+            except Exception:  # health: allow BLE001 -- plugin constructor errors may contain credentials; skip with a fixed diagnostic
                 # Provider exceptions may carry credentials, even during initialization.
                 logger.warning("Login backend '%s' initialization failed; skipping", cls.name)
     return out

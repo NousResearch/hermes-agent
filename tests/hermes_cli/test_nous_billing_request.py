@@ -169,7 +169,7 @@ def test_billing_token_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """The 30s (token, base) memo must not hand profile A's Portal bearer to profile B under a
     multiplex gateway, where the per-turn HERMES_HOME override selects the auth.json."""
     import hermes_constants
-    import hermes_cli.auth as auth
+    from hermes_cli import auth
 
     monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(auth, "get_provider_auth_state", lambda provider: {})

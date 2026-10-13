@@ -145,7 +145,8 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {query ? C.filter(query) : C.typeToFilter} · {view.length === 1 ? P.petCountOne(1) : P.petCountOther(view.length)}
+        {query ? C.filter(query) : C.typeToFilter} ·{' '}
+        {view.length === 1 ? P.petCountOne(1) : P.petCountOther(view.length)}
       </Text>
 
       {offset > 0 && <Text color={t.color.muted}>{C.moreAbove(offset)}</Text>}
@@ -173,7 +174,9 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
         })
       )}
 
-      {offset + VISIBLE < view.length && <Text color={t.color.muted}>{C.moreBelow(view.length - offset - VISIBLE)}</Text>}
+      {offset + VISIBLE < view.length && (
+        <Text color={t.color.muted}>{C.moreBelow(view.length - offset - VISIBLE)}</Text>
+      )}
 
       {err ? <Text color={t.color.label}>{C.error(err)}</Text> : null}
       {busy ? <Text color={t.color.accent}>{P.adopting}</Text> : null}

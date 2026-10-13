@@ -270,6 +270,28 @@ def _loop_route_is_gateway_chat(state) -> bool:
     return bool(route.get("platform") and route.get("chat_id"))
 
 
+def _session_owns_live_wakeup_schedule(session: dict) -> bool:
+    """True while THIS process's notification poller is the only driver of an active /loop or /heartbeat for
+    ``session`` — the reapers must then keep the detached session (and with it the poller) alive, or the schedule
+    freezes until a client reattaches. Gateway-routed schedules are fired by the gateway, so they never pin the
+    session here. Bounded: a loop pauses at its tick budget and a stopped/paused schedule releases the session.
+    Fail-open to False: an unreadable store must not make a session unreapable."""
+    if not (sid_key := session.get("session_key") or ""):
+        return False
+    try:
+        from hermes_cli.heartbeat import HeartbeatManager
+        from hermes_cli.loops import LoopManager
+        with _session_profile_runtime_scope(session, hydrate_secrets=False):
+            loop = LoopManager(session_id=sid_key)
+            if loop.is_active() and not _loop_route_is_gateway_chat(loop.state):
+                return True
+            heartbeat = HeartbeatManager(session_id=sid_key)
+            return heartbeat.is_active() and not _notif_gateway_owns_heartbeat(session, sid_key)
+    except Exception:
+        logger.debug("wakeup-schedule check failed for %s", sid_key, exc_info=True)
+        return False
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -727,7 +749,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
-    handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
+    handle = lambda events, deferred: _notif_handle_ready(
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
@@ -844,7 +866,13 @@ def _hud_surface_note(session: dict) -> str:
     surface = session.get("client_surface")
     if surface == "hud":
         from agent.prompt_builder import hud_surface_note
-        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        agent = session.get("agent")
+        direct = getattr(agent, "valid_tool_names", None) or set()
+        if TOOL_CALL_NAME not in direct:
+            return hud_surface_note(direct)
+        from agent.tool_executor import _tool_search_scoped_names
+        return hud_surface_note(direct, _tool_search_scoped_names(agent))
     if surface == "voice-live":
         from tools.voice_live import voice_live_turn_note
         return voice_live_turn_note(session.get("voice_live_context") or "")

@@ -15,8 +15,8 @@ from tools.registry import registry
 def test_unlock_accepts_plugin_name_and_rejects_ineligible_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    args = {"backend": "custom"}
-    validate(args, tool.BROWSER_VAULT_UNLOCK_SCHEMA["parameters"])
+    args = {"action": "unlock", "backend": "custom"}
+    validate(args, tool.BROWSER_VAULT_SCHEMA["parameters"])
     unlock = Mock()
     backend = SimpleNamespace(name="custom", display_name="Custom", needs_unlock=True,
                               is_unlocked=lambda: False, unlock=unlock)
@@ -26,17 +26,17 @@ def test_unlock_accepts_plugin_name_and_rejects_ineligible_sources(
     prompt = Mock(return_value="synthetic-master")
     monkeypatch.setattr("agent.vault_backends.unlock.get_unlock_prompt_callback", lambda: prompt)
 
-    raw = registry.dispatch("browser_vault_unlock", args)
+    raw = registry.dispatch("browser_vault", args)
     assert isinstance(raw, str) and json.loads(raw)["success"]
     assert "synthetic-master" not in raw
     unlock.assert_called_once_with("synthetic-master")
     prompt.reset_mock()
     unlock.reset_mock()
     for name in ("unregistered", "token_provider"):
-        raw = registry.dispatch("browser_vault_unlock", {"backend": name})
+        raw = registry.dispatch("browser_vault", {"action": "unlock", "backend": name})
         assert isinstance(raw, str) and not json.loads(raw)["success"]
-    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [])
-    raw = registry.dispatch("browser_vault_unlock", args)
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", list)
+    raw = registry.dispatch("browser_vault", args)
     assert isinstance(raw, str) and not json.loads(raw)["success"]
     prompt.assert_not_called()
     unlock.assert_not_called()

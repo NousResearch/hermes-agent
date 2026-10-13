@@ -89,7 +89,7 @@ def register(ctx):
 '''
 
 
-@pytest.mark.parametrize("tool_name", ["browser_vault_fill", "browser_vault_enter_code"])
+@pytest.mark.parametrize("action", ["fill", "enter_code"])
 @pytest.mark.parametrize("policy, kind, empty, destination, focus, authorized", [
     ("default", "login", False, "https://example.test", True, True),
     ("default", "login", False, "https://login.example.test", True, False),
@@ -111,7 +111,7 @@ def register(ctx):
 def test_native_tab_policy_and_fill_precheck_share_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     policy: str, kind: str, empty: bool | str, destination: str, focus: bool, authorized: bool,
-    tool_name: str,
+    action: str,
 ) -> None:
     from agent import redact, vault_login_classifier
     from agent.vault_backends.base import backend_for_handle
@@ -119,7 +119,7 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
     from tools import browser_supervisor, browser_vault_tool
     from tools.registry import registry
 
-    otp = tool_name == "browser_vault_enter_code"
+    otp = action == "enter_code"
     authorized = authorized and (not otp or kind == "login")
     home = tmp_path / "profile"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -175,12 +175,12 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
     secret_eval = Mock(return_value={"success": True, "result": {"filled": 1}})
     monkeypatch.setattr(browser_vault_tool, "_eval_js_secret", secret_eval)
     try:
-        raw = registry.dispatch(tool_name, {"handle": "policytest:item"}, task_id="policy-test")
+        raw = registry.dispatch("browser_vault", {"action": action, "handle": "policytest:item"}, task_id="policy-test")
         assert isinstance(raw, str)
         out = json.loads(raw)
         assert out["success"] is authorized
         assert attached == (["destination"] if authorized and focus else [])
-        assert getattr(backend, "reads") == (["policytest:item"] if authorized else [])
+        assert backend.reads == (["policytest:item"] if authorized else [])
         if authorized:
             assert out["origin"] == destination
             assert fill.call_args.kwargs == {"expected_origin": destination, "nonce": inspect.call_args.args[0]}
@@ -191,9 +191,9 @@ def test_native_tab_policy_and_fill_precheck_share_authority(
             inspect.assert_not_called()
             secret_eval.assert_not_called()
         if kind != "login" or empty:
-            assert getattr(backend, "calls") == []
+            assert backend.calls == []
         else:
-            assert destination in getattr(backend, "calls")
+            assert destination in backend.calls
         assert "0" * 6 not in raw
         assert "synthetic-password" not in raw
         assert "PRIVATE-POLICY-DETAIL" not in raw + caplog.text

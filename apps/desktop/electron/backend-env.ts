@@ -244,12 +244,61 @@ function buildDesktopBackendEnv({
   }
 }
 
+/**
+ * Spawn env for a POOLED per-profile backend (`spawnPoolBackend`).
+ *
+ * TERMINAL_CWD is the LAUNCH profile's resolved workspace. A pooled child
+ * serves ANOTHER profile (`--profile X`): stamping the app-global cwd makes
+ * that profile's placeholder/unset `terminal.cwd` sessions inherit the launch
+ * (or another) profile's workspace (#87584). Drop TERMINAL_CWD from the
+ * inherited env AND from any runtime-provided mapping (case-insensitively on
+ * Windows); the `--profile` child re-resolves its own cwd from its profile
+ * config, the same way a standalone `hermes -p X serve` would. The launch
+ * profile's own (primary) backend keeps the pin in main.ts.
+ */
+function pooledProfileBackendEnv({
+  hermesHome,
+  profile,
+  currentEnv = process.env,
+  backendEnv = {},
+  platform = process.platform,
+  fsModule = fs,
+  pathModule = pathModuleForPlatform(platform)
+}: any = {}) {
+  const parent = profileBackendParentEnv({ hermesHome, profile, currentEnv, platform, fsModule, pathModule })
+  const fold = platform === 'win32' ? (value: string) => value.toUpperCase() : (value: string) => value
+  const isTerminalCwd = (key: string) => fold(key) === 'TERMINAL_CWD'
+
+  const env = { ...parent }
+
+  for (const key of Object.keys(env)) {
+    if (isTerminalCwd(key)) {
+      delete env[key]
+    }
+  }
+
+  // The resolved root, not process.env's: on Windows it can come from the user
+  // registry, and the --profile child resolves its home under it.
+  env.HERMES_HOME = hermesHome
+
+  for (const [key, value] of Object.entries(backendEnv || {})) {
+    if (isTerminalCwd(key)) {
+      continue
+    }
+
+    env[key] = value
+  }
+
+  return env
+}
+
 export {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   delimiterForPlatform,
   normalizeHermesHomeRoot,
   pathEnvKey,
+  pooledProfileBackendEnv,
   POSIX_SANE_PATH_ENTRIES,
   profileBackendParentEnv,
   storeFirstPath

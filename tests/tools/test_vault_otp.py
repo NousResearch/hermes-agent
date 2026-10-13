@@ -61,7 +61,7 @@ def test_otp_failures_neither_leak_nor_silently_prompt(
             transport.side_effect = RuntimeError(private)
         case "transport_result":
             transport.return_value = {"success": False, "error": private}
-    raw = registry.dispatch("browser_vault_enter_code", {"handle": "fixture:item"}, task_id="otp-test")
+    raw = registry.dispatch("browser_vault", {"action": "enter_code", "handle": "fixture:item"}, task_id="otp-test")
     assert isinstance(raw, str)
     assert json.loads(raw)["error_type"] == expected
     assert "PRIVATE-OTP-DETAIL" not in raw and "0" * 6 not in raw
@@ -79,7 +79,7 @@ def test_manual_code_fallback_names_the_authorized_site(
 ) -> None:
     backend, prompt, transport = otp_path
     backend.resolve_otp.return_value = None
-    raw = registry.dispatch("browser_vault_enter_code", {"handle": handle, "manual": manual}, task_id="otp-test")
+    raw = registry.dispatch("browser_vault", {"action": "enter_code", "handle": handle, "manual": manual}, task_id="otp-test")
     assert isinstance(raw, str)
     assert json.loads(raw)["success"] and json.loads(raw)["source"] == "user"
     prompt.assert_called_once_with("example.test", "")
@@ -102,8 +102,8 @@ def test_explicit_manual_retry_preserves_the_saved_login_checks(
 ) -> None:
     backend, prompt, transport = otp_path
     backend.resolve_otp.side_effect = RuntimeError("PRIVATE-OTP-DETAIL")
-    args = {"handle": "fixture:item"}
-    first = registry.dispatch("browser_vault_enter_code", args, task_id="otp-test")
+    args = {"action": "enter_code", "handle": "fixture:item"}
+    first = registry.dispatch("browser_vault", args, task_id="otp-test")
     assert isinstance(first, str)
     assert json.loads(first)["error_type"] == "code_unavailable"
     assert "manual=true" in json.loads(first)["next"]
@@ -115,7 +115,7 @@ def test_explicit_manual_retry_preserves_the_saved_login_checks(
             backend.get_meta.side_effect = RuntimeError("PRIVATE-OTP-DETAIL")
         case "missing":
             backend.get_meta.return_value = None
-    raw = registry.dispatch("browser_vault_enter_code", {**args, "manual": True}, task_id="otp-test")
+    raw = registry.dispatch("browser_vault", {**args, "manual": True}, task_id="otp-test")
     assert isinstance(raw, str)
     assert "PRIVATE-OTP-DETAIL" not in raw and "0" * 6 not in raw
     assert json.loads(raw)["success"] is (not denial)

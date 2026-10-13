@@ -46,7 +46,7 @@ def _wire_browser_exec(monkeypatch, run_cli):
     from tools import browser_use_cli as browser_use
 
     monkeypatch.setattr(browser_use, "_find_cli", lambda: ["browser-use"])
-    monkeypatch.setattr(browser_use, "_base_subprocess_env", lambda: {})
+    monkeypatch.setattr(browser_use, "_base_subprocess_env", dict)
     monkeypatch.setattr(browser_use, "_real_profile_consented", lambda: False)
     monkeypatch.setattr(browser_use, "_resolve_lightpanda_cdp", lambda *a: None)
     monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -123,7 +123,7 @@ def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_
     monkeypatch.setattr(session, "_get_session_info", lambda *a: {
         "session_name": "rp_1", "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
         "features": {"local": True, "real_profile": True}})
-    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(runtime, "published_env", dict)
     lease.acquire("human-viewer")
     result = json.loads(browser.browser_click("e1", task_id="review"))
     assert commands == [], f"human holds the lease, yet a real-profile browser command was dispatched: {commands}"
@@ -175,12 +175,12 @@ def test_vault_page_operations_respect_the_human_lease(monkeypatch):
     for name in ("browser_vault_fill", "browser_vault_enter_code", "browser_vault_save_login"):
         monkeypatch.setattr(vault, name, lambda *a, **k: touched.append(name) or json.dumps({"success": True}))
     lease.acquire("human")
-    for handler in (vault._handle_vault_fill, vault._handle_vault_enter_code, vault._handle_vault_save_login):
-        res = json.loads(handler({"handle": "vault_x"}, task_id="default"))
-        assert res["code"] == "human_has_control", handler.__name__
+    for action in ("fill", "enter_code", "save_login"):
+        res = json.loads(vault._handle_vault({"action": action, "handle": "vault_x"}, task_id="default"))
+        assert res["code"] == "human_has_control", action
     assert touched == [], "no vault page access while the human holds the screen"
     lease.release("human")
-    assert json.loads(vault._handle_vault_fill({"handle": "vault_x"}, task_id="default"))["success"] is True
+    assert json.loads(vault._handle_vault({"action": "fill", "handle": "vault_x"}, task_id="default"))["success"] is True
 
 
 def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypatch):
@@ -206,7 +206,10 @@ def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypa
     assert evaluated == ["fill()"], "the credential must not reach the page under a human lease"
 
 
-def test_explicit_manual_otp_dispatch_keeps_the_human_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("manual", [False, True])
+def test_otp_dispatch_keeps_the_manual_choice_and_human_lease(
+    monkeypatch: pytest.MonkeyPatch, manual: bool,
+) -> None:
     from tools import browser_tool as browser
     from tools import browser_vault_tool as vault
     from tools.registry import registry
@@ -222,12 +225,12 @@ def test_explicit_manual_otp_dispatch_keeps_the_human_lease(monkeypatch: pytest.
         return json.dumps({"success": True})
 
     monkeypatch.setattr(vault, "browser_vault_enter_code", enter_code)
-    args = {"handle": "vault_fixture", "manual": True}
-    raw = registry.dispatch("browser_vault_enter_code", args, task_id=task_id)
+    args = {"action": "enter_code", "handle": "vault_fixture", "manual": manual}
+    raw = registry.dispatch("browser_vault", args, task_id=task_id)
     assert isinstance(raw, str) and json.loads(raw)["success"] is True
-    assert calls == [("vault_fixture", task_id, True)]
+    assert calls == [("vault_fixture", task_id, manual)]
 
     lease.acquire("human")
-    refused = registry.dispatch("browser_vault_enter_code", args, task_id=task_id)
+    refused = registry.dispatch("browser_vault", args, task_id=task_id)
     assert isinstance(refused, str) and json.loads(refused)["code"] == "human_has_control"
     assert len(calls) == 1, "manual entry must not bypass the human's screen ownership"

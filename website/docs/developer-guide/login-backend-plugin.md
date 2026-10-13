@@ -115,7 +115,7 @@ Override `resolve_otp(self, handle: str) -> str | None` to retrieve a current on
 Set `VaultItemMeta.has_otp` only when the item supports automatic code retrieval and the plugin configuration enables it.
 The default returns `None`, allowing Hermes to ask the user for a code.
 New integrations should report retrieval failures by raising rather than silently treating them as absent OTP.
-The tool reports the error; the user can then choose explicit manual entry with `browser_vault_enter_code(handle, manual=true)`.
+The tool reports the error; the user can then choose explicit manual entry with `browser_vault(action="enter_code", handle=handle, manual=true)`.
 Never return the underlying TOTP seed in metadata or tool output.
 
 For a supplied login handle, Hermes verifies metadata and the destination policy before calling `resolve_otp()`.

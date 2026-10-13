@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.incidents as incidents
+from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
 from hermes_time import now as _hermes_now
@@ -50,7 +50,6 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
 
     def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
         deliveries.append(content)
-        return None
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
@@ -260,7 +259,7 @@ def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp
         assert len(deliveries) == 1, "an alerted signature must not re-ping on every run"
         rows = inc.list_incidents()
         assert len(rows) == 1 and rows[0]["state"] == "alerted" and rows[0]["alerted_at"]
-        stored = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
+        stored = next(j for j in cron_jobs.load_jobs() if j["id"] == job["id"])
         assert stored["last_status"] == "error", "the withheld run is still recorded"
 
         # Cooldown elapsed: exactly one reminder, then silent again.
@@ -303,6 +302,26 @@ def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
         _tick_failing(job, tmp_path, deliveries, error="boom signature B")
         assert len(deliveries) == 2, "changed signature must re-alert"
         assert inc.count_incidents() == 2
+
+
+def test_ack_holds_when_only_a_measured_duration_differs(monkeypatch, tmp_path):
+    """The inactivity watchdog polls every few seconds, so the same stall reports a slightly
+    different idle time each run. That is the same failure: the ack must keep it silent."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    stall = "Cron job 'x' idle for {}s (limit 600s) — last activity: waiting for tool"
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(601))
+        assert len(deliveries) == 1
+        (first,) = inc.list_incidents()
+        assert inc.ack_incident(first["id"]) is True
+
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(604))
+
+        assert len(deliveries) == 1, "acked stall must not re-ping on a new idle reading"
+        assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
 
 
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):

@@ -21,6 +21,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -119,12 +120,12 @@ class _AiohttpBridgeAdapter:
     """HttpServerAdapter bridging SDK route registrations into our aiohttp app; without it
     ``App()`` unconditionally imports fastapi/uvicorn and allocates a ``FastAPI()``."""
 
-    def __init__(self, aiohttp_app: "web.Application"):
+    def __init__(self, aiohttp_app: web.Application):
         self._aiohttp_app = aiohttp_app
 
-    def register_route(self, method: "HttpMethod", path: str, handler: "HttpRouteHandler") -> None:
-        async def _aiohttp_handler(request: "web.Request") -> "web.Response":
-            result: "HttpResponse" = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
+    def register_route(self, method: HttpMethod, path: str, handler: HttpRouteHandler) -> None:
+        async def _aiohttp_handler(request: web.Request) -> web.Response:
+            result: HttpResponse = await handler(HttpRequest(body=await request.json(), headers=dict(request.headers)))
             status = result.get("status", 200)
             resp_body = result.get("body")
             if resp_body is not None:
@@ -189,7 +190,7 @@ def _env_enablement() -> dict | None:
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None, media_files: Optional[list] = None, force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Acquire a Bot Framework bearer token and POST a single message activity; used by
     ``send_message_tool._send_via_adapter`` when the gateway runner is not in this process
     (``hermes cron``). ``TEAMS_SERVICE_URL`` is allowlisted and ``chat_id`` charset-checked
@@ -357,7 +358,7 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
-        self._extra: Dict[str, Any] = config.extra or {}
+        self._extra: dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
@@ -366,11 +367,11 @@ class TeamsAdapter(BasePlatformAdapter):
         self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
         _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
-        self._app: Optional["App"] = None
-        self._runner: Optional["web.AppRunner"] = None
+        self._app: Optional[App] = None
+        self._runner: Optional[web.AppRunner] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
-        self._conv_refs: Dict[str, Any] = {}
+        self._conv_refs: dict[str, Any] = {}
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
@@ -600,7 +601,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 logger.warning("[teams] Failed to cache attachment '%s' (%s): %s", att_name or content_url, content_type, e)
         return None
 
-    async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
+    async def _send_card(self, chat_id: str, card: AdaptiveCard) -> Any:
         """Send an AdaptiveCard, using a stored ConversationReference when available."""
         from microsoft_teams.api import MessageActivityInput
         if not self._app:
@@ -624,17 +625,17 @@ class TeamsAdapter(BasePlatformAdapter):
             self._sent_ids.append(sent_id)
 
     @staticmethod
-    def _invoke_message(text: str) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+    def _invoke_message(text: str) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         return InvokeResponse(status=200, body=AdaptiveCardActionMessageResponse(value=text))
 
     @staticmethod
-    def _invoke_card(body: list) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+    def _invoke_card(body: list) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         card = AdaptiveCard().with_version("1.4").with_body(body)
         return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=card))
 
     async def _on_card_action(
-        self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
-    ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+        self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
+    ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
         from tools.approval import resolve_gateway_approval, has_blocking_approval
 
         data = ctx.activity.value.action.data or {}
@@ -705,7 +706,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
@@ -727,7 +728,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
@@ -751,8 +752,8 @@ class TeamsAdapter(BasePlatformAdapter):
             else:
                 path = source.removeprefix("file://")
                 mime_type = mimetypes.guess_type(path)[0] or default_mime
-                with open(path, "rb") as f:
-                    content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                content_url = f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
             activity = MessageActivityInput().add_attachments(Attachment(content_type=mime_type, content_url=content_url))
             if caption:
                 activity = activity.add_text(caption)
@@ -763,7 +764,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         return await self._send_media_attachment(chat_id, image_url, "image/png", caption=caption, media_label="image")
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -771,15 +772,15 @@ class TeamsAdapter(BasePlatformAdapter):
         return await self.send_image(chat_id=chat_id, image_url=image_path, caption=caption, reply_to=reply_to)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(chat_id, video_path, "video/mp4", caption=caption, media_label="video")
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-                         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(chat_id, audio_path, "audio/mpeg", caption=caption, media_label="voice")
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
-                            reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+                            reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         return await self._send_media_attachment(
             chat_id, file_path, "application/octet-stream", caption=caption, media_label="document")
 

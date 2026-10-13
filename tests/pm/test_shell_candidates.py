@@ -38,3 +38,16 @@ def test_nonstarting_bash_is_rejected(monkeypatch):
 
     monkeypatch.setattr(shell.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 1))
     assert shell._bash_starts("broken-bash.exe") is False
+
+
+def test_module_docstring_preserves_windows_paths_literal():
+    # The module docstring documents Windows bash paths (C:\Windows\System32\bash.exe,
+    # WindowsApps\bash.exe). A non-raw docstring would emit a SyntaxWarning for \W (py3.12+)
+    # and silently corrupt \b in "WindowsApps\bash.exe" into a backspace character. The
+    # docstring must stay raw so every backslash is literal.
+    from pm import shell
+
+    doc = shell.__doc__ or ""
+    assert "C:\\Windows\\System32\\bash.exe" in doc
+    assert "WindowsApps\\bash.exe" in doc
+    assert "\b" not in doc

@@ -187,8 +187,15 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   // `relative` box), so the layer covers exactly the pane the page used to own.
   // The zone's tab strip still stands down while a page is showing — that is
   // `paneChrome.headerVeto` on the contribution, driven by `$workspaceIsPage`.
+  //
+  // `data-glass-raised` is load-bearing, not decoration: in window glass the
+  // app thins `--ui-chat-surface-background` to `transparent` on purpose
+  // (styles.css, `:root[data-hermes-glass]`), so a layer wearing only that token
+  // paints NOTHING and the live session view underneath shows through the page.
+  // The marker re-resolves the token to the near-opaque chrome mix for this
+  // subtree — the same mechanism the overlay card uses for its raised surface.
   const page = (view: ReactNode) => (
-    <div className="absolute inset-0 z-10 bg-(--ui-chat-surface-background)">
+    <div className="absolute inset-0 z-10 bg-(--ui-chat-surface-background)" data-glass-raised="">
       <Suspense fallback={null}>{view}</Suspense>
     </div>
   )

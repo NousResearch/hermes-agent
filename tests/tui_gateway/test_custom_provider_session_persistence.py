@@ -511,6 +511,36 @@ class TestOverridesHaveRoutableProvider:
 
 
 class TestRoomPlumbingRuntimeOverrides:
+    def test_live_bot_chat_rehydrates_composer_pin_before_config_sync(self, monkeypatch):
+        import tui_gateway.server as server
+
+        monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/default", "nous"))
+        row = {
+            "title": "Bot Chat",
+            "model": "claude-sonnet-5-5",
+            "billing_provider": "nous",
+            "model_config": json.dumps({
+                "composer_override_profile": {"model": "profile/default", "provider": "nous"},
+            }),
+        }
+
+        class DB:
+            def get_session(self, key):
+                assert key == "session-key"
+                return row
+
+        agent = types.SimpleNamespace(
+            model="profile/default", provider="nous", _session_db=DB(),
+        )
+        session = {"agent": agent, "session_key": "session-key"}
+        monkeypatch.setattr(server, "_persist_live_session_runtime", lambda session: None)
+
+        server._sync_agent_model_with_config("sid", session)
+
+        assert session["model_override"]["model"] == "claude-sonnet-5-5"
+        assert session["model_override"]["provider"] == "nous"
+        assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+
     def test_marked_row_returns_no_overrides(self):
         """A row carrying the room_plumbing marker never restores a stored
         provider pin — resume falls back to the profile's CURRENT config."""

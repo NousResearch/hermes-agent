@@ -341,7 +341,7 @@ def _env_nonnegative_number(value: Any) -> bool:
 
 def _env_nonempty_strings(value: Any, *, allow_empty: bool = True) -> bool:
     return (
-        isinstance(value, list)
+        isinstance(value, (list, tuple))
         and (allow_empty or bool(value))
         and all(isinstance(item, str) and bool(item.strip()) for item in value)
     )
@@ -353,7 +353,8 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
 
     An empty list means the envelope is structurally valid. The store calls this
     before persisting any grant; callers may call it independently for pre-flight
-    checks. No I/O is performed.
+    checks. JSON lists and their immutable bound tuple forms are accepted.
+    No I/O is performed.
     """
 
     errors = [field for field in _REQUIRED_FIELDS if envelope.get(field) is None]
@@ -367,10 +368,15 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
             errors.append(field)
     if len(str(envelope.get("objective") or "")) > 2000:
         errors.append("objective")
-    if envelope.get("execution_surface") not in _ALLOWED_SURFACES:
-        errors.append("execution_surface")
-    if envelope.get("lane") not in _ALLOWED_LANES:
-        errors.append("lane")
+    for field, allowed in (
+        ("execution_surface", _ALLOWED_SURFACES),
+        ("lane", _ALLOWED_LANES),
+        ("exec_policy", _ALLOWED_EXEC),
+        ("destructive_policy", _ALLOWED_DESTRUCTIVE),
+    ):
+        value = envelope.get(field)
+        if not isinstance(value, str) or value not in allowed:
+            errors.append(field)
     if not _env_nonempty_strings(envelope.get("roots"), allow_empty=False) or any(not Path(root).expanduser().is_absolute() for root in envelope["roots"]):
         errors.append("roots")
 
@@ -386,16 +392,12 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
             errors.append(f"permissions.{field}")
 
     network_policy = envelope.get("network_policy")
-    if network_policy not in _ALLOWED_NETWORK:
+    if not isinstance(network_policy, str) or network_policy not in _ALLOWED_NETWORK:
         errors.append("network_policy")
     if network_policy == "allowlist" and not _env_nonempty_strings(
         envelope.get("network_allowlist"), allow_empty=False
     ):
         errors.append("network_allowlist")
-    if envelope.get("exec_policy") not in _ALLOWED_EXEC:
-        errors.append("exec_policy")
-    if envelope.get("destructive_policy") not in _ALLOWED_DESTRUCTIVE:
-        errors.append("destructive_policy")
 
     budgets = envelope.get("budgets")
     if not isinstance(budgets, Mapping):
@@ -429,7 +431,7 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         errors.append("retry_policy.max_attempts")
     if not isinstance(retry_eligible, bool):
         errors.append("retry_policy.retry_eligible")
-    if not isinstance(retry.get("backoff_s"), list) or not all(
+    if not isinstance(retry.get("backoff_s"), (list, tuple)) or not all(
         _env_nonnegative_number(item) for item in retry.get("backoff_s", [])
     ):
         errors.append("retry_policy.backoff_s")
@@ -440,7 +442,10 @@ def validate_sealed_envelope(envelope: Mapping[str, Any]) -> list[str]:
         valid_max_attempts
         and isinstance(max_attempts, int)
         and max_attempts > 1
-        and envelope.get("execution_surface") not in _STATELESS_SURFACES
+        and (
+            not isinstance(envelope.get("execution_surface"), str)
+            or envelope["execution_surface"] not in _STATELESS_SURFACES
+        )
     ):
         errors.append("retry_policy.execution_surface")
 

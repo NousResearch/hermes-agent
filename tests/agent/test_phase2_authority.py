@@ -235,6 +235,7 @@ def test_validate_current_reports_unrepresentable_finite_ttl(tmp_path):
     assert "lease_or_deadline_invalid" in errors
 
 
+@pytest.mark.platforms("posix")
 def test_authority_database_files_are_owner_only(tmp_path):
     db = tmp_path / "authority.db"
     store = Phase2AuthorityStore(db)

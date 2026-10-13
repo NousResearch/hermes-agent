@@ -201,69 +201,11 @@ class Phase2BudgetMixin(ABC):
     ) -> str:
         """Reserve spend against the node budget under exact live authority."""
 
-        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
-            raise AuthorityError("tokens must be a non-negative integer")
-        usd_value = usd
-        _budget_decimal(usd_value, "usd")
-        metadata_payload = _normalized_reservation_metadata(metadata)
-        current = _utc(now)
-        with _DB_LOCK:
-            conn = self._connect()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                graph_id, node_id, fence, latest_envelope = self._load_live_authority(
-                    conn, envelope, current, action="reserve budget"
-                )
-                state = self._budget_state(conn, graph_id, node_id)
-                if state["cost_unknown"]:
-                    raise AuthorityError("budget cost is unknown")
-                limits = latest_envelope["budgets"]
-                tokens_max = _tokens_max_integer(
-                    limits.get("tokens_max"), "sealed budgets.tokens_max"
-                )
-                usd_max = _budget_decimal(
-                    limits.get("usd_max"), "sealed budgets.usd_max"
-                )
-                if (
-                    state["charged_tokens"] + state["reserved_tokens"] + tokens
-                    > tokens_max
-                ):
-                    raise AuthorityError("token budget reservation exceeds node budget")
-                if (
-                    state["charged_usd"]
-                    + state["reserved_usd"]
-                    + _budget_decimal(usd_value, "usd")
-                    > usd_max
-                ):
-                    raise AuthorityError("USD budget reservation exceeds node budget")
-                reservation_id = f"res-{uuid.uuid4().hex}"
-                self._append_event(
-                    conn,
-                    kind="BUDGET_RESERVED",
-                    graph_id=graph_id,
-                    node_id=node_id,
-                    attempt_id=str(latest_envelope["attempt_id"]),
-                    fence=fence,
-                    payload={
-                        "tokens": tokens,
-                        "usd": usd_value,
-                        **(
-                            {"metadata": metadata_payload}
-                            if metadata_payload is not None
-                            else {}
-                        ),
-                    },
-                    now=current,
-                    event_id=reservation_id,
-                )
-                conn.execute("COMMIT")
-                return reservation_id
-            except Exception:
-                with suppress(Exception):
-                    conn.execute("ROLLBACK")
-                raise
-            finally:
-                conn.close()
+        return self.reserve_budget_allocations(
+            envelope,
+            [{"tokens": tokens, "usd": usd, "metadata": metadata}],
+            now=now,
+        )[0]
 
     def reconcile_budget(
         self,

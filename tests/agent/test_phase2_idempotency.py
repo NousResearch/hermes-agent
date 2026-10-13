@@ -363,6 +363,7 @@ def test_attempt_id_cannot_move_to_another_fence(tmp_path):
         )
 
 
+@pytest.mark.platforms("posix")
 def test_claim_database_files_are_owner_only(tmp_path):
     db = tmp_path / "phase2.db"
     store = MutationClaimStore(db)

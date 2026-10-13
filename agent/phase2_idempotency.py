@@ -140,7 +140,7 @@ class MutationClaimStore:
     """Own durable logical-operation, attempt, settlement, and readmission rows."""
 
     def __init__(self, db_path: Path | str | None = None) -> None:
-        self.db_path = Path(db_path) if db_path is not None else default_db_path()
+        self.db_path = (Path(db_path) if db_path is not None else default_db_path()).expanduser()
 
     def _connect(self) -> sqlite3.Connection:
         conn = _open_phase2_sqlite(self.db_path)

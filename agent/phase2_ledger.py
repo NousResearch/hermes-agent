@@ -168,7 +168,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
     """Seal plans and issue node-scoped fences, leases, and budget reservations."""
 
     def __init__(self, db_path: Path | str | None = None) -> None:
-        self.db_path = Path(db_path) if db_path is not None else default_db_path()
+        self.db_path = (Path(db_path) if db_path is not None else default_db_path()).expanduser()
 
     def _connect(self) -> sqlite3.Connection:
         conn = _open_phase2_sqlite(self.db_path, timeout=5.0)
@@ -436,7 +436,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
             if isinstance(ikey, str):
                 seen_ikeys.add(ikey)
             surface = node.get("execution_surface")
-            if surface not in _ALLOWED_SURFACES:
+            if not isinstance(surface, str) or surface not in _ALLOWED_SURFACES:
                 raise AuthorityError(f"invalid execution_surface for {node_id}")
             for key in _HASH_KEYS:
                 _valid_sha256(node.get(key), f"{key} for {node_id}")
@@ -720,7 +720,11 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     raise AuthorityError(f"attempt_id {attempt_id} was already used")
                 authority = self._node_authority(conn, graph_id, node_id)
                 if authority is not None:
-                    if not authority["revoked"] and not authority["completed"]:
+                    if (
+                        not authority["revoked"]
+                        and not authority["completed"]
+                        and authority["settlement"] is None
+                    ):
                         if granted_at < authority["effective_expires"]:
                             raise AuthorityError("node already has an active lease")
                     prior_attempt_id = str(authority["envelope"]["attempt_id"])
@@ -821,6 +825,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
     ) -> dict[str, Any]:
         """Append an explicit non-completion settlement for one exact attempt.
 
+        Settlement ends this attempt's live authority immediately.
         Expiry and revocation never call this automatically: neither proves
         whether the effect happened. Indeterminate is terminal evidence but
         does not make an automatic retry safe.
@@ -996,6 +1001,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
         )
         if authority["completed"]:
             raise AuthorityError("node already completed")
+        if authority["settlement"] is not None:
+            raise AuthorityError(f"settled attempt cannot {action}")
         if authority["revoked"]:
             raise AuthorityError(f"revoked lease cannot {action}")
         if current >= authority["effective_expires"]:
@@ -1033,6 +1040,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 )
                 if authority["completed"]:
                     raise AuthorityError("node already completed")
+                if authority["settlement"] is not None:
+                    raise AuthorityError("settled attempt cannot renew")
                 if authority["revoked"]:
                     raise AuthorityError("revoked lease cannot renew")
                 authoritative = authority["envelope"]
@@ -1087,7 +1096,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
     def revoke_node(
         self, envelope: Mapping[str, Any], *, now: datetime | None = None
     ) -> dict[str, Any]:
-        """Cancel the current lease so the node can be immediately regranted.
+        """Revoke the current lease without asserting a non-effect settlement.
 
         Uses the shared exact authority gate: the supplied envelope must be the
         byte-identical authoritative sealed envelope. After revocation the old
@@ -1105,6 +1114,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 )
                 if authority["completed"]:
                     raise AuthorityError("node already completed")
+                if authority["settlement"] is not None:
+                    raise AuthorityError("settled attempt cannot revoke")
                 if authority["revoked"]:
                     raise AuthorityError("lease already revoked")
                 authoritative = authority["envelope"]
@@ -1237,6 +1248,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                     "idempotent": True,
                 }
             reject("node_completed", fence_hint=authority["fence"])
+        if authority["settlement"] is not None:
+            reject("attempt_settled", fence_hint=authority["fence"])
         if authority["revoked"]:
             reject("lease_revoked", fence_hint=authority["fence"])
         if current >= authority["effective_expires"]:
@@ -1358,6 +1371,8 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                 errors.append("lease_revoked")
             if authority["completed"]:
                 errors.append("node_terminal")
+            if authority["settlement"] is not None:
+                errors.append("attempt_settled")
             if current >= authority["effective_expires"]:
                 errors.append("lease_expired")
             if current >= _parse_time(authority["envelope"]["deadline_utc"]):
@@ -1488,7 +1503,7 @@ class Phase2AuthorityStore(Phase2BudgetMixin):
                         grants[key] = payload
                     elif row["kind"] == "LEASE_RENEWED":
                         renewals[key] = payload
-                    elif row["kind"] in ("LEASE_REVOKED",) + _ACCEPTED_KINDS:
+                    elif row["kind"] in ("LEASE_REVOKED", "ATTEMPT_SETTLED") + _ACCEPTED_KINDS:
                         dead_leases.add(key)
                     elif row["kind"] == "BUDGET_RESERVED":
                         reservations[row["event_id"]] = row

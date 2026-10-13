@@ -35,6 +35,9 @@ def _turn(agent, prompt, history):
 
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # The flat skills index is retired by default (agent/prompt_builder.skills_index_dark); this
+    # file tests the index's per-turn delta channel, so it exercises the explicit flat hatch.
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
     monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *_: set())
     pb.clear_skills_system_prompt_cache(clear_snapshot=True)
     return tmp_path / "skills"

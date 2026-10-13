@@ -126,6 +126,9 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
     # Ambient env resolves to the launch/default home; nothing binds the
     # ContextVar on the build thread.
     monkeypatch.setenv("HERMES_HOME", str(default_home))
+    # The flat skills index is retired by default (agent/prompt_builder.skills_index_dark): this test
+    # asserts WHICH home's index lines reach the prompt, so it exercises the explicit flat hatch.
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
     prompt_builder.clear_skills_system_prompt_cache(clear_snapshot=False)
 
     agent = _agent_for(bot_home, valid_tool_names=["skill_view"])

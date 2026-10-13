@@ -51,7 +51,10 @@ def test_whitespace_hugging_the_inside_of_the_bracket_is_still_a_marker():
     assert is_intentional_silence_response("[  SILENT\t]")
     assert is_autonomous_silence_response("[ SILENT ]")
     assert is_autonomous_silence_response("[ SILENT ] No changes detected")
-    assert is_autonomous_silence_response("2 deals filtered\n\n[ 沉默 ]")
+    # Emphasis + inside-whitespace in one marker: this crosses the same canonicalisation as
+    # the emphasis-only handling in #109599, so a merge that keeps only one of the two fixes
+    # drops this combination again.
+    assert is_autonomous_silence_response("**[ SILENT ]**")
 
 
 def test_bracket_structure_still_required_after_inside_whitespace_collapse():

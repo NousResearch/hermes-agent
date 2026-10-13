@@ -328,8 +328,11 @@ def _cmd_export(db, args):
         except ValueError as e:
             print(f"Error: {e}")
             return
-        # A backup includes protected rows; prune's keep rules must not omit them.
+        # A backup includes protected rows; prune's keep rules must not omit them.  Open sessions are
+        # protected by the prune guard too: 109 of 122 telegram rows have no ``ended_at``, so reusing
+        # that guard silently exported 13 rows where the store held 122.
         filters["archived"] = None
+        filters["include_open"] = True
         filters["include_pinned"] = True
     if args.session_id and not db.resolve_session_id(args.session_id):
         return _not_found(args.session_id)

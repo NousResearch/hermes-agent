@@ -162,6 +162,75 @@ class TestDoctorToolAvailabilitySummary:
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
         assert any("hermes setup" in issue for issue in f.issues)
 
+    def test_disabled_toolset_does_not_get_setup_advice(self, monkeypatch):
+        """#137529: a toolset turned off for the CLI is not a fault.
+
+        It still fails its check_fn, so it lands in ``unavailable`` — but the row must not
+        prescribe a provider/key, which would contradict ``hermes tools list`` and send the
+        operator to fix something that is working as configured.
+        """
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", list)
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        image_line = next(line for line in out.splitlines() if "image_gen" in line)
+        assert "not enabled for this platform" in image_line
+        assert "check the provider selection" not in out
+        assert not any("hermes setup" in issue for issue in f.issues)
+
+    def test_enabled_toolset_keeps_setup_hint(self, monkeypatch):
+        """The #9516 hint still applies when the toolset IS enabled — only the
+        disabled case changes wording."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", list)
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        assert "check the provider selection" in out
+        assert "not enabled for this platform" not in out
+
+    def test_unresolvable_enablement_degrades_to_previous_behaviour(self, monkeypatch):
+        """If enablement cannot be resolved, keep the old hint rather than claiming
+        every unavailable toolset is disabled."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: None)
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", list)
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        assert "check the provider selection" in out
+        assert "not enabled for this platform" not in out
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:

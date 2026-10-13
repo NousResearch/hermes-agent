@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,77 +25,30 @@ PROFILE_BUILD_FLAG = "profile_build_offered"
 
 # Busy-input hints are keyed by the effective busy_input_mode that was just
 # applied so the message matches reality; "interrupt" is the default branch.
-_BUSY_INPUT_HINTS_GATEWAY = {
-    "queue": (
-        "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages "
-        "stop the current task immediately, or `/busy status` to check. This notice won't appear again."
-    ),
-    "steer": (
-        "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool "
-        "call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy "
-        "status` to check. This notice won't appear again."
-    ),
-    "redirect": (
-        "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or "
-        "`/busy status` to check. This notice won't appear again."
-    ),
-}
-_BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue "
-    "follow-ups for after the current task instead, `/busy steer` to inject them mid-run without "
-    "interrupting, or `/busy status` to check. This notice won't appear again."
-)
-
-_BUSY_INPUT_HINTS_CLI = {
-    "queue": (
-        "(tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current "
-        "run instead, or /busy steer to inject mid-run. This tip only shows once."
-    ),
-    "steer": (
-        "(tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy "
-        "interrupt or /busy queue to change this. This tip only shows once."
-    ),
-    "redirect": (
-        "(tip) Your correction redirected the current run without discarding completed work. Use /stop to "
-        "cancel or /busy queue to wait for a separate turn. This tip only shows once."
-    ),
-}
-_BUSY_INPUT_HINT_CLI_DEFAULT = (
-    "(tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn "
-    "instead, or /busy steer to inject mid-run. This tip only shows once."
-)
+_HINT_MODES = frozenset({"queue", "steer", "redirect"})
 
 
 def busy_input_hint_gateway(mode: str) -> str:
     """Hint shown the first time a user messages while the agent is busy (markdown)."""
-    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT)
+    return t(f"tips.busy_gateway.{mode if mode in _HINT_MODES else 'interrupt'}")
 
 
 def busy_input_hint_cli(mode: str) -> str:
     """CLI version of the busy-input hint (plain text, no markdown)."""
-    return _BUSY_INPUT_HINTS_CLI.get(mode, _BUSY_INPUT_HINT_CLI_DEFAULT)
+    return t(f"tips.busy_cli.{mode if mode in _HINT_MODES else 'interrupt'}")
 
 
 def tool_progress_hint_gateway() -> str:
-    return ("💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages "
-            "feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again.")
+    return t("tips.tool_progress_gateway")
 
 
 def tool_progress_hint_cli() -> str:
-    return ("(tip) That tool ran for a while. Use /verbose to cycle tool-progress "
-            "display modes (all -> new -> off -> verbose). This tip only shows once.")
+    return t("tips.tool_progress_cli")
 
 
 def openclaw_residue_hint_cli() -> str:
     """Banner shown the first time Hermes finds ``~/.openclaw/``: migrate first, cleanup (which breaks OpenClaw) after."""
-    return (
-        "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.\n"
-        "If you've already migrated and want to archive the old directory, run `hermes claw cleanup` "
-        "(renames it to ~/.openclaw.pre-migration — OpenClaw will stop working after this).\n"
-        "This tip only shows once."
-    )
+    return t("tips.openclaw_residue_cli")
 
 
 def detect_openclaw_residue(home: Optional[Path] = None) -> bool:

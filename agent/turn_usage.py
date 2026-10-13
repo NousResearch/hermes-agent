@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.codex_responses_adapter import response_ran_server_looped_tools
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
@@ -70,6 +71,50 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _record_context_reading(
+    agent: Any, messages: list[dict[str, Any]], usage_dict: Dict[str, int], aggregator_usage: Any, *,
+    api_call_count: int, compression_attempts: int, max_compression_attempts: int,
+    completed_compaction_pending: bool,
+) -> tuple[int, bool]:
+    """Feed a single-pass prompt reading to the compressor, usage anchor and headroom math.
+    Returns ``(compression_attempts, rearmed)``."""
+    compressor = agent.context_compressor
+    prompt_tokens = usage_dict["prompt_tokens"]
+    compressor.update_from_response(usage_dict)
+    # Usage-anchored accounting: snapshot exact provider usage against the durable
+    # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
+    # anchors on the turn's FIRST response: later same-turn responses inflate
+    # prompt_tokens with replayed thinking. Display-only; compression math uses real usage.
+    # The provider just priced this request exactly: if the delta since the previous anchor
+    # introduced images, the residual is their real per-image cost (learned before re-anchoring).
+    calibrate_from_usage(agent, messages, aggregator_usage.prompt_tokens)
+    _new_anchor = capture_usage_anchor(
+        aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
+    )
+    if _new_anchor is not None:
+        set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
+    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
+    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
+    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
+    _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+    if not _loop_mod()._should_rearm_compression_budget(
+        compression_attempts, completed_compaction_pending=completed_compaction_pending,
+        prompt_tokens=prompt_tokens, threshold_tokens=_compression_threshold,
+    ):
+        return compression_attempts, False
+    logger.info(
+        "Compression budget rearmed after provider-confirmed "
+        "recovery: prompt=%s < threshold=%s (attempts were %s/%s)",
+        f"{prompt_tokens:,}",
+        f"{_compression_threshold:,}",
+        compression_attempts,
+        max_compression_attempts,
+    )
+    # Confirmed recovery also clears the loop's stale insufficient-progress verdict
+    # (``_preflight_compression_blocked``), else a later pressure spike grows unchecked.
+    return 0, True
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -123,42 +168,19 @@ def record_response_usage(
     _completed_compaction_pending = bool(
         getattr(compressor, "_verify_compaction_cleared_threshold", False)
     )
-    compressor.update_from_response(usage_dict)
-    # Usage-anchored accounting: snapshot exact provider usage against the durable
-    # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
-    # anchors on the turn's FIRST response: later same-turn responses inflate
-    # prompt_tokens with replayed thinking. Display-only; compression math uses real usage.
-    # The provider just priced this request exactly: if the delta since the previous anchor
-    # introduced images, the residual is their real per-image cost (learned before re-anchoring).
-    calibrate_from_usage(agent, messages, aggregator_usage.prompt_tokens)
-    _new_anchor = capture_usage_anchor(
-        aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
-    )
-    if _new_anchor is not None:
-        set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)
-    _compression_threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
-    if _loop_mod()._should_rearm_compression_budget(
-        compression_attempts, completed_compaction_pending=_completed_compaction_pending,
-        prompt_tokens=prompt_tokens, threshold_tokens=_compression_threshold,
-    ):
-        logger.info(
-            "Compression budget rearmed after provider-confirmed "
-            "recovery: prompt=%s < threshold=%s (attempts were %s/%s)",
-            f"{prompt_tokens:,}",
-            f"{_compression_threshold:,}",
-            compression_attempts,
-            max_compression_attempts,
+    # Server-looped built-in tools (native web_search, x_search, ...) report the prompt summed over
+    # every provider-side pass: billing keeps it, context accounting must not (a 139K request
+    # reported as 561K forced a needless compaction), so the last single-pass reading stands.
+    prompt_summed_over_server_passes = response_ran_server_looped_tools(response)
+    if not prompt_summed_over_server_passes:
+        compression_attempts, rearmed = _record_context_reading(
+            agent, messages, usage_dict, aggregator_usage, api_call_count=api_call_count,
+            compression_attempts=compression_attempts, max_compression_attempts=max_compression_attempts,
+            completed_compaction_pending=_completed_compaction_pending,
         )
-        compression_attempts = 0
-        # Confirmed recovery also clears the loop's stale insufficient-progress verdict
-        # (``_preflight_compression_blocked``), else a later pressure spike grows unchecked.
-        rearmed = True
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
-    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
-    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
-    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):
@@ -202,6 +224,8 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    if prompt_summed_over_server_passes:
+        _ident += " in_summed=server_tools"
     logger.info(
         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",

@@ -324,16 +324,6 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
-def _resolve_rate_limit_max_cooldown_seconds() -> int:
-    """``HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS`` else default: the backoff cap."""
-    return _env_int("HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS)
-
-
-def _resolve_rate_limit_max_consecutive() -> int:
-    """``HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE`` else default: rate-limited runs before parking."""
-    return _env_int("HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE", DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE, minimum=1)
-
-
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
     """``just now`` / ``18h ago`` / ``3d ago``; "" for a missing/invalid ts. An LLM
     reads a bare absolute timestamp as current fact — the relative age is what
@@ -2004,34 +1994,6 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
-def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
-    protocol-violation budget or a systemic same-error wave. Those trip on a
-    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
-    counter check cannot see them — without this the trip is promoted back to
-    ``ready`` in the same tick and the card respawns forever. A plain
-    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
-    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
-    """
-    row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    if row and row["kind"] == "blocked":
-        return True
-    trip = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
-        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
-        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
-    ).fetchone()
-    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
-
-
 def _latest_event(
     conn: sqlite3.Connection, task_id: str, kind: str, run_id: Optional[int] = None,
 ) -> Optional[sqlite3.Row]:
@@ -2042,24 +2004,6 @@ def _latest_event(
         sql += " AND run_id = ?"
         params = (*params, int(run_id))
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
-
-
-def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
-    """``review`` when the newest lifecycle event carries a review
-    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
-    row = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
-        ") ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    payload = _json_dict(_row_get(row, "payload"))
-    for key in ("resume_status", "retry_status", "source_status"):
-        if payload.get(key) == "review":
-            return "review"
-    return "ready"
 
 
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
@@ -2190,23 +2134,12 @@ def _claim_and_open_run(
     )
     run_id = run_cur.lastrowid
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
-    # A respawn names the run it retries, so a restart's reason is auditable.
-    prior = conn.execute(
-        "SELECT id, outcome FROM task_runs WHERE task_id = ? AND id != ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC, id DESC LIMIT 1", (task_id, run_id),
-    ).fetchone()
-    retry_of = {"retry_of": {"run_id": prior["id"], "outcome": prior["outcome"]}} if prior else {}
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **retry_of, **(event_extra or {})}, run_id=run_id,
+        {"lock": lock, "expires": expires, "run_id": run_id, **retry_of(conn, task_id, run_id), **(event_extra or {})},
+        run_id=run_id,
     )
     return run_id
-
-
-def _attribution(actor: Optional[str], source: str) -> dict:
-    """Who initiated a lifecycle transition and through which surface. An
-    unidentified caller is recorded as ``"unknown"``, never a guessed name."""
-    return {"actor": actor or "unknown", "source": source}
 
 
 def claim_task(
@@ -4278,11 +4211,15 @@ from hermes_cli.kanban_db_workspace import (
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli.kanban_db_respawn import (
+    _attribution,
+    _has_sticky_block,
+    _resume_status_from_events,
+    retry_of,
+)
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
-    DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE,
-    DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS,
     DispatchResult,
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,

@@ -26,6 +26,8 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_respawn import rate_limit_guard
+from hermes_cli.kanban_db_respawn import record_guard
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -79,18 +81,6 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # wall, burning a worker slot every tick for hours. Overridable via
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
-
-# Consecutive rate-limited runs double that cooldown up to this cap, and after
-# this many the card parks ``blocked`` for an operator instead of probing the
-# quota wall forever (~8h of backoff at the defaults). Overridable via
-# ``HERMES_KANBAN_RATE_LIMIT_MAX_COOLDOWN_SECONDS`` /
-# ``HERMES_KANBAN_RATE_LIMIT_MAX_CONSECUTIVE``.
-DEFAULT_RATE_LIMIT_MAX_COOLDOWN_SECONDS = 3600
-DEFAULT_RATE_LIMIT_MAX_CONSECUTIVE = 12
-
-# Guard reasons that no tick can clear on its own: the dispatcher parks the
-# card ``blocked`` (sticky) once rather than skipping it on every tick.
-_PARKING_GUARD_REASONS = frozenset({"blocker_auth", "rate_limit_exhausted"})
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -1609,28 +1599,9 @@ def check_respawn_guard(
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
-        # Bounded backoff: the trailing run of consecutive rate-limited
-        # outcomes doubles the wait up to the cap, then parks the card. The
-        # ceiling is checked first so a zero cooldown cannot switch it off.
-        max_streak = _kb._resolve_rate_limit_max_consecutive()
-        recent = conn.execute(
-            "SELECT outcome FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
-            "ORDER BY ended_at DESC, id DESC LIMIT ?", (task_id, max_streak),
-        ).fetchall()
-        streak = next((i for i, r in enumerate(recent) if r["outcome"] != "rate_limited"), len(recent))
-        if streak >= max_streak:
-            return "rate_limit_exhausted"
-        if rl_cooldown <= 0:
-            # Cooldown disabled — respawn immediately, skipping blocker_auth so
-            # the stamped rate-limit text doesn't re-trap the task.
-            return None
-        backoff = min(rl_cooldown << (streak - 1), max(rl_cooldown, _kb._resolve_rate_limit_max_cooldown_seconds()))
-        ended_at = _kb._to_epoch(latest_run["ended_at"])
-        if ended_at is not None and (now - ended_at) < backoff:
-            return "rate_limit_cooldown"
-        # Backoff elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text.
-        return None
+        # Bounded backoff. Returning here also keeps blocker_auth off the
+        # stamped rate-limit text once the wait has elapsed.
+        return rate_limit_guard(conn, task_id, latest_run["ended_at"], rl_cooldown, now)
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
@@ -2126,26 +2097,8 @@ def _dispatch_lane_task(
         # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
-        if dry_run:
-            return False
-        payload = {"reason": guard_reason, "actor": "dispatcher"}
-        with _kb.write_txn(conn):
-            # Once per condition, not one row per tick forever (same rule as
-            # ``skipped_nonspawnable``); a new reason is recorded again.
-            # By id, not created_at: insertion order survives a clock step.
-            last = conn.execute(
-                "SELECT kind, payload FROM task_events WHERE task_id = ? "
-                "ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
-            if (last is None or last["kind"] != "respawn_guarded"
-                    or last["payload"] != _kb._json_or_null(payload)):
-                _kb._append_event(conn, task_id, "respawn_guarded", payload)
-        if guard_reason in _PARKING_GUARD_REASONS:
-            # No tick clears these: park for an operator (sticky) instead of
-            # showing a ``ready``/``review`` card that is skipped forever. Counters
-            # and ``last_failure_error`` are kept; ``unblock_task`` resets them and
-            # resumes the lane it left (``source_status``).
-            _kb.block_task(conn, task_id, kind="needs_input", from_review=lane == "review",
-                           reason=f"dispatcher parked: {guard_reason}", actor="dispatcher", source="dispatcher")
+        if not dry_run:
+            record_guard(conn, task_id, guard_reason, lane=lane)
         return False
 
     def _count_spawn(name: str) -> None:

@@ -89,6 +89,10 @@ def test_comment_delimiter_keeps_flags_literal(task_id):
     assert args.author == "reviewer"
     assert kc.kanban_command(args) == 0
     assert comments(task_id)[-1].body == "--body-file -"
+    assert comment(task_id, "--author", "reviewer", "hello", "--", "--body-file", "-") == 0
+    assert comments(task_id)[-1].body == "hello --body-file -"
+    assert comment(task_id, "hello", "--author", "reviewer", "world", "--", "--", "--body-file") == 0
+    assert comments(task_id)[-1].body == "hello world -- --body-file"
 
 
 def test_file_input_boundaries_match_inline(task_id, tmp_path, monkeypatch):

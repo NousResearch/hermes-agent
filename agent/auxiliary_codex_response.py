@@ -53,3 +53,43 @@ def _parse_codex_final_response(
             total_tokens=_u("total_tokens"))
     return text_parts, tool_calls_raw, usage, finish_reason
 
+
+def _recover_aux_response_message(response: Any) -> Optional[Any]:
+    """Synthesize chat-completions shape from Responses-style text (``output_text``,
+    ``output`` items) that some compatible endpoints return outside ``choices``."""
+    text = _extract_aux_response_text(response)
+    if not text:
+        return None
+    choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=getattr(response, "finish_reason", None) or "stop")
+    try:
+        response.choices = [choice]
+        return response
+    except Exception:
+        return SimpleNamespace(
+            id=getattr(response, "id", ""), model=getattr(response, "model", ""),
+            object=getattr(response, "object", "chat.completion"), choices=[choice],
+            usage=getattr(response, "usage", None),
+        )
+
+
+def _extract_aux_response_text(response: Any) -> str:
+    """Text from Responses-style ``output_text`` or ``output[].content[].text``."""
+    from agent.auxiliary_client import _field
+
+    output_text = _field(response, "output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = _field(response, "output")
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        item_type = _field(item, "type")
+        if item_type and item_type != "message":
+            continue
+        for part in (_field(item, "content") or []):
+            if _field(part, "type") in {"output_text", "text", None}:
+                text = _field(part, "text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+    return "\n".join(parts).strip()

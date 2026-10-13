@@ -20,14 +20,23 @@ New contract for ``_CodexCompletionsAdapter.create``:
    full-budget stall skips straight to fallback (#54465 semantics).
 """
 
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
 import pytest
 
-from agent.auxiliary_client import _CodexCompletionsAdapter, call_llm
+from agent.auxiliary_client import (
+    AsyncCodexAuxiliaryClient,
+    CodexAuxiliaryClient,
+    _CodexCompletionsAdapter,
+    async_call_llm,
+    call_llm,
+)
 
 
 def _content_event(text="tok"):
@@ -278,3 +287,83 @@ class TestCompressionRetryGate:
         assert result.choices[0].message.content == "fallback"
         assert primary.chat.completions.create.call_count == 1
         assert mock_fb.called
+
+
+class TestSameProviderRetryAfterTimeoutClosedTheClient:
+    """The no-progress timeout closes and evicts the Codex client; both same-provider retries reused the
+    closed one, failing at once with "Connection error." and then "refusing to guess". A retry must run on
+    the client the cache holds now; a healthy cached client is reused."""
+
+    def _real_client(self, events, calls, closed):
+        def _create(**_kwargs):
+            calls.append(events.__name__)
+            if closed.is_set():
+                # What a closed openai.OpenAI raises: "Cannot send a request, as the client has been closed."
+                raise openai.APIConnectionError(request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex"))
+            return events()
+        return SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex", api_key="k",
+            responses=SimpleNamespace(create=_create), close=closed.set,
+        )
+
+    def _call(self, clients, *, async_mode):
+        built = iter(clients)
+
+        def _build(*_args, **_kwargs):
+            client = CodexAuxiliaryClient(next(built), "gpt-5.6-sol")
+            return (AsyncCodexAuxiliaryClient(client) if async_mode else client), "gpt-5.6-sol"
+
+        request = dict(task="compression", messages=[{"role": "user", "content": "summarize"}])
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_build) as build,
+            # Route "auto" (the session's own model), whose client cache key includes the task.
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("auto", "gpt-5.6-sol", None, None, None)),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
+            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+        ):
+            result = asyncio.run(async_call_llm(**request)) if async_mode else call_llm(**request)
+        return result, build.call_count
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    def test_retry_runs_on_a_new_client_after_the_timeout_closed_the_first(self, async_mode):
+        first_closed = threading.Event()
+
+        def keepalives():
+            while not first_closed.wait(0.02):
+                yield _keepalive_event()
+
+        def summary():
+            yield _content_event()
+
+        calls = []
+        clients = [self._real_client(keepalives, calls, first_closed), self._real_client(summary, calls, threading.Event())]
+
+        result, built = self._call(clients, async_mode=async_mode)
+
+        assert result.choices[0].message.content == "summary"
+        assert first_closed.is_set(), "the timeout closes the first client"
+        assert calls == ["keepalives", "summary"]
+        assert built == 2
+
+    def test_a_healthy_cached_client_is_reused_for_the_retry(self):
+        def blip():
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex"))
+            yield
+
+        def summary():
+            yield _content_event()
+
+        streams = iter([blip, summary])
+        calls = []
+        client = self._real_client(lambda: next(streams)(), calls, threading.Event())
+
+        result, built = self._call([client], async_mode=False)
+
+        assert result.choices[0].message.content == "summary"
+        assert len(calls) == 2
+        assert built == 1

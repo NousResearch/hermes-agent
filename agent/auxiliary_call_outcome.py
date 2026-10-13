@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.error_classifier import ClassifiedError, FailoverReason
+
 logger = logging.getLogger(__name__)
 
 # Attribute an aux "invalid response" error carries when the HTTP-200 body held a provider
@@ -44,17 +46,36 @@ def is_cancellation(error: BaseException) -> bool:
     return not isinstance(error, Exception) or isinstance(error, InterruptedError)
 
 
-def error_class(error: BaseException, *, provider: str = "", model: str = "") -> str:
-    """The classifier's reason for one aux attempt error; ``unknown`` when it cannot say.
-    Never raises: telemetry must not replace the caller's exception."""
+def classify_auxiliary_error(
+    error: BaseException,
+    *,
+    provider: str = "",
+    model: str = "",
+) -> ClassifiedError:
+    """Return the shared recovery verdict after normalising auxiliary provider facts.
+
+    Classification failures use the existing unknown recovery defaults and
+    never replace the caller's exception.
+    """
     if not isinstance(error, Exception):
-        return "unknown"
+        return ClassifiedError(
+            reason=FailoverReason.unknown, provider=provider, model=model
+        )
     try:
         from agent.error_classifier import classify_api_error
 
         embedded = getattr(error, PROVIDER_ERROR_ATTR, None)
-        target = _EmbeddedProviderError(embedded) if isinstance(embedded, dict) else error
-        return classify_api_error(target, provider=provider, model=model).reason.value
+        target = (
+            _EmbeddedProviderError(embedded) if isinstance(embedded, dict) else error
+        )
+        return classify_api_error(target, provider=provider, model=model)
     except Exception:
         logger.debug("Auxiliary error classification failed", exc_info=True)
-        return "unknown"
+        return ClassifiedError(
+            reason=FailoverReason.unknown, provider=provider, model=model
+        )
+
+
+def error_class(error: BaseException, *, provider: str = "", model: str = "") -> str:
+    """Return the auxiliary verdict's reason without replacing the caller's exception."""
+    return classify_auxiliary_error(error, provider=provider, model=model).reason.value

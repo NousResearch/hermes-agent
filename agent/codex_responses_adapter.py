@@ -1302,6 +1302,7 @@ def _normalize_codex_response(
         finish_reason = "content_filter"
     elif (
         leaked_tool_call_text
+        or getattr(response, "terminal_observed", None) is False
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)

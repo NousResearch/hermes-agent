@@ -608,14 +608,7 @@ def test_wire_guard_scopes_retention_drop_by_real_endpoint(
 
 
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):
-    """The event-driven path tolerates streams that end without a terminal frame.
-
-    Previously the SDK's ``responses.stream(...)`` helper raised
-    ``RuntimeError("Didn't receive a `response.completed` event.")`` which the
-    primary path caught and retried/fell back through. The new
-    ``responses.create(stream=True)`` path consumes events directly and just
-    returns whatever it collected — no retry, no separate fallback path.
-    """
+    """Keep collected items at EOF without certifying response completion."""
     agent = _build_agent(monkeypatch)
     output_item = SimpleNamespace(
         type="message",
@@ -639,8 +632,7 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
 
     response = agent._run_codex_stream(_codex_request_kwargs())
     assert calls["create"] == 1
-    assert response.status == "completed"
-    assert response.output == [output_item]
+    assert (response.status, response.terminal_observed, response.output) == (None, False, [output_item])
 
 
 def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):

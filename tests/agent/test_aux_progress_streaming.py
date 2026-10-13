@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.auxiliary_chat_stream import _ChatStreamAccumulator
 from agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
-    _ChatStreamAccumulator,
     _CodexCompletionsAdapter,
     _acreate_with_progress,
     _acreate_with_stream,

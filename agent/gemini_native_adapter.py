@@ -82,7 +82,11 @@ _END = object()  # stream-exhausted marker for _advance_stream_iterator
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _FINISH_REASON_MAP = {
     "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    "BLOCKLIST": "content_filter", "PROHIBITED_CONTENT": "content_filter",
+    "SPII": "content_filter", "IMAGE_SAFETY": "content_filter",
 }
+_INVALID_TOOL_REASONS = {"MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"}
+_PROMPT_BLOCK_REASONS = {"SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY"}
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (
     "Gemini native client requires an API key, but none was provided. Set GOOGLE_API_KEY or GEMINI_API_KEY in your "
@@ -579,7 +583,7 @@ def _dump_call_args(fc: dict[str, Any], **kwargs: Any) -> str:
         return "{}"
 
 
-def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
+def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace | None:
     """Gemini ``usageMetadata`` → OpenAI-shaped usage.
 
     Hidden thinking is reported separately in ``thoughtsTokenCount``:
@@ -589,18 +593,27 @@ def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
     real output and ``prompt + completion != total``) and also surfaced under
     ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
     them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
-    count = lambda key: int(usage_meta.get(key) or 0)
-    reasoning_tokens = count("thoughtsTokenCount")
+    from agent.native_usage import NativeUsageCounts
+
+    counts = NativeUsageCounts.read(usage_meta, kind="gemini")
+    if counts.input is None or counts.output is None:
+        return None
+    completion = counts.output + counts.reasoning
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
-        total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
-        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
+        prompt_tokens=counts.input,
+        completion_tokens=completion,
+        total_tokens=counts.total
+        if counts.total is not None
+        else counts.input + completion,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=counts.cached),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=counts.reasoning),
     )
 
 
-def _envelope(model: str, object_: str, choice: SimpleNamespace, usage: Any, cls: type = SimpleNamespace) -> Any:
+def _envelope(model: str | None, object_: str, choice: SimpleNamespace, usage: Any, cls: type = SimpleNamespace,
+              response_id: str | None = None) -> Any:
     """OpenAI chat.completion / chat.completion.chunk envelope around one choice."""
-    return cls(id=f"chatcmpl-{uuid.uuid4().hex[:12]}", object=object_, created=int(time.time()), model=model,
+    return cls(id=response_id, object=object_, created=int(time.time()), model=model,
                choices=[choice], usage=usage)
 
 
@@ -624,9 +637,38 @@ def _text_part_signature(part: dict[str, Any]) -> Optional[str]:
     return sig if isinstance(sig, str) and sig and "functionCall" not in part else None
 
 
-def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-    fc = part.get("functionCall")
-    return fc if isinstance(fc, dict) and fc.get("name") else None
+def _part_function_call(part: dict[str, Any], response: dict[str, Any], candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if "functionCall" not in part:
+        return None
+    fc = part["functionCall"]
+    if isinstance(fc, dict) and isinstance(fc.get("name"), str) and fc["name"] and (fc.get("args") is None or isinstance(fc["args"], dict)):
+        return fc
+    details = {key: response[key] for key in ("responseId", "modelVersion", "usageMetadata") if key in response}
+    if "finishReason" in candidate:
+        details["finishReason"] = candidate["finishReason"]
+    details["functionCall"] = fc
+    raise GeminiAPIError("Gemini returned a malformed function call", code="gemini_invalid_tool_call", details=details)
+
+
+def _prompt_is_blocked(response: dict[str, Any]) -> bool:
+    feedback = response.get("promptFeedback")
+    if not isinstance(feedback, dict):
+        return False
+
+    reason = feedback.get("blockReason")
+    return isinstance(reason, str) and reason in _PROMPT_BLOCK_REASONS
+
+
+def _candidate_finish_reason(response: dict[str, Any], candidate: dict[str, Any], has_tools: bool) -> str:
+    reason = candidate.get("finishReason")
+    details = {key: response[key] for key in ("responseId", "modelVersion", "usageMetadata") if key in response}
+    details["finishReason"] = reason
+    if isinstance(reason, str) and reason in _INVALID_TOOL_REASONS:
+        raise GeminiAPIError(f"Gemini reported invalid tool generation: {reason}", code="gemini_invalid_tool_call", details=details)
+    if not isinstance(reason, str) or reason not in _FINISH_REASON_MAP:
+        raise GeminiAPIError("Gemini response has no supported completion reason", code="gemini_invalid_response", details=details)
+    verdict = _FINISH_REASON_MAP[reason]
+    return "tool_calls" if has_tools and reason == "STOP" else verdict
 
 
 def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespace:
@@ -636,8 +678,11 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         cand = candidates[0] if isinstance(candidates[0], dict) else {}
         content_obj = cand.get("content")
         parts = content_obj.get("parts") if isinstance(content_obj, dict) else []
+    native_reason = (cand or {}).get("finishReason")
+    blocked_tools = _prompt_is_blocked(resp) or (isinstance(native_reason, str) and _FINISH_REASON_MAP.get(native_reason) == "content_filter")
     pieces: dict[bool, list[str]] = {False: [], True: []}  # is_thought → text pieces
     tool_calls: list[SimpleNamespace] = []
+    native_calls: list[dict[str, Any]] = []
     text_signature = None
     for index, part in enumerate(parts or []):
         if not isinstance(part, dict):
@@ -646,22 +691,35 @@ def translate_gemini_response(resp: dict[str, Any], model: str) -> SimpleNamespa
         if text is not None:
             pieces[is_thought].append(text)
             text_signature = _text_part_signature(part) or text_signature
-        elif fc := _part_function_call(part):
-            tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
-    usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
+        elif not blocked_tools and (fc := _part_function_call(part, resp, cand or {})):
+            native_calls.append(part)
+            tool_calls.append(_tool_call_ns(fc["name"], _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
+    usage = (
+        _usage_from_metadata(metadata)
+        if (metadata := resp.get("usageMetadata")) is not None
+        else None
+    )
+    finish_reason = "content_filter" if _prompt_is_blocked(resp) else _candidate_finish_reason(resp, cand or {}, bool(tool_calls))
+    if finish_reason == "length":
+        tool_calls = []
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None,
                               extra_content=_tool_call_extra_from_part({"thoughtSignature": text_signature}))
-    return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    response = _envelope(resp.get("modelVersion"), "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason),
+                         usage, response_id=resp.get("responseId"))
+    if cand is not None and finish_reason == "length":
+        response.native = SimpleNamespace(finish_reason=cand.get("finishReason"), function_call_parts=native_calls)
+    if cand is not None and finish_reason == "content_filter":
+        response.native = SimpleNamespace(finish_reason=cand.get("finishReason"))
+    return response
 
 
 class _GeminiStreamChunk(SimpleNamespace): ...
 
 
 def _make_stream_chunk(
-    *, model: str, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
+    *, model: str | None, content: str = "", tool_call_delta: Optional[dict[str, Any]] = None, finish_reason: Optional[str] = None, reasoning: str = "",
     text_signature: Optional[str] = None,
 ) -> _GeminiStreamChunk:
     d = tool_call_delta
@@ -739,9 +797,15 @@ def _tool_call_slot(fc: dict[str, Any], part: dict[str, Any], part_index: int, a
 
 def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices: dict[str, dict[str, Any]]) -> list[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
-    if not candidates:
+    metadata = event.get("usageMetadata")
+    usage = _usage_from_metadata(metadata) if metadata is not None else None
+    model = event.get("modelVersion")
+    prompt_blocked = _prompt_is_blocked(event)
+    if not candidates and not (metadata or model or event.get("responseId") or prompt_blocked):
         return []
-    cand = candidates[0] if isinstance(candidates[0], dict) else {}
+    cand = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+    native_reason = cand.get("finishReason")
+    blocked_tools = prompt_blocked or (isinstance(native_reason, str) and _FINISH_REASON_MAP.get(native_reason) == "content_filter")
     parts = (cand.get("content") or {}).get("parts") or []
     chunks: list[_GeminiStreamChunk] = []
     for part_index, part in enumerate(parts):
@@ -755,8 +819,8 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             chunks.append(_make_stream_chunk(model=model, content=text))
         if sig := _text_part_signature(part):
             chunks.append(_make_stream_chunk(model=model, text_signature=sig))
-        if fc := _part_function_call(part):
-            name = str(fc["name"])
+        if not blocked_tools and (fc := _part_function_call(part, event, cand)):
+            name = fc["name"]
             args_str = _dump_call_args(fc, sort_keys=True)
             call_key, slot = _tool_call_slot(fc, part, part_index, args_str, tool_call_indices)
             if slot is None:
@@ -764,15 +828,26 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
+            slot["native"] = part
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
-    if finish_reason_raw := str(cand.get("finishReason") or ""):
-        finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+    finish_reason = "content_filter" if prompt_blocked else None
+    if not prompt_blocked and cand.get("finishReason"):
+        finish_reason = _candidate_finish_reason(event, cand, bool(tool_call_indices))
+    if finish_reason:
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
-        if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
-            finish_chunk.usage = _usage_from_metadata(usage_meta)
+        if finish_reason == "length":
+            finish_chunk.native = SimpleNamespace(finish_reason=cand.get("finishReason"), function_call_parts=[slot["native"] for slot in tool_call_indices.values()])
+        if not prompt_blocked and finish_reason == "content_filter":
+            finish_chunk.native = SimpleNamespace(finish_reason=cand.get("finishReason"))
         chunks.append(finish_chunk)
+    if not chunks:
+        chunks.append(_make_stream_chunk(model=model))
+    for chunk in chunks:
+        chunk.id = event.get("responseId")
+    if metadata is not None:
+        chunks[-1].usage = usage
     return chunks
 
 
@@ -913,8 +988,19 @@ class GeminiNativeClient:
                 if response.status_code != 200:
                     raise self._http_error(response, read_streaming_error_body(response))
                 tool_call_indices: dict[str, dict[str, Any]] = {}
+                saw_completion = False
+                observed_facts: dict[str, Any] = {}
                 for event in _iter_sse_events(response):
-                    yield from translate_stream_event(event, model, tool_call_indices)
+                    observed_facts.update({key: event[key] for key in ("responseId", "modelVersion", "usageMetadata") if key in event})
+                    try:
+                        chunks = translate_stream_event(event, model, tool_call_indices)
+                    except GeminiAPIError as error:
+                        error.details = {**observed_facts, **error.details}
+                        raise
+                    saw_completion |= any(chunk.choices[0].finish_reason is not None for chunk in chunks)
+                    yield from chunks
+                if not saw_completion:
+                    raise GeminiAPIError("Gemini stream ended without completion facts", code="gemini_invalid_response", details=observed_facts)
         except httpx.HTTPError as exc:
             raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc
 

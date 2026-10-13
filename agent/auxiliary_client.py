@@ -48,33 +48,12 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 if TYPE_CHECKING:
     from openai import OpenAI
 
-_OPENAI_CLS_CACHE: Optional[type] = None
+from agent.auxiliary_openai_client import _AuxiliaryOpenAIProxy
+from agent.auxiliary_chat_stream import _ChatStreamAccumulator
+from agent.auxiliary_response_envelope import _unwrap_data_envelope
+from agent.auxiliary_response_recovery import _recover_aux_response_message
 
-
-def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
-
-
-class _OpenAIProxy:
-    """Lazy stand-in for ``openai.OpenAI``: forwards calls and isinstance checks, importing on first use."""
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
+OpenAI = _AuxiliaryOpenAIProxy()
 
 
 # Availability probe mode: check_fns only need to know whether a client is RESOLVABLE, so
@@ -1592,11 +1571,11 @@ class _CodexCompletionsAdapter:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             from agent.auxiliary_codex_response import _parse_codex_final_response
 
-            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+            response = _parse_codex_final_response(
                 final, issuer_kind=issuer_kind, issuer_model=issuer_model,
             )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
-            for tc in tool_calls_raw or ():
+            for tc in response.choices[0].message.tool_calls or ():
                 if tc.function.name in wire_aliases:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
@@ -1606,13 +1585,7 @@ class _CodexCompletionsAdapter:
             raise
         finally:
             guard.finish()
-        # Shape the result like chat.completions.
-        message = SimpleNamespace(
-            role="assistant", content="".join(text_parts).strip() or None,
-            tool_calls=tool_calls_raw or None,
-        )
-        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return response
 
 
 class _ChatShim:
@@ -1715,7 +1688,7 @@ class _AnthropicCompletionsAdapter:
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
-        from agent.transports import get_transport
+        from agent.auxiliary_anthropic_response import _normalize_anthropic_auxiliary_response
         model = kwargs.get("model", self._model)
         # ZAI's Anthropic endpoint rejects max_tokens on vision models (code 1210);
         # callers signal this via _skip_zai_max_tokens.
@@ -1787,27 +1760,13 @@ class _AnthropicCompletionsAdapter:
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
+            preserve_usage_unknown=True,
             # Record provider-response timing every event, but tick forward progress only for
             # substantive payloads so keepalives can't hold a stalled summary open. None keeps
             # the fast get_final_message path.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
         )
-        _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
-        usage = None
-        if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
-            )
-        # ToolCall already duck-types as OpenAI shape via properties.
-        choice = SimpleNamespace(
-            index=0,
-            message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
-            finish_reason=_nr.finish_reason,
-        )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return _normalize_anthropic_auxiliary_response(response, is_oauth=self._is_oauth)
 
 
 class AnthropicAuxiliaryClient:
@@ -1925,7 +1884,9 @@ def _maybe_wrap_anthropic(
     if api_mode != "anthropic_messages" and (api_mode or not _endpoint_speaks_anthropic_messages(base_url)):
         return client_obj
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.native_usage_anthropic import (
+            build_auxiliary_anthropic_client as build_anthropic_client,
+        )
     except ImportError:
         logger.warning(
             "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
@@ -2914,7 +2875,9 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
         # #114967); third-party Anthropic-compatible gateways never get it.
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.native_usage_anthropic import (
+                build_auxiliary_anthropic_client as build_anthropic_client,
+            )
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
@@ -3041,7 +3004,9 @@ def _try_azure_foundry(
 def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.native_usage_anthropic import (
+            build_auxiliary_anthropic_client as build_anthropic_client,
+        )
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
@@ -3810,6 +3775,7 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     )
     return _validate_llm_response(
         _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        provider=resolved_provider, model=retry_kwargs.get("model"), base_url=str(getattr(retry_client, "base_url", "") or ""),
     )
 
 
@@ -3819,7 +3785,7 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     )
     return _validate_llm_response(
         await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
+        task, provider=resolved_provider, model=retry_kwargs.get("model"), base_url=str(getattr(retry_client, "base_url", "") or ""),
     )
 
 
@@ -4153,7 +4119,7 @@ def _call_fallback_candidate_sync(
                     force_stream=_provider_requires_stream(dest.provider, dest.base_url),
                 ),
             ),
-            task,
+            task, provider=dest.provider, base_url=dest.base_url, model=request_kwargs.get("model"),
         )
     from agent.auxiliary_fallback_recovery import send_with_parameter_rungs
 
@@ -4203,7 +4169,7 @@ async def _call_fallback_candidate_async(
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
         return _validate_llm_response(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
-            task,
+            task, provider=dest.provider, base_url=dest.base_url, model=request_kwargs.get("model"),
         )
     from agent.auxiliary_fallback_recovery import send_with_parameter_rungs_async
 
@@ -4713,7 +4679,8 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
-    from openai import AsyncOpenAI
+    from agent.native_usage_openai import UsageValidatedAsyncOpenAI as AsyncOpenAI
+
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -4867,7 +4834,8 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
-        from openai import OpenAI as _VertexOpenAI
+        from agent.native_usage_openai import UsageValidatedOpenAI as _VertexOpenAI
+
         client = _VertexOpenAI(api_key=token, base_url=base_url)
     except Exception as exc:
         logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
@@ -5215,7 +5183,9 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.native_usage_anthropic import (
+                build_auxiliary_anthropic_client as build_anthropic_client,
+            )
             from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
             if entry_headers:
@@ -6809,16 +6779,12 @@ def _build_call_kwargs(
 
 def _validate_llm_response(
     response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Any:
-    """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
+    """Validate the response shape and record usage once for a successful auxiliary call.
 
-    Also the single aux-usage accounting chokepoint: every successful non-streaming response
-    passes here exactly once; *provider*/*base_url* are optional hints.
-
-    See #7264.
-    Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
-    hints — fallback-path calls omit them and the row keeps the model (read from the response itself) with
-    an empty route. See #23270.
+    Accounting uses the observed model, or the selected attempt route when the
+    provider omits its model. Recording failures do not affect validation.
     """
     if response is None:
         raise RuntimeError(
@@ -6826,7 +6792,7 @@ def _validate_llm_response(
         )
     response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    record_aux_usage(response, task, provider=provider, base_url=base_url, model=model)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -6902,94 +6868,6 @@ def _fail_relay_auxiliary_call(exc: BaseException) -> None:
         _complete_relay_auxiliary_call(outcome="failed")
     except Exception:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)
-
-
-def _unwrap_data_envelope(response: Any, task: str | None = None) -> Any:
-    """Unwrap gateway envelopes like {"data": {<chat completion>}, "success": true}.
-
-    Some OpenAI-compatible gateways (e.g. api.cline.bot) wrap non-streaming
-    JSON bodies in a data/success envelope.  The SDK leniently parses this
-    into a ChatCompletion with choices=None and keeps the envelope keys as
-    extra fields, so the real completion is reachable at ``response.data``.
-    Error envelopes ({"success": false, "data": {"error": ...}}) raise the
-    provider's actual error instead of a generic invalid-response error.
-    """
-    if _field(response, "choices"):
-        return response
-    data = _field(response, "data")
-    if not isinstance(data, dict):
-        return response
-    if _field(response, "success") is False:
-        err = data.get("error") or data
-        msg = err.get("message") if isinstance(err, dict) else None
-        raise RuntimeError(
-            f"Auxiliary {task or 'call'}: provider returned error envelope: "
-            f"{msg or err}"
-        )
-    if not data.get("choices"):
-        return response
-    try:
-        return type(response).model_validate(data)
-    except (AttributeError, TypeError, ValueError):
-        # No model_validate (SimpleNamespace) or the inner payload fails
-        # strict validation (pydantic ValidationError is a ValueError).
-        pass
-    choices = []
-    for ch in data["choices"]:
-        msg = ch.get("message") if isinstance(ch, dict) else None
-        if isinstance(msg, dict):
-            choices.append(SimpleNamespace(
-                message=SimpleNamespace(**msg),
-                finish_reason=ch.get("finish_reason") or "stop",
-            ))
-    if not choices:
-        return response
-    return SimpleNamespace(
-        id=data.get("id", ""),
-        model=data.get("model", ""),
-        object=data.get("object", "chat.completion"),
-        choices=choices,
-        usage=data.get("usage"),
-    )
-
-
-def _recover_aux_response_message(response: Any) -> Optional[Any]:
-    """Synthesize chat-completions shape from Responses-style text (``output_text``,
-    ``output`` items) that some compatible endpoints return outside ``choices``."""
-    text = _extract_aux_response_text(response)
-    if not text:
-        return None
-    choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=getattr(response, "finish_reason", None) or "stop")
-    try:
-        response.choices = [choice]
-        return response
-    except Exception:
-        return SimpleNamespace(
-            id=getattr(response, "id", ""), model=getattr(response, "model", ""),
-            object=getattr(response, "object", "chat.completion"), choices=[choice],
-            usage=getattr(response, "usage", None),
-        )
-
-
-def _extract_aux_response_text(response: Any) -> str:
-    """Text from Responses-style ``output_text`` or ``output[].content[].text``."""
-    output_text = _field(response, "output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-    output = _field(response, "output")
-    if not isinstance(output, list):
-        return ""
-    parts: list[str] = []
-    for item in output:
-        item_type = _field(item, "type")
-        if item_type and item_type != "message":
-            continue
-        for part in (_field(item, "content") or []):
-            if _field(part, "type") in {"output_text", "text", None}:
-                text = _field(part, "text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-    return "\n".join(parts).strip()
 
 
 # Streamed aggregation for progress-hooked aux calls: ``timeout`` becomes an inter-chunk idle
@@ -7202,136 +7080,6 @@ def _aggregate_chat_stream(
     finally:
         _close_chunk_stream(chunks)
     return acc.finish()
-
-
-# Reasoning-detail fields whose non-empty text counts as forward progress.
-_REASONING_DETAIL_TEXT_FIELDS = ("summary", "thinking", "content", "text")
-
-
-class _ChatStreamAccumulator:
-    """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
-
-    def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: Optional[float] = None):
-        self._started = time.monotonic()
-        self._total_ceiling = total_ceiling
-        # Absolute instant the waiting host gives up; checked alongside (not instead of) the
-        # ceiling, and unaffected by pre-construction dispatch/TTFT.
-        # Checked as well as (not instead of) the ceiling above: the ceiling still bounds callers with no
-        # host deadline, and the host deadline is absolute, so it is unaffected by however long dispatch and
-        # TTFT took before this accumulator was constructed. See #99692.
-        self._host_deadline = host_deadline
-        self.content_parts: list[str] = []
-        self.reasoning_parts: list[str] = []
-        self.reasoning_details: list[Any] = []
-        self.tool_calls_acc: dict[int, dict[str, Any]] = {}
-        self.finish_reason = self.usage = None
-        self.resp_id = ""
-        self.resp_model = model or ""
-
-    def _check_deadlines(self) -> None:
-        """Raise TimeoutError past the total ceiling or the host deadline."""
-        now = time.monotonic()
-        if self._total_ceiling is not None and (now - self._started) >= self._total_ceiling:
-            raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
-                               "total ceiling (stream still open but over budget)")
-        if self._host_deadline is not None and now >= self._host_deadline:
-            raise TimeoutError("Auxiliary streamed call timed out at the host compression "
-                               f"deadline after {time.monotonic() - self._started:.0f}s "
-                               "(the caller already stopped waiting; streaming on would only "
-                               "pin its session lease)")
-
-    def _feed_reasoning_details(self, delta: Any) -> bool:
-        """Collect ``reasoning_details`` (OpenRouter-style thinking); True only when a detail
-        carries text, so structural/signed envelopes can't keep a stall alive."""
-        reasoning_details = getattr(delta, "reasoning_details", None)
-        if reasoning_details is None:
-            model_extra = getattr(delta, "model_extra", None)
-            if isinstance(model_extra, dict):
-                reasoning_details = model_extra.get("reasoning_details")
-        if not isinstance(reasoning_details, list):
-            return False
-        made_progress = False
-        for detail in reasoning_details:
-            self.reasoning_details.append(detail)
-            if isinstance(detail, dict) and any(
-                isinstance(detail.get(f), str) and detail[f] for f in _REASONING_DETAIL_TEXT_FIELDS):
-                made_progress = True
-        return made_progress
-
-    def _feed_tool_calls(self, delta: Any) -> bool:
-        """Merge tool-call fragments by index; True when any fragment carried data."""
-        made_progress = False
-        for tc in (getattr(delta, "tool_calls", None) or []):
-            idx = getattr(tc, "index", 0) or 0
-            acc = self.tool_calls_acc.setdefault(idx, {"id": "", "name": "", "arguments": []})
-            if getattr(tc, "id", None):
-                acc["id"] = tc.id
-                made_progress = True
-            fn = getattr(tc, "function", None)
-            if fn is not None:
-                if getattr(fn, "name", None):
-                    acc["name"] = fn.name
-                    made_progress = True
-                if getattr(fn, "arguments", None):
-                    acc["arguments"].append(fn.arguments)
-                    made_progress = True
-        return made_progress
-
-    def feed(self, chunk: Any) -> bool:
-        # Every frame records transport timing (TTFP); only a substantive payload ticks the
-        # forward-progress hook that keeps compression alive (and is reported as True).
-        _notify_aux_timing_response()
-        self._check_deadlines()
-        self.resp_id = getattr(chunk, "id", None) or self.resp_id
-        self.resp_model = getattr(chunk, "model", None) or self.resp_model
-        chunk_usage = getattr(chunk, "usage", None)
-        if chunk_usage:
-            self.usage = chunk_usage
-        choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            return False
-        choice = choices[0]
-        self.finish_reason = getattr(choice, "finish_reason", None) or self.finish_reason
-        delta = getattr(choice, "delta", None)
-        if delta is None:
-            return False
-        made_progress = False
-        from agent.message_content import flatten_message_text
-
-        piece = flatten_message_text(getattr(delta, "content", None), sep="")
-        if piece:
-            self.content_parts.append(piece)
-            made_progress = True
-        reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
-        if reasoning_piece is None and isinstance(getattr(delta, "model_extra", None), dict):
-            reasoning_piece = delta.model_extra.get("reasoning") or delta.model_extra.get("reasoning_content")
-        reasoning_piece = flatten_message_text(reasoning_piece, sep="")
-        if reasoning_piece:
-            self.reasoning_parts.append(reasoning_piece)
-            made_progress = True
-        # Evaluate both unconditionally: they accumulate state, not just progress.
-        made_progress |= self._feed_reasoning_details(delta)
-        made_progress |= self._feed_tool_calls(delta)
-        if made_progress:
-            _notify_aux_progress()
-        return made_progress
-
-    def finish(self) -> Any:
-        tool_calls = None
-        if self.tool_calls_acc:
-            tool_calls = [
-                SimpleNamespace(id=acc["id"], type="function", function=SimpleNamespace(
-                    name=acc["name"], arguments="".join(acc["arguments"])))
-                for _idx, acc in sorted(self.tool_calls_acc.items())]
-        message = SimpleNamespace(
-            role="assistant", content="".join(self.content_parts), tool_calls=tool_calls,
-            reasoning="".join(self.reasoning_parts) or None,
-            reasoning_details=self.reasoning_details or None,
-        )
-        choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
-        return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
-                               choices=[choice], usage=self.usage)
 
 
 async def _aggregate_chat_stream_async(
@@ -8208,7 +7956,7 @@ def _call_llm_impl(
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
-    def _primary(**validate_kw: Any) -> Any:
+    def _primary() -> Any:
         # Retry on the same provider for a transient transport blip (connection reset / streaming-close /
         # incomplete chunked read / 5xx / 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy provider — this especially
@@ -8229,14 +7977,14 @@ def _call_llm_impl(
                         request_provider, req.base_info or req.resolved_base_url),
                 ),
             ),
-            task, **validate_kw,
+            task, model=kwargs.get("model"), provider=request_provider, base_url=req.base_info,
         )
     try:
         # Bounded same-provider retry (exponential backoff, auxiliary.transient_retries) for
         # transient blips before escalating to fallback — a dropped connection shouldn't
         # abandon a healthy provider (matters for pinned MoA advisors).
         try:
-            return _primary(provider=request_provider, base_url=req.base_info)
+            return _primary()
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
@@ -8259,7 +8007,8 @@ def _call_llm_impl(
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(_relay_sync_completion(*args, **kw), task)
+                return _validate_llm_response(_relay_sync_completion(*args, **kw), task,
+                                              provider=kw.get("provider"), base_url=req.base_info, model=args[1].get("model"))
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
@@ -8386,14 +8135,14 @@ async def _async_call_llm_impl(
         async def _acreate(_kwargs: dict[str, Any]) -> Any:
             return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
-        async def _primary(**validate_kw: Any) -> Any:
+        async def _primary() -> Any:
             return _validate_llm_response(
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                     create=_acreate),
-                task, **validate_kw)
+                task, model=kwargs.get("model"), provider=request_provider, base_url=req.base_info)
         try:
-            return await _primary(provider=request_provider, base_url=req.base_info)
+            return await _primary()
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
             if not _should_retry_same_provider(task, transient_err, " (async)"):
@@ -8405,7 +8154,8 @@ async def _async_call_llm_impl(
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
+                return _validate_llm_response(await _relay_async_completion(*args, **kw), task,
+                                              provider=kw.get("provider"), base_url=req.base_info, model=args[1].get("model"))
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args

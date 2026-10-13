@@ -91,6 +91,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+    cron_create.add_argument("--tz",
+        help="Optional IANA timezone for the schedule (e.g. 'America/New_York'). "
+             "When set, cron expressions evaluate against this timezone's wall clock "
+             "and adapt across Daylight Saving Time transitions.")
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
@@ -151,6 +155,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--tz",
+        help="Set/replace the schedule timezone (e.g. 'America/New_York'). "
+            "Pass empty string '' to clear.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

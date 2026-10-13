@@ -31,5 +31,14 @@ export const zhConnectorCard: TranslationOverrides['connectors'] = {
   authorizedToolsUnavailable: '已授权。工具不可用。',
   required: '必填',
   namedAccount: (app, alias) => `Hermes 已将这个 ${app} 账户命名为 ${alias}。`,
-  renameAccount: '重命名'
+  renameAccount: '重命名',
+  directory: {
+    suggested: '推荐',
+    allApps: '全部应用',
+    receiptConnected: apps => `已连接：${apps}`,
+    receiptNone: '未连接新应用',
+    receiptTimedOut: '5 分钟后已关闭',
+    finishInBrowser: '请在浏览器中完成',
+    signInFailed: '连接失败，点击重试'
+  }
 }

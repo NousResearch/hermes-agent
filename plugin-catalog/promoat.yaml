@@ -1,0 +1,39 @@
+name: promoat
+repo: https://github.com/TechHiveDev/promoat_partner_hermes_plugin
+sha: 8f50b57a589ed1e160ec05d66d8b41f6fc66d01a
+description: Realistic AI presenter videos. Estimate, create, and edit videos with your own Promoat account.
+maintainer: Promoat
+tier: community
+category: tools
+version: "1.1.1"
+docs_url: https://platform.promoat.ai/docs
+capabilities:
+  provides_tools:
+    - estimate_video
+    - create_video
+    - create_character
+    - clone_voice
+    - list_voices
+    - get_balance
+    - get_job
+    - get_scenes
+    - fix_scene
+    - edit_script
+    - fix_sound
+    - list_characters
+    - get_character
+    - delete_character
+    - regenerate_character
+    - list_voice_presets
+    - delete_voice
+    - reclone_voice
+    - synthesize_speech
+    - create_first_frame
+    - plan_scenes
+    - list_assets
+    - get_asset
+    - list_jobs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PROMOAT_KEY

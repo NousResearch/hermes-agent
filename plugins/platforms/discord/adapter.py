@@ -1258,12 +1258,13 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_overflow import DiscordOverflowMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+class DiscordAdapter(DiscordMediaMixin, DiscordOverflowMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
                      BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -3268,26 +3269,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
-    def _cap_split_chunks(self, chunks: list[str]) -> list[str]:
-        """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
-        notice so a degenerate turn can't flood the channel (full text stays in session history).
-
-        Cap the number of chunks sent for one logical response (#86581).
-        A degenerate turn can produce tens of thousands of characters; the 86581 incident delivered 60,698
-        chars as 31 back-to-back Discord messages. The full response remains available in the gateway
-        session history / logs. See #86581.
-        """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
-            return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
-        notice = "\n\n" + t(
-            "platform.discord.limits.response_truncated",
-            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
-        if self.warning_text(notice):
-            kept.append(notice)
-        return kept
-
     async def send(
         self,
         chat_id: str,
@@ -3328,9 +3309,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
+            split = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._cap_split_chunks(split, attached=True)
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3338,8 +3318,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+                capped_tail = i == len(chunks) - 1 and len(split) > self.MAX_SPLIT_MESSAGES
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await (self._send_capped_tail(channel, chunk, chunk_reference, content, split)
+                                 if capped_tail else channel.send(content=chunk, reference=chunk_reference))
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3347,7 +3329,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await (self._send_capped_tail(channel, chunk, None, content, split)
+                                     if capped_tail else channel.send(content=chunk, reference=None))
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -3555,7 +3538,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         A continuation failure still reports success plus ``partial_overflow`` so the consumer
         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
+        split = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._cap_split_chunks(split, attached=True)
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
             await msg.edit(content=chunks[0] if chunks else formatted)
@@ -3570,7 +3554,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         continuation_ids: list[str] = []
         delivered = 1
         prev_msg = msg
-        for chunk in chunks[1:]:
+        for index, chunk in enumerate(chunks[1:], start=2):
+            capped_tail = index == len(chunks) and len(split) > self.MAX_SPLIT_MESSAGES
             reference = None
             if hasattr(prev_msg, "to_reference"):
                 try:
@@ -3581,7 +3566,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 # Prior message without to_reference (duck-typed): build the reference from ids.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await (self._send_capped_tail(channel, chunk, reference, content, split)
+                              if capped_tail else channel.send(content=chunk, reference=reference))
             except Exception as send_err:
                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
                 logger.warning(
@@ -3589,7 +3575,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await (self._send_capped_tail(channel, chunk, None, content, split)
+                                  if capped_tail else channel.send(content=chunk, reference=None))
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",

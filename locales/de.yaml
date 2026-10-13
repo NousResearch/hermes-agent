@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "/{name} ausführen"
     limits:
       response_truncated: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. {dropped_chars} Zeichen wurden nicht zugestellt; die vollständige Antwort steht in den Sitzungs-Logs."
+      response_attached: "⚠️ **Antwort gekürzt** — diese Antwort hat das Zustellungslimit ({max_messages} Nachrichten) überschritten. Die vollständige Antwort ist als full-reply.md angehängt."
     forum:
       default_title: "Neuer Beitrag"
     voice:

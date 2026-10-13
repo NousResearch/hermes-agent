@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "Rith /{name}"
     limits:
       response_truncated: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Níor seachadadh {dropped_chars} carachtar; tá an freagra iomlán i logaí an tseisiúin."
+      response_attached: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Tá an freagra iomlán ceangailte mar full-reply.md."
     forum:
       default_title: "Postáil Nua"
     voice:

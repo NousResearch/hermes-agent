@@ -1354,6 +1354,7 @@ platform:
       auto_description_fallback: "Exécuter /{name}"
     limits:
       response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
+      response_attached: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). La réponse complète est jointe en tant que full-reply.md."
     forum:
       default_title: "Nouvelle publication"
     voice:

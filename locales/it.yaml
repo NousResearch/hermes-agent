@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "Esegui /{name}"
     limits:
       response_truncated: "⚠️ **Risposta troncata** — questa risposta ha superato il limite di consegna ({max_messages} messaggi). {dropped_chars} caratteri non sono stati consegnati; la risposta completa è nei log della sessione."
+      response_attached: "⚠️ **Risposta troncata** — questa risposta ha superato il limite di consegna ({max_messages} messaggi). La risposta completa è allegata come full-reply.md."
     forum:
       default_title: "Nuovo post"
     voice:

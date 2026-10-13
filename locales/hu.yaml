@@ -1169,6 +1169,7 @@ platform:
       auto_description_fallback: "/{name} futtatása"
     limits:
       response_truncated: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). {dropped_chars} karakter nem lett kézbesítve; a teljes válasz a munkamenet naplóiban található."
+      response_attached: "⚠️ **A válasz csonkolva** — ez a válasz túllépte a kézbesítési limitet ({max_messages} üzenet). A teljes válasz full-reply.md néven csatolva van."
     forum:
       default_title: "Új bejegyzés"
     voice:

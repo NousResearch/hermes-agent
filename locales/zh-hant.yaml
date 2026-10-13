@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "執行 /{name}"
     limits:
       response_truncated: "⚠️ **回應已截斷** — 此回覆超過傳送上限（{max_messages} 則訊息）。有 {dropped_chars} 個字元未送達；完整回應請見工作階段記錄。"
+      response_attached: "⚠️ **回應已截斷** — 此回覆超過傳送上限（{max_messages} 則訊息）。完整回應已附加為 full-reply.md。"
     forum:
       default_title: "新貼文"
     voice:

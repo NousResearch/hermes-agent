@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "/{name} 실행"
     limits:
       response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
+      response_attached: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. 전체 응답은 full-reply.md 파일로 첨부했어요."
     forum:
       default_title: "새 게시물"
     voice:

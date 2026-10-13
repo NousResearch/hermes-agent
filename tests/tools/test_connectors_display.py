@@ -2,7 +2,8 @@
 
 Contracts:
 - on desktop the call emits a card with no targets, waits for Continue or the deadline, and reports what is
-  connected, computed from the gateway list read at the start and at settle; the deadline adds timed_out
+  connected, computed from the gateway list read at the start and at settle; the deadline adds timed_out,
+  and words typed in the composer settle it like Continue and come back as said
 - without a card surface it returns at once with the status list and where to connect
 """
 
@@ -38,17 +39,18 @@ def _display(gw, *, callback, card_surface):
     ))
 
 
-@pytest.mark.parametrize("ending", ["continue", "deadline"])
+@pytest.mark.parametrize("ending", ["continue", "deadline", "said"])
 def test_display_waits_for_the_user_and_reports_what_they_connected(ending):
     gw = ListFake({"gmail"})
     seen = []
 
     def card(payload):
-        # The user connects Slack while the card is open, then presses Continue or walks away.
+        # The user connects Slack while the card is open, then presses Continue, types an answer or walks away.
         seen.append(payload)
         gw.connected.add("slack")
-        if ending == "continue":
-            apply_answer(live.get("s1", payload["op_id"]), json.dumps({"settled_by": "continue"}))
+        if ending != "deadline":
+            answer = {"settled_by": "continue"} if ending == "continue" else {"said": " maybe later "}
+            apply_answer(live.get("s1", payload["op_id"]), json.dumps(answer))
 
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2 if ending == "deadline" else 60):
         out = _display(gw, callback=card, card_surface=True)
@@ -56,7 +58,8 @@ def test_display_waits_for_the_user_and_reports_what_they_connected(ending):
     (payload,) = seen
     assert payload["targets"] == [] and payload["display"] == {"suggested": ["slack", "linear"]}
     expected = {"connected": ["gmail", "slack"], "newly_connected": ["slack"], "suggested": ["slack", "linear"]}
-    assert out == ({**expected, "timed_out": True} if ending == "deadline" else expected)
+    extra = {"deadline": {"timed_out": True}, "said": {"said": "maybe later"}}.get(ending, {})
+    assert out == {**expected, **extra}
     assert live.current("s1") is None
 
 

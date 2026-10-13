@@ -40,6 +40,7 @@ export function ComposerControls({
   busy,
   busyAction,
   canSubmit,
+  cardWaiting = false,
   compactModelPill = false,
   conversation,
   disabled,
@@ -57,6 +58,8 @@ export function ComposerControls({
   busy: boolean
   busyAction: 'steer' | 'queue' | 'stop'
   canSubmit: boolean
+  /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
+  cardWaiting?: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
@@ -79,10 +82,10 @@ export function ComposerControls({
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
-  // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
-  // only when the composer is empty and a turn is running.
+  // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
+  // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
-  const showQueueButton = busy && busyAction !== 'stop' && hasComposerPayload
+  const showQueueButton = busy && busyAction !== 'stop' && hasComposerPayload && !cardWaiting
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
   // narrow tile hits the same wall from the other direction and folds for the

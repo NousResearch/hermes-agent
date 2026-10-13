@@ -729,6 +729,15 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs, call=call), None
     underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
     if err or not underlying_name:
+        # A tool_call naming a tool this session lists DIRECTLY carries an unambiguous
+        # intent, so dispatch it as the local call instead of spending an iteration on a
+        # refusal the model then has to correct (#137639). Scope stays this session's own
+        # defs, so the bridge still cannot reach a tool the session lacks: a deferred name,
+        # a connector name, a multi-entry local batch and an out-of-grant name keep their
+        # own corrections.
+        direct = ts.directly_listed_target(args, current_defs)
+        if direct is not None:
+            return None, direct
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
         if not ts.connections_in_scope(current_defs):

@@ -548,6 +548,18 @@ class TestBuildPreloadedSkillsPrompt:
         assert "enabled-skill" in prompt
 
 
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(monkeypatch):
+    """This module renders the LEGACY flat skills index.
+
+    The index is RETIRED by default (card t_cc3c6951, operator ruling 2026-09-30); the curated
+    hierarchical surface is the routing surface now. These tests exercise the renderer that still
+    exists behind the explicit escape hatch, so it is pinned ON here. The DARK default is guarded by
+    tests/agent/test_skills_index_deprecated.py.
+    """
+    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
+
+
 class TestDuplicateNamesAgreeAcrossSurfaces:
     def test_every_surface_resolves_duplicates_like_skill_view(self, tmp_path, monkeypatch, caplog):
         """#64392: list, prompt index, slash commands, skill_view, -s preload and cron agree. A same-tier

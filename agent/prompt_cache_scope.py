@@ -57,16 +57,8 @@ def _agent_source(
     if row_source:
         return row_source
     platform = getattr(agent, "platform", None)
-    try:
-        # Lazy: run_agent imports this module.
-        from run_agent import _session_source_for_agent
-
-        source = str(_session_source_for_agent(platform) or "").strip()
-        if source:
-            return source
-    except Exception:
-        logger.debug("declared-scope source authority unavailable", exc_info=True)
-    return str(platform or "").strip()
+    from agent.session_source import session_source_for
+    return str(session_source_for(platform)).strip()
 
 
 def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:

@@ -7,6 +7,7 @@ helpers used by ``hermes import`` and ``/snapshot restore``.  Backup
 which composes these helpers.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -26,7 +27,7 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
     Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
@@ -45,7 +46,7 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
 
     canonical_db = _canonical(os.fspath(db_path))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
-    pids: List[int] = []
+    pids: list[int] = []
     try:
         own_pid = os.getpid()
         for pid_str in os.listdir("/proc"):
@@ -70,6 +71,88 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     except OSError:
         return None
     return pids
+
+
+def _auth_restore_target(dst: Path) -> Optional[Path]:
+    """Writable auth-store path whose lock and publish name the same underlying file.
+
+    A file symlink is resolved so refresh writers and restore take the same auth.lock. A hard-linked
+    auth.json cannot be atomically replaced without splitting a deliberately shared store into two
+    inodes, so that topology fails closed instead of silently breaking credential sharing.
+    """
+    try:
+        if dst.exists():
+            links = dst.stat().st_nlink
+            if links > 1:
+                logger.error(
+                    "Refusing auth.json restore to %s: it has %d hard links; atomic replacement "
+                    "would split a shared auth store",
+                    dst,
+                    links,
+                )
+                return None
+        return dst.resolve(strict=False) if dst.is_symlink() else dst
+    except (OSError, RuntimeError) as exc:
+        logger.error("Refusing auth.json restore to %s: cannot resolve store identity: %s", dst, exc)
+        return None
+
+
+def _restore_auth_json(src: Path, dst: Path) -> bool:
+    """Restore auth.json without rolling back a live single-use OAuth generation.
+
+    The live read and final write share the canonical auth-store lock, so a concurrent refresh
+    cannot land between preservation and publish.
+    """
+    try:
+        snapshot_store = json.loads(src.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        logger.error("Refusing auth.json restore from %s: %s", src, exc)
+        return False
+    if not isinstance(snapshot_store, dict):
+        logger.error("Refusing auth.json restore from %s: top level is not an object", src)
+        return False
+    if not (
+        isinstance(snapshot_store.get("providers"), dict)
+        or isinstance(snapshot_store.get("credential_pool"), dict)
+        or isinstance(snapshot_store.get("systems"), dict)
+    ):
+        logger.error("Refusing auth.json restore from %s: unrecognized auth-store shape", src)
+        return False
+    # Legacy "systems" stores are still valid snapshot input. Mirror auth._load_auth_store's
+    # migration without asking that loader to create a .corrupt sidecar inside the snapshot.
+    if (
+        not isinstance(snapshot_store.get("providers"), dict)
+        and not isinstance(snapshot_store.get("credential_pool"), dict)
+        and isinstance(snapshot_store.get("systems"), dict)
+    ):
+        systems = snapshot_store["systems"]
+        providers = {"nous": systems["nous_portal"]} if "nous_portal" in systems else {}
+        # Match auth._load_auth_store's migration shape exactly: the legacy
+        # "systems" container itself is obsolete and must not be written back.
+        snapshot_store = {
+            "providers": providers,
+            "active_provider": "nous" if providers else None,
+        }
+
+    try:
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+        from hermes_cli.auth_oauth_grants import (
+            merge_snapshot_auth_preserving_live_single_use_grants,
+        )
+
+        target = _auth_restore_target(dst)
+        if target is None:
+            return False
+        with _auth_store_lock(target_path=target):
+            live_store = _load_auth_store(target)
+            restored = merge_snapshot_auth_preserving_live_single_use_grants(
+                snapshot_store, live_store
+            )
+            _save_auth_store(restored, target_path=target)
+        return True
+    except Exception as exc:
+        logger.error("Failed to restore %s safely: %s", dst, exc)
+        return False
 
 
 def _safe_restore_db(src: Path, dst: Path) -> bool:
@@ -380,7 +463,7 @@ def _extract_member_atomically(
         raise
 
 
-def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
+def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     """Return ``(sessions, messages)`` stored in the session database *path*.
 
     Read-only and best effort.  ``None`` means "unknown" — a missing file, a

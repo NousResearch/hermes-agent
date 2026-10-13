@@ -374,6 +374,8 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+    # ...because no plugin registered them, so the reconnect watcher may still heal them.
+    monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
 
     import logging
     with caplog.at_level(logging.WARNING):
@@ -383,9 +385,14 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     assert ok is True
     assert runner.should_exit_cleanly is False
     assert runner.adapters == {}
-    # Runtime state must remain "running", not "startup_failed".
+    # Cron still runs; missing enabled platforms are flagged and queued for the reconnect watcher.
     state = read_runtime_status()
     assert state["gateway_state"] == "running"
+    assert set(runner._failed_platforms) == {Platform.TELEGRAM, Platform.DISCORD}
+    for platform in ("telegram", "discord"):
+        assert state["platforms"][platform]["state"] == "retrying"
+        assert state["platforms"][platform]["error_code"] == "adapter_unavailable"
+        assert state["platforms"][platform]["needs_attention"] is True
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message

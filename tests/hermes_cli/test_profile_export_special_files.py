@@ -42,7 +42,8 @@ def test_named_profile_export_survives_unix_socket(tmp_path, monkeypatch):
     """Sockets and FIFOs in a named profile are skipped, not fatal."""
     profiles_root = tmp_path / "profiles"
     profile_dir = profiles_root / "sockety"
-    browser_dir = profile_dir / "home" / ".agent-browser"
+    # Not home/.agent-browser: a named export never walks home/ (the subprocess HOME's CLI credentials).
+    browser_dir = profile_dir / "workspace" / ".agent-browser"
     browser_dir.mkdir(parents=True)
 
     (profile_dir / "config.yaml").write_text("model: gpt-4\n")

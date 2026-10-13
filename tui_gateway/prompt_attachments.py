@@ -136,18 +136,27 @@ def _session_images_dir(session: dict) -> Path:
 
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the session images dir and queue them for the next submit."""
-    session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    counter = session.get("image_counter", 0) + 1
+    while True:
+        candidate = img_dir / f"{prefix}_{ts}_{counter}{ext}"
+        try:
+            upload = candidate.open("xb")
+        except FileExistsError:
+            counter += 1
+        else:
+            break
+    session["image_counter"] = counter
     try:
-        img_path.write_bytes(img_bytes)
+        with upload:
+            upload.write(img_bytes)
     except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
+        candidate.unlink(missing_ok=True)
         raise
-    session.setdefault("attached_images", []).append(str(img_path))
-    return img_path
+    session.setdefault("attached_images", []).append(str(candidate))
+    return candidate
 
 
 def _format_ref_value(value: str) -> str:
@@ -211,7 +220,7 @@ def _stage_session_file_attachment(
         import re as _re
         try:
             payload = _b64_payload(
-                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I)
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
@@ -219,13 +228,23 @@ def _stage_session_file_attachment(
     root.mkdir(parents=True, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
+    stem = Path(filename).stem or "attachment"
+    suffix = Path(filename).suffix
+    counter = 2
+    while True:
+        try:
+            upload = target.open("xb")
+        except FileExistsError:
+            target = root / f"{stem}-{counter}{suffix}"
             counter += 1
-    target.write_bytes(payload)
+        else:
+            break
+    try:
+        with upload:
+            upload.write(payload)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     return target.resolve(), True
 
 

@@ -37,8 +37,8 @@ def _ensure_google_auth() -> bool:
     try:
         from pm import ensure_import
         ensure_import("vertex")
-        import google.auth as _auth  # noqa: F401 — rebinding the module globals below
-        import google.auth.transport.requests  # noqa: F401
+        import google.auth as _auth
+        import google.auth.transport.requests
         from google.oauth2 import service_account as _service_account
     except Exception as exc:
         logger.warning("google-auth package not installed (%s). Cannot use Vertex AI.", exc)
@@ -93,7 +93,7 @@ def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
     return None
 
 
-def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[Any, ...]]:
+def _sa_snapshot(resolved_path: Optional[str]) -> tuple[Optional[bytes], tuple[Any, ...]]:
     """Resolve (bytes-or-None, cache key) for one credential attempt.
 
     - No path (ADC): (None, ("__adc__",)) sentinel key.
@@ -115,7 +115,7 @@ def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[A
     return raw, (resolved_path, hashlib.sha256(raw).hexdigest())
 
 
-def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[Tuple[Any, Optional[str]]]:
+def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[tuple[Any, Optional[str]]]:
     """Build (credentials, project_id) for a cache miss; None when ADC must be refused."""
     if resolved_path:
         if sa_raw is not None:
@@ -145,7 +145,7 @@ def _needs_refresh(creds) -> bool:
     )
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if not _ensure_google_auth():
         return None, None
@@ -189,7 +189,7 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 def get_vertex_config(
     credentials_path: Optional[str] = None, region: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
     token, project_id = get_vertex_credentials(credentials_path)
     if not token or not project_id:

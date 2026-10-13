@@ -42,7 +42,7 @@ def _is_test_file(rel: Path) -> bool:
     return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py"
 
 
-def _python_files(plugin_dir: Path) -> Iterable[Tuple[Path, Path]]:
+def _python_files(plugin_dir: Path) -> Iterable[tuple[Path, Path]]:
     for path in sorted(plugin_dir.rglob("*.py")):
         rel = path.relative_to(plugin_dir)
         if _SKIP_DIRS.intersection(rel.parts[:-1]) or _is_test_file(rel):
@@ -50,11 +50,11 @@ def _python_files(plugin_dir: Path) -> Iterable[Tuple[Path, Path]]:
         yield path, rel
 
 
-def _runtime_files(plugin_dir: Path, files: Dict[Path, ast.AST], local: Set[str]) -> Set[Path]:
+def _runtime_files(plugin_dir: Path, files: dict[Path, ast.AST], local: set[str]) -> set[Path]:
     """The import closure of what Hermes loads: ``__init__.py`` (``register``) and ``dashboard/*.py``
     (dashboard plugin API). Benchmarks, CI and smoke scripts shipped beside them never run inside
     Hermes, so a stub they install into ``sys.modules`` is not a runtime override."""
-    by_module: Dict[str, Set[Path]] = {}
+    by_module: dict[str, set[Path]] = {}
     for rel in files:
         parts = rel.with_suffix("").parts
         if parts[-1] == "__init__":
@@ -62,8 +62,8 @@ def _runtime_files(plugin_dir: Path, files: Dict[Path, ast.AST], local: Set[str]
         for start in range(len(parts)):
             by_module.setdefault(".".join(parts[start:]), set()).add(rel)
 
-    def resolve(rel: Path, node: ast.AST) -> Set[Path]:
-        names: List[str] = []
+    def resolve(rel: Path, node: ast.AST) -> set[Path]:
+        names: list[str] = []
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -73,14 +73,14 @@ def _runtime_files(plugin_dir: Path, files: Dict[Path, ast.AST], local: Set[str]
                 names = [prefix] + [f"{prefix}.{a.name}".strip(".") for a in node.names]
             elif node.module:
                 names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
-        found: Set[Path] = set()
+        found: set[Path] = set()
         for name in names:
             if name.split(".")[0] in local or isinstance(node, ast.ImportFrom) and node.level:
                 found |= by_module.get(name, set())
         return found
 
     roots = {rel for rel in files if rel == Path("__init__.py") or (len(rel.parts) == 2 and rel.parts[0] == "dashboard")}
-    seen: Set[Path] = set()
+    seen: set[Path] = set()
     stack = list(roots)
     while stack:
         rel = stack.pop()
@@ -93,7 +93,7 @@ def _runtime_files(plugin_dir: Path, files: Dict[Path, ast.AST], local: Set[str]
     return seen
 
 
-def _local_names(plugin_dir: Path) -> Set[str]:
+def _local_names(plugin_dir: Path) -> set[str]:
     """Module/package names the plugin ships itself: an import of these is local, not core."""
     names = set()
     for path in plugin_dir.rglob("*"):
@@ -121,12 +121,12 @@ def _call_name(node: ast.Call) -> str:
 
 
 class _Analysis:
-    def __init__(self, core_roots: frozenset, local: Set[str]):
+    def __init__(self, core_roots: frozenset, local: set[str]):
         self.core_roots = core_roots - local
-        self.core_returners: Set[str] = set()
-        self.param_patchers: Dict[str, Set[int]] = {}
-        self.aliases: Dict[str, str] = {}  # ``from .compat import server as gateway_server``
-        self.constants: Dict[str, str] = {}  # module-level ``NAME = "module.path"``
+        self.core_returners: set[str] = set()
+        self.param_patchers: dict[str, set[int]] = {}
+        self.aliases: dict[str, str] = {}  # ``from .compat import server as gateway_server``
+        self.constants: dict[str, str] = {}  # module-level ``NAME = "module.path"``
 
     def _func_key(self, call: ast.Call) -> str:
         name = _call_name(call).split(".")[-1]
@@ -136,7 +136,7 @@ class _Analysis:
     def _core_module_name(self, name: object) -> bool:
         return isinstance(name, str) and name.split(".")[0] in self.core_roots
 
-    def is_core(self, node: ast.AST, tainted: Set[str]) -> bool:
+    def is_core(self, node: ast.AST, tainted: set[str]) -> bool:
         if isinstance(node, ast.Name):
             return node.id in tainted
         if isinstance(node, ast.Attribute):
@@ -170,7 +170,7 @@ class _Analysis:
         return isinstance(arg, ast.Constant) and self._core_module_name(arg.value)
 
     # -- per-scope taint --------------------------------------------------------------------------
-    def scope_taint(self, body: List[ast.stmt], inherited: Set[str]) -> Set[str]:
+    def scope_taint(self, body: list[ast.stmt], inherited: set[str]) -> set[str]:
         tainted = set(inherited)
         nodes = [n for stmt in body for n in _walk_scope(stmt)]
         for _ in range(4):
@@ -194,8 +194,8 @@ class _Analysis:
         return tainted
 
     # -- sinks ------------------------------------------------------------------------------------
-    def rebinds(self, node: ast.AST, tainted: Set[str]) -> List[str]:
-        hits: List[str] = []
+    def rebinds(self, node: ast.AST, tainted: set[str]) -> list[str]:
+        hits: list[str] = []
         targets: Sequence[ast.expr] = []
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -240,7 +240,7 @@ def _walk_scope(stmt: ast.AST):
                 stack.append(child)
 
 
-def _bound_names(targets: Iterable[ast.AST]) -> Set[str]:
+def _bound_names(targets: Iterable[ast.AST]) -> set[str]:
     names = set()
     for t in targets:
         if isinstance(t, ast.Name):
@@ -265,10 +265,10 @@ def _functions(tree: ast.AST):
     yield from visit(tree, False)
 
 
-def core_override_findings(plugin_dir: Path) -> List[str]:
+def core_override_findings(plugin_dir: Path) -> list[str]:
     """``["<target> (<rel>:<line>)", ...]`` for every runtime rebind of Hermes core in the plugin."""
     plugin_dir = Path(plugin_dir)
-    parsed: Dict[Path, ast.AST] = {}
+    parsed: dict[Path, ast.AST] = {}
     for path, rel in _python_files(plugin_dir):
         try:
             parsed[rel] = ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
@@ -298,16 +298,16 @@ def core_override_findings(plugin_dir: Path) -> List[str]:
                        for stmt in func.body for n in _walk_scope(stmt)):
                     analysis.core_returners.add(func.name)
                 params = [a.arg for a in func.args.posonlyargs + func.args.args]
-                for index, param in enumerate(params):
-                    if index == 0 and is_method:
-                        continue
+                # A method is called as ``obj.bind(module, ...)``: its call-site args start after ``self``.
+                offset = 1 if is_method else 0
+                for index, param in enumerate(params[offset:]):
                     if any(analysis.rebinds(n, {param}) for stmt in func.body for n in _walk_scope(stmt)):
                         analysis.param_patchers.setdefault(func.name, set()).add(index)
         after = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()))
         if after == before:
             break
 
-    findings: List[str] = []
+    findings: list[str] = []
     for rel, tree in trees:
         module_taint = analysis.scope_taint(tree.body, set())
         scopes = [(tree.body, module_taint)]

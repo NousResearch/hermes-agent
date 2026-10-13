@@ -24,7 +24,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
-VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
+VIDEO_GENERATE_SCHEMA: dict[str, Any] = {
     "name": "video_generate",
     # Placeholder: description AND params are rebuilt at get_tool_definitions() time by
     # _build_dynamic_video_schema() from capabilities() + the model's catalog entry. Optional
@@ -146,7 +146,7 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return _BOOL_WORDS.get(value.strip().lower()) if isinstance(value, str) else None
 
 
-def _normalize_reference_images(value: Any) -> Optional[List[str]]:
+def _normalize_reference_images(value: Any) -> Optional[list[str]]:
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, (list, tuple)):
@@ -154,7 +154,7 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return [item.strip() for item in value if isinstance(item, str) and item.strip()] or None
 
 
-def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
@@ -190,7 +190,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     # Config, then provider default; a ``model`` in args is ignored (models do not choose models).
     model = _read_configured_video_model() or provider.default_model()
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": model, "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -260,7 +260,7 @@ _GENERIC_DESCRIPTION = (
 )
 
 
-def _schema(description: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+def _schema(description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "description": description,
         "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
@@ -274,11 +274,11 @@ def _provider_call(provider: Any, method: str, default: Any) -> Any:
         return default
 
 
-def _build_dynamic_video_schema() -> Dict[str, Any]:
+def _build_dynamic_video_schema() -> dict[str, Any]:
     """Description AND params from capabilities() + the model's catalog entry; enums and duration
     bounds tighten to the active model. Unadvertised args are still accepted (replay compat)."""
     static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-    parts: List[str] = [_GENERIC_DESCRIPTION]
+    parts: list[str] = [_GENERIC_DESCRIPTION]
     configured_model = _read_configured_video_model()
     provider = _resolve_active_provider()
     if provider is None:
@@ -323,7 +323,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             notice = ""
         if notice:
             parts.append(f"- storage: {notice}")
-    properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+    properties: dict[str, Any] = {"prompt": static_props["prompt"]}
     if can_i2v:
         properties["image_url"] = {
             "type": "string",

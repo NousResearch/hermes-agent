@@ -4293,6 +4293,9 @@ export const en: Translations = {
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`,
       workhorse: {
+        label: 'Subagents',
+        resetModel: 'Inherit parent model and route',
+        resetEffort: 'Inherit parent effort',
         openPicker: 'Open subagent model picker',
         inherit: 'inherit',
         noModel: 'no subagent model',

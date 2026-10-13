@@ -3731,6 +3731,9 @@ export interface Translations extends NoticeTranslations {
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
       workhorse: {
+        label: string
+        resetModel: string
+        resetEffort: string
         openPicker: string
         inherit: string
         noModel: string

@@ -34,6 +34,9 @@ import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
+  title?: string
+  onReset?: () => void
+  resetLabel?: string
   open: boolean
   onOpenChange: (open: boolean) => void
   gw?: HermesGateway
@@ -63,6 +66,9 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  onReset,
+  resetLabel,
+  title,
   ownerConnectionId,
   profile = 'default',
   request,
@@ -183,7 +189,7 @@ export function ModelPickerDialog({
         className={cn('max-h-[85vh] max-w-2xl', contentClassName)}
       >
         <DialogHeader className="border-b border-border px-4 py-3">
-          <DialogTitle>{copy.title}</DialogTitle>
+          <DialogTitle>{title ?? copy.title}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
             {copy.current} {optionsModel || currentModel || copy.unknown}
             {optionsProvider || currentProvider ? ` · ${optionsProvider || currentProvider}` : ''}
@@ -217,7 +223,21 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+        <DialogFooter
+          className={cn('flex-row items-center justify-end gap-2 bg-card p-3', onReset && resetLabel && 'flex-wrap')}
+        >
+          {onReset && resetLabel && (
+            <Button
+              className="w-full justify-start"
+              onClick={() => {
+                onReset()
+                onOpenChange(false)
+              }}
+              variant="ghost"
+            >
+              {resetLabel}
+            </Button>
+          )}
           <Button className="mr-auto" onClick={enterSlug} variant="ghost">
             {copy.addCustomModelAction}
           </Button>

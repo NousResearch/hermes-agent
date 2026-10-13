@@ -68,7 +68,16 @@ describe('ComposerControls workhorse dry run', () => {
         busy={false}
         busyAction="stop"
         canSubmit={true}
-        conversation={{ active: false, level: 0, muted: false, onEnd: vi.fn(), onStart: vi.fn(), onStopTurn: vi.fn(), onToggleMute: vi.fn(), status: 'idle' }}
+        conversation={{
+          active: false,
+          level: 0,
+          muted: false,
+          onEnd: vi.fn(),
+          onStart: vi.fn(),
+          onStopTurn: vi.fn(),
+          onToggleMute: vi.fn(),
+          status: 'idle'
+        }}
         disabled={false}
         hasComposerPayload={true}
         onDictate={vi.fn()}
@@ -99,7 +108,16 @@ describe('ComposerControls workhorse dry run', () => {
         busy={false}
         busyAction="stop"
         canSubmit={true}
-        conversation={{ active: false, level: 0, muted: false, onEnd: vi.fn(), onStart: vi.fn(), onStopTurn: vi.fn(), onToggleMute: vi.fn(), status: 'idle' }}
+        conversation={{
+          active: false,
+          level: 0,
+          muted: false,
+          onEnd: vi.fn(),
+          onStart: vi.fn(),
+          onStopTurn: vi.fn(),
+          onToggleMute: vi.fn(),
+          status: 'idle'
+        }}
         disabled={false}
         hasComposerPayload={true}
         onDictate={vi.fn()}

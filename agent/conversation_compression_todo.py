@@ -16,7 +16,9 @@ from typing import Any
 _PRUNED_SKILL_RELOAD_NOTICE_HEADER = "[Skills pruned during compression — reload before acting on these tasks]"
 # Length-prefixed item opener from TodoStore.format_for_injection:
 # ``<indent>- <marker> <id>. #<N>:<content> (<status>)`` — N is len(content) in characters.
-_TASK_ITEM_OPEN_RE = re.compile(r"^(?:  )*- (\[.\]) (\S+)\. #(\d+):")
+# No ^ anchor: Pattern.match(string, pos) still only lets ^ match at index 0,
+# so later items would never match. Line-start is enforced by the caller.
+_TASK_ITEM_OPEN_RE = re.compile(r"(?:  )*- (\[.\]) (\S+)\. #(\d+):")
 
 
 def _consume_todo_snapshot_tasks(text: str) -> str:

@@ -16,6 +16,7 @@ import logging
 import re
 import sys
 import threading
+import time
 import types
 from contextlib import contextmanager
 from functools import wraps
@@ -44,6 +45,10 @@ _BARE_MODULE_SCOPE: dict[str, str] = {}  # bare module name -> owning scope_key
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
+# Space between retries of a plugin whose load already failed (#137879): the first lookup after the
+# failure retries at once (a transient startup overrun heals on the next agent build), later ones
+# wait this long so a persistently broken plugin is not re-imported on every agent build.
+_FAILED_PLUGIN_RETRY_BACKOFF_SECS = 60.0
 _LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worker; the re-arm guard matches it
 _ABANDONED_LOADERS: list[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
@@ -185,6 +190,20 @@ def _load_error_text(exc: BaseException) -> str:
     return str(exc)
 
 
+def get_plugin_context_engine():
+    """Return the plugin-registered context engine, or None; retries failed loads (backoff-spaced,
+    ``PluginLoaderMixin.rearm_failed_plugin_loads``) so a transient startup failure heals instead of
+    every later agent silently running the built-in compressor until a restart (#137879). Lives here,
+    next to the retry, so ``hermes_cli.plugins`` (a facade) grows no new behaviour."""
+    from hermes_cli.plugins import _ensure_plugins_discovered
+    manager = _ensure_plugins_discovered()
+    engine = manager._context_engine
+    if engine is None:
+        manager.rearm_failed_plugin_loads()
+        engine = manager._context_engine
+    return engine
+
+
 def _dist_installed(req: str) -> Optional[bool]:
     """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
     dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
@@ -288,6 +307,38 @@ class PluginLoaderMixin:
             logger.info("Re-arming failed platform plugin load: %s", platform_name)
             self._register_deferred_platform(failed)
             return True
+
+    def rearm_failed_plugin_loads(self) -> None:
+        """Retry the load of every general plugin whose load failed, so a transient startup overrun
+        or a raising ``register()`` heals inside the process instead of silencing the plugin until a
+        restart (#137879) — the context-engine twin of :meth:`rearm_failed_platform`, driven by
+        ``get_plugin_context_engine`` when the engine slot is empty. Without it the manager's
+        ``_context_engine`` stays ``None`` for the life of the process and every agent built later
+        silently falls back to the built-in compressor. Each retry is spaced by
+        ``_FAILED_PLUGIN_RETRY_BACKOFF_SECS``; a still-hung abandoned import is never retried, and
+        placeholders / version-gated skips carry the same error-set shape as a failure but must
+        never be re-imported."""
+        from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
+        from hermes_cli.plugins_manifest import requires_hermes_error
+        now = time.monotonic()
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            for plugin_key, loaded in list(self._plugins.items()):
+                manifest = loaded.manifest
+                if (not loaded.error or loaded.enabled or manifest is None
+                        or manifest.kind == "platform"):
+                    continue  # platforms re-arm through their own reconnect watcher
+                if requires_hermes_error(manifest) or gate_manifest(
+                        manifest, _get_disabled_plugins(), _get_enabled_plugins()).action != "load":
+                    continue
+                with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
+                    if any(t.is_alive() and t.name == f"{_LOADER_THREAD_PREFIX}{plugin_key}"
+                           for t in _ABANDONED_LOADERS):
+                        continue
+                if self._failed_plugin_retry_at.get(plugin_key, 0.0) > now:
+                    continue
+                self._failed_plugin_retry_at[plugin_key] = now + _FAILED_PLUGIN_RETRY_BACKOFF_SECS
+                logger.info("Retrying failed plugin load: %s (previous error: %s)", plugin_key, loaded.error)
+                self._load_plugin_scoped(manifest)
 
     @_serialized_replacement
     def _lease_deferred_platform(self, manifest: PluginManifest, lookup_key: str) -> bool:

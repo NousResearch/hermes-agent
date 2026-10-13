@@ -509,6 +509,86 @@ class TestLoadIsolation:
             if hasattr(sys, "_load_thread"):
                 del sys._load_thread
 
+    def test_failed_engine_plugin_load_is_retried_on_next_engine_lookup(self, hermes_home, monkeypatch):
+        """#137879: a plugin whose register() overran the load deadline left the engine slot None for the
+        life of the process — every later agent silently ran the built-in compressor. The next engine
+        lookup must retry the load (once the hung worker finished) and pick up the engine."""
+        import sys
+        import threading
+        from textwrap import dedent
+        sys._eng_gate, sys._eng_done = threading.Event(), threading.Event()
+        _write_plugin(hermes_home / "plugins", "eng_slow")
+        (hermes_home / "plugins" / "eng_slow" / "__init__.py").write_text(dedent('''
+            import sys
+            from agent.context_engine import ContextEngine
+
+            class Retried(ContextEngine):
+                @property
+                def name(self):
+                    return "ctx_retried"
+                def update_from_response(self, usage):
+                    pass
+                def should_compress(self, prompt_tokens=None):
+                    return False
+                def compress(self, messages, current_tokens=None):
+                    return messages
+
+            def register(ctx):
+                sys._eng_gate.wait(5)
+                ctx.register_context_engine(Retried())
+                sys._eng_done.set()
+        '''))
+        _enable(hermes_home, ["eng_slow"])
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["eng_slow"], "load_timeout_seconds": 0.3}}))
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert not mgr._plugins["eng_slow"].enabled
+            assert "load timed out" in (mgr._plugins["eng_slow"].error or "")
+            assert mgr._context_engine is None
+            monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+            assert plugins_mod.get_plugin_context_engine() is None  # hung worker still alive → no retry
+            sys._eng_gate.set()  # let the abandoned worker finish; its late registration must bounce
+            assert sys._eng_done.wait(5)
+            assert mgr._context_engine is None
+            engine = plugins_mod.get_plugin_context_engine()
+            assert engine is not None and engine.name == "ctx_retried"
+            assert mgr._plugins["eng_slow"].enabled
+            assert not mgr._plugins["eng_slow"].error
+        finally:
+            del sys._eng_gate, sys._eng_done
+
+    def test_persistently_failing_plugin_is_retried_on_backoff_not_every_lookup(self, hermes_home, monkeypatch):
+        """#137879: the first engine lookup after a failure retries the load once; inside the retry
+        backoff window later lookups must not re-import a persistently failing plugin."""
+        import sys
+        import time as _time
+        _write_plugin(hermes_home / "plugins", "eng_boom",
+                      register_body="import sys; sys._eng_attempts = getattr(sys, '_eng_attempts', 0) + 1\n"
+                                    "    raise RuntimeError('still broken')")
+        _enable(hermes_home, ["eng_boom"])
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins_loader import _FAILED_PLUGIN_RETRY_BACKOFF_SECS
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+            assert sys._eng_attempts == 1  # initial discovery tried once
+            assert plugins_mod.get_plugin_context_engine() is None
+            assert sys._eng_attempts == 2  # first lookup after the failure retried once
+            assert len(mgr._failed_plugin_retry_at) == 1
+            assert next(iter(mgr._failed_plugin_retry_at.values())) > _time.monotonic()
+            assert plugins_mod.get_plugin_context_engine() is None
+            assert sys._eng_attempts == 2  # backoff window: not retried again
+            assert "still broken" in (mgr._plugins["eng_boom"].error or "")
+        finally:
+            if hasattr(sys, "_eng_attempts"):
+                del sys._eng_attempts
+
 
 class TestBundledKeyShadowing:
     def test_impostor_dir_cannot_claim_a_bundled_key(self, tmp_path, monkeypatch, caplog):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-import yaml
+import hermes_yaml
 
 
 _ALLOWED_EVIDENCE = {"success_count", "fail_count", "steps", "evolution", "version", "updated"}
@@ -17,24 +17,6 @@ class EvidenceMergeError(ValueError):
     """Raised when evidence or a merge delta is malformed."""
 
 
-class _UniqueLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_mapping(loader, node, deep=False):
-    mapping = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise EvidenceMergeError(f"duplicate YAML key: {key!r}")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
-
-
 def _split_document(content: str) -> tuple[dict[str, Any], str]:
     if not content.startswith("---\n"):
         raise EvidenceMergeError("SKILL.md must start with YAML frontmatter")
@@ -44,9 +26,7 @@ def _split_document(content: str) -> tuple[dict[str, Any], str]:
     raw = content[4:marker]
     body = content[marker + len("\n---\n"):]
     try:
-        data = yaml.load(raw, Loader=_UniqueLoader)  # nosec B506 — SafeLoader subclass rejects duplicate keys
-    except EvidenceMergeError:
-        raise
+        data = hermes_yaml.safe_load(raw)  # safe_load raises on duplicate keys — fail-closed
     except Exception as exc:  # noqa: BLE001
         raise EvidenceMergeError(f"malformed YAML: {exc}") from exc
     if not isinstance(data, dict):
@@ -178,7 +158,7 @@ def merge_evidence(content: str, delta: dict[str, Any]) -> str:
             raise EvidenceMergeError("version metadata requires evolution")
     frontmatter["evidence"] = _validate_evidence(current)
     try:
-        rendered = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).rstrip("\n")
+        rendered = hermes_yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).rstrip("\n")
     except Exception as exc:  # noqa: BLE001
         raise EvidenceMergeError(f"could not render frontmatter: {exc}") from exc
     return f"---\n{rendered}\n---\n{body}"

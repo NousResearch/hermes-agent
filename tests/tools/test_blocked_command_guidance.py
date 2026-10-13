@@ -82,6 +82,10 @@ class TestBackgroundGuidanceRecipes:
             r"type C:\app\.venv\Lib\site-packages\gunicorn\arbiter.py",
             r"dir C:\app\.venv\Lib\site-packages\uvicorn",
             "cat node_modules/nodemon/package.json",
+            "cat node_modules/nodemon/bin/nodemon.js",
+            "ls /app/site-packages//uvicorn",
+            "ls /app/site-packages/./uvicorn",
+            "ls node_modules/vite",
         ],
     )
     def test_installed_package_paths_are_not_server_launches(self, command):
@@ -94,6 +98,10 @@ class TestBackgroundGuidanceRecipes:
             "/app/.venv/bin/uvicorn app:app",
             "python -m uvicorn app:app",
             "./node_modules/.bin/nodemon server.js",
+            "python /app/site-packages/gunicorn/app/wsgiapp.py app:app",
+            "node node_modules/nodemon/bin/nodemon.js server.js",
+            "cat node_modules/nodemon/package.json && node node_modules/nodemon/bin/nodemon.js server.js",
+            "cat $(python /app/site-packages/gunicorn/app/wsgiapp.py app:app)",
         ],
     )
     def test_server_launches_still_require_background(self, command):

@@ -86,18 +86,26 @@ def _strip_quotes(command: str) -> str:
     return re.sub(r"`[^`]*`", "``", result)
 
 
-# A server name directly under an installed-package directory is a path, not a launch
-# (`ls .venv/lib/python3.13/site-packages/uvicorn`, `cat node_modules/nodemon/package.json`).
-_NOT_IN_PACKAGE_DIR = r"(?<!(?:site|dist)-packages[/\\])(?<!node_modules[/\\])"
+# Mask installed-package paths only for file readers. Python/node can execute those paths too.
+_PACKAGE_PATH_READERS = re.compile(
+    r"(?:^|[;&|\n])\s*(?:cat|ls|grep|rg|head|tail|stat|wc|cd|dir|type)\b[^;&|\n$()]*",
+    re.IGNORECASE,
+)
+_PACKAGE_PATH = re.compile(r"[^\s;&|$()]*\b(?:(?:site|dist)-packages|node_modules)[/\\][^\s;&|$()]*", re.IGNORECASE)
+
+
+def _mask_read_package_paths(command: str) -> str:
+    """Keep launched scripts visible, including compound commands and command substitutions."""
+    return _PACKAGE_PATH_READERS.sub(lambda match: _PACKAGE_PATH.sub("", match[0]), command)
 
 _LONG_LIVED_FOREGROUND_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b",
     r"\bdocker\s+compose\s+up\b",
     r"\bnext\s+dev\b",
-    _NOT_IN_PACKAGE_DIR + r"\bvite(?:\s|$)",
-    _NOT_IN_PACKAGE_DIR + r"\bnodemon\b",
-    _NOT_IN_PACKAGE_DIR + r"\buvicorn\b",
-    _NOT_IN_PACKAGE_DIR + r"\bgunicorn\b",
+    r"\bvite(?:\s|$)",
+    r"\bnodemon\b",
+    r"\buvicorn\b",
+    r"\bgunicorn\b",
     r"\bpython(?:3)?\s+-m\s+http\.server\b",
 ))
 
@@ -141,7 +149,7 @@ def _foreground_background_guidance(command: str) -> str | None:
     backgrounding (it should be a managed background session), else None."""
     if _looks_like_help_or_version_command(command):
         return None
-    unquoted = _strip_quotes(command)
+    unquoted = _mask_read_package_paths(_strip_quotes(command))
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
 
 

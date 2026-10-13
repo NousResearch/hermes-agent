@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
@@ -101,3 +102,18 @@ class SummaryDispatchMixin:
                 self._previous_summary = scan.previous_summary_before
                 self._summary_has_user_turn = scan.has_user_turn_before
             raise
+
+    @staticmethod
+    def _validate_summary_user_provenance(summary: str, has_user_turn: bool) -> None:
+        """Reject user attribution when the source transcript has no user."""
+        from agent.context_compressor import _HISTORICAL_TASK_SECTION_RE, _NO_USER_TASK_SENTINEL
+        if has_user_turn:
+            return
+        match = _HISTORICAL_TASK_SECTION_RE.search(summary)
+        task_snapshot = match.group(0).split("\n", 1)[-1].strip() if match else ""
+        # The "User asked:" scan can false-positive on quoted tool output; acceptable, since
+        # the RuntimeError only costs one retry on the existing fallback path.
+        if task_snapshot != _NO_USER_TASK_SENTINEL or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE):
+            raise RuntimeError(
+                "Context compression summary invented user attribution for a session with no user-authored turns",
+            )

@@ -24,6 +24,9 @@ def mock_runner():
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
     # _handle_message's ingress gates (profile route rejection) live in this helper.
     runner._hm_admit_event = GatewayRunner._hm_admit_event.__get__(runner)
+    # Preserve the real event at the completion-consumption seam before admission.
+    runner._next_unconsumed_completion_event = GatewayRunner._next_unconsumed_completion_event.__get__(runner)
+    runner._refresh_process_completion_event = GatewayRunner._refresh_process_completion_event.__get__(runner)
     # The identity seam the gate canonicalizes through; a hand-built source has no transport owner.
     runner._canonicalize = GatewayRunner._canonicalize.__get__(runner)
     runner._transport_owner = lambda _source: None

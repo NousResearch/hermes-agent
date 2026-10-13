@@ -4346,8 +4346,10 @@ Write only the summary body. Do not include any preamble or prefix."""
             _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
+        from agent.turn_facade import _COMPLETION_RECOVERY_NUDGE
+
         return text in {
-            COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+            _COMPLETION_RECOVERY_NUDGE, COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
             _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
@@ -4356,19 +4358,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX, TODO_INJECTION_HEADER + "\n", _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
         ))
 
-    @staticmethod
-    def _validate_summary_user_provenance(summary: str, has_user_turn: bool) -> None:
-        """Reject user attribution when the source transcript has no user."""
-        if has_user_turn:
-            return
-        match = _HISTORICAL_TASK_SECTION_RE.search(summary)
-        task_snapshot = match.group(0).split("\n", 1)[-1].strip() if match else ""
-        # The "User asked:" scan can false-positive on quoted tool output; acceptable, since
-        # the RuntimeError only costs one retry on the existing fallback path.
-        if task_snapshot != _NO_USER_TASK_SENTINEL or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE):
-            raise RuntimeError(
-                "Context compression summary invented user attribution for a session with no user-authored turns",
-            )
 
     @classmethod
     def _is_context_summary_message(cls, message: Any) -> bool:

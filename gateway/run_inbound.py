@@ -1249,43 +1249,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             _handled = _result is not None
         return _handled, _result
 
-    def _hm_rescue_orphaned_fifo(
-        self, event: MessageEvent, source: SessionSource, is_internal: bool, _quick_key: str
-    ) -> tuple[MessageEvent, SessionSource, bool]:
-        """FIFO orphan rescue: a session that went idle with a populated overflow (post-turn drain
-        never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
-        oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
-        for control commands and internal events."""
-        try:
-            # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
-            # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
-            # a compression-demoted follow-up after the compression window ended through an exit that
-            # skipped the promotion site), those events were silently orphaned. We are starting the next
-            # turn for this session NOW: re-stage the orphans in FIFO order and enqueue the incoming event
-            # behind them, so arrival order (#28503) holds: oldest orphan runs as this turn, the rest drain
-            # in order, the new message last.
-            _orphan_adapter = self._delivery_adapter_for(source)
-            if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
-                return event, source, is_internal
-            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
-            if _rescued is None:
-                return event, source, is_internal
-            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
-            # Same session key by construction; carry the orphan's own source so reply anchors /
-            # thread metadata point at the message actually being answered.
-            _rescued_source = getattr(_rescued, "source", None)
-            source = _rescued_source if _rescued_source is not None else source
-            return _rescued, source, bool(getattr(_rescued, "internal", False))
-        except Exception:
-            logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
-            return event, source, is_internal
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        event = self._next_unconsumed_completion_event(event)
+        if event is None:
+            return None
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1745,6 +1716,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
+        if not self._refresh_process_completion_event(event):
+            return None
         kwargs = dict(event=event, source=source, history=history, session_key=session_key)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):

@@ -16,7 +16,7 @@ import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional, Sequence, cast
 
 from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
@@ -123,7 +123,10 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
-class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
+from gateway.run_completion_consumption import GatewayCompletionConsumptionMixin
+
+
+class GatewayNotificationsMixin(GatewayCompletionConsumptionMixin, GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -1165,6 +1168,8 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get("type") == "completion":
+                metadata["process_completion_entries"] = evt.get("process_completion_entries") or [(synth_text, dict(evt))]
             proven_session_id = str(evt.get("proven_session_id") or "").strip()
             if proven_session_id:
                 metadata["gateway_proven_session_id"] = proven_session_id
@@ -1188,6 +1193,10 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            if evt.get("type") == "completion":
+                # A merge can retain internal=True while appending human text/media.
+                # Bind permission to this exact injected input, outside public metadata.
+                synth_event._completion_silence_text = synth_text
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1207,6 +1216,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
             return False
+
 
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
@@ -1508,36 +1518,6 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
     def _event_route_key(evt: dict, fields: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(str(evt.get(field) or "") for field in fields)
 
-    @staticmethod
-    def _format_coalesced_process_completions(entries: list[tuple[str, dict, asyncio.Future]]) -> str:
-        """Build one bounded synthetic event from several redacted completions."""
-        from gateway.run import _redact_gateway_user_facing_secrets
-        lines = [
-            f"[IMPORTANT: {len(entries)} background processes completed for this session.",
-            "Treat these results as one completion batch and send at most one "
-            "consolidated user-facing response.",
-        ]
-        shown = entries[:10]
-        for _text, evt, _future in shown:
-            session_id = str(evt.get("session_id") or "unknown")
-            exit_code = evt.get("exit_code")
-            reason = str(evt.get("completion_reason") or "exited")
-            # Unconditional gateway redaction floor (the producer-seam redactor is configurable). Redact
-            # BEFORE slicing: truncating first can leave a credential fragment the patterns miss.
-            output = _redact_gateway_user_facing_secrets(str(evt.get("output") or "")).strip()
-            if len(output) > 800:
-                output = f"[… truncated …]\n{output[-800:]}"
-            lines.append(f"\n- {session_id}: exit_code={exit_code}, reason={reason}")
-            if output:
-                lines.append(output)
-        omitted = len(entries) - len(shown)
-        if omitted:
-            lines.append(
-                f"\n- … and {omitted} more completion(s); inspect them with "
-                "the process tool if they affect the conclusion."
-            )
-        lines.append("If a result does not change the current conclusion, absorb it silently.]")
-        return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:
         """Extend a successful primary delivery claim to its batched siblings."""
@@ -1558,11 +1538,23 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
+            remaining = []
+            for entry in entries:
+                if self._process_completion_consumed(entry[1]):
+                    self._settle_batch_waiters([entry], None)
+                else:
+                    remaining.append(entry)
+            entries = remaining
+            if not entries:
+                return
             synth_text = entries[0][0] if len(entries) == 1 else self._format_coalesced_process_completions(entries)
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries:
+                candidate_evt = dict(candidate_evt, process_completion_entries=[
+                    (text, evt) for text, evt, _future in entries
+                ])
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break

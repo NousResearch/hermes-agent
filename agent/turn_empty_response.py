@@ -147,6 +147,7 @@ def recover_empty_response(
     the ladder). Role alternation is preserved: the post-tool nudge appends the empty
     assistant row BEFORE the user-level hint (APIs reject tool→user)."""
     from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE, _sync_failover_system_message
+    from agent.turn_facade import completion_recovery_nudge
 
     _turn_exit_reason = turn_exit_reason
     _preflight_compression_blocked = preflight_compression_blocked
@@ -217,7 +218,8 @@ def recover_empty_response(
         _nudge_msg["_empty_recovery_synthetic"] = True
         append_message(messages, _nudge_msg)
         append_message(messages, {
-            "role": "user", "content": _EMPTY_TOOL_RESPONSE_NUDGE, "_empty_recovery_synthetic": True
+            "role": "user", "content": completion_recovery_nudge(agent, _EMPTY_TOOL_RESPONSE_NUDGE),
+            "_empty_recovery_synthetic": True,
         })
         return _verdict("continue")
 
@@ -293,3 +295,13 @@ def recover_empty_response(
     _turn_exit_reason = "empty_response_exhausted"
     final_response = _terminal_empty(agent, assistant_message, finish_reason, messages)
     return _verdict("break")
+
+def _completion_silence_input(user_message, allowed):
+    """Attach guidance only to the verified completion input."""
+    from agent.turn_facade import _COMPLETION_SILENCE_GUIDANCE
+    if allowed:
+        if isinstance(user_message, str):
+            return user_message + "\n\n" + _COMPLETION_SILENCE_GUIDANCE
+        if isinstance(user_message, list):
+            return [*user_message, {"type": "text", "text": _COMPLETION_SILENCE_GUIDANCE}]
+    return user_message

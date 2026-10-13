@@ -165,7 +165,10 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+from gateway.run_turn_followup_ack import GatewayPendingFollowupMixin
+
+
+class GatewayTurnMixin(GatewayPendingFollowupMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -2207,7 +2210,10 @@ class GatewayTurnMixin:
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner,
-                    **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
+                    **reply_expected_metadata(event.reply_expected),
+                    **diagnostic_metadata(event),
+                    **self._completion_silence_metadata(event),
+                },
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -3625,113 +3631,6 @@ class GatewayTurnMixin:
             if callable(_mark_turn):
                 _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
 
-    async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
-    ) -> tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
-
-        Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import (
-            _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        )
-        pending_event = None
-        pending = None
-        if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
-            # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
-            # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
-            pending_event = self._promote_queued_event(session_key, adapter, pending_event)
-            if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
-                interrupt_message = result.get("interrupt_message")
-                if _is_control_interrupt_message(interrupt_message):
-                    logger.info(
-                        "Ignoring control interrupt message for session %s: %s",
-                        session_key or "?", interrupt_message,
-                    )
-                else:
-                    pending = interrupt_message
-            elif pending_event:
-                # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
-                _pending_text = pending_event.text or ""
-                if self._pending_event_audio_paths(pending_event):
-                    pending, _ = await self._transcribe_and_echo_pending_voice(
-                        pending_event, adapter, source, _pending_text, log_context="Voice-drain",
-                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                    )
-                    pending = pending or _build_media_placeholder(pending_event)
-                else:
-                    pending = _pending_text or _build_media_placeholder(pending_event)
-                if pending:
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
-
-        # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        leftover_steer = (result.get("pending_steer") or "").strip() if result else None
-        if leftover_steer:
-            if not pending and not pending_event:
-                pending = leftover_steer
-                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
-            elif pending_event and adapter and session_key:
-                # User steered during the turn, but a background event or queued message arrived.
-                # Deliver the user's steer first and restore the pending event to the head of the queue.
-                overflow = self._overflow_queue(session_key)
-                if hasattr(adapter, "_pending_messages") and isinstance(adapter._pending_messages, dict):
-                    promoted = adapter._pending_messages.get(session_key)
-                    if promoted is not None:
-                        if overflow is not None:
-                            overflow.insert(0, promoted)
-                        else:
-                            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
-                    adapter._pending_messages[session_key] = pending_event
-                else:
-                    if overflow is not None:
-                        overflow.insert(0, pending_event)
-                    else:
-                        self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-                pending_event = None
-                pending = leftover_steer
-                logger.debug(
-                    "Delivering leftover /steer before queued event for session %s: '%s...'",
-                    session_key, pending[:40],
-                )
-            elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key, None, source, internal=True,
-                )
-                steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
-                )
-                if session_key:
-                    self._enqueue_fifo(session_key, steer_event, adapter)
-                logger.debug(
-                    "Enqueued leftover /steer behind pending message for session %s: '%s...'",
-                    session_key or "?", leftover_steer[:40],
-                )
-
-        # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
-            _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
-            if _pending_cmd_word:
-                with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _rc_pending
-                    if _rc_pending(_pending_cmd_word):
-                        logger.info(
-                            "Discarding command '/%s' from pending queue — "
-                            "commands must not be passed as agent input", _pending_cmd_word,
-                        )
-                        pending_event = None
-                        pending = None
-
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
-        return pending_event, pending
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
@@ -3821,6 +3720,12 @@ class GatewayTurnMixin:
         _interrupt_depth, history, _status_thread_metadata = (
             turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata,
         )
+        if pending_event and not self._refresh_process_completion_event(pending_event):
+            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            if not pending_event and not pending:
+                return result
+        elif pending_event and (getattr(pending_event, "metadata", None) or {}).get("process_completion_entries"):
+            pending = pending_event.text
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
         # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
@@ -3945,7 +3850,10 @@ class GatewayTurnMixin:
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
-                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                    **reply_expected_metadata(next_reply_expected),
+                    **diagnostic_metadata(pending_event),
+                    **self._completion_silence_metadata(pending_event),
+                } or None,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

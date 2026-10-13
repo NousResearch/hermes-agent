@@ -34,7 +34,7 @@ def send_with_parameter_rungs(
         return send(client, kwargs)
     except Exception as first_err:
         ladder = _parameter_ladder(first_err, client, kwargs, task=task, tag="")
-        return _drive_ladder(ladder, lambda step: send(*step.args))
+        return _drive_ladder(ladder, lambda step: send(*step.args), prior_error=first_err)
 
 
 async def send_with_parameter_rungs_async(
@@ -47,4 +47,4 @@ async def send_with_parameter_rungs_async(
         return await send(client, kwargs)
     except Exception as first_err:
         ladder = _parameter_ladder(first_err, client, kwargs, task=task, tag=" (async)")
-        return await _drive_ladder_async(ladder, lambda step: send(*step.args))
+        return await _drive_ladder_async(ladder, lambda step: send(*step.args), prior_error=first_err)

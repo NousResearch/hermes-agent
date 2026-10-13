@@ -398,7 +398,7 @@ def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
 
 
 def _build_anthropic_client_with_bearer_hook(
-    token_provider, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False
+    token_provider, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False, client_factory=None
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
@@ -428,10 +428,10 @@ def _build_anthropic_client_with_bearer_hook(
         headers["x-app"] = "cli"
     else:
         headers = _beta_header(betas)
-    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url, client_factory=client_factory)
 
 
-def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None):
+def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None, *, client_factory=None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
     ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
@@ -453,7 +453,7 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
-    return sdk.Anthropic(**kwargs)
+    return (client_factory or sdk.Anthropic)(**kwargs)
 
 
 def _custom_provider_extra_headers(base_url) -> dict[str, str]:
@@ -487,7 +487,7 @@ def _auth_style(api_key, base_url, normalized_base_url) -> str:
     return "api_key"
 
 
-def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
+def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False, client_factory=None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
@@ -497,7 +497,7 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
+            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta, client_factory=client_factory
         )
     normalize_proxy_env_vars()
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
@@ -517,7 +517,7 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url, client_factory=client_factory)
 
 
 def build_anthropic_bedrock_client(region: str):

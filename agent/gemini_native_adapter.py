@@ -891,6 +891,8 @@ class GeminiNativeClient:
             response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
+        from agent.auxiliary_request_requirements import validate_native_request
+        validate_native_request(request, "gemini", self.base_url)
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
@@ -909,6 +911,8 @@ class GeminiNativeClient:
     def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
         try:
             headers = {**self._headers(), "Accept": "text/event-stream"}
+            from agent.auxiliary_request_requirements import validate_native_request
+            validate_native_request(request, "gemini", self.base_url)
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
                     raise self._http_error(response, read_streaming_error_body(response))

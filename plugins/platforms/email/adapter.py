@@ -373,7 +373,8 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so for each id in the required
     *authserv_id* (comma-separated, case-insensitive) only the FIRST header carrying that id is authoritative; the result
-    clauses of those headers are merged (iCloud stamps one header per check). Other ids are ignored. A matching id is a
+    clauses of those headers are merged (iCloud stamps one header per check). Only the contiguous topmost run of pinned-id headers is read: the first header with another id (or a malformed
+    one) ends it. A matching id is a
     pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
     True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
@@ -393,8 +394,10 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         trusted = " ".join(str(header).split())
         if (header_clauses := _ar_clauses(trusted)) is None:
             unbalanced = True
-        elif (hid := header_clauses[0].strip().lower()) in pinned and hid not in selected:
-            selected[hid] = (trusted, header_clauses)
+            break
+        if (hid := header_clauses[0].strip().lower()) not in pinned:
+            break  # the receiver stamps its own ids on top: a foreign id above means nothing below is receiver-written
+        selected.setdefault(hid, (trusted, header_clauses))
     if not selected:
         return False, "unbalanced quote or comment in Authentication-Results" if unbalanced else _UNTRUSTED_AUTHSERV_REASON
     clauses = [c for _, hc in selected.values() for c in hc[1:]]  # drop each header's authserv-id; merge result clauses

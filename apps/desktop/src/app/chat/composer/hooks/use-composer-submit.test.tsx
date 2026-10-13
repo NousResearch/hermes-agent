@@ -13,6 +13,8 @@ import {
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
+import { $onboardingPhase } from '@/store/onboarding-phase'
+import { $onboardingSession } from '@/store/onboarding-session'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -21,6 +23,7 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
+import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -879,5 +882,82 @@ describe('useComposerSubmit with a blocking prompt parked on the session', () =>
 
     // The approval card is still the turn's owner; only its own buttons answer it.
     expect(hasBlockingPromptRequest('runtime-session')).toBe(true)
+  })
+})
+
+describe('useComposerSubmit with a setup card waiting in the onboarding chat', () => {
+  // The card is a live setup_beat server request; its answer is that request's response frame.
+  const parkCard = (beat: 'layout' | 'name') => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id: `srq-${beat}`, method: 'setup_beat', params: {}, respond })
+    parkSetupBeat({
+      beat,
+      card: {},
+      question: 'Which layout?',
+      requestId: `srq-${beat}`,
+      sessionId: 'runtime-session',
+      toolCallId: `call-${beat}`
+    })
+
+    return respond
+  }
+
+  afterEach(() => {
+    cleanup()
+    resetServerRequestsForTests()
+    $setupBeatRequests.set({})
+    $onboardingSession.set(null)
+    $onboardingPhase.set('idle')
+  })
+
+  it('closes the card unanswered and sends the words as the next turn, never into the card turn', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
+    const respond = parkCard('layout')
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'can ya look around and take a wild guess which one id like? :D'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(respond).toHaveBeenCalledWith({ wrote_instead: true })
+    expect($setupBeatRequests.get()['runtime-session']).toBeUndefined()
+    // The backend ends the card turn on that result; the queued message runs as the next user turn.
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('takes words typed on the name card as the name, and sends no message', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'runtime-session',
+      storedId: 'stored-session'
+    })
+    const respond = parkCard('name')
+
+    const { clearDraft, hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'Sid' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(respond).toHaveBeenCalledWith({ said: 'Sid' })
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 })

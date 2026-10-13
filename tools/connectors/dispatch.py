@@ -8,11 +8,12 @@ from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 from tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
 
 
-def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None):
+def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None, task_id=None):
     from tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
-    entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None, turn_id=turn_id)
+    entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None, turn_id=turn_id,
+                         task_id=task_id)
     entry = entries[0]
     return json.dumps({key: value for key, value in entry.items() if key in {"response", "error", "account"}},
                       ensure_ascii=False)

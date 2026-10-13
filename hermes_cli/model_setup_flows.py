@@ -284,6 +284,11 @@ def _model_flow_nous(config, current_model="", args=None):
     from hermes_cli.config import load_config
     from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     state = get_provider_auth_state("nous")
+    from hermes_cli import anon_auth
+    if anon_auth.guest_without_free_tier(state):
+        # A guest that carries no inference here: signing in promotes it and keeps its connectors.
+        print(anon_auth.UPGRADE_HINT)
+        return
     if not state or not state.get("access_token"):
         _say("Not logged into Nous Portal. Starting login...", "")
 
@@ -301,21 +306,6 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
-    from hermes_cli.model_switch_providers import _free_tier_nous_row
-    tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
-    if tier_row is None:
-        print("The Nous free tier is off for this install; sign in with `hermes auth upgrade` to use Nous models.")
-        return
-    if tier_row["models"]:
-        # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,
-        # pricing, or account lookups apply.
-        creds = _nous_verified_credentials()
-        if creds is None:
-            return
-        selected = tier_row["models"][0]
-        _nous_persist_selection(selected, creds)
-        print(f"Default model set to: {selected} (via {tier_row['name']})")
-        return
     model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")

@@ -72,6 +72,14 @@ export function connectionRequestToolPayload(request: ConnectionRequest): Gatewa
     }
   }
 
+  if (request.display) {
+    return {
+      args: { action: 'display', connectors: request.display.suggested, [CONNECTION_OP_ARG]: request.opId },
+      name: 'manage_connections',
+      tool_id: request.toolCallId
+    }
+  }
+
   return {
     args: {
       action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),

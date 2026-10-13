@@ -1370,6 +1370,7 @@ def terminal_tool(
     watch_patterns: Optional[list[str]] = None,
     _host_local: bool = False,
     _completion_output_chars: int = 0,
+    continue_on_complete: bool = False,
     heartbeat: int = 0,
     persist_on_release: bool = False,
 ) -> str:
@@ -1397,6 +1398,10 @@ def terminal_tool(
     from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
     plan = None
     try:
+        continuation = None
+        if continue_on_complete:
+            from cron.continuations import validate_request
+            continuation = validate_request(background, task_id)
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )
@@ -1459,6 +1464,7 @@ def terminal_tool(
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                 completion_output_chars=_completion_output_chars,
+                continuation=continuation,
                 heartbeat_seconds=heartbeat,
                 persist_on_release=persist_on_release,
             )
@@ -1522,6 +1528,10 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
                 "default": False
+            },
+            "continue_on_complete": {
+                "type": "boolean",
+                "description": "Cron only, with background=true: run one follow-up turn on exit. Durable and at-most-once; unavailable inside a continuation. Default: false."
             },
             "notify": {
                 "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons.",
@@ -1622,6 +1632,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        continue_on_complete=args.get("continue_on_complete", False),
         heartbeat=heartbeat,
         persist_on_release=persist_on_release,
     )

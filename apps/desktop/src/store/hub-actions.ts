@@ -141,10 +141,10 @@ async function runHubAction(
       const blocked = parseInstallBlocked(lines)
 
       if (blocked) {
-        throw new HubInstallBlockedError(key, blocked.findings, blocked.unverified, lines.slice(-3).join('\n').trim())
+        throw new HubInstallBlockedError(key, blocked.findings, blocked.unverified, hubActionFailureDetail(lines))
       }
 
-      const detail = lines.slice(-3).join('\n').trim()
+      const detail = hubActionFailureDetail(lines)
 
       throw new Error(detail || `Action exited with code ${exitCode}`)
     }
@@ -206,6 +206,26 @@ const INSTALL_BLOCKED_UNVERIFIED_RE = /never\s+installs\s+unverified/i
 const INSTALL_BLOCKED_LEGACY_RE =
   /Installation blocked:.*?\((?<source>[a-z_-]+) source \+ (?<verdict>[a-z_]+) verdict, (?<findings>\d+) findings?\)/i
 
+/** The CLI prints scan provenance (`rules: unpinned_pip_install`) on the line
+ *  before a path refusal. Toasts must use the block line, not that tail —
+ *  joining the last few lines made a symlink refusal look like a pip block. */
+export function hubActionFailureDetail(lines: readonly string[]): string {
+  const text = lines.join('\n')
+  const blocked = text.match(/Installation blocked:\s*([^\n]+)/i)
+
+  if (blocked?.[1]?.trim()) {
+    return blocked[1].trim()
+  }
+
+  const notInstalled = text.match(/Not installed:\s*([\s\S]+)/i)
+
+  if (notInstalled?.[1]) {
+    return notInstalled[1].replace(/\s+/g, ' ').trim()
+  }
+
+  return lines.slice(-3).join('\n').trim()
+}
+
 export function parseInstallBlocked(lines: readonly string[]): { findings: number; unverified: boolean } | null {
   const text = lines.join('\n')
   const current = text.match(INSTALL_BLOCKED_CURRENT_RE)
@@ -247,6 +267,24 @@ export function notifyHubActionFailed(
   profile?: ProfileScope
 ): void {
   if (!(err instanceof HubInstallBlockedError)) {
+    const message = err instanceof Error ? err.message : ''
+
+    // A path refusal is not a scan block. Don't offer "View scan", and don't
+    // let notifyError treat a long provenance tail as the failure.
+    if (/Unsafe install path:/i.test(message)) {
+      const name = skillName || ''
+      const component = message.match(/(\S+) is a symlink/)?.[1] ?? 'that folder'
+
+      notify({
+        kind: 'error',
+        title: name ? translateNow('skills.hub.installBlockedTitle', name) : fallbackTitle,
+        message: translateNow('skills.hub.installPathBlocked', component),
+        detail: message
+      })
+
+      return
+    }
+
     notifyError(err, fallbackTitle)
 
     return

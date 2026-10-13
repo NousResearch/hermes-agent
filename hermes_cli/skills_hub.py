@@ -830,7 +830,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     attempt = attempt if attempt is not None else {}
     attempt["registry"] = "none"
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
-    from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
+    from tools.skills_hub_install import (
+        avoid_symlinked_category, install_from_quarantine, quarantine_bundle,
+    )
     from tools.skills_guard import should_allow_install
     ensure_hub_dirs()
     from tools.skills_sync_bundled_ops import bundled_skill_for_install
@@ -869,12 +871,24 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
 
     # URL-sourced skills: pick a category interactively when none was given (TTY only;
     # non-interactive installs fall through to flat install like every other source).
+    explicit_category = bool(category)
     if bundle.source == "url" and not category and not skip_confirm:
         category = _prompt_for_category(c, _existing_categories())
+        explicit_category = bool(category)
     # Official skills can be nested ("official/mlops/training/trl-fine-tuning"): keep every
     # identifier segment between "official" and the final slug as the category path.
     if bundle.source == "official" and not category:
         category = "/".join(bundle.identifier.split("/")[1:-1])
+    # Desktop Install cannot pass --category, so an auto-derived category that is a
+    # symlink would otherwise fail every official skill in that folder. Install flat
+    # instead. An explicit --category still hits the named path refusal below.
+    dropped_category = category
+    category, redirect_reason = avoid_symlinked_category(category, explicit=explicit_category)
+    if redirect_reason:
+        c.print(
+            f"[yellow]Warning:[/] not installing into '{dropped_category}' because {redirect_reason}. "
+            f"Installing at '{bundle.name}' instead.\n"
+        )
 
     existing = HubLockFile().get_installed(bundle.name)
     if existing:

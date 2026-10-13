@@ -2,13 +2,16 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
@@ -35,6 +38,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 export const ruOverrides = {
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
+  firstRun: ruFirstRun,
   sessionImport: ruConnectors.sessionImport,
   common: {
     apply: 'Применить',
@@ -1004,13 +1008,7 @@ export const ruOverrides = {
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
-      developerTitle: 'Для разработчиков',
-      resetOnboardingTitle: 'Сбросить первоначальную настройку',
-      resetOnboardingDesc:
-        'Удалить чаты настройки, пересоздать профиль настройки и снова запустить первоначальную настройку. Ваши профили, чаты и плагины сохранятся.',
-      resetOnboardingAction: 'Сбросить',
-      resetOnboardingFailed: 'Не удалось сбросить первоначальную настройку'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -2654,20 +2652,6 @@ export const ruOverrides = {
     },
     markAllRead: 'Отметить все как прочитанные'
   },
-  handoffTour: {
-    profileTitle: 'Первая задача выполняется в профиле по умолчанию',
-    profileText:
-      'Эта панель переключает профили. Сейчас подсвечен default — там сессия задачи. Другой — профиль настройки, там приветственный чат.',
-    sessionsTitle: 'У каждого профиля свои сессии',
-    sessionsText:
-      'Этот список относится к профилю default. «Новая сессия» создаёт её в выбранном профиле. Переключите профиль на панели — и список сменится.',
-    stayTitle: 'Hermes в одном клике',
-    stayText:
-      'Переключитесь на профиль настройки и откройте «Добро пожаловать в Hermes», когда понадобится помощь. Он остаётся там.',
-    localTitle: 'Этот компьютер может запускать модели локально',
-    localText: (model: string) =>
-      `${model} подходит для вашего оборудования. Работает бесплатно, а чаты не покидают ваш компьютер. Выберите её здесь, в меню моделей, когда захотите.`
-  },
   composer: {
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
@@ -3747,49 +3731,8 @@ export const ruOverrides = {
         `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
       alwaysAllow: 'Всегда разрешать'
     },
-    clarify: {
-      notReady: 'Запрос уточнения ещё не готов',
-      gatewayDisconnected: 'Шлюз Hermes не подключён',
-      sendFailed: 'Не удалось отправить ответ на уточнение',
-      loadingQuestion: 'Загрузка вопроса…',
-      other: 'Другое (введите ответ)',
-      placeholder: 'Введите ваш ответ…',
-      skip: 'Пропустить',
-      skipped: 'Пропущено',
-      noAnswer: 'Нет ответа',
-      confirmAndContinueLabel: 'Подтвердить и продолжить',
-      singleSelectHint: 'Выберите один',
-      multiSelectHint: 'Выберите все подходящие',
-      oneQuestion: '1 вопрос',
-      questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
-      notDelivered:
-        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Акцентный цвет',
-        connectors: 'Приложения',
-        layout: 'Раскладка',
-        plugins: 'Плагины',
-        theme: 'Оформление'
-      },
-      loading: 'Загружаю варианты…',
-      unavailable: 'Этот список сейчас недоступен. Ответьте в чате.',
-      findApp: 'Найти приложение',
-      customColor: 'Свой цвет',
-      plugin: 'Плагин',
-      startsLater: 'Мы настроим это, когда вы начнёте.'
-    },
-    startChat: {
-      starting: title => `Запускаю «${title}»…`,
-      startingUntitled: 'Запускаю чат…',
-      untitled: 'Новый чат',
-      notStarted: 'Чат не запустился',
-      retry: 'Повторить',
-      inProfile: profile => `В ${profile}`,
-      open: 'Открыть',
-      openFailed: 'Не удалось открыть чат'
-    },
+    clarify: ruClarify,
+    themePicker: ruThemePicker,
     catalogInstall: {
       preparing: 'Готовим установку…',
       install: 'Установить',
@@ -3932,12 +3875,6 @@ export const ruOverrides = {
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
-        setup_choose: {
-          done: 'Задан вопрос о настройке',
-          pending: 'Задаю вопрос о настройке',
-          pendingAction: 'Спрашиваю'
-        },
-        start_chat: { done: 'Чат запущен', pending: 'Запускаю чат', pendingAction: 'Запускаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {

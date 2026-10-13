@@ -106,12 +106,43 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
+def _oauth_token_on_disk(server_name: str) -> bool:
+    """True when ``mcp_servers.<name>`` is an OAuth server whose token file exists on disk. The
+    token may be expired, but a parked transport refreshes it without user interaction, so the
+    server is down, not de-authorized."""
+    try:
+        from tools import mcp_tool_config as _config
+        entry = (_config._load_mcp_config() or {}).get(server_name)
+        if not entry or str(entry.get("auth") or "").lower().strip() != "oauth":
+            return False
+        from tools.mcp_oauth import HermesTokenStorage
+        return HermesTokenStorage(server_name).has_cached_tokens()
+    except (AttributeError, OSError, TypeError):  # config shape surprises / token stat — hint is best-effort
+        return False
+
+
 def _acquire_call_server(server_name: str, tool_timeout: float):
     """``(server, None)`` when a call may be dispatched, else ``(None, error)``. No session: a
     reconnect may be completing, so wait briefly before a breaker strike; still down -> ask the
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
+    if _oauth_token_on_disk(server_name):
+        # Credentials on disk mean a parked/reconnecting transport, not dead ones: the revival
+        # probe (and the reconnect signal below) refreshes the token without user interaction.
+        # Left flat, the model reads "not connected" as dead credentials and sends the user into
+        # a browser OAuth flow that was never needed (#137825).
+        not_connected = tool_error(
+            f"MCP server '{server_name}' is not connected right now, but its OAuth token file is on "
+            f"disk and may still be valid — the transport reconnects on its own (retrying at most "
+            f"~{_core._PARKED_RETRY_INTERVAL}s apart) and refreshes the token without user "
+            f"interaction. Retry this tool after a short wait; only suggest re-authorizing if "
+            f"failures persist.",
+            server=server_name,
+            user_action="Wait briefly and retry the tool; the connection self-heals. Do not start "
+                        "an OAuth flow for this server.",
+            retry="after_user_action",
+        )
     from tools.mcp_liveness import unavailable_details
     details = unavailable_details(server_name)
     if details is not None:

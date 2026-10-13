@@ -2005,6 +2005,66 @@ def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_mes
     assert resolved.get("bedrock_anthropic") is True
 
 
+def test_resolve_runtime_provider_bedrock_scoped_bearer_keeps_claude_on_converse(monkeypatch, tmp_path):
+    """Regression for #132685: the bearer probe is scope-aware, so a multiplexed profile whose
+    only credential is its Bedrock API key routes Claude models through Converse
+    (AnthropicBedrock is SigV4-only) instead of the SDK path the launch env would pick."""
+    from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home-bearer"
+    home.mkdir()
+    (home / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-scoped\n")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    _patch_bedrock(monkeypatch, config_default="global.anthropic.claude-sonnet-4-6")
+
+    h_tok = set_hermes_home_override(str(home))
+    s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+    try:
+        resolved = rp.resolve_runtime_provider(
+            requested="bedrock",
+            target_model="global.anthropic.claude-sonnet-4-6",
+        )
+    finally:
+        secret_scope.reset_secret_scope(s_tok)
+        reset_hermes_home_override(h_tok)
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "bedrock_converse"
+    assert not resolved.get("bedrock_anthropic")
+
+
+def test_resolve_runtime_provider_bedrock_launch_bearer_does_not_route_a_credless_profile(monkeypatch, tmp_path):
+    """Regression for #132685 (inverse control): under a HERMES_HOME override the bearer probe
+    reads the served profile's scope, so a LAUNCH-profile bearer must NOT flip a cred-less
+    served profile's Claude models onto the bearer/Converse path."""
+    from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "home-empty"
+    home.mkdir()
+    (home / ".env").write_text("")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-launch")
+
+    _patch_bedrock(monkeypatch, config_default="global.anthropic.claude-sonnet-4-6")
+
+    h_tok = set_hermes_home_override(str(home))
+    s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+    try:
+        resolved = rp.resolve_runtime_provider(
+            requested="bedrock",
+            target_model="global.anthropic.claude-sonnet-4-6",
+        )
+    finally:
+        secret_scope.reset_secret_scope(s_tok)
+        reset_hermes_home_override(h_tok)
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved.get("bedrock_anthropic") is True
+
+
 def test_auto_provider_with_local_base_url_bypasses_anthropic_key(monkeypatch):
     """provider:auto + base_url:localhost should NOT route to Anthropic even if
     ANTHROPIC_API_KEY is set in the environment. Regression test for #3846.

@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -554,6 +555,10 @@ class CLIAgentSetupMixin:
         """Restore cwd / yolo / model from the resumed session's metadata."""
         if restore_cwd:
             self._restore_session_cwd(session_meta, quiet=quiet)
+        elif "TERMINAL_CWD" in os.environ:
+            # Keep inherited tool cwd aligned with the explicit launch directory;
+            # unset stays unset so remote backends retain their own defaults.
+            os.environ["TERMINAL_CWD"] = os.getcwd()
         self._restore_session_yolo(session_meta, quiet=quiet)
         self._restore_session_model(session_meta, quiet=quiet)
 

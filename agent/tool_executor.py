@@ -46,6 +46,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    _scrub_registered_secrets,
     _context_pruned_argument_paths,
     _plan_tool_batch_segments,
     make_tool_result_message,
@@ -1085,6 +1086,9 @@ def _commit_tool_result(
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
     from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
+    # Model-egress boundary for exact registered secrets (vault fills, profile .env values):
+    # before observation, persistence, callbacks and the message append all see the same text.
+    function_result = _scrub_registered_secrets(function_result)
     observe_tool_outcome(agent, function_name, is_error)
     if observed:
         if not blocked:
@@ -1129,6 +1133,7 @@ def _commit_tool_result(
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:
+        subdir_hints = _scrub_registered_secrets(subdir_hints)
         if _is_multimodal_tool_result(persisted_result):
             # Hint goes on the text summary part so the model still sees it; image blocks untouched.
             _append_subdir_hint_to_multimodal(persisted_result, subdir_hints)

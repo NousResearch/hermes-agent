@@ -22,19 +22,111 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Exact secret values that transited a server-side vault fill (browser_vault). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
-# the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
-# passthrough) is scrubbed against them before it can reach the model. Memory only: never
-# persisted or logged. Keyed by profile home so a multiplex gateway never scrubs profile B's
-# output with profile A's passwords (which would also confirm to B that the bytes exist), and
-# bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
+# the exact bytes and every tool result is scrubbed against them before it can reach the model
+# (``redact_sensitive_text`` applies the registry first, and ``agent/tool_executor.py`` runs it once
+# more over the assembled result — subdirectory hints included — so a tool that never calls the
+# redactor is still covered). Memory only: never persisted or logged. Keyed by profile home so a
+# multiplex gateway never scrubs profile B's output with profile A's passwords (which would also
+# confirm to B that the bytes exist), and bounded per profile: a fill-heavy session evicts its
+# oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
+
+# Profile ``.env`` secret values: the same exact-value defence, fed from the profile's own secret
+# scope at agent build. A bare opaque token (a 20-char service token quoted in a project's
+# CLAUDE.md, say) has no vendor prefix and no ``KEY=`` shape, so the regex patterns pass it; the
+# profile already holds the exact bytes, so an exact match is the one check that cannot miss it.
+# Own bucket, not the vault LRU: a fill-heavy browser session must never evict the profile's
+# credentials. Rebuilt from the scope on every registration (a rotated value is added, a removed
+# key dropped), capped so a pathological ``.env`` cannot turn every tool result into a 1000-way scan.
+_ENV_REDACTION_MAX_PER_PROFILE = 128
+_ENV_REDACTION_MIN_LEN = 8
+_ENV_REDACTION_VALUES: dict = {}  # profile home → {value: KEY}
+_ENV_REDACTION_SENTINEL = "«redacted-env-secret:{key}»"
+# Key suffixes that name an identifier, locator or switch, never a credential, even under a
+# keyword-bearing prefix (``BASIC_AUTH_USERNAME``, ``AWS_ACCESS_KEY_ID``, ``TOKEN_URL``). Scrubbing a
+# user name or a host from every tool result would mangle paths and logs for no protection.
+_ENV_NON_SECRET_SUFFIXES = (
+    "_USER", "_USERNAME", "_HOST", "_HOSTNAME", "_URL", "_URI", "_PATH", "_DIR", "_FILE", "_ID",
+    "_NAME", "_EMAIL", "_PORT", "_ENABLED", "_MODE", "_TYPE", "_REGION", "_ENDPOINT", "_HEADER",
+)
+_ENV_PLACEHOLDER_VALUES = frozenset({"changeme", "placeholder", "redacted", "<redacted>"})
 
 
 def _vault_scope() -> str:
     from hermes_constants import get_hermes_home
     return str(get_hermes_home())
+
+
+def _is_env_secret_candidate(key: str, value: str) -> bool:
+    """Should this ``.env`` assignment's exact value be scrubbed from every tool result?
+
+    Key-driven on purpose: a value-shape test alone registers model names, docker image tags
+    and IPs (``TERMINAL_MODAL_IMAGE``, ``SOME_SERVICE_HOST``) and then erases them from output. A
+    credential-keyword key (API_KEY/TOKEN/SECRET/PASSWORD/PASS/PW/CREDENTIAL/AUTH/KEY) with a
+    value that is not a path, variable reference, URL or placeholder qualifies; so does any value
+    carrying a known vendor prefix regardless of key (the prefix regex already masks those, but
+    an exact match also survives the splits and wrappings a regex cannot anticipate).
+    """
+    if not isinstance(key, str) or not isinstance(value, str):
+        return False
+    value = value.strip()
+    if len(value) < _ENV_REDACTION_MIN_LEN or value == "***" or value.startswith("«redacted"):
+        return False
+    if value.lower() in _ENV_PLACEHOLDER_VALUES or (value.startswith("<") and value.endswith(">")):
+        return False
+    if _PREFIX_RE.search(value):
+        return True
+    if not _key_has_secret_keyword(key) or key.upper().endswith(_ENV_NON_SECRET_SUFFIXES):
+        return False
+    if _PATH_OR_VAR_VALUE_RE.match(value) or "://" in value:
+        return False
+    if value.isdigit() and len(value) < 12:
+        return False  # a short numeric value is a port, a PIN or a count far more often than a secret
+    return True
+
+
+def register_env_redaction_values(secrets=None) -> int:
+    """Register the current profile's ``.env`` secret values for exact-value redaction.
+
+    *secrets* is the profile secret mapping (``agent.secret_scope.current_secret_scope()`` when a
+    scope is installed, else the profile's own ``.env``); ``None`` resolves it here. Memory only —
+    the values already live in the profile's ``.env``; nothing is persisted or logged. REPLACES the
+    profile's bucket so a rotated-out key stops being scrubbed only when the file no longer holds it.
+    Returns the number of registered values. Cheap enough to call at every agent build.
+    """
+    if secrets is None:
+        try:
+            from agent.secret_scope import current_secret_scope, load_env_file
+            from hermes_constants import get_hermes_home
+            secrets = current_secret_scope()
+            if secrets is None:
+                secrets = load_env_file(get_hermes_home() / ".env")
+        except Exception:
+            logger.debug("env redaction registry: could not resolve the profile secret scope", exc_info=True)
+            return 0
+    selected: dict = {}
+    for key in sorted(secrets, key=str):
+        value = secrets[key]
+        if _is_env_secret_candidate(key, value):
+            selected[value.strip()] = key
+    if len(selected) > _ENV_REDACTION_MAX_PER_PROFILE:
+        logger.warning("env redaction registry: %d secret-like .env values exceed the %d cap; the rest are "
+                       "covered by pattern redaction only", len(selected), _ENV_REDACTION_MAX_PER_PROFILE)
+        selected = dict(list(selected.items())[:_ENV_REDACTION_MAX_PER_PROFILE])
+    with _VAULT_REDACTION_LOCK:
+        if selected:
+            _ENV_REDACTION_VALUES[_vault_scope()] = selected
+        else:
+            _ENV_REDACTION_VALUES.pop(_vault_scope(), None)
+    return len(selected)
+
+
+def clear_env_redaction_values() -> None:
+    """Drop the current profile's registered ``.env`` values (tests / profile teardown)."""
+    with _VAULT_REDACTION_LOCK:
+        _ENV_REDACTION_VALUES.pop(_vault_scope(), None)
 
 
 def register_vault_redaction_value(value) -> None:
@@ -64,15 +156,26 @@ def clear_vault_redaction_values() -> None:
 
 
 def redact_registered_vault_values(text: str) -> str:
-    """Exact-substring scrub of every vault secret value registered for the current profile."""
+    """Exact-substring scrub of every registered secret value for the current profile:
+    vault-fill values (``«redacted-vault-secret»``) and profile ``.env`` values
+    (``«redacted-env-secret:KEY»`` — the key name tells the agent which credential it hit without
+    revealing anything it does not already hold). Longest value first across both buckets, so a
+    value that is a substring of another never shadows it."""
     if not isinstance(text, str) or not text:
         return text
     with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
-    for value in values:
+        scope = _vault_scope()
+        vault_bucket = _VAULT_REDACTION_VALUES.get(scope)
+        env_bucket = _ENV_REDACTION_VALUES.get(scope)
+        if not vault_bucket and not env_bucket:
+            return text
+        labels = {v: None for v in (vault_bucket or ())}
+        labels.update(env_bucket or {})
+    for value in sorted(labels, key=len, reverse=True):
         if value in text:
-            text = text.replace(value, "«redacted-vault-secret»")
+            key = labels[value]
+            text = text.replace(value, "«redacted-vault-secret»" if key is None
+                                else _ENV_REDACTION_SENTINEL.format(key=key))
     return text
 
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth

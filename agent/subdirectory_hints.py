@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.redact import redact_sensitive_text
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -117,9 +118,20 @@ _CONTAINER_HOMES = frozenset({Path("/home"), Path("/root"), Path("/workspace")})
 
 
 def _is_home_like_working_dir(working_dir: Path) -> bool:
-    """True when ``working_dir`` is a home the desktop/container fell back to — not a project."""
+    """True when ``working_dir`` is a directory the process fell back to — not a project.
+
+    Home itself (#76902), every ancestor of home (``/``, ``/Users``: a daemon or desktop backend
+    launched with cwd ``/`` resolves ``terminal.cwd: "."`` there, and containment is then vacuously
+    true for the whole filesystem), the container homes, and the Hermes home (the gateway's own cwd;
+    its subtree holds every profile and the install checkout's contributor AGENTS.md).
+    """
     home = Path.home()
     if working_dir == home or working_dir in _CONTAINER_HOMES or working_dir.parent in _CONTAINER_HOMES:
+        return True
+    if working_dir == Path(working_dir.anchor) or working_dir in home.parents:
+        return True
+    from hermes_constants import get_hermes_home
+    if working_dir == Path(get_hermes_home()).resolve():
         return True
     # Also the local-sandbox home mount: a docker backend binds the host home under a
     # container path whose basename stays the user name (e.g. /mnt/host-home/brooklyn).
@@ -297,6 +309,10 @@ class SubdirectoryHintTracker:
                 self._loaded_digests.add(digest)
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
+                # File content bound for the model: the same redaction read_file applies, so a
+                # credential quoted in a project's CLAUDE.md (a bare token in
+                # backticks, say) is masked before it lands in a tool result.
+                content = redact_sensitive_text(content, file_read=True)
                 rel_path = self._display_path(hint_path)
                 content = _truncate_content(
                     content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,

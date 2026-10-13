@@ -339,6 +339,26 @@ def _append_subdir_hint_to_multimodal(value: dict[str, Any], hint: str) -> None:
         value["text_summary"] = value["text_summary"] + hint
 
 
+def _scrub_registered_secrets(value: Any) -> Any:
+    """Exact-value scrub (vault fills + profile ``.env`` secrets) over a finished tool result.
+
+    The one choke point every result crosses before it becomes a tool message: tools that never
+    call the redactor (delegate summaries, kanban payloads, plugin/MCP results) and text the
+    executor adds itself (subdirectory context hints) are covered here. String results are
+    returned as-is when nothing matches (the timeout/cancel marker subclasses keep their type);
+    multimodal envelopes are scrubbed in place on their text parts only."""
+    from agent.redact import redact_registered_vault_values
+    if isinstance(value, str):
+        return redact_registered_vault_values(value)
+    if _is_multimodal_tool_result(value):
+        for p in value.get("content") or []:
+            if _is_text_part(p) and isinstance(p.get("text"), str):
+                p["text"] = redact_registered_vault_values(p["text"])
+        if isinstance(value.get("text_summary"), str):
+            value["text_summary"] = redact_registered_vault_values(value["text_summary"])
+    return value
+
+
 # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser / file_tools, which
 # accept ``***Update File:`` with no space.
 _V4A_FILE_HEADER = re.compile(r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$', re.MULTILINE)

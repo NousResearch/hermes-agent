@@ -1689,11 +1689,16 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
 
 
 def _read_context_file(path: Path) -> str:
-    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
+    """Stripped, credential-redacted text of *path*; "" when missing, empty or unreadable (logged at debug).
+
+    Project context files are file content bound for the model, so they get the same ``file_read``
+    redaction as ``read_file``: a token quoted in a CLAUDE.md must not ride every request in the
+    system prompt. Redaction is deterministic, so the prompt stays byte-stable for the conversation."""
     if not path.exists():
         return ""
     try:
-        return (_read_text_with_timeout(path) or "").strip()
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text((_read_text_with_timeout(path) or "").strip(), file_read=True)
     except Exception as e:
         logger.debug("Could not read %s: %s", path, e)
         return ""

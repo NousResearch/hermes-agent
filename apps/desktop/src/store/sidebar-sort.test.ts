@@ -4,7 +4,7 @@ import type { SessionInfo } from '@/hermes'
 
 import { resetSidebarView, setSidebarOrdering } from './layout'
 import { $sessions } from './session'
-import { $sidebarSessionRankIds } from './sidebar-sort'
+import { $sidebarSessionRankIds, sortPinnedSessions } from './sidebar-sort'
 
 const session = (id: string, fields: Partial<SessionInfo>) =>
   ({ id, input_tokens: 0, output_tokens: 0, started_at: 0, ...fields }) as SessionInfo
@@ -61,5 +61,45 @@ describe('$sidebarSessionRankIds', () => {
     setSidebarOrdering('manual')
 
     expect($sidebarSessionRankIds.get()).toEqual([])
+  })
+})
+
+describe('sortPinnedSessions', () => {
+  const dots = {}
+
+  it('leaves the hand-built pin order exactly as it is on manual', () => {
+    const pinned = [session('second', { last_active: 1 }), session('first', { last_active: 9 })]
+
+    expect(sortPinnedSessions(pinned, 'manual', dots).map(s => s.id)).toEqual(['second', 'first'])
+  })
+
+  it('ranks by recency on updated — the flat list gets that order from the backend, a pin list does not', () => {
+    const pinned = [session('stale', { last_active: 1 }), session('live', { last_active: 9 })]
+
+    expect(sortPinnedSessions(pinned, 'updated', dots).map(s => s.id)).toEqual(['live', 'stale'])
+  })
+
+  it('ranks by creation, newest first', () => {
+    const pinned = [session('older', { started_at: 1 }), session('newer', { started_at: 9 })]
+
+    expect(sortPinnedSessions(pinned, 'created', dots).map(s => s.id)).toEqual(['newer', 'older'])
+  })
+
+  it('ranks by total tokens, both halves counted', () => {
+    const pinned = [session('small', { input_tokens: 10, output_tokens: 10 }), session('big', { input_tokens: 1, output_tokens: 500 })]
+
+    expect(sortPinnedSessions(pinned, 'tokens', dots).map(s => s.id)).toEqual(['big', 'small'])
+  })
+
+  it('ranks by spend, priciest first', () => {
+    const pinned = [session('cheap', { actual_cost_usd: 0.01 }), session('dear', { estimated_cost_usd: 2 })]
+
+    expect(sortPinnedSessions(pinned, 'cost', dots).map(s => s.id)).toEqual(['dear', 'cheap'])
+  })
+
+  it('keeps the pin order for ties, so an equal-ranked pair does not shuffle on every render', () => {
+    const pinned = [session('a', { last_active: 5 }), session('b', { last_active: 5 })]
+
+    expect(sortPinnedSessions(pinned, 'updated', dots).map(s => s.id)).toEqual(['a', 'b'])
   })
 })

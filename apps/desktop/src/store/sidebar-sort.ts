@@ -60,3 +60,30 @@ export const $sidebarSessionRankIds: ReadableAtom<string[]> = computed(
     return [...sessions].sort((a, b) => rank(a) - rank(b)).map(session => session.id)
   }
 )
+
+/** Recency as the sidebar reads it: last activity, else creation. Mirrored from
+ *  the projects module rather than imported — that one lives under app/ and
+ *  pulls the whole sidebar in behind it. */
+const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
+
+/**
+ * Order the Pinned section's rows. `manual` is Pinned's own pin order — the
+ * sequence the user builds by dragging a pin, and what the section shipped
+ * with — so it arrives unchanged, like the flat list's `manual`.
+ *
+ * The rest mirror the filter menu's sort keys, except that `updated` ranks here
+ * while the flat list gets it for free from the backend's own recency order: a
+ * pin list is in hand-picked order, so nothing else would put it back in time.
+ *
+ * Array.sort is stable, so ties keep the pin order rather than shuffling.
+ */
+export function sortPinnedSessions(
+  sessions: readonly SessionInfo[],
+  ordering: SidebarOrdering,
+  dotStates: Record<string, SessionDotState>
+): SessionInfo[] {
+  const rank: null | ((session: SessionInfo) => number) =
+    ordering === 'updated' ? session => -recency(session) : rankBy(ordering, dotStates)
+
+  return rank ? [...sessions].sort((a, b) => rank(a) - rank(b)) : [...sessions]
+}

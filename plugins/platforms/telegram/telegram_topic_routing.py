@@ -47,11 +47,24 @@ class TelegramTopicRoutingMixin:
             logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
 
     def _pending_created_topics_store(self) -> dict:
-        """``(chat_id, sender_id) -> (thread_id, creation message id, monotonic stamp)``."""
+        """``(chat_id, sender_id) -> (thread_id, creation message id, monotonic stamp)``.
+
+        Every record is claimed on the lookup path (adoption or TTL expiry) — except one whose
+        opener arrived already threaded, which returns early before any pop. Pruning expired
+        records here, at record time, keeps that path bounded without a background task (#136567).
+        """
         pending = getattr(self, "_pending_created_topics", None)
         if not isinstance(pending, dict):
             pending = {}
             self._pending_created_topics = pending
+            return pending
+        now = time.monotonic()
+        expired = [
+            key for key, record in pending.items()
+            if (now - record[2]) > self._NEW_TOPIC_OPENER_TTL_SECONDS
+        ]
+        for key in expired:
+            pending.pop(key, None)
         return pending
 
     async def _handle_forum_topic_created(self, update: Any, context: Any) -> None:

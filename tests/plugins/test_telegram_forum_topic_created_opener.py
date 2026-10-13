@@ -83,6 +83,10 @@ async def connected(monkeypatch, *, bot_id=111):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token=f"{bot_id}:offline-test", extra={}))
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "")
+    # Clean any stale update receipt so the admission controller doesn't drop our updates.
+    receipt = adapter._update_receipt_dir / f"telegram_update_receipts_{bot_id}.json"
+    if receipt.exists():
+        receipt.unlink()
     monkeypatch.setattr(adapter, "_build_ptb_requests", AsyncMock(return_value=(NoNetwork(bot_id), NoNetwork(bot_id))))
     monkeypatch.setattr(adapter, "_start_polling_mode", AsyncMock())
     monkeypatch.setattr(adapter, "_start_post_connect_housekeeping", lambda: None)
@@ -99,6 +103,8 @@ async def connected(monkeypatch, *, bot_id=111):
         store = getattr(adapter, "_session_store", None)
         if store is not None:
             store.close_all_db_handles()
+        if receipt.exists():
+            receipt.unlink()
 
 
 async def _deliver(app, adapter, *updates):
@@ -180,3 +186,67 @@ async def test_explicit_thread_on_the_opener_wins(monkeypatch):
         await _deliver(app, adapter, topic_created(app.bot), opener(app.bot, thread=40798, is_topic=True))
 
     assert delivered[0].source.thread_id == "40798"
+
+
+@pytest.mark.asyncio
+async def test_pending_created_topics_stays_bounded(monkeypatch):
+    """Distinct-key growth is bounded by prune-on-record, not by the lookup path (#136567).
+
+    Jarvis4Sleaf's finding: records whose opener arrives already threaded (or that simply never
+    got claimed) are never revisited by the lookup path, so without a prune at record time the
+    map grows for the process lifetime. Three phases: (1) the leak — 10 distinct keys all
+    survive with the real TTL; (2) with a negative TTL every record is expired, so the next
+    record's prune evicts all of them; (3) a fresh record still claims its opener.
+    """
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        # Every delivered user must be allow-listed, or the message is blocked before it is
+        # even built and never reaches the topic-routing path we are measuring.
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88," + ",".join(str(300 + i) for i in range(10)))
+
+        # Phase 1 — the leak: with the real TTL, no record is ever revisited by the lookup
+        # path, so all 10 distinct (chat, sender) keys survive for the process lifetime.
+        for i in range(10):
+            # Distinct keys; half get the healthy already-threaded opener (returns early at
+            # the adopt guard, never popped), half get nothing.
+            if i % 2 == 0:
+                await _deliver(
+                    app, adapter,
+                    topic_created(app.bot, uid=100 + i, chat=200 + i, user=300 + i,
+                                  thread=40000 + i, message_id=40001 + i),
+                    opener(app.bot, uid=500 + i, chat=200 + i, user=300 + i,
+                           message_id=40002 + i, thread=40000 + i, is_topic=True),
+                )
+            else:
+                await _deliver(
+                    app, adapter,
+                    topic_created(app.bot, uid=100 + i, chat=200 + i, user=300 + i,
+                                  thread=40000 + i, message_id=40001 + i),
+                )
+
+        pending = adapter._pending_created_topics_store()
+        assert len(pending) == 10, "leak repro: every record survived; the map is unbounded"
+
+        # Phase 2 — prune-on-record: a negative TTL makes every delivered record immediately
+        # expired, so the next record's prune evicts all of them at record time.
+        monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_TTL_SECONDS", -1.0)
+        adapter._pending_created_topics.clear()
+        for i in range(10):
+            await _deliver(
+                app, adapter,
+                topic_created(app.bot, uid=1000 + i, chat=200 + i, user=300 + i,
+                              thread=40000 + i, message_id=40001 + i),
+            )
+        pending = adapter._pending_created_topics_store()
+        assert len(pending) == 0, "prune-on-record must evict every expired record"
+
+        # Phase 3 — the fresh record still claims its opener: pruning never breaks the
+        # routing contract.
+        monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_TTL_SECONDS", 120.0)
+        delivered.clear()
+        await _deliver(app, adapter, topic_created(app.bot, uid=999, chat=42, user=88,
+                                                   thread=50000, message_id=50001))
+        pending = adapter._pending_created_topics_store()
+        assert len(pending) == 1, "only the fresh record remains"
+        assert pending[("42", "88")][0] == "50000"
+        await _deliver(app, adapter, opener(app.bot, uid=2000, message_id=50002, text="fresh"))
+        assert delivered[-1].source.thread_id == "50000"

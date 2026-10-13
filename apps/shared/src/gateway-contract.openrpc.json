@@ -2437,6 +2437,24 @@
       }
     },
     {
+      "name": "plugins.catalog.lookup",
+      "summary": "One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginCatalogLookupParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PluginCatalogLookupResult"
+        }
+      }
+    },
+    {
       "name": "plugins.list",
       "summary": "Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list.",
       "params": [
@@ -9303,6 +9321,24 @@
         "title": "ConnectionAnswerTarget",
         "type": "object"
       },
+      "ConnectionDisplay": {
+        "additionalProperties": false,
+        "description": "``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested.",
+        "properties": {
+          "suggested": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggested",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggested"
+        ],
+        "title": "ConnectionDisplay",
+        "type": "object"
+      },
       "ConnectionOperationParams": {
         "additionalProperties": false,
         "properties": {
@@ -9844,6 +9880,17 @@
             ],
             "default": null,
             "title": "Tool Call Id"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionDisplay"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22362,6 +22409,97 @@
         ],
         "title": "PluginActivation",
         "type": "object"
+      },
+      "PluginCatalogLookupEntry": {
+        "additionalProperties": false,
+        "description": "The fields an install needs: the same ones the embedded catalog picker posts on a pick.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "sha": {
+            "title": "Sha",
+            "type": "string"
+          },
+          "subdir": {
+            "title": "Subdir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "repo",
+          "sha",
+          "subdir"
+        ],
+        "title": "PluginCatalogLookupEntry",
+        "type": "object"
+      },
+      "PluginCatalogLookupParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PluginCatalogLookupParams",
+        "type": "object"
+      },
+      "PluginCatalogLookupResult": {
+        "additionalProperties": false,
+        "description": "``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;\n``unavailable`` means neither the live catalog nor the in-tree fallback could be read.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/PluginCatalogLookupStatus"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginCatalogLookupEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "PluginCatalogLookupResult",
+        "type": "object"
+      },
+      "PluginCatalogLookupStatus": {
+        "enum": [
+          "found",
+          "invalid_name",
+          "unknown",
+          "unavailable"
+        ],
+        "title": "PluginCatalogLookupStatus",
+        "type": "string"
       },
       "PluginLiveNow": {
         "additionalProperties": false,

@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
-from tools.connectors.gateway.config import operation_session_key
+from tools.connectors.gateway.config import ensure_guest_identity, operation_session_key
 from tools.connectors.gateway.errors import RateLimited, ToolGatewayError
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
@@ -43,10 +43,24 @@ NOTE = (
 )
 
 
-def managed_client():
-    from tools.connectors.gateway.client import ConnectorClient
+GUEST_SETUP_FAILED = "GUEST_SETUP_FAILED"
 
-    return ConnectorClient()
+# The connect request's ``initiator``: manage_connections, the Connectors page, the card's Try again.
+AGENT_TOOL = "agent_tool"
+DESKTOP_PAGE = "desktop_page"
+CARD_RETRY = "card_retry"
+
+
+def managed_client(*, initiator: Optional[str] = AGENT_TOOL, call: Optional[Any] = None):
+    """The real gateway client for a user action. The first one creates the guest identity when the
+    user has none: every hosted action is a request for an app. ``initiator`` names who asked, so
+    every link the client mints is attributed."""
+    from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.gateway.errors import ToolGatewayError
+
+    if setup_error := ensure_guest_identity():
+        raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
+    return ConnectorClient(initiator=initiator, call=call)
 
 
 def managed_kind(client: Any, action: str, force: bool) -> Kind:
@@ -124,7 +138,7 @@ def _status_for(client: Any, target: Target, *, timeout: float) -> Optional[dict
     except RateLimited:
         raise
     except Exception as exc:
-        logger.debug("connector account read failed for %s: %s", target.name, exc)
+        logger.warning("connector account read failed for %s: %s", target.name, exc)
         return None
 
 
@@ -310,6 +324,17 @@ def _status_result(client: Any, connectors: list[str]) -> str:
         "replaced by a reconnect and is kept only for the record.")}, ensure_ascii=False)
 
 
+def _display_result(client: Any, suggested: list[str], *, session_id: Optional[str], tool_call_id: Optional[str],
+                    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]], call: Any) -> str:
+    """The desktop card when one can draw; elsewhere the status list and where to connect."""
+    from tools.connectors.display import OFF_DESKTOP_NOTE, run_display
+
+    if connection_callback is None:
+        return json.dumps({**json.loads(_status_result(client, [])), "note": OFF_DESKTOP_NOTE}, ensure_ascii=False)
+    return run_display(client, suggested, session_key=operation_session_key(session_id), tool_call_id=tool_call_id,
+                       connection_callback=connection_callback, call=call)
+
+
 def _rename_result(target: HostedTarget) -> str:
     """Rename the one account of ``target.name`` called ``target.alias`` (or, when unnamed, labelled
     so) to ``target.to``. Synchronous: no operation and no card."""
@@ -350,15 +375,23 @@ def run_managed_action(
     client_factory: Optional[Callable[[], Any]] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
+    card_surface: bool = False,
 ) -> str:
+    from tools.managed_gateway_identity import CallRef
+
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     try:
         if action == "rename":
             return _rename_result(targets[0])
-        client = (client_factory or managed_client)()
+        call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
+        client = client_factory() if client_factory else managed_client(call=call)
+        if action == "display":
+            return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
+                                   connection_callback=connection_callback if card_surface else None, call=call)
         if action == "status":
             return _status_result(client, [t.name for t in targets])
         if not targets:
@@ -374,10 +407,12 @@ def run_managed_action(
             _targets(targets, action),
             managed_kind(client, action, force),
             session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
-            connection_callback=connection_callback, with_urls_in_result=False,
+            connection_callback=connection_callback, with_urls_in_result=False, call=call,
         )
     except Exception as exc:
-        logger.debug("manage_connections %s failed: %s", action, exc)
+        logger.warning("manage_connections %s failed: %s", action, exc)
+        if getattr(exc, "code", None) == GUEST_SETUP_FAILED:
+            return tool_error(str(exc))
         return tool_error(
             f"The connector gateway request failed: {exc}. "
             "If this persists, the user can manage connections in the Nous Portal."

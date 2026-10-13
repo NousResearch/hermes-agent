@@ -16,9 +16,9 @@ def _cdp_version_url(discovery_url: str) -> str:
     """Append ``/json/version`` to the URL *path*, keeping its query: token-gated CDP endpoints
     (``http://host/slot/cdp?tok=x``) need ``.../cdp/json/version?tok=x``, not the path after the query."""
     parts = urlsplit(discovery_url)
-    path = parts.path
+    path = parts.path.rstrip("/")
     if not path.lower().endswith("/json/version"):
-        path = path.rstrip("/") + "/json/version"
+        path += "/json/version"
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
@@ -41,10 +41,11 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         if not (raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]):
             return raw
         discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
-    version_url = _cdp_version_url(discovery_url)
+    version_url = discovery_url
 
     san = _bt._sanitize_url_for_logs
     try:
+        version_url = _cdp_version_url(discovery_url)
         import requests  # lazy — shared module object, test patches still apply
         response = requests.get(version_url, timeout=10, **loopback_request_kwargs(version_url))
         response.raise_for_status()

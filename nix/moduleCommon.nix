@@ -1082,6 +1082,10 @@ let
       pkgs.coreutils
       pkgs.git
     ]
+    # The gateway places restart-safe children in ``systemd-run --user --scope``
+    # units (tools/process_registry.py), and a unit PATH carries no system profile
+    # on NixOS, so the binary must ride along (#137222).
+    ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.systemd ]
     ++ cfg.extraPackages;
 
   # workingDirectory has a default on both modules, but a bad one. It is the

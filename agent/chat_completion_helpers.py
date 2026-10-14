@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.chat_completion_request_options import consume_ephemeral_max_output, message_target_model
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -1399,17 +1400,9 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
     return tools_for_api
 
 
-def _consume_ephemeral_max_output(agent):
-    """Pop the one-shot ephemeral output cap; whichever path builds the request consumes it."""
-    ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-    if ephemeral_out is not None:
-        agent._ephemeral_max_output_tokens = None
-    return ephemeral_out
-
-
 def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides):
     ctx_len = getattr(agent, "context_compressor", None)
-    ephemeral_out = _consume_ephemeral_max_output(agent)
+    ephemeral_out = consume_ephemeral_max_output(agent)
     anthropic_kwargs = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_anthropic_messages_for_api(api_messages), tools=tools_for_api,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
@@ -1451,7 +1444,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
             tools_for_api, _ = strip_slash_enum(tools_for_api)
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
-    ephemeral_out = _consume_ephemeral_max_output(agent)
+    ephemeral_out = consume_ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
@@ -1493,7 +1486,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
 
-    _ephemeral_out = _consume_ephemeral_max_output(agent)
+    _ephemeral_out = consume_ephemeral_max_output(agent)
     from agent.reasoning_carriers import shape_wire_carriers
     api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
     # Strip image parts for non-vision models on BOTH paths (registered
@@ -1508,6 +1501,9 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         supports_reasoning=agent._supports_reasoning_extra_body(),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         qwen_session_metadata=_qwen_meta)
+    _target_model = message_target_model(agent)
+    if _target_model:
+        _common["message_target_model"] = _target_model
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)

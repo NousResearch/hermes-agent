@@ -30,24 +30,18 @@ from agent.tool_dispatch_helpers import (
 )
 from run_agent import AIAgent
 
-
 # ---------------------------------------------------------------------------
 # _extract_file_mutation_targets
 # ---------------------------------------------------------------------------
-
 
 class TestExtractFileMutationTargets:
     def test_non_mutating_tool_returns_empty(self):
         assert _extract_file_mutation_targets("read_file", {"path": "/x"}) == []
         assert _extract_file_mutation_targets("terminal", {"command": "ls"}) == []
 
-
-
     def test_patch_replace_mode_returns_path(self):
         args = {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"}
         assert _extract_file_mutation_targets("patch", args) == ["/tmp/a.md"]
-
-
 
     def test_patch_v4a_multi_file(self):
         body = (
@@ -63,7 +57,6 @@ class TestExtractFileMutationTargets:
         paths = _extract_file_mutation_targets("patch", args)
         assert paths == ["/tmp/a.md", "/tmp/new.md", "/tmp/old.md"]
 
-
     def test_patch_v4a_accepts_no_space_after_asterisks(self):
         """Match patch_parser / file_tools: ``***Update File:`` (no space)."""
         body = "***Update File: nospace.py\n"
@@ -71,11 +64,9 @@ class TestExtractFileMutationTargets:
             "patch", {"mode": "patch", "patch": body}
         ) == ["nospace.py"]
 
-
 # ---------------------------------------------------------------------------
 # _extract_error_preview
 # ---------------------------------------------------------------------------
-
 
 class TestExtractErrorPreview:
     def test_json_error_field_preferred(self):
@@ -91,12 +82,9 @@ class TestExtractErrorPreview:
         assert len(out) <= 50
         assert out.endswith("…")
 
-
-
 # ---------------------------------------------------------------------------
 # _record_file_mutation_result — state transitions
 # ---------------------------------------------------------------------------
-
 
 def _bare_agent() -> AIAgent:
     """Skip __init__ and only attach the per-turn state dict.
@@ -111,7 +99,6 @@ def _bare_agent() -> AIAgent:
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     return agent
-
 
 class TestRecordFileMutationResult:
     def test_non_mutating_tool_ignored(self):
@@ -148,7 +135,6 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
         assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
-
 
     def test_landed_paths_prefer_resolved_tool_result(self):
         paths = _extract_landed_file_mutation_paths(
@@ -264,14 +250,9 @@ class TestRecordFileMutationResult:
         still_failed = agent._file_mutations_still_failed(agent._turn_failed_file_mutations)
         assert list(still_failed) == [str(untouched)]
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # _format_file_mutation_failure_footer
 # ---------------------------------------------------------------------------
-
 
 class TestFormatFooter:
     def test_empty_returns_empty_string(self):
@@ -283,8 +264,6 @@ class TestFormatFooter:
         )
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
-
-
 
     def test_footer_path_not_extracted_by_gateway(self):
         """End-to-end: the gateway's extract_local_files must NOT pull a
@@ -314,11 +293,9 @@ class TestFormatFooter:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
-
 # ---------------------------------------------------------------------------
 # _file_mutation_verifier_enabled — env + config precedence
 # ---------------------------------------------------------------------------
-
 
 class TestVerifierEnabled:
 
@@ -327,7 +304,6 @@ class TestVerifierEnabled:
         monkeypatch.setenv("HERMES_FILE_MUTATION_VERIFIER", value)
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
-
 
     def test_config_value_disables(self, monkeypatch):
         """``display.file_mutation_verifier: false`` turns the verifier off."""
@@ -340,11 +316,6 @@ class TestVerifierEnabled:
         )
         assert agent._file_mutation_verifier_enabled() is False
 
-
-
-
 # ---------------------------------------------------------------------------
 # Module-level invariants
 # ---------------------------------------------------------------------------
-
-

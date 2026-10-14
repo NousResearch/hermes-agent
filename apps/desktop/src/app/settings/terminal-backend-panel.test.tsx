@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/api/client'
 import { deferred } from '@/test/deferred'
 import type { TerminalBackendsResponse } from '@/types/hermes'
 
@@ -9,8 +10,8 @@ const selectTerminalBackend = vi.fn()
 const confirmMock = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getTerminalBackends: () => getTerminalBackends(),
-  selectTerminalBackend: (backend: string) => selectTerminalBackend(backend)
+  getTerminalBackends: (profile?: ProfileScope) => getTerminalBackends(profile),
+  selectTerminalBackend: (backend: string, profile?: ProfileScope) => selectTerminalBackend(backend, profile)
 }))
 
 vi.mock('@/store/confirm', () => ({
@@ -21,6 +22,10 @@ vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
 }))
+
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { TerminalBackendPanel } = await import('./terminal-backend-panel')
 
 function backends(overrides: Partial<TerminalBackendsResponse> = {}): TerminalBackendsResponse {
   return {
@@ -67,8 +72,23 @@ afterEach(() => {
 })
 
 describe('TerminalBackendPanel', () => {
-  it('marks the active backend as pressed', async () => {
+  it('reads and writes the profile currently selected by Capabilities', async () => {
     const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+    const { rerender } = render(<TerminalBackendPanel profile="research" />)
+
+    for (const profile of ['research', 'coder', 'research']) {
+      rerender(<TerminalBackendPanel profile={profile} />)
+      await waitFor(() => expect(getTerminalBackends).toHaveBeenLastCalledWith(profile))
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /Local/ }).getAttribute('aria-pressed')).toBe('true')
+      )
+      fireEvent.click(screen.getByRole('button', { name: /SSH/ }))
+      await waitFor(() => expect(selectTerminalBackend).toHaveBeenLastCalledWith('ssh', profile))
+      await waitFor(() => expect(screen.getByRole('button', { name: /SSH/ }).getAttribute('aria-pressed')).toBe('true'))
+    }
+  })
+
+  it('marks the active backend as pressed', async () => {
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     const local = await screen.findByRole('button', { name: /Local/ })
@@ -77,12 +97,11 @@ describe('TerminalBackendPanel', () => {
 
   it('selects a backend when clicked and reports the change', async () => {
     const onConfiguredChange = vi.fn()
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={onConfiguredChange} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /SSH/ }))
 
-    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('ssh'))
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('ssh', undefined))
     await waitFor(() => expect(onConfiguredChange).toHaveBeenCalled())
     // Active highlight moves without a refetch.
     const ssh = screen.getByRole('button', { name: /SSH/ })
@@ -93,7 +112,6 @@ describe('TerminalBackendPanel', () => {
     const confirmGate = deferred<boolean>()
     confirmMock.mockReturnValue(confirmGate.promise)
     selectTerminalBackend.mockResolvedValue({ ok: true, backend: 'docker' })
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
@@ -110,7 +128,7 @@ describe('TerminalBackendPanel', () => {
 
     confirmGate.resolve(true)
 
-    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('docker'))
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('docker', undefined))
     // The guidance detail stays visible on the now-active row.
     expect(screen.getByText(/Docker daemon not reachable/)).toBeTruthy()
   })
@@ -118,7 +136,6 @@ describe('TerminalBackendPanel', () => {
   it('does not select a needs_setup backend when the confirm dialog is declined', async () => {
     const confirmGate = deferred<boolean>()
     confirmMock.mockReturnValue(confirmGate.promise)
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
@@ -137,7 +154,6 @@ describe('TerminalBackendPanel', () => {
   })
 
   it('does not re-select the already active backend', async () => {
-    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
     render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /Local/ }))

@@ -14,7 +14,11 @@ def prepare_chat_messages(client, kwargs: dict) -> dict:
     """
     if not isinstance(client, (OpenAI, AsyncOpenAI)) or "messages" not in kwargs:
         return kwargs
+    from agent.reasoning_carriers import shape_wire_carriers
+
+    base_url = str(getattr(client, "base_url", "") or "")
     messages = ChatCompletionsTransport().convert_messages(
-        kwargs["messages"], model=kwargs.get("model"), base_url=str(getattr(client, "base_url", "") or ""),
+        shape_wire_carriers(kwargs["messages"], model=kwargs.get("model"), base_url=base_url),
+        model=kwargs.get("model"), base_url=base_url,
     )
     return {**kwargs, "messages": messages}

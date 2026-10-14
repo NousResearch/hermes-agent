@@ -21,22 +21,15 @@ class CopilotProfile(ProviderProfile):
         if not (supports_reasoning and model):
             return {}, {}
         try:
-            from hermes_cli.models import clamp_reasoning_effort_to_supported, github_model_reasoning_efforts
+            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
 
             supported = github_model_reasoning_efforts(model)
             if not supported:
                 return {}, {}
             if not reasoning_config:
                 return {"reasoning": {"effort": "medium"}}, {}
-            effort = reasoning_config.get("effort", "medium")
-            # Honor a level the live catalog lists; otherwise clamp to the nearest WEAKER
-            # supported level (never drop straight to medium, which inverted the ladder:
-            # ultra < high). Bespoke levels the ladder can't place fall to medium (or [0]).
-            # See #74295.
-            if effort not in supported:
-                effort = clamp_reasoning_effort_to_supported(effort, list(supported))
-                if effort not in supported:
-                    effort = "medium" if "medium" in supported else supported[0]
+            # Never drop straight to medium, which inverted the ladder (ultra < high). See #74295.
+            effort = clamp_github_reasoning_effort(reasoning_config.get("effort"), supported)
             return {"reasoning": {"effort": effort}}, {}
         except Exception:
             return {}, {}

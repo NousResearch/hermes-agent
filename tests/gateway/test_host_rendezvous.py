@@ -1,5 +1,6 @@
 """Host-wide singleton invariants (multiplex-only): one lock per host, staleness is proved."""
 
+import dataclasses
 import json
 import os
 import signal
@@ -108,7 +109,33 @@ def test_stale_record_is_never_attachable(host_dir, pid, create_time):
     assert hr.read_record(hr.ROLE_SERVE, include_stale=True) is not None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
+@pytest.mark.platforms("posix")
+def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkeypatch):
+    """WSL can shift psutil.create_time() for the same live PID while /proc start ticks stay fixed.
+
+    The host record must keep recognizing that owner, but a changed stable start fingerprint must
+    still be rejected as PID reuse.
+    """
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None
+
+    # Model the exact WSL failure family: the recorded epoch create_time drifted away from the
+    # live process's, while the stable start fingerprint is unchanged.
+    drifted = dataclasses.replace(record, create_time=record.create_time - 5)
+    assert hr.record_is_stale(drifted) is False
+    assert hr.liveness_is_proven(drifted) is True
+
+    assert record.start_time is not None
+    from gateway import status
+
+    monkeypatch.setattr(
+        status, "get_process_start_time",
+        lambda _pid: record.start_time + status.START_TIME_DRIFT_TOLERANCE + 1,
+    )
+    assert hr.record_is_stale(record) is True
+
+
+@pytest.mark.platforms("posix")  # POSIX signal disposition
 def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not
     run ``atexit``: the record outlived its process and the 0600 token kept a LIVE session token

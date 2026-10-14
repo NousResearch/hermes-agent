@@ -53,7 +53,7 @@ def _make_db(tmp_path: Path) -> Path:
 # ── Repair-path write durability ────────────────────────────────────────
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:
     """The repair connection must carry both macOS durability barriers."""
     db = _make_db(tmp_path)

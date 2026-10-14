@@ -154,11 +154,13 @@ async def rescan_dashboard_plugins():
 
 
 @router.get("/api/dashboard/plugins/hub")
-async def get_plugins_hub(request: Request):
+async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return await asyncio.to_thread(_merged_plugins_hub)
+        return await config_scoped_to_thread(profile, _merged_plugins_hub)
+    except HTTPException:
+        raise  # an unknown ?profile= is the scope's 404, not a hub failure
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc

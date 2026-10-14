@@ -83,10 +83,16 @@ export function SidebarLoadErrorState({ onRetry }: { onRetry: () => void }) {
 const SESSION_STORAGE_RECOVERY_URL =
   'https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery#when-the-three-steps-do-not-work'
 
+interface SidebarStorageCorruptNoticeProps {
+  openRecoveryGuide?: (url: string) => void
+}
+
 // A structurally corrupt state.db empties (or thins out) the list below it,
 // which reads as deleted history (#72046). Persistent while the backend
 // reports the store corrupt; there is nothing to dismiss until it is recovered.
-export function SidebarStorageCorruptNotice() {
+export function SidebarStorageCorruptNotice({
+  openRecoveryGuide = openExternalLink
+}: SidebarStorageCorruptNoticeProps) {
   const profiles = useStore($corruptSessionStores)
   const { t } = useI18n()
   const copy = t.sidebar.storageCorrupt
@@ -108,7 +114,7 @@ export function SidebarStorageCorruptNotice() {
           </code>
           <Button
             className="-ml-1 mt-0.5 text-(--ui-text-secondary)"
-            onClick={() => openExternalLink(SESSION_STORAGE_RECOVERY_URL)}
+            onClick={() => openRecoveryGuide(SESSION_STORAGE_RECOVERY_URL)}
             size="sm"
             variant="ghost"
           >

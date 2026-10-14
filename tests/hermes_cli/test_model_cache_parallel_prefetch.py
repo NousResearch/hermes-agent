@@ -12,8 +12,6 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-
-
 # ---------------------------------------------------------------------------
 # Thread-safe cache entry update (hermes_cli/models.py)
 # ---------------------------------------------------------------------------
@@ -89,7 +87,6 @@ class TestUpdateProviderCacheEntry:
         for p in providers:
             assert p in cache, f"{p} was lost in concurrent write"
             assert cache[p]["models"] == [f"model_{p}"]
-
 
 # ---------------------------------------------------------------------------
 # Parallel prefetch (hermes_cli/model_switch.py)
@@ -230,4 +227,3 @@ class TestPrefetchProviderModelsParallel:
             _prefetch_provider_models_parallel(["openrouter"])
 
         assert fetched == ["openrouter"]
-

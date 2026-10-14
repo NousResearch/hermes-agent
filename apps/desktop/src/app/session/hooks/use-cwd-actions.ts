@@ -7,13 +7,14 @@ import {
   $newChatWorkspaceTargetGeneration,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setNewChatWorkspaceTarget
 } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
-  onSessionRuntimeInfo?: (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
+  onSessionRuntimeInfo?: (sessionId: string, info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -46,21 +47,28 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
   )
 
   const changeSessionCwd = useCallback(
-    async (cwd: string) => {
+    async (cwd: string, targetSessionId?: string) => {
       const trimmed = cwd.trim()
 
       if (!trimmed) {
         return
       }
 
-      // Ref, not the closure-captured prop: this hook's consumers are memoized
-      // on a stable actions object, so the prop can still name the previously
-      // focused chat. Re-anchoring the wrong session's workspace would point
-      // that agent's terminal/file tools at another conversation's project.
-      const sessionId = activeSessionIdRef.current
+      // A focused tile names its own runtime id. Otherwise the ref, not the
+      // closure-captured prop: this hook's consumers are memoized on a stable
+      // actions object, so the prop can still name the previously focused
+      // chat. Re-anchoring the wrong session's workspace would point that
+      // agent's terminal/file tools at another conversation's project.
+      const sessionId = targetSessionId || activeSessionIdRef.current
+      // The primary-scoped readouts ($currentCwd/$currentBranch) follow only
+      // the primary chat; a tile's own state arrives via onSessionRuntimeInfo.
+      const primary = sessionId === activeSessionIdRef.current
 
       if (!sessionId) {
         setCurrentCwd(trimmed)
+        // A folder chosen here is a deliberate workspace pick (#52589) — the
+        // gateway must let it beat a named profile's configured terminal.cwd.
+        setCurrentCwdExplicit(true)
         const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {
@@ -96,9 +104,12 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
           cwd: trimmed
         })
 
-        setCurrentCwd(info.cwd || trimmed)
-        setCurrentBranch(info.branch || '')
-        onSessionRuntimeInfo?.({ branch: info.branch || '', cwd: info.cwd || trimmed })
+        if (primary) {
+          setCurrentCwd(info.cwd || trimmed)
+          setCurrentBranch(info.branch || '')
+        }
+
+        onSessionRuntimeInfo?.(sessionId, { branch: info.branch || '', cwd: info.cwd || trimmed })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
 
@@ -108,8 +119,11 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
           return
         }
 
-        setCurrentCwd(trimmed)
-        setCurrentBranch('')
+        if (primary) {
+          setCurrentCwd(trimmed)
+          setCurrentBranch('')
+        }
+
         notify({
           kind: 'warning',
           title: copy.cwdStagedTitle,

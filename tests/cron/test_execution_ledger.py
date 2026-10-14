@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def _point_ledger(monkeypatch, tmp_path):
-    import cron.executions as executions
+    from cron import executions
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
     return executions
@@ -136,7 +136,7 @@ def test_foreign_process_cannot_start_or_finish_execution(monkeypatch, tmp_path)
 
 
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
-    import cron.executions as executions
+    from cron import executions
 
     current_home = {"path": tmp_path / "default"}
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
@@ -298,7 +298,7 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
 
 
 def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch):
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     class BrokenPool:
         def submit(self, _callable):
@@ -328,7 +328,7 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):
-    import cron.scheduler as scheduler
+    from cron import scheduler
 
     events = []
     run_execution_ids = []
@@ -476,7 +476,7 @@ def test_early_return_still_closes_connection(monkeypatch, tmp_path):
 
 
 def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
-    import cron.jobs as jobs
+    from cron import jobs
 
     monkeypatch.setattr(jobs, "CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
@@ -490,3 +490,27 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_history_orders_by_instant_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    first_pass = datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    second_pass = datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: first_pass)
+    earlier = executions.create_execution("dst-job", source="builtin")
+    monkeypatch.setattr(executions, "_hermes_now", lambda: second_pass)
+    later = executions.create_execution("dst-job", source="builtin")
+    assert later["claimed_at"] < earlier["claimed_at"]
+
+    assert executions.latest_execution("dst-job")["id"] == later["id"]
+    assert executions.latest_executions(["dst-job"])["dst-job"]["id"] == later["id"]
+    assert [r["id"] for r in executions.list_executions(job_id="dst-job")] == [
+        later["id"], earlier["id"],
+    ]
+    page = executions.list_executions(job_id="dst-job", before_claimed_at=later["claimed_at"])
+    assert [r["id"] for r in page] == [earlier["id"]]

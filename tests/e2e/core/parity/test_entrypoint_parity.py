@@ -76,12 +76,6 @@ DRIVERS: dict[str, Driver] = {
     "cron (run-now)": _drive_cron.drive_cron,
 }
 
-# Cells that are red on current main for a tracked, open bug. Strict: the test
-# FAILS as soon as the cell turns green, so the entry is removed with the fix
-# instead of silently masking a later regression of the same cell.
-KNOWN_RED: dict[tuple[str, str], str] = {}
-
-
 @dataclass
 class Row:
     entrypoint: str
@@ -130,7 +124,7 @@ def _run_row(entrypoint: str, root: Path) -> Row:
             f"  host exit code: {result.extra.get('exit_code')}\n"
             f"  host stderr tail: {stderr_tail[-1500:]}"
         )
-    except Exception as exc:  # noqa: BLE001 - reported per row
+    except Exception as exc:
         row.error = f"{type(exc).__name__}: {exc}"[:4000]
     finally:
         if ph is not None:
@@ -153,11 +147,7 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
     out = os.environ.get("PARITY_TABLE_OUT")
     if out:
         with open(out, "a", encoding="utf-8") as fh:
-            for row in rows.values():
-                fh.write(json.dumps({
-                    **asdict(row), "detail": None,
-                    "known_red": {c: ref for (ep, c), ref in KNOWN_RED.items() if ep == row.entrypoint},
-                }) + "\n")
+            fh.writelines(json.dumps({**asdict(row), "detail": None}) + "\n" for row in rows.values())
     return rows
 
 
@@ -165,10 +155,5 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
 def test_entrypoint_parity(entrypoint: str, matrix: dict[str, Row]) -> None:
     row = matrix[entrypoint]
     assert row.error is None, f"{entrypoint}: turn failed before the cells could be evaluated:\n{row.error}"
-    known = {cell for (ep, cell) in KNOWN_RED if ep == entrypoint}
-    fixed = sorted(cell for cell in known if row.cells.get(cell))
-    assert not fixed, (
-        f"{entrypoint}: {fixed} now green — drop the KNOWN_RED entry "
-        f"({[KNOWN_RED[(entrypoint, c)] for c in fixed]}) so the cell is enforced again")
-    failed = sorted(k for k, ok in row.cells.items() if not ok and k not in known)
+    failed = sorted(k for k, ok in row.cells.items() if not ok)
     assert not failed, f"{entrypoint}: parity cells red: {failed}\n{row.detail}"

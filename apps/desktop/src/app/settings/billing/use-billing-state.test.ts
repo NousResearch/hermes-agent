@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 
 import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
@@ -84,7 +85,7 @@ describe('deriveBillingView', () => {
       }
 
       const free = deriveBillingView(
-        okBilling({ ...loggedOutBillingState, free_tier: true }),
+        okBilling({ ...loggedOutBillingState, free_tier_account: true }),
         okSubscription(loggedOutSubscriptionState),
         b
       )
@@ -248,11 +249,23 @@ describe('deriveBillingView', () => {
     expect(view.usageRows).toEqual([])
   })
 
+  it('signs in from the logged-out notice through the shared sign-in dialog, not a portal link', () => {
+    // A plain portal link never writes a credential, so the page would stay logged out forever
+    // (#87792). The action must open the one Nous sign-in dialog (device-code + poll).
+    $freeTierSignIn.set({ status: 'closed' })
+    const view = deriveBillingView(okBilling(loggedOutBillingState), okSubscription(loggedOutSubscriptionState))
+
+    expect(view.notice?.action?.url).toBeUndefined()
+    view.notice?.action?.onSelect?.()
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    $freeTierSignIn.set({ status: 'closed' })
+  })
+
   it('derives the free-tier view before the logged-out one, with nothing to pay', () => {
     // A free-tier install is logged_in:false, so this branch must win — otherwise
     // the generic "connect your account" notice sends the user to the portal.
     const view = deriveBillingView(
-      okBilling({ ...loggedOutBillingState, free_tier: true, free_tier_model: 'nous/welcome' }),
+      okBilling({ ...loggedOutBillingState, free_tier_account: true, free_tier_model: 'nous/welcome' }),
       okSubscription(loggedOutSubscriptionState)
     )
 

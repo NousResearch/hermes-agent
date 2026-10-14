@@ -42,7 +42,6 @@ import pytest
 
 from hermes_state import SessionDB
 
-
 def _build_agent_with_db(
     db: SessionDB,
     session_id: str,
@@ -102,7 +101,6 @@ def _build_agent_with_db(
     agent.compression_in_place = False
     return agent
 
-
 def _count_children(db: SessionDB, parent_sid: str) -> int:
     """Count rows in state.db whose parent_session_id == parent_sid."""
     rows = db._conn.execute(
@@ -110,7 +108,6 @@ def _count_children(db: SessionDB, parent_sid: str) -> int:
         (parent_sid,),
     ).fetchall()
     return len(rows)
-
 
 def _live_child_id(db: SessionDB, parent_sid: str) -> str | None:
     """The single child id of ``parent_sid``, or None when there is none.
@@ -126,7 +123,6 @@ def _live_child_id(db: SessionDB, parent_sid: str) -> str | None:
     assert len(rows) <= 1, f"expected at most one child of {parent_sid}, got {rows!r}"
     return rows[0][0] if rows else None
 
-
 def _wait_for_touch(touch_calls: list[str], value: str, timeout: float = 1.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -134,7 +130,6 @@ def _wait_for_touch(touch_calls: list[str], value: str, timeout: float = 1.0) ->
             return
         time.sleep(0.01)
     pytest.fail(f"Timed out waiting for touch activity {value!r}; calls={touch_calls!r}")
-
 
 def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_path: Path) -> None:
     """Long compression must refresh agent activity so gateway watchdogs do not fire."""
@@ -164,7 +159,6 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     assert touch_calls[-1] == "context compression completed"
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Path) -> None:
     """The heartbeat must re-emit the compacting status, not just DB touches.
 
@@ -188,11 +182,7 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
     touch_calls: list[str] = []
     agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
 
     def _slow_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -222,7 +212,6 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
     assert first_tick_touch >= 1  # "started" touch came first
     assert len(heartbeats) <= touch_calls.count("context compression in progress")
 
-
 def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Path) -> None:
     """A context engine that suppresses the routine start status opens no
     visible compaction phase; the heartbeat must not open one either (there
@@ -238,11 +227,7 @@ def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Pat
     touch_calls: list[str] = []
     agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
 
     def _slow_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -263,7 +248,6 @@ def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Pat
     assert all(m != COMPACTION_HEARTBEAT_STATUS for _, m in status_events)
     assert "context compression in progress" in touch_calls  # DB touches still ran
 
-
 def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) -> None:
     """A lock loser still closes the structured compaction lifecycle.
 
@@ -280,11 +264,7 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
 
     agent = _build_agent_with_db(db, session_id)
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     returned, _system_prompt = agent._compress_context(
@@ -297,7 +277,6 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
     assert getattr(agent, "_compression_skipped_due_to_lock", None) == "winner"
     assert status_events.count(("compacted", COMPACTION_DONE_STATUS)) == 1
 
-
 def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """A failed durable split must not emit a successful completion edge."""
     from agent.conversation_compression import COMPACTION_DONE_STATUS
@@ -306,14 +285,10 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
     session_id = "FAILED_SPLIT_STATUS_TEST"
     db.create_session(session_id, source="discord")
     agent = _build_agent_with_db(db, session_id)
-    setattr(agent, "compression_in_place", False)
+    agent.compression_in_place = False
     db.publish_compression_child = MagicMock(side_effect=RuntimeError("split boom"))
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     agent._compress_context(
@@ -327,7 +302,6 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
     assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """An in-place persistence failure must not emit a completion edge."""
     from agent.conversation_compression import COMPACTION_DONE_STATUS
@@ -336,14 +310,10 @@ def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: P
     session_id = "FAILED_IN_PLACE_STATUS_TEST"
     db.create_session(session_id, source="discord")
     agent = _build_agent_with_db(db, session_id)
-    setattr(agent, "compression_in_place", True)
+    agent.compression_in_place = True
     db.archive_and_compact = MagicMock(side_effect=RuntimeError("archive boom"))
     status_events: list[tuple[str, str]] = []
-    setattr(
-        agent,
-        "status_callback",
-        lambda event, message: status_events.append((event, message)),
-    )
+    agent.status_callback = lambda event, message: status_events.append((event, message))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     agent._compress_context(
@@ -357,7 +327,6 @@ def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: P
     assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
     assert getattr(agent, "session_id", None) == session_id
     assert db.get_compression_lock_holder(session_id) is None
-
 
 def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Path) -> None:
     """Exception paths must stop the heartbeat and release the compression lock."""
@@ -385,7 +354,6 @@ def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Pa
     assert touch_calls[-1] == "context compression failed"
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> None:
     """Activity touch failures must not affect compression success semantics."""
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -401,7 +369,6 @@ def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> 
 
     assert compressed[0]["content"] == "[CONTEXT COMPACTION] summary"
     assert db.get_compression_lock_holder(session_id) is None
-
 
 def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(tmp_path: Path) -> None:
     """Strict compressor signatures still compress while heartbeat cleanup runs.
@@ -440,7 +407,6 @@ def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(
     assert touch_calls[-1] == "context compression completed"
     assert db.get_compression_lock_holder(session_id) is None
     assert strict_calls == [120_000]
-
 
 def test_compression_heartbeat_stop_persists_completed_over_in_progress(
     tmp_path: Path,
@@ -482,7 +448,6 @@ def test_compression_heartbeat_stop_persists_completed_over_in_progress(
     assert agent._last_activity_desc == "context compression completed"
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-
 def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
     """Detached heartbeat/stop must not overwrite a host timeout stamp."""
     from types import SimpleNamespace
@@ -510,7 +475,6 @@ def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
     assert agent.touches == []
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION_TIMEOUT
     assert agent._last_activity_desc == "context compression timed out"
-
 
 def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> None:
     """A new compression episode may overwrite a prior timeout/cooldown stamp."""
@@ -546,7 +510,6 @@ def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> 
     )
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
-
 def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None:
     """After a terminal stamp, UNKNOWN must not re-arm a detached heartbeat."""
     from types import SimpleNamespace
@@ -579,7 +542,6 @@ def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None
     assert agent.touches == []
     assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
     assert agent._last_activity_desc == "calling model"
-
 
 def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
     """Host fence cancel must silence detached heartbeat refresh and late stop."""
@@ -616,7 +578,6 @@ def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
     assert agent.touches == []
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
     assert agent._last_activity_desc == "context compression started"
-
 
 def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     """Two AIAgents that share a session_id MUST NOT both rotate it.
@@ -706,7 +667,6 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
         "Compression lock leaked: still held after both paths completed."
     )
 
-
 def test_durable_message_committed_before_lease_is_adopted(
     tmp_path: Path,
 ) -> None:
@@ -747,7 +707,6 @@ def test_durable_message_committed_before_lease_is_adopted(
     child_id = _live_child_id(db, parent_sid)
     assert child_id is not None
     assert child_id == agent.session_id
-
 
 def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) -> None:
     """A fence-cancelled attempt must not poison the per-session lock.
@@ -822,7 +781,6 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
     assert agent._last_compaction_in_place is True
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_commit_fence_waits_for_an_active_commit() -> None:
     """A timeout that loses the fence race cannot overlap the live turn."""
     from agent.conversation_compression import CompressionCommitFence
@@ -851,7 +809,6 @@ def test_commit_fence_waits_for_an_active_commit() -> None:
     assert not waiter.is_alive()
     assert result["cancelled"] is False
 
-
 def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None:
     """A total-ceiling timeout must exclude retries while its worker is alive."""
     from agent.conversation_compression import CompressionCommitFence
@@ -871,7 +828,6 @@ def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None
     fence.release_cancelled_compression_lock()
 
     assert not released.is_set()
-
 
 def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     """A stale agent must continue on the winner's compacted child transcript."""
@@ -911,13 +867,11 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     assert lifecycle_kwargs["old_session_id"] == parent_sid
     assert lifecycle_kwargs["session_db"] is db
 
-
 def _no_consecutive_user_roles(messages: list) -> bool:
     roles = [m.get("role") for m in messages if isinstance(m, dict)]
     return all(
         not (roles[i] == roles[i + 1] == "user") for i in range(len(roles) - 1)
     )
-
 
 def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     """Anchor restoration must preserve strict role alternation (#55677).
@@ -964,7 +918,6 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     assert compressed[0]["content"].startswith("REAL HUMAN ASK")
     assert not compressed[0].get("_todo_snapshot_synthetic")
 
-
 def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "HEADLESS_PREFLIGHT_PARENT"
@@ -982,7 +935,6 @@ def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
 
     agent._flush_messages_to_session_db(compressed, None)
     assert len(db.get_messages(child_sid)) == len(compressed)
-
 
 def test_rotation_publish_failure_restores_proactive_prune_runway(
     tmp_path: Path,
@@ -1028,7 +980,6 @@ def test_rotation_publish_failure_restores_proactive_prune_runway(
         "_proactive_prune_rearm_tokens": 120_000,
     }
 
-
 def test_full_in_place_compression_atomically_clears_durable_prune_runway(
     tmp_path: Path,
 ) -> None:
@@ -1055,7 +1006,6 @@ def test_full_in_place_compression_atomically_clears_durable_prune_runway(
     ]
     assert json.loads(db.get_session(session_id)["model_config"]) == {"keep": "value"}
 
-
 def test_rotation_child_starts_without_durable_prune_runway(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "ROTATION_CLEARS_PRUNE_RUNWAY"
@@ -1077,7 +1027,6 @@ def test_rotation_child_starts_without_durable_prune_runway(tmp_path: Path) -> N
         "_proactive_prune_rearm_tokens"
     ] == 120_000
 
-
 @pytest.mark.parametrize("in_place", [False, True])
 def test_equal_copy_compression_result_does_not_rewrite_session(
     tmp_path: Path,
@@ -1088,9 +1037,9 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
     db.create_session(parent_sid, source="cli")
 
     agent = _build_agent_with_db(db, parent_sid)
-    setattr(agent, "compression_in_place", in_place)
+    agent.compression_in_place = in_place
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    compressor = getattr(agent, "context_compressor")
+    compressor = agent.context_compressor
     compressor.compress.side_effect = lambda incoming, **_kw: list(incoming)
 
     with patch.object(
@@ -1105,14 +1054,13 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
         )
 
     assert returned is messages
-    assert getattr(agent, "session_id") == parent_sid
+    assert agent.session_id == parent_sid
     assert _count_children(db, parent_sid) == 0
     parent = db.get_session(parent_sid)
     assert parent is not None
     assert parent["end_reason"] is None
     assert db.get_compression_lock_holder(parent_sid) is None
     archive_and_compact.assert_not_called()
-
 
 def test_signature_introspection_exception_releases_lock_and_refresher(
     tmp_path: Path, monkeypatch
@@ -1164,7 +1112,6 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert len(refreshers) == 1
     assert not refreshers[0]._thread.is_alive()
 
-
 @pytest.mark.parametrize(
     "error",
     [
@@ -1201,7 +1148,6 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
     assert agent.session_id == parent_sid
     assert _count_children(db, parent_sid) == 0
     agent.context_compressor.compress.assert_not_called()
-
 
 def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> None:
     """An oversized review snapshot replays warm on the first request, then
@@ -1460,7 +1406,6 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
     finally:
         db.close()
 
-
 def test_review_fork_fails_closed_when_compressor_rebind_raises(
     tmp_path: Path,
 ) -> None:
@@ -1544,14 +1489,12 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
     finally:
         db.close()
 
-
 # ── Lease-refresher bounded-failure tolerance (salvage follow-up, #54465) ────
 # A single falsy refresh (transient DB blip) must NOT permanently kill the
 # lease — only a *persistent* failure (genuine lost-ownership) should stop the
 # refresher after a bounded number of consecutive failures. Without this, one
 # escaped lock-contention error silently reintroduces the TTL-expiry wedge the
 # PR set out to fix.
-
 
 class _FlakyRefreshDB:
     """A db whose refresh_compression_lock returns a scripted sequence."""
@@ -1566,7 +1509,6 @@ class _FlakyRefreshDB:
             return self._results.pop(0)
         return True  # steady-state success after the scripted prefix
 
-
 def _no_sleep(refresher) -> None:
     """Make the refresher loop iterate without real wall-clock sleeps.
 
@@ -1576,7 +1518,6 @@ def _no_sleep(refresher) -> None:
     scripted db, not by timing.
     """
     refresher._stop.wait = lambda _interval: False  # type: ignore[assignment]
-
 
 def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
     """Persistent failure stops within one lease's worth of time, not forever.
@@ -1604,7 +1545,6 @@ def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
     assert cap * interval <= ttl, (
         f"give-up window {cap * interval}s must not exceed the lease TTL {ttl}s"
     )
-
 
 def test_hard_interrupt_aborts_compression_and_unblocks_session_writes(tmp_path: Path) -> None:
     """Ctrl+C must abort an interrupt-protected summary without leaving the
@@ -1639,7 +1579,6 @@ def test_hard_interrupt_aborts_compression_and_unblocks_session_writes(tmp_path:
     assert messages == original_messages
     assert db.get_compression_lock_holder(session_id) is None
     db.append_message(session_id, "assistant", "writes recovered")
-
 
 def test_late_hard_interrupt_restores_full_compressor_attempt_state_and_retry(
     tmp_path: Path,
@@ -1735,7 +1674,6 @@ def test_late_hard_interrupt_restores_full_compressor_attempt_state_and_retry(
     assert retried is not messages
     assert retried[0]["content"] == "[CONTEXT COMPACTION] retry summary"
 
-
 def test_force_cancel_restores_newer_durable_cooldown_captured_under_lease(
     tmp_path: Path,
 ) -> None:
@@ -1823,7 +1761,6 @@ def test_force_cancel_restores_newer_durable_cooldown_captured_under_lease(
     assert future is not None
     assert future["error"] == "newer durable failure"
 
-
 def test_unrelated_interrupted_error_propagates_and_releases_compression_lease(
     tmp_path: Path,
 ) -> None:
@@ -1846,7 +1783,6 @@ def test_unrelated_interrupted_error_propagates_and_releases_compression_lease(
 
     assert db.get_compression_lock_holder(session_id) is None
     db.append_message(session_id, "assistant", "writes recovered")
-
 
 def test_redirect_interrupt_remains_protected_during_compression(tmp_path: Path) -> None:
     """Redirects use interrupt_requested=True/message=None; only the atomic
@@ -1874,7 +1810,6 @@ def test_redirect_interrupt_remains_protected_during_compression(tmp_path: Path)
 
     assert compressed == messages
     assert db.get_compression_lock_holder(session_id) is None
-
 
 def test_hard_cancel_between_compress_return_and_commit_begin_wins_atomically(
     tmp_path: Path,
@@ -1922,7 +1857,6 @@ def test_hard_cancel_between_compress_return_and_commit_begin_wins_atomically(
     assert result["value"][0] is messages
     archive_spy.assert_not_called()
     assert db.get_compression_lock_holder(session_id) is None
-
 
 def test_hard_stop_waits_for_commit_already_admitted(tmp_path: Path) -> None:
     """A surfaced stop never races an untracked post-return transcript commit."""
@@ -1980,7 +1914,6 @@ def test_hard_stop_waits_for_commit_already_admitted(tmp_path: Path) -> None:
     assert agent._hard_interrupt_requested.is_set()
     assert db.get_compression_lock_holder(session_id) is None
 
-
 @pytest.mark.parametrize("deadline_offset", [-10.0, 0.05, None])
 def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     tmp_path: Path,
@@ -2037,7 +1970,6 @@ def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     assert db.get_compression_failure_cooldown_row(session_id) == before
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_exact_cooldown_restore_tolerates_a_concurrently_deleted_session(
     tmp_path: Path,
 ) -> None:
@@ -2056,7 +1988,6 @@ def test_exact_cooldown_restore_tolerates_a_concurrently_deleted_session(
         "cooldown_until": None,
         "error": None,
     }
-
 
 def test_exact_cooldown_restore_tolerates_deletion_before_verification(
     tmp_path: Path,
@@ -2079,7 +2010,6 @@ def test_exact_cooldown_restore_tolerates_deletion_before_verification(
     db.restore_compression_failure_cooldown_row(session_id, snapshot)
 
     assert db.get_compression_failure_cooldown_row(session_id)["session_exists"] is False
-
 
 def test_cooldown_rollback_failure_surfaces_and_releases_lease(
     tmp_path: Path,
@@ -2131,7 +2061,6 @@ def test_cooldown_rollback_failure_surfaces_and_releases_lease(
 
     assert db.get_compression_lock_holder(session_id) is None
 
-
 def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2154,5 +2083,3 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
-
-

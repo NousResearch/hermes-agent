@@ -676,7 +676,7 @@ def test_startup_model_and_provider_survive_boundary(_offline_route, monkeypatch
 def test_plain_startup_restores_endpoint_after_session_alias(
         _offline_route, monkeypatch, credential_result):
     """C1: a real /model alias changes only the endpoint of a non-alias launch."""
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     startup_url = "https://startup.example/v1"
     session_url = "https://session.example/v1"
@@ -891,7 +891,7 @@ def test_startup_alias_with_mismatched_provider_keeps_endpoint(
     """``--model <url-bearing alias> --provider <different provider>``: startup
     keeps the alias endpoint, so the boundary must restore it (not the
     explicit provider's default host) with the same credential startup used."""
-    cli, alias_url = _make_mismatch_cli(monkeypatch)
+    cli, _alias_url = _make_mismatch_cli(monkeypatch)
     startup_route = (cli.model, cli.provider, cli.requested_provider,
                      cli.base_url, cli.api_key)
 

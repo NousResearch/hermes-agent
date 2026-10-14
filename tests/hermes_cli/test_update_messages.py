@@ -12,7 +12,6 @@ import pytest
 from hermes_cli import update_cmd
 import hermes_cli.update_receipt as ur
 
-
 class TestFleetMatrixVerdict:
     """cli-09: a stale/down fleet must end with an explicit "not complete" verdict, because
     ``✓ Update complete!`` was already printed before the restart phase."""
@@ -31,7 +30,6 @@ class TestFleetMatrixVerdict:
         fleet = [{"profile": "default", "pid": 1, "code_sha": None, "state": "unknown"}]
         assert ur.print_fleet_version_matrix(fleet) is False
 
-
 class TestCalledProcessErrorMessage:
     """cli-10: a dependency-install failure leads with a plain sentence, not the exception repr."""
 
@@ -48,4 +46,3 @@ class TestCalledProcessErrorMessage:
         assert info.value.code == 1
         out = capsys.readouterr().out
         assert "disk full" in out
-

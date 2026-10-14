@@ -88,10 +88,7 @@ class TestProfileScopedDiscovery:
 
 class TestSaveJsonFile:
 
-    @pytest.mark.skipif(
-        sys.platform.startswith("win"),
-        reason="POSIX file modes are not enforced on Windows",
-    )
+    @pytest.mark.platforms("posix")  # POSIX file modes are not enforced on Windows
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
         _save_json_file(target, {"data": 1})
@@ -478,7 +475,7 @@ class TestCodeExpiry:
     def test_expired_codes_cleaned_up(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            code = store.generate_code("telegram", "user1")
+            store.generate_code("telegram", "user1")
 
             # Manually expire all pending entries
             pending = store._load_json(store._pending_path("telegram"))
@@ -538,14 +535,11 @@ class TestListAndClear:
 class TestUnreadablePairingFile:
     def test_permission_error_logs_warning_and_returns_empty(self, tmp_path, caplog):
         import logging
-        import builtins
 
         approved_path = tmp_path / "weixin-approved.json"
         approved_path.write_text(
             '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
         )
-
-        real_open = builtins.open
 
         def fake_read_text(self, *a, **kw):
             # Path.read_text uses Path.open internally; raise PermissionError

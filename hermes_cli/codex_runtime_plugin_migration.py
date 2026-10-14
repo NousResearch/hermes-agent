@@ -191,7 +191,7 @@ def render_codex_toml_section(
     for name in sorted(servers or ()):
         out += ["", f"[mcp_servers.{_quote_key(name)}]"]
         out += [f"{_quote_key(k)} = {_format_toml_value(v)}" for k, v in servers[name].items()]
-    plugin_sort_key = lambda p: f"{p.get('name','')}@{p.get('marketplace','')}"  # noqa: E731
+    plugin_sort_key = lambda p: f"{p.get('name','')}@{p.get('marketplace','')}"
     for plugin in sorted(plugins or (), key=plugin_sort_key):
         qualified = f"{plugin.get('name') or ''}@{plugin.get('marketplace') or 'openai-curated'}"
         out += ["", f'[plugins.{_quote_key(qualified)}]',
@@ -475,7 +475,7 @@ def migrate(
     without_managed = ""
     if target.exists():
         try:
-            existing = target.read_text(encoding="utf-8")
+            existing = target.read_text(encoding="utf-8-sig")
         except Exception as exc:
             report.errors.append(f"could not read {target}: {exc}")
             return report

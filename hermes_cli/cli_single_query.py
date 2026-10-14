@@ -129,24 +129,12 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
-# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
-# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
-_TRANSIENT_PROVIDER_REASONS = frozenset({
-    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
-})
-
-
-# ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
-# not exist for this account, or the TLS chain is broken. A Kanban worker exits
-# ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
-# the provider's words as the reason, instead of re-spawning into the same wall until
-# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
-# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
-# header change heals it, never a retry.
-_TERMINAL_PROVIDER_REASONS = frozenset({
-    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
-})
+# Single source of truth lives in agent/turn_failure_copy.py (the restart-limit re-stamper
+# needs the same partition, #133361); these aliases keep the exit-code mapper's imports stable.
+from agent.turn_failure_copy import (  # noqa: F401
+    TERMINAL_PROVIDER_FAILURE_REASONS as _TERMINAL_PROVIDER_REASONS,
+    TRANSIENT_PROVIDER_FAILURE_REASONS as _TRANSIENT_PROVIDER_REASONS,
+)
 
 
 def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,

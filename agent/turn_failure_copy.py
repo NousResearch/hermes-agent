@@ -111,6 +111,60 @@ _EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
 )
 
 
+# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
+# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
+# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
+# Declaration order is the pick priority when a whole fallback chain walked transiently (#133361):
+# a rate limit names the cooldown the dispatcher should honour before re-spawning.
+_TRANSIENT_PROVIDER_FAILURE_PRIORITY = (
+    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
+)
+TRANSIENT_PROVIDER_FAILURE_REASONS = frozenset(_TRANSIENT_PROVIDER_FAILURE_PRIORITY)
+
+# ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
+# not exist for this account, or the TLS chain is broken. A Kanban worker exits
+# ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
+# the provider's words as the reason, instead of re-spawning into the same wall until
+# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
+# header change heals it, never a retry.
+_TERMINAL_PROVIDER_FAILURE_PRIORITY = (
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+)
+TERMINAL_PROVIDER_FAILURE_REASONS = frozenset(_TERMINAL_PROVIDER_FAILURE_PRIORITY)
+
+
+def restart_limit_failure_reason(
+    turn_exit_reason: Any, activation_reasons: Any
+) -> Optional[str]:
+    """``failure_reason`` override for a turn that ended on a restart-limit exit (#133361).
+
+    A fallback chain where every rung was walled by the SAME class of provider error is a
+    provider outage, not a task failure: when ``activation_reasons`` (the classified reason of
+    each failover activation this turn, ``None`` for an unattributed one) is non-empty and all
+    transient, return the highest-priority transient reason so a Kanban worker exits
+    ``KANBAN_RATE_LIMIT_EXIT_CODE`` exactly like a single-provider 429 wall; when all terminal,
+    return the terminal reason (``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``). A mixed or unattributed
+    history, or any other exit reason, returns None — the caller keeps today's ``loop_error``.
+    """
+    reason = str(turn_exit_reason or "")
+    if not (
+        reason.startswith("rebuilt_restart_limit_exceeded")
+        or reason.startswith("redirect_restart_limit_exceeded")
+    ):
+        return None
+    # An unattributed (None) entry keeps the verdict fail-closed: None is in neither set, so
+    # a chain with one reasonless activation stays loop_error instead of guessing transient.
+    seen = {r if isinstance(r, str) else None for r in (activation_reasons or ())}
+    if not seen:
+        return None
+    if seen <= TRANSIENT_PROVIDER_FAILURE_REASONS:
+        return next(p for p in _TRANSIENT_PROVIDER_FAILURE_PRIORITY if p in seen)
+    if seen <= TERMINAL_PROVIDER_FAILURE_REASONS:
+        return next(p for p in _TERMINAL_PROVIDER_FAILURE_PRIORITY if p in seen)
+    return None
+
+
 # Provider error code carried inside an HTTP-200 body → classifier reason.
 _INVALID_RESPONSE_CODES: dict[int, str] = {
     429: FailoverReason.rate_limit.value,

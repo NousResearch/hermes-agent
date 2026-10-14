@@ -79,3 +79,41 @@ def test_lock_is_board_scoped(conn):
             assert held_b is True, "a lock on a different board must be independent"
 
 
+
+
+def test_paused_host_dispatches_nothing_even_in_dry_run(conn, kanban_home):
+    """Every dispatch door shares dispatch_once, so `hermes pause` must stop it there."""
+    from agent import estop
+
+    kb.create_task(conn, title="t", assignee="w")
+    estop.engage()
+    spawned = []
+    for dry_run in (False, True):
+        res = kbd.dispatch_once(
+            conn, dry_run=dry_run, spawn_fn=lambda *a, **k: spawned.append(a) or 1
+        )
+        assert res.paused is True
+        assert not res.spawned
+    assert spawned == []
+
+    estop.disengage()
+    res = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+    assert res.paused is False
+
+
+def test_paused_cli_dispatch_says_why(conn, kanban_home, capsys):
+    """`hermes kanban dispatch` must report the pause, not a silent zero."""
+    import argparse
+    import json
+
+    from agent import estop
+    from hermes_cli import kanban_ops
+
+    estop.engage()
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=True)
+    assert kanban_ops._cmd_dispatch(args) == 0
+    assert json.loads(capsys.readouterr().out)["paused"] is True
+
+    args.json = False
+    kanban_ops._cmd_dispatch(args)
+    assert "emergency stop" in capsys.readouterr().out

@@ -859,6 +859,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
     )
 
     expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
+    expect(deliverCall?.[0]).toMatchObject({ connectionId: 'b', profile: 'ops', targetProfile: 'ops' })
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }

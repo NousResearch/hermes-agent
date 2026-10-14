@@ -339,6 +339,79 @@ class TestSessionOps:
         conn.session_update.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_dispatch_pass_serves_idle_peer_while_busy_session_retains(
+        self, agent, monkeypatch
+    ):
+        """Two sessions attached on one connection, one dispatch pass.
+
+        A completion owned by an idle session must still be delivered while the
+        peer session is mid-turn, and the busy owner's own completion must stay
+        queued instead of starting or interrupting anything.
+        """
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        agent._conn = conn
+        busy = agent.session_manager.create_session(cwd="/tmp")
+        busy.is_running = True
+        busy.active_turn_origin = "user"
+        idle = agent.session_manager.create_session(cwd="/tmp")
+        idle.agent.run_conversation.return_value = {
+            "final_response": "Idle peer report.",
+            "messages": [
+                {"role": "user", "content": "Background process completed."},
+                {"role": "assistant", "content": "Idle peer report."},
+            ],
+        }
+        agent._connected_session_ids.update({busy.session_id, idle.session_id})
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+        registry.completion_queue.put(
+            {
+                "type": "completion",
+                "session_id": "proc_busy",
+                "session_key": busy.session_id,
+                "command": "printf busy",
+                "exit_code": 0,
+                "output": "busy",
+            }
+        )
+        registry.completion_queue.put(
+            {
+                "type": "completion",
+                "session_id": "proc_idle",
+                "session_key": idle.session_id,
+                "command": "printf done",
+                "exit_code": 0,
+                "output": "done",
+            }
+        )
+
+        delivered = await agent._dispatch_background_notifications_once()
+
+        # The idle peer is served in this same pass, while the busy owner keeps
+        # its event queued and its turn untouched.
+        assert delivered == 1
+        idle.agent.run_conversation.assert_called_once()
+        assert registry.completion_queue.get_nowait()["session_id"] == "proc_busy"
+        assert registry.completion_queue.empty()
+        busy.agent.run_conversation.assert_not_called()
+        assert busy.is_running is True
+
+        calls = conn.session_update.await_args_list
+        assert calls
+        # Routing is per session: no frame of this delivery lands on the peer.
+        assert {(call.kwargs.get("session_id") or call.args[0]) for call in calls} == {
+            idle.session_id
+        }
+        updates = [call.kwargs.get("update") or call.args[1] for call in calls]
+        notification = next(
+            update for update in updates if update.session_update == "user_message_chunk"
+        )
+        assert notification.field_meta["hermes"]["process"]["id"] == "proc_idle"
+
+    @pytest.mark.asyncio
     async def test_async_delegation_turn_completes_its_durable_claim(
         self, agent, monkeypatch
     ):

@@ -1012,3 +1012,42 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def _replying_to(message, *, user_id, message_id=10):
+    message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=user_id), message_id=message_id, text="earlier", caption=None)
+    return message
+
+
+@pytest.mark.parametrize("message, expected", [
+    (_group_message("@hermes_bot when is rent due?", entities=[_mention_entity("@hermes_bot when is rent due?")]), True),
+    (_group_message("sure, saturday", reply_to_bot=True), True),
+    (_group_message("hermes, add milk to the list"), True),
+    (_group_message("", caption="/status"), True),
+    (_dm_message("hello"), True),
+    (_replying_to(_group_message("yes, saturday"), user_id=222), False),
+    (_group_message("@alice are we buying the fridge?", entities=[_mention_entity("@alice are we buying the fridge?", "@alice")]), False),
+    (_group_message("the fridge arrives on saturday"), False),
+    (_group_message("are we buying the fridge on saturday?"), None),
+    (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
+    (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
+], ids=[
+    "mention", "reply-to-bot", "wake-word", "caption-command", "dm",
+    "reply-to-other-member", "opens-with-other-mention", "chatter",
+    "question", "mentions-other-mid-question", "forum-topic-root",
+])
+def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
+    adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])
+
+    assert adapter._build_message_event(message, MessageType.TEXT).reply_expected is expected
+
+
+def test_photo_batch_keeps_the_reply_expectation_of_an_addressed_photo():
+    adapter = _make_adapter(require_mention=False)
+    pending = {}
+    for caption in ("just a photo", "/status"):
+        event = adapter._build_message_event(_group_message("", caption=caption), MessageType.PHOTO)
+        adapter._merge_into_pending(pending, "album", event)
+
+    assert pending["album"].reply_expected is True

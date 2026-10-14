@@ -645,6 +645,17 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
+### Letting the bot stay silent in a group
+
+A bot that reads every group message can answer exactly `[SILENT]` (or another [silence token](index.md#intentional-silence-tokens)) when a message doesn't need it. Whether that silence stands depends on who the message addresses:
+
+| Group message | Bare silence token |
+|---|---|
+| Mentions the bot, replies to it, matches `mention_patterns`, or is a `/command` | Replaced by a short notice, so a question to the bot never vanishes |
+| Replies to another member, or opens by @mentioning someone else | Stays silent |
+| Any other message without a `?` | Stays silent |
+| Any other message with a `?` (it may be a question for the bot) | Replaced by the notice |
+
 ### Multiple Hermes bots in one group
 
 If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and start one gateway per profile. Do not reuse the same bot token in multiple running gateways; Telegram will reject concurrent polling for the same token.

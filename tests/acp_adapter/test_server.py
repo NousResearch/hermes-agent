@@ -264,6 +264,48 @@ class TestSessionOps:
         assert registry.completion_queue.get_nowait()["session_id"] == "proc_foreign"
 
     @pytest.mark.asyncio
+    async def test_session_not_attached_in_memory_keeps_notification_pending(
+        self, agent, monkeypatch
+    ):
+        from tools.process_registry import ProcessRegistry
+
+        registry = ProcessRegistry()
+        conn = MagicMock()
+        conn.session_update = AsyncMock()
+        agent._conn = conn
+        monkeypatch.setattr("acp_adapter.server.process_registry", registry)
+
+        # This connection still claims the session id (e.g. the claim outlived a
+        # transport replacement) but no in-process state is attached for it, and
+        # the dispatcher must not restore a database-only session here.
+        detached = "acp-detached-not-in-memory"
+        agent._connected_session_ids.add(detached)
+        registry.completion_queue.put(
+            {
+                "type": "completion",
+                "session_id": "proc_detached",
+                "session_key": detached,
+                "command": "printf done",
+                "exit_code": 0,
+                "output": "done",
+            }
+        )
+
+        delivered = await agent._dispatch_background_notifications_once()
+
+        # Fail-closed: no autonomous turn and no client update for a session this
+        # transport does not hold in memory ...
+        assert delivered == 0
+        state = agent.session_manager.get_in_memory(detached)
+        assert state is None
+        conn.session_update.assert_not_awaited()
+        # ... and the stale claim goes away so it cannot keep the drain loop busy.
+        assert detached not in agent._connected_session_ids
+        # The completion is not dropped either: it stays pending for a later
+        # reconnect that attaches the session again.
+        assert registry.completion_queue.get_nowait()["session_id"] == "proc_detached"
+
+    @pytest.mark.asyncio
     async def test_busy_session_keeps_background_notification_pending(
         self, agent, monkeypatch
     ):

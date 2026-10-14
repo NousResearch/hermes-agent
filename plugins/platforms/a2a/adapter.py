@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -149,6 +150,32 @@ def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bo
     except Exception:
         logger.debug(log_msg, exc_info=True)
         return ""
+
+
+class _DualStackThreadingHTTPServer(ThreadingHTTPServer):
+    """Dual-stack (IPv4 + IPv6) ThreadingHTTPServer for Windows.
+
+    The stdlib ``ThreadingHTTPServer`` is AF_INET-pinned (``address_family =
+    AF_INET``), so it cannot bind an IPv6 host like ``::`` at all:
+    ``getaddrinfo("::", port, AF_INET)`` fails with gaierror 11001. When
+    ``A2A_HOST=::`` we want one socket that answers on both stacks
+    (``AF_INET6`` + ``IPV6_V6ONLY=0``), matching the DM (aiohttp) dual-stack
+    bind on 8642. On non-Windows platforms the same V6ONLY=0 socket gives the
+    same dual-stack behavior.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            with contextlib.suppress(
+                OSError,
+                AttributeError,  # platform without IPV6_V6ONLY
+            ):
+                self.socket.setsockopt(
+                    socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0
+                )
+        super().server_bind()
 
 
 class A2ARequestHandler(BaseHTTPRequestHandler):
@@ -316,8 +343,12 @@ class A2AAdapter(BasePlatformAdapter):
     async def connect(self, **_kwargs) -> bool:
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
+        # A2A_HOST=:: wants one dual-stack (v4+v6) socket. The stdlib
+        # ThreadingHTTPServer is AF_INET-pinned and cannot bind "::" at all,
+        # so swap in the AF_INET6/V6ONLY=0 subclass for that case only.
+        _server_cls = _DualStackThreadingHTTPServer if str(self.host) == "::" else ThreadingHTTPServer
         try:
-            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = _server_cls((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)

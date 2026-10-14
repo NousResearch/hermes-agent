@@ -1557,8 +1557,8 @@ def _planned_restart_notification_pending() -> bool:
     return _planned_restart_notification_path().exists()
 
 
-# Gateway marker so a lazily imported cli.py load_cli_config() doesn't clobber TERMINAL_CWD.
-os.environ["_HERMES_GATEWAY"] = "1"
+if __name__ == "__main__":
+    os.environ["_HERMES_GATEWAY"] = "1"
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -5752,7 +5752,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
     deadlocks); ``force`` starts without consulting the host owner at all."""
-    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
+    os.environ["_HERMES_GATEWAY"] = "1"
     os.environ["HERMES_EXEC_ASK"] = "1"
 
     # Messaging-only defaults belong to startup, not incidental imports by the TUI.

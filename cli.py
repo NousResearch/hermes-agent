@@ -1588,6 +1588,7 @@ def _run_legacy_gateway():
     with suppress(Exception):
         from hermes_startup_watchdog import arm_startup_watchdog
         arm_startup_watchdog()
+    os.environ["_HERMES_GATEWAY"] = "1"
     from gateway.run import start_gateway
     print(_t("cli.gateway.starting"))
     asyncio.run(start_gateway())

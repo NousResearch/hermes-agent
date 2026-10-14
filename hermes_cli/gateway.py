@@ -4633,7 +4633,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             refresh_systemd_unit_if_needed(system=False)
         except Exception:
             pass  # best-effort; don't block gateway startup
-
+    os.environ["_HERMES_GATEWAY"] = "1"
     from gateway.run import start_gateway
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ☤ Hermes Gateway Starting...                 │")

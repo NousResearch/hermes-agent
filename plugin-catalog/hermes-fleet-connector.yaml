@@ -1,0 +1,21 @@
+name: hermes-fleet-connector
+title: Hermes Fleet Connector
+repo: https://github.com/tony-simons-aiowa/hermes-fleet-connector
+sha: "31fe92652c5cba5aab0f43153a89b40c1132e81e"
+description: "Owner-authorized Telegram pairing for Hermes Fleet through a separate connector service and private HTTPS origin. Phone invitations grant broad fleet:operator access."
+maintainer: tony-simons-aiowa
+tier: community
+category: platform
+requires_hermes: ">=0.21.6"
+version: "0.1.4"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Only clean stock Hermes v0.21.6 with Python 3.14 has been validated; requires plugins.isolation: in_process."
+  - "Requires qrencode and a logged-in local GUI session with a private browser window and screen; headless or SSH-only display is refused."
+  - "WSL2 to Windows Edge browser paint is experimental; native Windows is unsupported."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

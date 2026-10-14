@@ -423,6 +423,8 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
+        "tab_cleanup_enabled": False,  # opt-in exact Harness creation ledger
+        "ipc_response_timeout_seconds": 5,  # per-response Harness IPC budget; valid range 5–120
         # "" = Browser Use mode when the browser-use CLI (or uvx) is available, else built-in tools
         # (Camofox setups always keep built-in tools: no CDP surface); "browser-use" = force one
         # browser_exec tool driving the Browser Use CLI over any CDP backend (local Chrome, cloud);

@@ -1141,6 +1141,15 @@ class GatewayStartupMixin:
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
+        # Recover only previously admitted ownership ledgers, without starting a browser.
+        with _log_suppressed(logging.DEBUG, "Browser tab recovery held: %s"):
+            from tools.browser_tab_lifecycle import startup
+            startup(_hermes_home)
+            if getattr(self.config, "multiplex_profiles", False):
+                from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+                for _, home in _multiplex_profile_homes(self.config):
+                    with _profile_runtime_scope(Path(home), {}):
+                        startup(home)
         # Recover the turns the last process left marked (in flight, or reply not yet ledgered).
         # SKIP after a clean exit — the previous process already drained.
         _clean_marker = _hermes_home / ".clean_shutdown"

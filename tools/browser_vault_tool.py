@@ -26,6 +26,8 @@ autofill (kernel-login-autofill.ts / fill_from_vault.ts).
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
+from functools import wraps
 import secrets
 import logging
 from typing import Any, Dict, Optional
@@ -52,6 +54,52 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
+_owned_vault = ContextVar("owned_vault", default=None)
+
+
+def _pin_owned_vault(fn):
+    @wraps(fn)
+    def pinned(*args, **kwargs):
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser_tab_ownership import OwnershipBusy
+
+        if _owned_vault.get() is not None:
+            return fn(*args, **kwargs)
+        task_id = kwargs.get("task_id") or (args[1] if len(args) > 1 else None) or "default"
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None or getattr(supervisor, "_vault_owned_call", None) is None:
+            from tools.browser_use_cli import _read_browser_cfg, is_browser_use_cli_mode
+            if is_browser_use_cli_mode() and _read_browser_cfg().get("tab_cleanup_enabled") is True:
+                return json.dumps({"success": False, "error_type": "owned_current_unavailable",
+                                   "error": "No completed owned page handoff is available. Run browser work first."})
+            return fn(*args, **kwargs)
+        token = None
+        try:
+            from hermes_constants import get_hermes_home
+            from pathlib import Path
+            if Path(supervisor._vault_owned_call[0]).resolve().parent != get_hermes_home().resolve():
+                raise OwnershipBusy('owned page belongs to another profile')
+            binding = supervisor.bind_owned_vault()
+            token = _owned_vault.set((supervisor, binding))
+            return fn(*args, **kwargs)
+        except OwnershipBusy:
+            return json.dumps({"success": False, "error_type": "owned_current_unavailable",
+                               "error": "Owned current page changed or is unavailable. Retry after browser work completes."})
+        finally:
+            if token is not None:
+                _owned_vault.reset(token)
+                supervisor.release_owned_vault(binding)
+    return pinned
+
+
+def _eval_owned(expression):
+    supervisor, binding = _owned_vault.get()
+    supervisor.validate_owned_vault(binding)
+    result = supervisor.evaluate_runtime(expression, vault_binding=binding)
+    return {"success": bool(result.get("ok")), "result": result.get("result"),
+            "error": result.get("error", "")}
+
+
 def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
@@ -60,6 +108,8 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    if _owned_vault.get() is not None:
+        return _eval_owned(expression)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -124,8 +174,12 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
+    if _owned_vault.get() is not None:
+        supervisor = _owned_vault.get()[0]
+    else:
+        supervisor = None
     try:
-        supervisor = _ensure_supervisor(task_id)
+        supervisor = supervisor or _ensure_supervisor(task_id)
     except Exception as exc:
         logger.debug("vault fill: supervisor unavailable (%s)", exc)
         supervisor = None
@@ -154,6 +208,8 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
+    if _owned_vault.get() is not None:
+        return _eval_owned(expression)
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
@@ -202,6 +258,9 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    if _owned_vault.get() is not None:
+        current = _current_page_origin(task_id)
+        return current if not origin or current == origin else None
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -287,6 +346,7 @@ def browser_vault_unlock(backend_name: str) -> str:
     return json.dumps({"success": True, "backend": backend.name})
 
 
+@_pin_owned_vault
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
     vault bound to that origin, and fill the password at once. The values never enter the conversation."""
@@ -311,6 +371,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     if not answer or not answer.get("password") or not answer.get("identifier"):
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
+    if _owned_vault.get() is not None:
+        supervisor, binding = _owned_vault.get()
+        supervisor.validate_owned_vault(binding)
     identifier = str(answer["identifier"]).strip()
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
     try:
@@ -331,6 +394,7 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
+@_pin_owned_vault
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
@@ -396,6 +460,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
+@_pin_owned_vault
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     """Fill the current page's password field from a vault handle.
 
@@ -424,6 +489,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         unlocked = json.loads(browser_vault_unlock(backend.name))
         if not unlocked.get("success"):
             return json.dumps(unlocked)
+        if _owned_vault.get() is not None:
+            supervisor, binding = _owned_vault.get()
+            supervisor.validate_owned_vault(binding)
 
     try:
         meta = backend.get_meta(handle) if backend is not None else None

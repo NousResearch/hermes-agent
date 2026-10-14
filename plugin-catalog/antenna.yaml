@@ -1,13 +1,13 @@
 name: antenna
 repo: https://github.com/ClawReefAntenna/antenna-hermes
-sha: 0d53a5bd22934b9d0347070b9215f80ccdec8521
+sha: f1fe906ea3b7292dcec5e59754cf4a50f84d737b
 description: Signed messaging with paired Hermes and OpenClaw agents, with receiver-controlled live and opt-in non-YOLO headless delivery.
 maintainer: ClawReefAntenna
 tier: community
 category: automation
 title: Antenna for Hermes
 version: "1.7.0"
-docs_url: https://github.com/ClawReefAntenna/antenna-hermes/blob/0d53a5bd22934b9d0347070b9215f80ccdec8521/references/USER-GUIDE.md
+docs_url: https://github.com/ClawReefAntenna/antenna-hermes/blob/f1fe906ea3b7292dcec5e59754cf4a50f84d737b/references/USER-GUIDE.md
 platforms: [linux]
 readme: true
 capabilities:

@@ -59,12 +59,16 @@ def _wire_probe(runner, adapter, source, session_key, run_generation):
         _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
     )
-    TurnRunner._wire_turn_agent_callbacks(cast(TurnRunner, holder), agent, {}, None, None, None, False)
+    TurnRunner._wire_turn_agent_callbacks(
+        cast(TurnRunner, holder), agent, {}, None, None, None, False
+    )
     return agent
 
 
 @pytest.mark.asyncio
-async def test_durable_fifo_followup_is_visible_to_the_review_probe_and_fences_the_review(monkeypatch):
+async def test_durable_fifo_followup_is_visible_to_the_review_probe_and_fences_the_review(
+    monkeypatch,
+):
     from gateway.config import GatewayConfig, Platform
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
@@ -76,9 +80,13 @@ async def test_durable_fifo_followup_is_visible_to_the_review_probe_and_fences_t
     adapter = Adapter()
     adapter.gateway_runner = runner
     runner.adapters = {Platform.TELEGRAM: adapter}
-    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    authority = await initialize_session_authority(
+        runner, profile_id="default", instance_id="owner"
+    )
     runner._wire_adapter_handlers(adapter)
-    source = adapter.build_source(chat_id="busy-chat", chat_type="dm", user_id="fixture-user")
+    source = adapter.build_source(
+        chat_id="busy-chat", chat_type="dm", user_id="fixture-user"
+    )
     key = runner.session_store._generate_session_key(source)
     first_turn_wired, gate = asyncio.Event(), asyncio.Event()
     observed, cancels = {}, []
@@ -87,34 +95,53 @@ async def test_durable_fifo_followup_is_visible_to_the_review_probe_and_fences_t
         await runner._mark_durable_active_turn(event, quick_key)
         if event.text == "one":
             agent = _wire_probe(runner, adapter, source, quick_key, run_generation)
-            adapter.register_followup_review_cancel(quick_key, lambda: cancels.append(event.text))
+            adapter.register_followup_review_cancel(
+                quick_key, lambda: cancels.append(event.text)
+            )
             # The live turn's own started admission is not a follow-up.
             observed["probe_before"] = agent.followup_pending_callback()
             observed["epoch_before"] = adapter.followup_admission_state(quick_key).epoch
             first_turn_wired.set()
             await gate.wait()
             observed["probe_with_follower"] = agent.followup_pending_callback()
-            observed["epoch_with_follower"] = adapter.followup_admission_state(quick_key).epoch
-        execution_result.get()["result"] = {"final_response": "reply to " + event.text, "messages": []}
+            observed["epoch_with_follower"] = adapter.followup_admission_state(
+                quick_key
+            ).epoch
+        execution_result.get()["result"] = {
+            "final_response": "reply to " + event.text,
+            "messages": [],
+        }
         return "reply to " + event.text
 
     monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
 
-    await adapter.handle_message(MessageEvent(text="one", source=source, message_id="m1"))
+    await adapter.handle_message(
+        MessageEvent(text="one", source=source, message_id="m1")
+    )
     await asyncio.wait_for(first_turn_wired.wait(), 5)
     assert observed["probe_before"] is False
     assert adapter.has_pending_message(key) is False
     assert cancels == []
 
     # The receive loop hands the follow-up over once it is committed to the FIFO, not when it runs.
-    await asyncio.wait_for(adapter.handle_message(MessageEvent(text="two", source=source, message_id="m2")), 5)
+    await asyncio.wait_for(
+        adapter.handle_message(
+            MessageEvent(text="two", source=source, message_id="m2")
+        ),
+        5,
+    )
     assert _statuses(authority) == {"one": "started", "two": "queued"}
     assert adapter.has_pending_message(key) is True
-    assert cancels == ["one"], "the FIFO commit did not run the live turn's review fence"
+    assert cancels == ["one"], (
+        "the FIFO commit did not run the live turn's review fence"
+    )
     assert adapter.followup_admission_state(key).epoch == observed["epoch_before"] + 1
 
     gate.set()
-    await async_wait_until(lambda: "reply to two" in adapter.sent and not adapter._background_tasks, timeout=15)
+    await async_wait_until(
+        lambda: "reply to two" in adapter.sent and not adapter._background_tasks,
+        timeout=15,
+    )
     assert observed["probe_with_follower"] is True
     assert observed["epoch_with_follower"] == observed["epoch_before"] + 1
     assert adapter.sent == ["reply to one", "reply to two"]

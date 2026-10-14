@@ -352,10 +352,12 @@ async def test_base_delivery_completes_gateway_review_with_actual_outcome(
 
     async def _handler(_event):
         _event._gateway_review_delivery_complete = (
-            lambda *, delivery_succeeded, cause=None: outcomes.append((
-                delivery_succeeded,
-                cause,
-            ))
+            lambda *, delivery_succeeded, cause=None: outcomes.append(
+                (
+                    delivery_succeeded,
+                    cause,
+                )
+            )
         )
         return "visible response"
 
@@ -647,10 +649,12 @@ def test_goal_clear_and_empty_promotion_keep_overflow_fenced_and_visible(monkeyp
     first = _event(text="first real follow-up")
     second = _event(text="second real follow-up")
     adapter._pending_messages[session_key] = goal
-    runner._session_state(session_key).conversation.queued_events.extend([
-        first,
-        second,
-    ])
+    runner._session_state(session_key).conversation.queued_events.extend(
+        [
+            first,
+            second,
+        ]
+    )
 
     assert runner._clear_goal_pending_continuations(session_key, adapter) == 1
     assert admission.epoch == 1
@@ -918,13 +922,15 @@ async def test_gateway_spawns_the_review_once_after_confirmed_delivery():
             has_loop = True
         except RuntimeError:
             has_loop = False
-        calls.append({
-            "kwargs": kwargs,
-            "marker": marker.get(),
-            "live": review_admission.other_live_turn(session_id, None, profile_key),
-            "thread": threading.get_ident(),
-            "has_loop": has_loop,
-        })
+        calls.append(
+            {
+                "kwargs": kwargs,
+                "marker": marker.get(),
+                "live": review_admission.other_live_turn(session_id, None, profile_key),
+                "thread": threading.get_ident(),
+                "has_loop": has_loop,
+            }
+        )
         spawned.set()
 
     agent = types.SimpleNamespace(
@@ -1450,11 +1456,13 @@ async def test_direct_handoff_completes_ownership_from_its_own_event_beside_a_li
     runner._evict_cached_agent = lambda _key: None
     runner._release_running_agent_state = lambda _key, **_kwargs: True
 
-    await runner._process_handoff({
-        "id": "cli-session",
-        "title": "work",
-        "handoff_platform": "telegram",
-    })
+    await runner._process_handoff(
+        {
+            "id": "cli-session",
+            "title": "work",
+            "handoff_platform": "telegram",
+        }
+    )
 
     assert sends == ["handoff reply"]
     assert review_admission.other_live_turn(session_id, None, profile_key) is False
@@ -1488,12 +1496,14 @@ async def test_nested_retry_review_supersedes_the_retracted_outgoing_candidate(
     sends, spawns = [], []
 
     def _spawn(**kwargs):
-        spawns.append((
-            kwargs["messages_snapshot"][0]["content"],
-            review_admission.other_live_turn(
-                session_id, kwargs["_spawning_turn_token"], profile_key
-            ),
-        ))
+        spawns.append(
+            (
+                kwargs["messages_snapshot"][0]["content"],
+                review_admission.other_live_turn(
+                    session_id, kwargs["_spawning_turn_token"], profile_key
+                ),
+            )
+        )
 
     agent = types.SimpleNamespace(
         session_id=session_id, _spawn_background_review=_spawn
@@ -1604,12 +1614,14 @@ async def test_inline_retry_completes_ownership_after_the_outgoing_task_released
     sends, spawns = [], []
 
     def _spawn(**kwargs):
-        spawns.append((
-            kwargs["messages_snapshot"][0]["content"],
-            review_admission.other_live_turn(
-                session_id, kwargs["_spawning_turn_token"], profile_key
-            ),
-        ))
+        spawns.append(
+            (
+                kwargs["messages_snapshot"][0]["content"],
+                review_admission.other_live_turn(
+                    session_id, kwargs["_spawning_turn_token"], profile_key
+                ),
+            )
+        )
 
     agent = types.SimpleNamespace(
         session_id=session_id, _spawn_background_review=_spawn

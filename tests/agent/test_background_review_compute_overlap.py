@@ -122,10 +122,12 @@ def _snapshot(pairs: int, filler_chars: int) -> list[dict]:
     messages: list[dict] = []
     for i in range(pairs):
         messages.append({"role": "user", "content": f"question {i}"})
-        messages.append({
-            "role": "assistant",
-            "content": f"answer {i} " + ("x" * filler_chars),
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": f"answer {i} " + ("x" * filler_chars),
+            }
+        )
     return messages
 
 

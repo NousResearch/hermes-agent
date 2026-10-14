@@ -395,14 +395,16 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: th
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
-    """POSIX drain: select() poll, stopping ~300ms after bash exits with the pipe idle, or
+    """POSIX drain: poll(), stopping ~300ms after bash exits with the pipe idle, or
     when *stop* is set (the pipe is being handed to another reader — yield-to-background)."""
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
     idle_after_exit = 0
     while True:
         if stop is not None and stop.is_set():
             return
         try:
-            ready, _, _ = select.select([fd], [], [], 0.1)
+            ready = poller.poll(100)
         except (ValueError, OSError):
             return  # fd already closed
         if ready:

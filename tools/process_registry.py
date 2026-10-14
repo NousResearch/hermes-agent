@@ -1334,10 +1334,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         blocks until EOF, landing "live" output in one burst at exit. Orphaned-pipe
         guard: a backgrounded grandchild (``node server.js &``) inherits our pipe's write
         end so EOF never arrives while it lives, which would park this thread and never
-        fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
+        fire ``notify_on_complete``; on POSIX we ``poll()`` and stop draining shortly
         after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
@@ -1373,7 +1371,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                     return stdout.read(4096) or None
                 raw = raw_read(4096)
                 return decoder.decode(raw) if raw else None
-            # select() needs a real OS fd; mocked streams (tests, adapters) may lack
+            # readiness polling needs a real OS fd; mocked streams (tests, adapters) may lack
             # fileno() and use the blocking read instead.
             try:
                 fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
@@ -1383,6 +1381,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 fd = None
             if fd is not None:
                 import select as _select
+                poller = _select.poll()
+                poller.register(fd, _select.POLLIN)
                 session._reader_selectable = True
             idle_after_exit = 0
             drained_after_request = 0
@@ -1392,7 +1392,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                         # Once a finish is requested, read only what is already buffered: the exited
                         # child's tail, never an orphaned grandchild's future writes.
                         wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
-                        ready, _, _ = _select.select([fd], [], [], wait_s)
+                        ready = poller.poll(wait_s * 1000)
                     except (ValueError, OSError):
                         break  # fd already closed
                     if not ready:

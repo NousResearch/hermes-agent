@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -62,6 +63,17 @@ def _session_dir(extra) -> Path:
     sends) share this one string, or a gateway restarted from another cwd would see its own bridge as foreign."""
     return Path(os.path.abspath(os.path.expanduser(str((extra or {}).get(
         "session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"))))))
+
+
+def _has_valid_creds(path: Path) -> bool:
+    """True when creds.json is a plausible paired Baileys credential file — a bridge killed mid-write can leave 0 bytes."""
+    try:
+        if not path.is_file() or path.stat().st_size < 100:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("noiseKey") and data.get("signedIdentityKey"))
 
 
 def _windows_listener_pids(port: int) -> list:
@@ -585,6 +597,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "
                                  "`hermes whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.", self.name, creds_path),
              "whatsapp_not_paired", "WhatsApp enabled but not paired — pair from the dashboard or run `hermes whatsapp`."),
+            (lambda: _has_valid_creds(creds_path),
+             ("[%s] WhatsApp creds.json at %s is empty or not a valid credential file (a bridge killed mid-write can "
+              "truncate it to 0 bytes). Re-pair from the dashboard or run `hermes whatsapp`.", self.name, creds_path),
+             "whatsapp_creds_invalid", "WhatsApp creds.json is empty or corrupted — re-pair via `hermes whatsapp` or the dashboard."),
         )
         for ok, warn_args, code, message in checks:
             if not ok():

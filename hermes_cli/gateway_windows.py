@@ -471,19 +471,31 @@ def _write_task_script() -> Path:
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    # utf-16-le plus an explicit BOM rather than bare "utf-16": the latter follows the writing
+    # platform's native byte order, and the \xff\xfe guarantee wscript needs must not depend on
+    # which host generated the file (#94391 review).
+    _atomic_write(
+        vbs_path,
+        "\ufeff" + _build_gateway_vbs_script(*settings),
+        vbs_path.with_name(vbs_path.name + ".tmp"),
+        encoding="utf-16-le",
+    )
     return script_path
 
 
-def _atomic_write(path: Path, content: str, tmp: Path) -> None:
+def _atomic_write(path: Path, content: str, tmp: Path, encoding: str = "utf-8") -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
+
+    ``encoding`` belongs to the file's consumer, not to us: ``wscript.exe`` decodes a ``.vbs`` with
+    the system ANSI code page unless the file carries a UTF-16 BOM, so a UTF-8 launcher hands
+    mojibake to ``WScript.Shell.Run`` for any non-ASCII ``HERMES_HOME`` (#94391).
 
     The staging file is removed even when the rename fails: the Startup-folder caller stages
     inside the Startup folder itself, and Windows opens every file there at login — a leftover
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:
@@ -600,7 +612,14 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
+    # Same UTF-16 BOM requirement as the task launcher: without it wscript decodes this file's
+    # non-ASCII path literals with the ANSI code page, and its FileExists guard then quits silently.
+    _atomic_write(
+        entry,
+        "\ufeff" + _build_startup_launcher(script_path),
+        _startup_staging_path(),
+        encoding="utf-16-le",
+    )
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():

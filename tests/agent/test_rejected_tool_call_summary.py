@@ -23,7 +23,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent.context_compressor import _summarize_tool_result
+from agent.context_compressor import _rejected_tool_call_outcome, _summarize_tool_result
 
 
 def _rejected_content() -> str:
@@ -83,3 +83,40 @@ def test_blocked_result_contract_still_holds():
     # The pre-existing BLOCKED contract must be unchanged by the new branch.
     summary = _summarize_tool_result("terminal", '{"command": "rm -rf /"}', "BLOCKED: destructive command")
     assert "BLOCKED, not run" in summary
+
+
+def test_real_loop_rejection_wording_matches_compressor_contract():
+    """Contract test: the dispatch loop's ACTUAL rejection wording must be recognized by
+    the compressor's rejected-outcome matcher.
+
+    The two sides are coupled only by message text — the compressor prefix-matches
+    prose, and every other test in this file feeds canned strings — so rewording the
+    rejection in ``agent/conversation_loop.py`` would silently stop the compressor from
+    flagging it, with the whole suite green. This feeds the real producer's output
+    through the real matcher so a rewording fails here first.
+    """
+    from agent.conversation_loop import _invalid_tool_name_error_content
+
+    valid_names = {"terminal", "read_file", "search_files"}
+
+    # Empty-name rejection: the live shape must match the matcher…
+    empty_msg = _invalid_tool_name_error_content("", valid_names)
+    assert _rejected_tool_call_outcome(empty_msg) is not None
+    # …and must render as not-run through the summarizer.
+    summary = _summarize_tool_result("", "{}", empty_msg)
+    assert "rejected" in summary
+    assert "not run" in summary
+    assert "do not report it as done" in summary
+
+    # Unknown-name rejection: the live shape must match the matcher.
+    unknown_msg = _invalid_tool_name_error_content("frobnicate_xyz", valid_names)
+    assert _rejected_tool_call_outcome(unknown_msg) is not None
+
+    # Batch-skip: the message ``agent/turn_tool_validation.py`` emits for valid siblings
+    # of an invalid call. The literal lives inline in that module's batch-error path,
+    # so it is duplicated here; it must keep the prefix the compressor matches on.
+    skip_msg = (
+        "Skipped: another tool call in this turn used an invalid name. "
+        "Please retry this tool call."
+    )
+    assert _rejected_tool_call_outcome(skip_msg) is not None

@@ -12,8 +12,11 @@ import re
 
 import pytest
 
-from agent.message_sanitization import mistral_compliant_tool_id, route_requires_mistral_tool_ids
-from agent.transports.chat_completions import ChatCompletionsTransport
+from agent.transports.chat_completions import (
+    ChatCompletionsTransport,
+    _mistral_tool_id,
+    _route_requires_mistral_tool_ids,
+)
 
 _BAD_ID = "call_04c3699a572b"
 _NATIVE_ID = "c9Abb5ZtX"
@@ -68,12 +71,12 @@ def _wire(model, base_url="https://ollama.com/v1"):
     ],
 )
 def test_route_gate(provider, model, base_url, required):
-    assert route_requires_mistral_tool_ids(provider, model, base_url) is required
+    assert _route_requires_mistral_tool_ids(provider, model, base_url) is required
 
 
 def test_mistral_wire_pairs_every_call_with_its_result_and_leaves_history():
-    assert mistral_compliant_tool_id(_NATIVE_ID) == _NATIVE_ID
-    assert mistral_compliant_tool_id(_BAD_ID) == "uzvbkiH61"
+    assert _mistral_tool_id(_NATIVE_ID) == _NATIVE_ID
+    assert _mistral_tool_id(_BAD_ID) == "uzvbkiH61"
 
     messages, sent = _wire("mistral-large-4")
     call_ids = [tc["id"] for tc in sent[0]["tool_calls"]]

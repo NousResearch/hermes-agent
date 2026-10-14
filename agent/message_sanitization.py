@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import re
-import string
 from functools import partial
 from typing import Any, Callable, Iterable, NamedTuple
 
@@ -465,10 +464,10 @@ __all__ = [
     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "mistral_compliant_tool_id", "needs_reasoning_echo",
+    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
     "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
-    "route_reasoning_carriers", "route_requires_mistral_tool_ids",
+    "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
@@ -505,41 +504,6 @@ def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Deterministic call_id fallback when the API omits one (random ids would break caching)."""
     seed = f"{fn_name}:{arguments}:{index}"
     return f"call_{hashlib.sha256(seed.encode('utf-8', errors='replace')).hexdigest()[:12]}"
-
-
-# Mistral's validator accepts only ``^[A-Za-z0-9]{9}$`` ("Tool call id was ... but must be a-z,
-# A-Z, 0-9, with a length of 9"); ``call_`` + 12 hex from a split tool_call batch or any other
-# provider's id is rejected on replay. ChatCompletionsTransport maps ids on the wire copy only:
-# stored history stays byte-stable, and one source id always becomes the same 9 characters so
-# the prompt-cache prefix does not drift.
-_MISTRAL_TOOL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
-_MISTRAL_ID_ALPHABET = string.digits + string.ascii_uppercase + string.ascii_lowercase
-_MISTRAL_MODEL_MARKERS = (
-    "mistral", "magistral", "mixtral", "devstral", "codestral", "ministral", "pixtral", "voxtral",
-)
-
-
-def route_requires_mistral_tool_ids(provider: Any, model: Any, base_url: Any) -> bool:
-    """True when this chat-completions route enforces Mistral's 9-character tool ids."""
-    from utils import base_url_host_matches
-
-    if (provider or "").strip().lower() == "mistral" or base_url_host_matches(str(base_url or ""), "mistral.ai"):
-        return True
-    model_lower = (model or "").lower()
-    return any(marker in model_lower for marker in _MISTRAL_MODEL_MARKERS)
-
-
-def mistral_compliant_tool_id(raw: Any) -> str:
-    """Return ``raw`` when it is already 9 alphanumeric characters, else a stable substitute."""
-    text = raw.strip() if isinstance(raw, str) else ""
-    if _MISTRAL_TOOL_ID_RE.fullmatch(text):
-        return text
-    number = int.from_bytes(hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest()[:8], "big")
-    chars = []
-    for _ in range(9):
-        number, rem = divmod(number, 62)
-        chars.append(_MISTRAL_ID_ALPHABET[rem])
-    return "".join(chars)
 
 
 def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:

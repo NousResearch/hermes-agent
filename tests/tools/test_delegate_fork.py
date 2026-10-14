@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from tests.tools.test_delegate import _make_mock_parent
 from tools.delegate_tool import _build_child_agent, delegate_task
+from tools.delegate_tool_child_run import _SchemaOutcome, _build_result_entry
 
 
 class TestDelegateFork(unittest.TestCase):
@@ -39,6 +40,17 @@ class TestDelegateFork(unittest.TestCase):
         self.assertEqual(len(history), 5)
         child_turn = history + [{"role": "user", "content": frame_forked_goal("Report the codeword")}]
         self.assertEqual(repair_message_sequence(None, child_turn), 0)
+
+        # The parent's calls in the inherited prefix are not reported as the child's work.
+        child._delegate_fork_history = history
+        own_call = {"id": "k1", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}
+        result = {"final_response": "AZURE", "completed": True, "messages": child_turn + [
+            {"role": "assistant", "content": "", "tool_calls": [own_call]},
+            {"role": "tool", "tool_call_id": "k1", "content": "[]"},
+            {"role": "assistant", "content": "AZURE"},
+        ]}
+        entry = _build_result_entry(child, result, 0, 1.0, _SchemaOutcome(None, None, [], 0))
+        self.assertEqual([t["tool"] for t in entry["tool_trace"]], ["search_files"])
 
     def test_context_mode_preserves_tool_error_for_malformed_tasks(self):
         parent = _make_mock_parent(depth=0)

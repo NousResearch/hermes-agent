@@ -145,3 +145,184 @@ def test_runner_rewires_live_adapters_on_the_loop_when_plugins_load():
         return runner.adapters[Platform.TELEGRAM].rewire_plugin_handlers.call_count
 
     assert asyncio.run(scenario()) == 1
+
+
+class _ObservedTelegram(TelegramAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="t", extra={}))
+        self.factory_calls = []
+        self.rewire_calls = 0
+
+    def rewire_plugin_handlers(self):
+        self.rewire_calls += 1
+        super().rewire_plugin_handlers()
+
+
+@pytest.mark.parametrize("secondary", [False, True])
+def test_control_reload_runs_new_factory_of_an_existing_plugin_without_loaded_event(tmp_path, secondary):
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_plugin_rewire import reload_plugins_verb
+
+    home = tmp_path / "secondary" if secondary else Path(os.environ["HERMES_HOME"])
+    profile = "secondary" if secondary else None
+    _write_plugin(home)
+    events = []
+    adapter = _ObservedTelegram()
+    other = _ObservedTelegram()
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        discover_plugins()
+        manager = get_plugin_manager()
+        manager.on_plugin_loaded(events.append)
+        adapter._wire_plugin_handlers(object())
+    (home / "plugins/late_cmd/__init__.py").write_text(textwrap.dedent('''
+        from hermes_constants import get_hermes_home
+        def added_factory(native, adapter):
+            adapter.factory_calls.append(("added_after_reload", str(get_hermes_home())))
+        def register(ctx):
+            ctx.register_platform_handler("telegram", added_factory)
+    '''), encoding="utf-8")
+
+    class Runner(GatewayPluginRewireMixin):
+        adapters = {Platform.TELEGRAM: other if secondary else adapter}
+        _profile_adapters = {"secondary": {Platform.TELEGRAM: adapter if secondary else other}}
+        _served_profile_homes = {"secondary": home} if secondary else {}
+
+    async def scenario():
+        runner = Runner()
+        runner._subscribe_plugin_rewire(manager, profile, home)
+        result = await asyncio.to_thread(reload_plugins_verb(runner, asyncio.get_running_loop()),
+                                         {"home": str(home)})
+        assert result["reloaded"] is True
+        assert result["adapters_rewired"] == 1
+        return result
+
+    asyncio.run(scenario())
+    assert events == []  # The newcomer-only event protocol is intentionally unchanged.
+    assert adapter.factory_calls == [("added_after_reload", str(home))]
+    assert other.rewire_calls == 0
+
+
+def test_control_reload_new_plugin_keeps_event_but_does_not_double_rewire():
+    from gateway.run_plugin_rewire import reload_plugins_verb
+
+    home = Path(os.environ["HERMES_HOME"])
+    discover_plugins()
+    manager = get_plugin_manager()
+    events = []
+    manager.on_plugin_loaded(events.append)
+    adapter = _ObservedTelegram()
+    adapter._wire_plugin_handlers(object())
+    _write_plugin(home)
+
+    class Runner(GatewayPluginRewireMixin):
+        adapters = {Platform.TELEGRAM: adapter}
+
+    async def scenario():
+        runner = Runner()
+        observer_adapter = _ObservedTelegram()
+        observer_runner = Runner()
+        observer_runner.adapters = {Platform.TELEGRAM: observer_adapter}
+        runner._subscribe_plugin_rewire(manager)
+        observer_runner._subscribe_plugin_rewire(manager)
+        result = await asyncio.to_thread(reload_plugins_verb(runner, asyncio.get_running_loop()))
+        assert result["adapters_rewired"] == 1
+        assert adapter.rewire_calls == observer_adapter.rewire_calls == 1
+        assert len(events) == 1
+        _write_plugin(home, "next_newcomer")
+        await asyncio.to_thread(discover_plugins, force=True)
+        await asyncio.sleep(0)
+        assert adapter.rewire_calls == observer_adapter.rewire_calls == 2
+
+    asyncio.run(scenario())
+    assert len(events) == 2
+
+
+@pytest.mark.parametrize("target", ["secondary", "default"])
+@pytest.mark.parametrize("newcomer", [False, True])
+def test_control_reload_named_launch_uses_served_owner_and_discovery_home(tmp_path, monkeypatch, target, newcomer):
+    import threading
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_plugin_rewire import reload_plugins_verb
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    homes = {"default": tmp_path / "primary", "secondary": tmp_path / "secondary"}
+    launch = homes["secondary"]
+    home = homes[target]
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    observed = {name: _ObservedTelegram() for name in homes}
+    natives = {name: _PtbApp() for name in homes}
+    managers = {}
+    events = []
+    for name, profile_home in homes.items():
+        _write_plugin(profile_home)
+        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            discover_plugins()
+            managers[name] = get_plugin_manager()
+            observed[name]._wire_plugin_handlers(natives[name])
+    managers[target].on_plugin_loaded(events.append)
+    plugin_name = "new_cmd" if newcomer else "late_cmd"
+    if newcomer:
+        _write_plugin(home, plugin_name)
+    (home / f"plugins/{plugin_name}/__init__.py").write_text(textwrap.dedent('''
+        import threading
+        from hermes_constants import get_hermes_home
+        from hermes_cli.plugins import get_plugin_manager
+        def added_factory(native, adapter):
+            native.add_handler("added_handler")
+            adapter.factory_calls.append((str(get_hermes_home()),
+                                         get_plugin_manager().scope_key, threading.get_ident()))
+        def register(ctx):
+            ctx.register_platform_handler("telegram", added_factory)
+    '''), encoding="utf-8")
+
+    class Runner(GatewayPluginRewireMixin):
+        _primary_profile_name = "default"
+        _served_profile_homes = homes
+        adapters = {Platform.TELEGRAM: observed["default"]}
+        _profile_adapters = {"secondary": {Platform.TELEGRAM: observed["secondary"]}}
+
+    async def scenario():
+        runner = Runner()
+        for name, manager in managers.items():
+            runner._subscribe_plugin_rewire(manager, None if name == "default" else name, homes[name])
+        result = await asyncio.to_thread(reload_plugins_verb(runner, asyncio.get_running_loop()),
+                                         {"home": str(home)})
+        assert result["reloaded"] is True
+        assert result["home"] == str(home)
+        assert result["plugins"] == sorted(managers[target]._plugins)
+        assert result["adapters_rewired"] == 1
+        assert observed[target].factory_calls == [
+            (str(home), hermes_home_key(home), threading.get_ident())]
+
+    asyncio.run(scenario())
+    other = "default" if target == "secondary" else "secondary"
+    assert natives[target].handlers[0] == ["added_handler"]
+    assert natives[other].handlers == {}
+    assert observed[target].rewire_calls == 1
+    assert observed[other].rewire_calls == 0
+    assert len(events) == int(newcomer)  # Only new keys notify other subscribers.
+    assert get_hermes_home() == launch
+
+
+def test_control_reload_rejects_unserved_launch_home_when_served_map_is_known(tmp_path, monkeypatch):
+    from gateway.run_plugin_rewire import reload_plugins_verb
+
+    launch = tmp_path / "unserved"
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class Runner(GatewayPluginRewireMixin):
+        _primary_profile_name = "default"
+        _served_profile_homes = {"default": tmp_path / "primary"}
+        adapters = {Platform.TELEGRAM: _ObservedTelegram()}
+
+    async def scenario():
+        runner = Runner()
+        result = await asyncio.to_thread(reload_plugins_verb(runner, asyncio.get_running_loop()),
+                                         {"home": str(launch)})
+        assert result == {"reloaded": False, "error": "home is not served by this gateway",
+                          "home": str(launch)}
+        assert runner.adapters[Platform.TELEGRAM].rewire_calls == 0
+
+    asyncio.run(scenario())

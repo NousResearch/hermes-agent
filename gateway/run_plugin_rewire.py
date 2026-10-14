@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextvars import ContextVar
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Only suppress this runner's redundant loaded-event pass during a control reload.
+_control_reload_scope: ContextVar[Optional[tuple[int, str]]] = ContextVar(
+    "_control_reload_scope", default=None)
 
 
 class GatewayPluginRewireMixin:
@@ -44,6 +49,8 @@ class GatewayPluginRewireMixin:
         def _on_loaded(_names) -> None:
             # Fires on the discovering thread (tool worker, control-socket executor, or the loop itself):
             # adapters own PTB/Bolt handler tables, so always hop onto the gateway loop.
+            if _control_reload_scope.get() == (id(self), scope):
+                return
             if loop is None or loop.is_closed():
                 return
             loop.call_soon_threadsafe(self._rewire_plugin_handlers, profile_name, profile_home)
@@ -52,8 +59,8 @@ class GatewayPluginRewireMixin:
 
     def _rewire_plugin_handlers(self, profile_name: Optional[str] = None,
                                 profile_home: Optional[Path] = None) -> int:
-        """Call ``rewire_plugin_handlers()`` on every live adapter of one profile (``None`` = the launch
-        profile's ``self.adapters``); a secondary's adapters read their own manager, so bind its scope.
+        """Call ``rewire_plugin_handlers()`` on every live adapter of one profile (``None`` = the primary
+        adapter map, ``self.adapters``); a secondary's adapters read their own manager, so bind its scope.
         Returns the number of adapters re-wired."""
         if profile_name is None:
             adapters = dict(getattr(self, "adapters", None) or {})
@@ -80,11 +87,12 @@ class GatewayPluginRewireMixin:
 
 def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callable[..., dict]:
     """Control-socket ``reload-plugins``: force re-discovery under the requested home's scope so a plugin
-    installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; the loaded event
-    then re-wires that profile's adapters. Only the gateway home and served profile homes are accepted.
+    installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; an explicit
+    loop pass re-wires that profile even when an existing plugin emits no newcomer event.
+    Other subscribers retain the loaded event. Only the gateway and served homes are accepted.
     Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired"}``. Runs on the socket executor thread
-    (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO), so a
-    truthful "active now" reaches the caller."""
+    (discovery is blocking); the count is completed adapter method calls, not native handler readiness.
+    Tools and prompt sections stay deferred to the next session."""
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -95,22 +103,25 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         gateway_home = Path(get_hermes_home())
         requested = Path(str(params.get("home") or gateway_home)).expanduser()
         req_key = hermes_home_key(requested)
-        profile_name: Optional[str] = None
-        if req_key != hermes_home_key(gateway_home):
-            served = (getattr(runner, "_served_profile_homes", None) or {}).items()
-            profile_name = next((str(n) for n, h in served if hermes_home_key(h) == req_key), None)
-            if profile_name is None:
-                return {"reloaded": False, "error": "home is not served by this gateway", "home": str(requested)}
-            if profile_name == (getattr(runner, "_primary_profile_name", None) or "default"):
-                profile_name = None
-        scope = (_profile_runtime_scope(requested, hydrate_secrets=False) if profile_name
-                 else contextlib.nullcontext())
-        with scope:
-            discover_plugins(force=True)
+        served = getattr(runner, "_served_profile_homes", None) or {}
+        profile_name = next((str(n) for n, h in served.items() if hermes_home_key(h) == req_key), None)
+        if profile_name is None and (served or req_key != hermes_home_key(gateway_home)):
+            return {"reloaded": False, "error": "home is not served by this gateway", "home": str(requested)}
+        # The launch home may belong to a secondary; only the primary uses self.adapters.
+        if profile_name == (getattr(runner, "_primary_profile_name", None) or "default"):
+            profile_name = None
+        with _profile_runtime_scope(requested, hydrate_secrets=False):
             manager = get_plugin_manager()
+            manager_scope = str(getattr(manager, "scope_key", "") or id(manager))
+            token = _control_reload_scope.set((id(runner), manager_scope))
+            try:
+                discover_plugins(force=True)
+            finally:
+                _control_reload_scope.reset(token)
             names, activations = sorted(manager._plugins), activation_summaries(manager)
         try:
-            rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
+            rewired = asyncio.run_coroutine_threadsafe(
+                _rewire_adapters(runner, profile_name, requested), loop).result(timeout=5.0)
         except Exception:
             rewired = None
         return {"reloaded": True, "home": str(requested), "plugins": names, "activations": activations,
@@ -119,8 +130,6 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     return _handler
 
 
-async def _count_adapters(runner: Any, profile_name: Optional[str]) -> int:
-    """Live adapters for the profile; scheduled after the loaded-event callback, so they are re-wired."""
-    if profile_name is None:
-        return len(getattr(runner, "adapters", None) or {})
-    return len((getattr(runner, "_profile_adapters", None) or {}).get(profile_name) or {})
+async def _rewire_adapters(runner: Any, profile_name: Optional[str], profile_home: Path) -> int:
+    """Run the requested-profile pass even when discovery added no new plugin key."""
+    return runner._rewire_plugin_handlers(profile_name, profile_home)

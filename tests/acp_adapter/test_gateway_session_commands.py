@@ -30,19 +30,46 @@ async def test_queue_submits_its_text_as_the_next_prompt():
     assert response.stop_reason == 'end_turn'
 
 
+def _receipt(status, generation=None):
+    return {'admission_id': 'mine', 'status': status, 'execution_generation': generation}
+
+
 @pytest.mark.asyncio
 async def test_steer_reaches_this_editors_running_turn():
     async def rpc(method, **params):
+        if method == 'prompt.receipt':
+            assert params == {'session_id': 's', 'admission_id': 'mine'}, params
+            return _receipt('started', 9)
         assert method == 'session.steer', method
-        assert params == {'session_id': 's', 'text': 'use pytest', 'execution_generation': 7}
-        return {'status': 'queued', 'text': 'use pytest', 'execution_generation': 7, 'authority_epoch': 1}
+        # Our admission's generation, not the session's latest event (7).
+        assert params == {'session_id': 's', 'text': 'use pytest', 'execution_generation': 9}
+        return {'status': 'queued', 'text': 'use pytest', 'execution_generation': 9, 'authority_epoch': 1}
 
     agent = _agent(rpc)
-    agent._admissions['s'] = 'running-turn'
+    agent._admissions['s'] = 'mine'
     response = await agent.prompt([acp.text_block('/steer use pytest')], 's')
     assert response.stop_reason == 'end_turn'
     assert 'Steer queued for the active turn: use pytest' in \
         agent._conn.session_update.await_args.kwargs['update'].content.text
+
+
+@pytest.mark.asyncio
+async def test_steer_while_this_editors_prompt_waits_behind_another_clients_turn_is_queued():
+    calls = []
+
+    async def rpc(method, **params):
+        calls.append(method)
+        if method == 'prompt.receipt':
+            return _receipt('queued')
+        assert method == 'prompt.submit' and params['text'] == 'use pytest', (method, params)
+        await agent._project({'session_id': 's', 'type': 'message.complete', 'admission_id': 'a',
+                              'payload': {'outcome': 'completed', 'text': 'done'}})
+        return {'admission_id': 'a'}
+
+    agent = _agent(rpc)  # generation 7 is the other client's running turn
+    agent._admissions['s'] = 'mine'
+    response = await asyncio.wait_for(agent.prompt([acp.text_block('/steer use pytest')], 's'), 5)
+    assert response.stop_reason == 'end_turn' and calls == ['prompt.receipt', 'prompt.submit']
 
 
 @pytest.mark.asyncio
@@ -52,13 +79,15 @@ async def test_a_refused_steer_is_reported_and_never_resent_as_a_prompt():
 
     async def rpc(method, **params):
         calls.append(method)
+        if method == 'prompt.receipt':
+            return _receipt('started', 7)
         raise GatewayRPCError('unsupported_control')
 
     agent = _agent(rpc)
-    agent._admissions['s'] = 'running-turn'
+    agent._admissions['s'] = 'mine'
     with pytest.raises(GatewayRPCError, match='unsupported_control'):
         await agent.prompt([acp.text_block('/steer use pytest')], 's')
-    assert calls == ['session.steer']
+    assert calls == ['prompt.receipt', 'session.steer']
 
 
 @pytest.mark.asyncio
@@ -68,6 +97,8 @@ async def test_a_steer_for_a_turn_that_just_ended_becomes_the_next_prompt():
 
     async def rpc(method, **params):
         calls.append(method)
+        if method == 'prompt.receipt':
+            return _receipt('started', 7)
         if method == 'session.steer':
             raise GatewayRPCError('stale_generation')
         assert method == 'prompt.submit' and params['text'] == 'use pytest', (method, params)
@@ -76,9 +107,9 @@ async def test_a_steer_for_a_turn_that_just_ended_becomes_the_next_prompt():
         return {'admission_id': 'a'}
 
     agent = _agent(rpc)
-    agent._admissions['s'] = 'running-turn'
+    agent._admissions['s'] = 'mine'
     response = await asyncio.wait_for(agent.prompt([acp.text_block('/steer use pytest')], 's'), 5)
-    assert response.stop_reason == 'end_turn' and calls == ['session.steer', 'prompt.submit']
+    assert response.stop_reason == 'end_turn' and calls == ['prompt.receipt', 'session.steer', 'prompt.submit']
 
 
 @pytest.mark.asyncio

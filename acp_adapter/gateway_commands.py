@@ -43,13 +43,20 @@ async def run_command(agent, session_id, command, arg):
 
 async def _steer(agent, session_id, text):
     """Guidance for this editor's running turn; None when there is none to steer (main ran an idle
-    steer as a plain prompt, and a turn that ended meanwhile leaves the text for the next one)."""
-    if session_id not in agent._admissions:
+    steer as a plain prompt, and a turn that ended meanwhile leaves the text for the next one).
+
+    The generation steered is our own admission's (``prompt.receipt``), never the session's latest:
+    while our prompt still waits behind another client's turn, that turn is not ours to redirect."""
+    admission_id = agent._admissions.get(session_id)
+    if admission_id is None:
         return None
     client = await agent._client()
+    receipt = await client.rpc('prompt.receipt', session_id=session_id, admission_id=admission_id)
+    if receipt.get('status') != 'started':
+        return None
     try:
         result = await client.rpc('session.steer', session_id=session_id, text=text,
-                                  execution_generation=agent._snapshots[session_id].get('execution_generation'))
+                                  execution_generation=receipt['execution_generation'])
     except GatewayRPCError as exc:
         # Only a turn that ended meanwhile (its generation moved on) leaves the text for the next
         # prompt; any other refusal (permission, unsupported control, not ready) is the answer.

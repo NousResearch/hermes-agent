@@ -16,31 +16,36 @@ def git_repo(tmp_path):
     """Create a temporary git repo for testing."""
     repo = tmp_path / "test-repo"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=False)
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     # Create initial commit (worktrees need at least one commit)
     (repo / "README.md").write_text("# Test Repo\n")
-    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=False)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     subprocess.run(
         ["git", "remote", "add", "origin", "https://example.com/test-repo.git"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     # Add a fake remote ref so cleanup logic sees the initial commit as
     # "pushed" when a remote is configured.
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     return repo
 
@@ -50,20 +55,23 @@ def git_repo_no_remote(tmp_path):
     """Create a temporary git repo with no configured remotes."""
     repo = tmp_path / "test-repo-no-remote"
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=False)
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     (repo / "README.md").write_text("# Test Repo\n")
-    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=False)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=repo, capture_output=True,
+        check=False,
     )
     return repo
 
@@ -73,7 +81,67 @@ def git_repo_no_remote(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-        # Should not crash — just skip all lines
+@pytest.mark.parametrize(
+    "real_untracked,separate_git_dir",
+    [(True, False), (False, False), (False, True)],
+    ids=["untracked-file-kept", "include-symlink-only-removed", "separate-git-dir-include-symlink-removed"],
+)
+def test_exit_cleanup_preserves_dirty_worktree(git_repo, tmp_path, monkeypatch, capsys, real_untracked,
+                                               separate_git_dir):
+    """Exit cleanup must preserve local changes, but not count .worktreeinclude symlinks as changes.
+
+    A trailing-slash ignore (``node_modules/``) never matches the include step's symlink, so git
+    lists it as untracked; treating that as dirty would keep every worktree of such a repo forever.
+    With ``--separate-git-dir`` the common dir's parent is not the main checkout, so the symlink
+    check must use the real checkout root.
+    """
+    import cli
+
+    include = "node_modules\n"
+    if separate_git_dir:
+        git_repo = tmp_path / "sep-repo"
+        (tmp_path / "gd").mkdir()
+        subprocess.run(["git", "init", "--separate-git-dir", str(tmp_path / "gd" / "x.git"), str(git_repo)],
+                       capture_output=True, check=True)
+        for args in (["config", "user.email", "test@test.com"], ["config", "user.name", "Test"],
+                     ["remote", "add", "origin", "https://example.com/test-repo.git"]):
+            subprocess.run(["git", *args], cwd=git_repo, capture_output=True, check=True)
+        (git_repo / "README.md").write_text("# Test Repo\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=git_repo, capture_output=True, check=False)
+        include = "node_modules/\n"
+    (git_repo / "node_modules").mkdir()
+    (git_repo / "node_modules" / "dep.js").write_text("x\n")
+    (git_repo / ".worktreeinclude").write_text(include)
+    exclude = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+                             cwd=git_repo, capture_output=True, text=True, check=True).stdout.strip()
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "w") as fh:
+        fh.write("node_modules/\n.worktreeinclude\n.worktrees/\n")
+    worktree = TestWorktreeLockReaping._mk(cli, git_repo, "session", dirty=real_untracked)
+    worktree_ops._copy_worktree_includes(str(git_repo), worktree)
+    assert (worktree / "node_modules").is_symlink()
+    monkeypatch.setattr(cli, "release_lsp_clients", lambda path: None)
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", printed.append)
+
+    cli._cleanup_worktree({
+        "path": str(worktree),
+        "branch": "hermes/session",
+        "repo_root": str(git_repo),
+    })
+
+    out = "".join(printed) + capsys.readouterr().out
+    if real_untracked:
+        assert worktree.exists()
+        assert (worktree / "dirty.txt").read_text() == "uncommitted"
+        assert "uncommitted changes" in out
+        assert "--force" not in out
+    else:
+        assert not worktree.exists()
+        assert "cleaned up" in out
+        assert (git_repo / "node_modules" / "dep.js").exists()
 
 
 class TestWorktreeLockReaping:
@@ -103,16 +171,18 @@ class TestWorktreeLockReaping:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
             cwd=repo, capture_output=True,
+            check=False,
         )
         if pid is not None:
             subprocess.run(
                 ["git", "worktree", "lock", "--reason", f"hermes pid={pid}", str(p)],
                 cwd=repo, capture_output=True,
+                check=False,
             )
         if unpushed:
             (p / "work.txt").write_text("x")
-            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
+            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True, check=False)
+            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True, check=False)
         if dirty:
             (p / "dirty.txt").write_text("uncommitted")
         TestWorktreeLockReaping._age(p, age_h)
@@ -166,10 +236,12 @@ class TestWorktreeLockPredicate:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
             cwd=repo, capture_output=True,
+            check=False,
         )
         subprocess.run(
             ["git", "worktree", "lock", "--reason", reason, str(p)],
             cwd=repo, capture_output=True,
+            check=False,
         )
         return p
 
@@ -179,6 +251,7 @@ class TestWorktreeLockPredicate:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", "hermes/hermes-x", "HEAD"],
             cwd=git_repo, capture_output=True,
+            check=False,
         )
         assert worktree_ops._worktree_lock_is_live(str(git_repo), str(p)) is None
 
@@ -216,15 +289,17 @@ class TestWidenedPruner:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", f"wt/{name}", "HEAD"],
             cwd=repo, capture_output=True,
+            check=False,
         )
         sha = None
         if commit:
             (p / "work.txt").write_text(f"work for {name}\n")
-            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
-            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
+            subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True, check=False)
+            subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True, check=False)
             sha = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=p,
                 capture_output=True, text=True,
+                check=False,
             ).stdout.strip()
         if dirty:
             (p / "dirty.txt").write_text("uncommitted")
@@ -241,15 +316,18 @@ class TestWidenedPruner:
             ["git", "-c", "user.email=merger@test.com", "-c", "user.name=Merger",
              "cherry-pick", sha],
             cwd=repo, capture_output=True,
+            check=False,
         )
         new_head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=repo,
             capture_output=True, text=True,
+            check=False,
         ).stdout.strip()
         assert new_head != sha
         subprocess.run(
             ["git", "update-ref", "refs/remotes/origin/main", new_head],
             cwd=repo, capture_output=True,
+            check=False,
         )
 
     # -- named (non hermes-*) directories are now covered ------------------
@@ -295,13 +373,14 @@ class TestWidenedPruner:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", "wt/noremote", "HEAD"],
             cwd=repo, capture_output=True,
+            check=False,
         )
         assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is True
 
         trunk = subprocess.run(["git", "branch", "--show-current"], cwd=repo, capture_output=True,
-                               text=True).stdout.strip()
-        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, capture_output=True)
-        subprocess.run(["git", "branch", "-m", trunk, "scratch/not-a-trunk"], cwd=repo, capture_output=True)
+                               text=True, check=False).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, capture_output=True, check=False)
+        subprocess.run(["git", "branch", "-m", trunk, "scratch/not-a-trunk"], cwd=repo, capture_output=True, check=False)
         assert worktree_ops._worktree_merge_base_ref(str(p)) is None
         assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is False
         assert worktree_ops._worktree_has_unpushed_commits(str(p)) is True
@@ -354,8 +433,8 @@ class TestMergeVerdictCache:
 
         # New local-only work lands in the worktree.
         (wt / "more.txt").write_text("unmerged work\n")
-        subprocess.run(["git", "add", "more.txt"], cwd=wt, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "new work"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "add", "more.txt"], cwd=wt, capture_output=True, check=False)
+        subprocess.run(["git", "commit", "-m", "new work"], cwd=wt, capture_output=True, check=False)
 
         assert worktree_ops._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
         assert set(cache) != key_after_merge, "moved HEAD must produce a new key"
@@ -478,6 +557,7 @@ class TestShallowCloneDeepening:
     def _run(cmd, cwd):
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
+            check=False,
         )
 
     @classmethod
@@ -505,6 +585,7 @@ class TestShallowCloneDeepening:
         subprocess.run(
             ["git", "clone", "--depth", "1", f"file://{up}", str(clone)],
             capture_output=True, text=True,
+            check=False,
         )
         cls._run(["git", "config", "user.email", "test@test.com"], clone)
         cls._run(["git", "config", "user.name", "Test"], clone)
@@ -546,7 +627,7 @@ class TestShallowCloneDeepening:
         """Sanity: without deepening, the primitive misreports unpushed."""
         import cli
 
-        _, clone, wt = self._stuck_worktree(tmp_path)
+        _, _clone, wt = self._stuck_worktree(tmp_path)
         assert cli._worktree_has_unpushed_commits(str(wt)), (
             "expected the shallow disconnect to look like unpushed commits — "
             "if this stops reproducing, the fixture no longer exercises the bug"
@@ -650,10 +731,11 @@ class TestPrMergedEscapeHatch:
         subprocess.run(
             ["git", "worktree", "add", str(p), "-b", f"hermes/{name}", "HEAD"],
             cwd=repo, capture_output=True,
+            check=False,
         )
         (p / "salvaged.txt").write_text("diff that was reworked during salvage\n")
-        subprocess.run(["git", "add", "salvaged.txt"], cwd=p, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "salvaged work"], cwd=p, capture_output=True)
+        subprocess.run(["git", "add", "salvaged.txt"], cwd=p, capture_output=True, check=False)
+        subprocess.run(["git", "commit", "-m", "salvaged work"], cwd=p, capture_output=True, check=False)
         TestPrMergedEscapeHatch._age(p, age_h)
         return p
 

@@ -7,6 +7,8 @@ from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+
 
 # These fields describe Hermes' durable record and timeline display, not
 # provider-visible message content. The request builder strips them from every
@@ -42,8 +44,16 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
-     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
+     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
+     # The alternation repair's row counts: an in-place compaction reads them off the live dict.
+     MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
 ) | REPAIR_BOOKKEEPING_FIELDS
+
+
+# Replay carriers the preflight estimate prices at 0, exactly as the compaction tail walk does (opaque signatures,
+# duplicate reasoning copies, ordered sidecars); a mismatch between the two estimates loops compaction.
+UNPRICED_REPLAY_FIELDS = frozenset({"_anthropic_content_blocks", "reasoning_details", "extra_content",
+                                    "reasoning_opaque", "reasoning_text", "bedrock_content_blocks"})
 
 
 def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -58,7 +68,7 @@ def mint_uid() -> str:
     return uuid4().hex
 
 
-def uid_list(value: Any) -> List[str]:
+def uid_list(value: Any) -> list[str]:
     """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
     return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
 
@@ -148,7 +158,7 @@ def _uid_occurrences(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: List[Mapping[str, Any]]) -> dict:
+def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapping[str, Any]]) -> dict:
     """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
     single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
     before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
@@ -205,7 +215,7 @@ def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) ->
     return None
 
 
-def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: dict) -> Optional[str]:
+def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
     ``owners`` memoizes each assistant's (named variants, uid index) across one flush's results, so K

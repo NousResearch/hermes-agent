@@ -73,7 +73,7 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except json.JSONDecodeError as e:
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"
-    except Exception as e:  # noqa: BLE001 — any parse failure is a lint failure
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -92,7 +92,7 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         return True, ""
     except YAMLError as e:
         return False, f"YAMLError: {e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
@@ -115,13 +115,13 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
     except SyntaxError as e:
         loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
         return False, f"{type(e).__name__}: {e.msg}{loc}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
 # In-process linters, preferred over shell linters (no subprocess). Each returns
 # (ok, error); error ``"__SKIP__"`` = unavailable dependency, counts as "no linter".
-LINTERS_INPROC: Dict[str, Callable[[str], tuple[bool, str]]] = {
+LINTERS_INPROC: dict[str, Callable[[str], tuple[bool, str]]] = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
     '.yaml': _lint_yaml_inproc,
@@ -211,7 +211,7 @@ class LintMixin:
             proc = subprocess.run(
                 [executable, *args, path], cwd=cwd or None, env=with_hermes_node_path(hermes_subprocess_env()),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags())
+                text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=windows_hide_flags(), check=False)
         except subprocess.TimeoutExpired:
             return ExecuteResult(stdout=f"{tool} timed out after 30s", exit_code=124)
         return ExecuteResult(stdout=proc.stdout or "", exit_code=proc.returncode)
@@ -247,7 +247,7 @@ class LintMixin:
             return False
         try:
             from tools.environments.local import LocalEnvironment
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return isinstance(env, LocalEnvironment)
 
@@ -272,7 +272,7 @@ class LintMixin:
         try:
             from agent.lsp import get_service
             return get_service()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
@@ -286,7 +286,7 @@ class LintMixin:
             if svc is not None:
                 return svc.handles_extension(ext)
             from agent.lsp.servers import SERVERS
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
         return any(ext.lower() in srv.extensions for srv in SERVERS)
 
@@ -304,7 +304,7 @@ class LintMixin:
                     return False
                 d = parent
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def _lsp_call(self, method: str, path: str, default):
@@ -315,7 +315,7 @@ class LintMixin:
             return default
         try:
             return getattr(svc, method)(path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return default
 
     def _lsp_will_handle(self, path: str) -> bool:
@@ -342,11 +342,11 @@ class LintMixin:
             try:
                 from agent.lsp.range_shift import build_line_shift
                 line_shift = build_line_shift(pre_content, post_content)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 line_shift = None
         try:
             diagnostics = svc.get_diagnostics_sync(path, delta=True, line_shift=line_shift)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
         if not diagnostics:
             return ""
@@ -354,5 +354,5 @@ class LintMixin:
             from agent.lsp.reporter import report_for_file, truncate
             block = report_for_file(path, diagnostics)
             return truncate("LSP diagnostics introduced by this edit:\n" + block) if block else ""
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""

@@ -75,4 +75,6 @@ def test_a_signed_claim_tag_is_read_through_the_jobs_own_git_read(tmp_path, monk
     assert "-----BEGIN SSH SIGNATURE-----" in raw
     with pytest.raises(json.JSONDecodeError):  # the shape that failed admission
         json.loads(raw)
-    assert _claim_metadata(raw, version="0.21.5", attempt=19, commit="3" * 40) == record
+    # The record predates the opt-in platform keys, which read as false.
+    assert _claim_metadata(raw, version="0.21.5", attempt=19, commit="3" * 40) == {
+        **record, "includeMacosIntel": False, "includeTermux": False}

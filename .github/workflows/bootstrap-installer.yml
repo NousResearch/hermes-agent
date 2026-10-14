@@ -10,13 +10,18 @@ name: Bootstrap installer
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: bootstrap-installer-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: bootstrap-installer-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   posix:
@@ -27,8 +32,9 @@ jobs:
     # env — a job-env `${{ runner.temp }}` makes GitHub reject the workflow
     # graph at dispatch (0 jobs). Each step that needs these exports them.
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           # The mirror step pushes HEAD to a fresh bare repo — a shallow
           # checkout can't (git: "shallow update not allowed").
           fetch-depth: 0
@@ -131,7 +137,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       # Windows PowerShell 5.1 is what ships with Windows and what `irm | iex`
       # lands in for most users — the protocol surface must parse there.

@@ -12,7 +12,7 @@ from __future__ import annotations
 # bootstrap's scratch/TMPDIR exports must not fire in those library importers.
 if __name__ == "__main__":
     try:
-        import hermes_bootstrap  # noqa: F401
+        import hermes_bootstrap
     except ModuleNotFoundError:
         pass  # a partial ``hermes update`` can leave the bootstrap unregistered
 
@@ -60,7 +60,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
     # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
     # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
+    "kanban_complete", "kanban_block", "kanban_schedule", "kanban_request_review",
+    "kanban_request_changes", "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",

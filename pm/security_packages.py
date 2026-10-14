@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from pm import paths
+from pm.filesystem import native
 from pm.lock import Lockfile
 from pm.package import InstallError
 from pm.packages import BinaryPackage, _RUST_TRIPLE
@@ -83,29 +84,6 @@ class _SignedBinary(BinaryPackage):
 
 
 @register
-class Tirith(_SignedBinary):
-    name = "tirith"
-    # v0.4.2 publishes aarch64 musl but no x86_64 musl archive.
-    gaps = {**_SignedBinary.gaps, "linux-x64-musl": "upstream publishes no x86_64 musl binary"}
-    binary_rel = {"posix": "tirith"}
-
-    def fetch_url(self, version: str, target: str) -> str:
-        return f"https://github.com/sheeki03/tirith/releases/download/v{version}/tirith-{_RUST_TRIPLE[target]}.tar.gz"
-
-    def fetch_urls(self, version: str, target: str) -> list[str]:
-        archive = self.fetch_url(version, target)
-        base = archive.rsplit("/", 1)[0]
-        return [archive, *[f"{base}/{name}" for name in ("checksums.txt", "checksums.txt.sig", "checksums.txt.pem")]]
-
-    def verify_provenance(self, directory: Path) -> None:
-        from tools.tirith_security import verify_release_provenance
-
-        _, reason = verify_release_provenance(directory, logging.getLogger(__name__).warning)
-        if reason:
-            raise InstallError(self.name, reason)
-
-
-@register
 class IronProxy(_SignedBinary):
     name = "iron-proxy"
     binary_rel = {"posix": "iron-proxy"}
@@ -143,12 +121,12 @@ class IronProxy(_SignedBinary):
             key = directory / "public-key.asc"
             if not signature.is_file() or not key.is_file():
                 raise InstallError(self.name, "pinned signature assets missing")
-            imported = subprocess.run([*args, "--import", str(key)], stdin=subprocess.DEVNULL,
+            imported = subprocess.run([*args, "--import", native(key)], stdin=subprocess.DEVNULL,
                                       capture_output=True, timeout=60, check=False)
             if imported.returncode:
                 logging.getLogger(__name__).warning("Could not import iron-proxy signing key; archive checksum remains enforced")
                 return
-            verified = subprocess.run([*args, "--verify", str(signature), str(directory / "checksums.txt")],
+            verified = subprocess.run([*args, "--verify", native(signature), native(directory / "checksums.txt")],
                                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False)
             if verified.returncode:
                 raise InstallError(self.name, "GPG signature verification failed")

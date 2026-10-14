@@ -14,12 +14,26 @@ function compilerPreset() {
   return preset
 }
 
+/** The production renderer build memoizes this pass on disk (scripts/compiler-cache.mjs); the
+ *  lockfile and this config (the preset and its filter) pin the toolchain it keys on. The
+ *  cache lives under node_modules: ignored, and outside every freshness hash. */
+async function cachedCompilerPass(command: string) {
+  return withCompilerCache(await babel({ presets: [compilerPreset()] }), {
+    command,
+    cacheRoot: path.join(__dirname, 'node_modules/.cache/hermes-react-compiler'),
+    base: __dirname,
+    toolchain: [path.resolve(__dirname, '../../package-lock.json'), fileURLToPath(import.meta.url)]
+  })
+}
+
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
 import tailwindcss from '@tailwindcss/vite'
+
+import { withCompilerCache } from './scripts/compiler-cache.mjs'
 
 // The runner loads this as ESM without the default bundler's CJS globals.
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url))
@@ -91,10 +105,12 @@ const emojibaseAssets = () => ({
       if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {
         return next()
       }
+
       fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
         if (err) {
           return next()
         }
+
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.end(buf)
@@ -118,7 +134,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

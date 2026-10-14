@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import cron.scheduler
+import run_agent
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -38,6 +40,21 @@ def _write_archive(cron_env, job_id: str, filename: str, body: str) -> None:
     out_dir = OUTPUT_DIR / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / filename).write_text(body, encoding="utf-8")
+
+
+def _run_stub_job(monkeypatch, job, answer):
+    """Run ``job`` through the real writer with a stub agent returning ``answer``."""
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_conversation(self, *args, **kwargs):
+            return {"final_response": answer, "completed": True, "failed": False}
+
+    monkeypatch.setattr(run_agent, "AIAgent", Agent)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+    return cron.scheduler.run_job(job)
 
 
 class TestResponseSurvivesLongPrompt:
@@ -91,10 +108,69 @@ class TestScriptModeArchives:
         from cron.scheduler_prompt import _inject_context_from
 
         job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
-        _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md", "plain script payload\nline two")
+        _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md",
+                       "\n\nplain script payload\nline two\n\n")
 
         prompt, injected = _inject_context_from(job, "Report")
 
         assert injected is True
-        assert "plain script payload" in prompt
-        assert "line two" in prompt
+        # Whole document, but trimmed like every other archive answer.
+        assert "```\nplain script payload\nline two\n```" in prompt
+
+
+def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    answer = "摘要 before heading\r\n\r\n## Response\nsubsection\n**Response Characters:** 4\n## Response\n\nbody\n\n  "
+
+    job = create_job(prompt="Original prompt noise\r\n**Response Characters:** 4\n## Response\n\nbody",
+                     schedule="0 8 * * *", context_from="self")
+    success, archive, _final, error = _run_stub_job(monkeypatch, job, answer)
+    assert success, error
+    save_job_output(job["id"], archive)
+    prompt, injected = _inject_context_from(job, "Next task")
+    assert injected
+    assert answer.replace("\r\n", "\n").strip() in prompt
+    assert "Original prompt noise" not in prompt
+
+
+def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch):
+    import os
+    from cron.jobs import create_job, save_job_output, OUTPUT_DIR
+    from cron.scheduler_prompt import _inject_context_from
+
+    quoted = "QUOTED INNER ANSWER"
+    suffix = "\nThis tail will be lost."
+    answer = ("Outer response introduction\n"
+              f"**Response Characters:** {len(quoted)}\n## Response\n\n{quoted}"
+              + suffix)
+
+    job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+    success, archive, _final, error = _run_stub_job(monkeypatch, job, answer)
+    assert success, error
+    save_job_output(job["id"], archive)
+    saved = next((OUTPUT_DIR / job["id"]).glob("*.md"))
+    complete = saved.read_text(encoding="utf-8")
+    assert complete.endswith(suffix + "\n")
+    # Simulate a partial write: the quoted inner frame now reaches EOF exactly,
+    # but the enclosing writer-owned response is missing its declared suffix.
+    saved.write_text(complete[:-len(suffix + "\n")] + "\n", encoding="utf-8")
+    os.utime(saved, (2, 2))
+    prompt, injected = _inject_context_from(job, "Next task")
+    assert not injected
+    assert prompt == "Next task"
+
+    _write_archive(cron_env, job["id"], "older.md", "## Response\n\nOLDER COMPLETE ANSWER\n")
+    os.utime(OUTPUT_DIR / job["id"] / "older.md", (1, 1))
+    prompt, injected = _inject_context_from(job, "Next task")
+    assert injected
+    assert "OLDER COMPLETE ANSWER" in prompt
+    assert quoted not in prompt
+
+    # Losing the response boundary itself is also unusable, not a script archive.
+    saved.write_text(complete.split("**Response Characters:**", 1)[0], encoding="utf-8")
+    os.utime(saved, (2, 2))
+    prompt, injected = _inject_context_from(job, "Next task")
+    assert injected and "OLDER COMPLETE ANSWER" in prompt
+    assert "## Prompt" not in prompt

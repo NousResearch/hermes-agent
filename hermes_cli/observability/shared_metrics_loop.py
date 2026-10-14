@@ -113,25 +113,32 @@ def _memory_origin() -> str:
     return "background_review" if is_background_review() else "foreground"
 
 
-def memory_op_fields(*, op: Any, provider: Any, outcome: Any, origin: Any) -> dict[str, str]:
-    from .shared_metrics_contract import MEMORY_OP_ORIGINS, MEMORY_OP_OUTCOMES, MEMORY_OPS
+def memory_op_fields(*, op: Any, provider: Any, outcome: Any, origin: Any, failure_class: Any) -> dict[str, str]:
+    from .shared_metrics_contract import MEMORY_OP_FAILURE_CLASSES, MEMORY_OP_ORIGINS, MEMORY_OP_OUTCOMES, MEMORY_OPS
 
-    outcome_value, origin_value = _norm(outcome), _norm(origin)
+    outcome_value, origin_value, class_value = _norm(outcome), _norm(origin), _norm(failure_class)
+    outcome_value = outcome_value if outcome_value in MEMORY_OP_OUTCOMES else "failed"
     return {
+        "failure_class": "none" if outcome_value == "success" else (
+            class_value if class_value in MEMORY_OP_FAILURE_CLASSES - {"none"} else "unknown"
+        ),
         "op": op if op in MEMORY_OPS else "other",
         "origin": origin_value if origin_value in MEMORY_OP_ORIGINS else "foreground",
-        "outcome": outcome_value if outcome_value in MEMORY_OP_OUTCOMES else "failed",
+        "outcome": outcome_value,
         "provider": memory_provider_name(provider),
     }
 
 
-def _record_memory_ops(ops: Iterable[str], *, provider: Any, outcome: str) -> None:
+def _record_memory_ops(ops: Iterable[str], *, provider: Any, outcome: str, failure_class: str) -> None:
     try:
         origin = _memory_origin()
     except Exception:
         origin = "foreground"
     for op in list(ops)[:_MAX_BATCH_OPS]:
-        _emit("MEMORY_OP_MARK", memory_op_fields, op=op, provider=provider, outcome=outcome, origin=origin)
+        _emit(
+            "MEMORY_OP_MARK", memory_op_fields, op=op, provider=provider, outcome=outcome, origin=origin,
+            failure_class=failure_class,
+        )
 
 
 def builtin_memory_ops(action: Any, operations: Any) -> list[str]:
@@ -140,9 +147,12 @@ def builtin_memory_ops(action: Any, operations: Any) -> list[str]:
     return [memory_op(action)]
 
 
-def record_builtin_memory_call(action: Any, operations: Any, *, outcome: str) -> None:
-    """One row per operation of a built-in ``memory`` tool call (a batch applies all or none)."""
-    _record_memory_ops(builtin_memory_ops(action, operations), provider="builtin", outcome=outcome)
+def record_builtin_memory_call(action: Any, operations: Any, *, outcome: str, failure_class: str = "unknown") -> None:
+    """One row per operation of a built-in ``memory`` tool call (a batch applies all or none).
+    ``failure_class`` is the store's closed refusal/failure name, ``none`` on success."""
+    _record_memory_ops(
+        builtin_memory_ops(action, operations), provider="builtin", outcome=outcome, failure_class=failure_class,
+    )
 
 
 def _provider_result_failed(result: Any) -> bool:
@@ -154,8 +164,11 @@ def _provider_result_failed(result: Any) -> bool:
 
 def record_provider_memory_call(provider: Any, tool_name: Any, args: Any, result: Any = None, *, raised: bool = False) -> None:
     """One row per memory-provider tool call (plugin providers expose their own tools)."""
-    outcome = "failed" if raised or _provider_result_failed(result) else "success"
-    _record_memory_ops([memory_provider_op(tool_name, args)], provider=provider, outcome=outcome)
+    failed = "exception" if raised else "provider_error" if _provider_result_failed(result) else None
+    _record_memory_ops(
+        [memory_provider_op(tool_name, args)], provider=provider, outcome="failed" if failed else "success",
+        failure_class=failed or "none",
+    )
 
 
 # ---- curator ---------------------------------------------------------------------------------

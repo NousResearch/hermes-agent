@@ -157,13 +157,12 @@ def _(rid, params: dict, transport, identity, session_id, broker, _scope, sessio
 
     controller_id = str(params.get("controller_id") or "").strip()
     browser_profile_id = str(params.get("browser_profile_id") or "").strip()
-    # The record is stamped with a profile only on some creation paths (session.create); a cold-resumed or lazy
-    # record carries just profile_home. Derive the profile from it rather than refusing the controller.
     profile_id = str(session.get("profile") or "").strip()
     if not profile_id:
         from hermes_constants import profile_name_for_home
-        from hermes_cli.profiles import get_active_profile_name
-        profile_id = (profile_name_for_home(session.get("profile_home")) or get_active_profile_name() or "default").strip()
+
+        # Create and resume records carry profile_home; ambient state cannot establish ownership.
+        profile_id = profile_name_for_home(session.get("profile_home")) or ""
     if not controller_id or not browser_profile_id or not profile_id:
         return _err(
             rid, _ERR_FORBIDDEN,

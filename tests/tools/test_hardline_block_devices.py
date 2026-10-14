@@ -12,6 +12,10 @@ no recovery path must hit the unconditional floor, and the tool invocations that
 only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
+import subprocess
+import sys
+import time
+
 import pytest
 
 from tools.approval import (
@@ -22,6 +26,12 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
+from tools.approval_detection import (
+    _collapse_device_paths,
+    _shell_word_name,
+    _single_parse_only,
+    _strip_shell_escapes,
+)
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -151,6 +161,105 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "chrt -f 1 blkdiscard /dev/sda",
     "taskset -c 0 dd if=/dev/zero of=/dev/sda",
     "ionice -c3 blkdiscard /dev/nvme0n1",
+    # ---- the same node under a traversal or collapsed spelling (review P1 #2 on #120926) ----
+    # `..` right in front of `dev/` may climb to the root: from /tmp, `../dev/sda` IS /dev/sda.
+    "wipefs -a ../dev/sda",
+    "blkdiscard ../../dev/nvme0n1",
+    "shred -n 1 -z /tmp/../dev/sda",
+    "sgdisk --zap-all /dev/../dev/sda",
+    "mkswap ../dev/sda1",
+    "newfs_hfs ../dev/disk2",
+    "dd if=/dev/zero of=../dev/sda",
+    "dd if=/dev/zero of=/tmp/../dev/disk0",
+    "cat x > ../dev/sda",
+    "cat x > /var/tmp/../../dev/mapper/vg-root",
+    'cat x > "../dev/disk0"',
+    "sudo wipefs -a ../dev/sda",
+    "nice blkdiscard /tmp/../dev/sda",
+    # a partition suffix is still the node; only a dot ends the name, and a mapper name may hold one
+    "cat x > ../dev/nvme0n1p2",
+    "dd if=/dev/zero of=../dev/disk0s2",
+    "cat x > /dev/mapper/vg.data-root",
+    # the kernel collapses empty and `.` segments
+    "wipefs -a /dev//sda",
+    "blkdiscard /dev/./nvme0n1",
+    "cat x > /dev/.//sda",
+    "dd if=/dev/zero of=/dev//disk0",
+    # mdadm's named arrays live in a directory, like /dev/mapper
+    "wipefs -a /dev/md/raid1",
+    "cat x > /dev/md/boot",
+    # traversal THROUGH a directory under /dev, and the spellings a redirect or `of=` anchor could
+    # not skip past (review on #122771: Enough1122, andrexibiza F1/F2)
+    "wipefs -a /dev/nvme/../sda",
+    "cat x > /dev/nvme/../sda",
+    "wipefs -a /dev/disk/../sda",
+    "cat x > /dev/disk/../sda",
+    "blkdiscard /dev/disk/by-id/../../nvme0n1",
+    "dd if=/dev/zero of=/dev/mapper/../sda",
+    "wipefs -a /dev/a/b/../../sda",
+    "cat x > ..//dev/sda",
+    "dd if=/dev/zero of=..//dev/sda",
+    "wipefs -a .././dev/sda",
+    "cat x > .././dev/sda",
+    "dd if=/dev/zero of=.././dev/sda",
+    "cat x > //dev/sda",
+    "dd if=/dev/zero of=//dev/sda",
+    "cat x > /./dev/sda",
+    "wipefs -a /./dev/sda",
+    "wipefs -a ~/../dev/sda",
+    "wipefs -a $HOME/../dev/sda",
+    'bash -c "wipefs -a ..//dev/sda"',
+    # a plain relative prefix that is popped and then climbed above (review F5 on #122771)
+    "cat x > build/../../dev/sda",
+    "dd if=/dev/zero of=build/../../dev/sda",
+    "wipefs -a build/../../dev/sda",
+    "blkdiscard a/b/../../../dev/nvme0n1",
+    "shred -n 1 -z .git/../../dev/sda",
+    # a tilde-user or tilde-op prefix expands to a directory first (review F8 on #122771)
+    "wipefs -a ~root/../../dev/sda",
+    "cat x > ~root/../../dev/sda",
+    "dd if=/dev/zero of=~root/../../dev/sda",
+    "shred -n 1 -z ~alice/../../dev/sda",
+    "blkdiscard ~+/../../dev/nvme0n1",
+    # an escaped BACKSLASH in front of `>` is a literal backslash and then a real redirect
+    'echo foo\\\\> "/dev/sda"',
+    "echo foo\\\\> /dev/sda",
+    # an escaped operator that a SECOND parse turns live: eval joins and re-reads its argv, a shell
+    # carrier re-reads its -c payload, ssh and watch hand theirs to another shell (review F4 on #122771)
+    "eval echo hello \\> /dev/sda",
+    "command eval echo hello \\> /dev/sda",
+    "builtin eval echo hello \\> /dev/sda",
+    "sudo eval echo hello \\> /dev/sda",
+    "eval cat x \\> /dev/sda",
+    "bash -c 'eval echo hello \\> /dev/sda'",
+    "bash -c echo\\ hello\\ \\>\\ /dev/sda",
+    'eval echo foo\\\\> "/dev/sda"',
+    "ssh host echo hello \\> /dev/sda",
+    "watch echo hello \\> /dev/sda",
+    # ...and the second parse reached through a dispatcher, a substitution, a pipe or an IFS spelling:
+    # anything can carry `bash -c` as an argument, so nothing but a lone printer is a single parse
+    "env -S bash -c 'eval echo hello \\> /dev/sda'",
+    "xargs bash -c 'eval echo hello \\> /dev/sda'",
+    "find . -exec bash -c 'eval echo hello \\> /dev/sda' \\;",
+    # a shell reached THROUGH another command parses its -c payload like one at command position
+    "xargs bash -c 'cat x > /dev/sda'",
+    "find . -exec sh -c 'wipefs -a /dev/sda' \\;",
+    "env -S bash -c 'dd if=/dev/zero of=/dev/sda'",
+    "xargs -I{} /bin/bash -c 'cat {} > /dev/disk0'",
+    'find . -exec "bash" -c "cat x > /dev/nvme0n1" \\;',
+    # a variable whose value IS the shell names a shell (review F6 on #122771)
+    "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
+    "$SHELL -c 'cat x > /dev/sda'",
+    "${SHELL} -c 'wipefs -a /dev/sda'",
+    '"$SHELL" -c "cat x > /dev/disk0"',
+    "find . -exec $SHELL -c 'wipefs -a /dev/sda' \\;",
+    "xargs $BASH -c 'dd if=/dev/zero of=/dev/sda'",
+    # a printer's argument piped into a shell is code again
+    "echo bash -c 'cat x > /dev/sda' | sh",
+    "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
+    "echo hello \\> /dev/sda | bash",
+    "echo $(eval echo hi \\> /dev/sda)",
+    "echo hi \\> <(eval echo x \\> /dev/sda)",
     # A real device path still matches after every boundary that is not a path character.
     "cat x > /dev/sda",
     'cat x > "/dev/sda"',
@@ -273,6 +382,52 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "mkswap /home/user/dev/sdk/swapfile",
     "mkswap /var/lib/dev/sdk/swap.img",
     "newfs_hfs ~/dev/sdk/disk.dmg",
+    # `..` widened the floor to traversal spellings, so the node must still be the LAST path
+    # component: a file under `../dev/` is a file, and `sda-notes` is not `sda`.
+    "shred -u ../dev/sdk/token.json",
+    "shred -n 3 -u ../../dev/sdk/keys.pem",
+    "shred -u /tmp/../dev/sdk/token.json",
+    "wipefs -a ../dev/sda-notes",
+    "mkswap ../dev/sdk/swap.img",
+    "shred -u /dev/sda-notes",
+    "blkdiscard -v /dev/sdk/token.json",
+    # No node name carries a dot, so a file with an extension under some `dev/` is a file, however
+    # `..` reaches it: `../dev/sdk.ts` collapses to `/dev/sdk.ts`, which is not `/dev/sdk`.
+    "cat x > ../dev/sdk.ts",
+    "cat x > ../dev/loopback.py",
+    "cat x > ../dev/disk2.img",
+    "cat x > /tmp/../dev/sda.bak",
+    "cat x > /dev/sda.bak",
+    "shred -u ../dev/sdk.env",
+    "wipefs -a ../dev/disk2.img",
+    "mkswap ../dev/loop0.img",
+    "dd if=build.img of=../dev/disk0.img",
+    # `..` climbs only above where the path STARTS: under the working directory it is a directory,
+    # and a file that merely sits under some `dev/` elsewhere is a file (review F3 on #122771)
+    "shred -u build/../dev/sda",
+    "shred -u /home/alice/dev/sda",
+    "shred -u ./x/../dev/sda",
+    # an escaped `>` is a literal argument: bash prints `hello > /dev/disk0` and writes nothing
+    'echo hello \\> "/dev/disk0"',
+    "echo hello \\> /dev/disk0",
+    "printf '%s\\n' hello \\> /dev/sda",
+    'echo "eval is a word" \\> /dev/disk0',
+    "e\\cho hello \\> /dev/disk0",
+    # a dispatched shell with a harmless payload, and a dispatched shell as quoted prose
+    "xargs bash -c 'ls'",
+    "find . -name '*.log' -exec sh -c 'echo {}' \\;",
+    "echo \"xargs bash -c 'cat x > /dev/sda'\"",
+    "grep -c bash /etc/passwd",
+    # a printer's arguments are data it prints, never a command it runs (review F7 on #122771)
+    "echo bash -c 'cat x > /dev/sda'",
+    "printf '%s\\n' bash -c 'cat x > /dev/sda'",
+    "sudo echo bash -c 'cat x > /dev/sda'",
+    # a plain relative prefix that is only popped stays under the working directory
+    "shred -u src/dev/sda",
+    "wipefs -a build/../dev/sda-notes",
+    # a file under a home directory is a file
+    "shred -u ~root/dev/sda",
+    "shred -u ~alice/dev/sdk/token.json",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -320,6 +475,12 @@ def test_lookalike_commands_stay_runnable(command):
     "tee /dev/disk0 < x",
     "tee /dev/mapper/vg-root < x",
     "echo x | tee /dev/nvme0n1",
+    "tee ../dev/disk0 < x",
+    "cp x /tmp/../dev/vda",
+    "mv x /dev//nvme0n1",
+    "tee ..//dev/disk0 < x",
+    "cp x /dev/nvme/../sda",
+    "xargs bash -c 'cp x /dev/nvme0n1'",
     ]],
     *[(c, False) for c in [
     "echo test > /dev/null",
@@ -329,6 +490,8 @@ def test_lookalike_commands_stay_runnable(command):
     "echo payload > /dev/shm/cache",
     "echo hi > /dev/fd/1",
     "cat file | tee /dev/tty",
+    "cp base.yaml ../dev/sdk.yaml",
+    "mv notes.txt ../dev/sda.txt",
     ]],
 ])
 def test_dangerous_tier_block_device_writes(command, needs_approval):
@@ -380,6 +543,20 @@ def clean_session(monkeypatch):
     "/sbin/mkfs.ext4 /dev/sda1",
     "nice -n 10 sgdisk -Z /dev/sda",
     "sudo /usr/sbin/wipefs -a /dev/sda",
+    "wipefs -a ../dev/sda",
+    "cat x > /tmp/../dev/disk0",
+    "dd if=/dev/zero of=/dev//sda",
+    "cat x > ..//dev/sda",
+    "wipefs -a /dev/disk/../sda",
+    'echo foo\\\\> "/dev/sda"',
+    "eval echo hello \\> /dev/sda",
+    "command eval echo hello \\> /dev/sda",
+    "bash -c 'eval echo hello \\> /dev/sda'",
+    "xargs bash -c 'eval echo hello \\> /dev/sda'",
+    "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
+    "wipefs -a build/../../dev/sda",
+    "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
+    "wipefs -a ~root/../../dev/sda",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -393,3 +570,144 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     assert second["approved"] is False, f"yolo leaked {command!r} (check_all_command_guards)"
     assert second.get("hardline") is True
     assert "BLOCKED (hardline)" in second["message"]
+
+
+# The collapse is a pure function of the spelling: the kernel's rules for `//`, `/./` and `..`,
+# plus one reading the kernel cannot make for us -- a `..` climbing above where the path starts
+# is taken as reaching the root, because the classifier cannot see the working directory.
+@pytest.mark.parametrize("spelling,resolved", [
+    ("../dev/sda", "/dev/sda"),
+    ("..//dev/sda", "/dev/sda"),
+    (".././dev/sda", "/dev/sda"),
+    ("/tmp/../dev/sda", "/dev/sda"),
+    ("/dev/nvme/../sda", "/dev/sda"),
+    ("/dev/disk/by-id/../../sda", "/dev/sda"),
+    ("//dev/sda", "/dev/sda"),
+    ("/./dev/sda", "/dev/sda"),
+    ("~/../dev/sda", "/dev/sda"),
+    ("~root/../../dev/sda", "/dev/sda"),
+    ("~+/../../dev/sda", "/dev/sda"),
+    ("$HOME/../dev/sda", "/dev/sda"),
+    ("of=../dev/sda", "of=/dev/sda"),
+    ('"../dev/disk0"', '"/dev/disk0"'),
+    # unchanged: a lone `.` and a directory under the working directory never climb, a variable
+    # is not a spelling, a URL is not a path, and nothing that resolves outside /dev is touched
+    ("build/../../dev/sda", "/dev/sda"),
+    ("a/b/../../../dev/sda", "/dev/sda"),
+    (".git/../../dev/sda", "/dev/sda"),
+    ("./dev/sdk/token.json", "./dev/sdk/token.json"),
+    ("build/../dev/sda", "build/../dev/sda"),
+    ("src/dev/sda", "src/dev/sda"),
+    ("~/dev/sdk/token.json", "~/dev/sdk/token.json"),
+    ("~root/dev/sda", "~root/dev/sda"),
+    ("/home/alice/dev/sda", "/home/alice/dev/sda"),
+    ("$D/sda", "$D/sda"),
+    ("https://host/../dev/sda", "https://host/../dev/sda"),
+    ("/tmp/../etc/passwd", "/tmp/../etc/passwd"),
+    # a component may be NAME_MAX long and is still one segment
+    ("n" * 255 + "/../../dev/sda", "/dev/sda"),
+])
+def test_device_path_spellings_collapse_to_the_node(spelling, resolved):
+    assert _collapse_device_paths(spelling) == resolved
+
+
+# Every start in a long word run used to rescan it to the end: quadratic in the line, so one heredoc line
+# of comma-separated prose took minutes. A trailing URL keeps `/` and `dev` in the run, so the per-run
+# skip alone does not save it; the NAME_MAX bound on a segment does.
+@pytest.mark.parametrize("unit,repeat,tail", [
+    ("中文内容，", 20_000, ""),
+    ("中文内容，", 20_000, "见https://example.com/dev/guide"),
+    ("a,", 50_000, "x:/dev/sda"),
+], ids=["prose", "prose-then-dev-url", "list-then-colon"])
+def test_collapse_is_linear_in_a_long_line(unit, repeat, tail):
+    command = "cat > notes.md <<'EOF'\n" + unit * repeat + tail + "\nEOF"
+    started = time.perf_counter()
+    collapsed = _collapse_device_paths(command)
+    elapsed = time.perf_counter() - started
+    assert collapsed == command
+    # Loose bound, like test_max_accepted_separator_free_input_is_fast: the quadratic scan took
+    # tens of seconds here, the linear one takes milliseconds.
+    assert elapsed < 1.0, f"collapse took {elapsed:.3f}s on a {len(command)}-char line"
+
+
+# A word names a shell by its basename, or by being a variable whose value IS the shell.
+@pytest.mark.parametrize("word,name", [
+    ("bash", "bash"),
+    ("/bin/bash", "bash"),
+    ("b\\ash", "bash"),
+    ("$SHELL", "sh"),
+    ("${SHELL}", "sh"),
+    ('"$SHELL"', "sh"),
+    ("$BASH", "sh"),
+    ("$CMD", "$cmd"),
+])
+def test_a_shell_naming_variable_names_a_shell(word, name):
+    assert _shell_word_name(word) == name
+
+
+# Escapes are read left to right, the way the shell reads them: `\>` is a literal argument and
+# never a redirect, while `\\>` is a literal backslash FOLLOWED by a real redirect.
+@pytest.mark.parametrize("raw,stripped", [
+    ('echo hello \\> "/dev/disk0"', 'echo hello   "/dev/disk0"'),
+    ('echo foo\\\\> "/dev/sda"', 'echo foo\\ > "/dev/sda"'),
+    ("echo foo\\\\\\> x", "echo foo\\  x"),
+    ("r\\m -rf /", "rm -rf /"),
+])
+def test_escaped_redirects_are_arguments_not_operators(raw, stripped):
+    assert _strip_shell_escapes(raw) == stripped
+
+
+# Under a second parse the same escape comes out live: eval joins its argv and reads it again.
+@pytest.mark.parametrize("raw,stripped", [
+    ("eval echo hello \\> /dev/sda", "eval echo hello > /dev/sda"),
+    ('eval echo foo\\\\> "/dev/sda"', 'eval echo foo\\ > "/dev/sda"'),
+])
+def test_escapes_under_a_second_parse_come_out_live(raw, stripped):
+    assert not _single_parse_only(raw)
+    assert _strip_shell_escapes(raw, live_operators=True) == stripped
+
+
+@pytest.mark.parametrize("command,single", [
+    ("echo hello \\> /dev/disk0", True),
+    ('echo "eval is a word" \\> /dev/disk0', True),
+    ("printf '%s' hi \\> /dev/sda", True),
+    ("e\\cho hello \\> /dev/disk0", True),
+    ("eval echo hello \\> /dev/sda", False),
+    ("xargs bash -c 'eval echo hello \\> /dev/sda'", False),
+    ("eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda", False),
+    ("echo hello \\> /dev/sda | bash", False),
+    ("echo $(date) \\> /dev/sda", False),
+    ("echo `date` \\> /dev/sda", False),
+    ("sudo echo hello \\> /dev/sda", False),
+    ("echo hello \\> /dev/sda; true", False),
+])
+def test_only_a_lone_printer_is_a_single_parse(command, single):
+    assert _single_parse_only(command) is single
+
+
+# The premise, measured on a real shell: only a second parse turns `\>` into a redirect. Gated with a
+# plain skipif: this branch's base knows only `linux_only`, current main only `platforms("linux")`
+# and rejects the old mark at collection, and a skipif means the same thing under both.
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="measures a real bash")
+@pytest.mark.parametrize("script,writes", [
+    ("echo hello \\> out", False),
+    ("eval echo hello \\> out", True),
+    ("command eval echo hello \\> out", True),
+    ("bash -c 'eval echo hello \\> out'", True),
+    ("bash -c echo\\ hello\\ \\>\\ out", True),
+    ("echo foo\\\\> out", True),
+    ("echo x | xargs bash -c 'eval echo hello \\> out'", True),
+    ("eval${IFS}echo${IFS}hello${IFS}\\>${IFS}out", True),
+    ("echo hello \\> out | bash", True),
+    ('echo "eval is a word" \\> out', False),
+    ("printf '%s' hello \\> out", False),
+    ("SHELL=/bin/bash; echo x | xargs $SHELL -c 'eval echo hello \\> out'", True),
+    ("echo bash -c 'echo hi > out'", False),
+    ("echo bash -c 'echo hi > out' | sh", True),
+])
+def test_bash_agrees_which_escaped_redirects_write(tmp_path, script, writes):
+    subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path, check=False, timeout=10,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    assert (tmp_path / "out").exists() is writes

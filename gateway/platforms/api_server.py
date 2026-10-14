@@ -141,8 +141,8 @@ from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
-    validate_media_delivery_path)
+    BasePlatformAdapter, SendResult, is_network_accessible)
+from gateway.platforms.api_server_media import _api_turn_session_key, _resolve_media_to_data_urls
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
@@ -853,49 +853,6 @@ if AIOHTTP_AVAILABLE:
         return response
 else:
     cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
-
-_MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-               ".webp": "image/webp", ".bmp": "image/bmp"}
-_MEDIA_IMG_EXT = set(_MEDIA_MIME)
-_MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
-
-
-def _resolve_media_to_data_urls(text: str) -> str:
-    """Replace ``MEDIA:<path>`` tags with inline base64 data URLs (remote frontends can't read
-    server paths); non-image/unreadable paths stay untouched. Security: the shared
-    ``MEDIA_TAG_CLEANUP_RE`` anchor + ``validate_media_delivery_path`` denylist — a bare-token
-    match would let a traversal path in the reply exfiltrate any readable image."""
-    if not text or "MEDIA:" not in text:
-        return text
-    import base64
-
-    def _to_data_url(path_str: str) -> Optional[str]:
-        # validate_media_delivery_path() strips wrapping quotes/trailing punctuation itself.
-        safe_path = validate_media_delivery_path(path_str)
-        p = Path(safe_path) if safe_path else None
-        suffix = p.suffix.lower() if p else ""
-        if suffix not in _MEDIA_IMG_EXT:
-            return None
-        try:
-            if p.stat().st_size > _MEDIA_DATA_URL_MAX_BYTES:
-                return None
-            b64 = base64.b64encode(p.read_bytes()).decode()
-        except OSError:
-            return None
-        return f"![image](data:{_MEDIA_MIME[suffix]};base64,{b64})"
-
-    def _repl(m: re.Match[str]) -> str:
-        return _to_data_url(m.group("path")) or m.group(0)
-    try:
-        # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
-        # scan without it, and drop it (control token, never content) only when a tag resolved.
-        sentinel_start = _terminal_sentinel_start(text)
-        scan = text[:sentinel_start] if sentinel_start >= 0 else text
-        resolved = MEDIA_TAG_CLEANUP_RE.sub(_repl, scan)
-        return text if resolved == scan else resolved
-    except Exception:
-        return text
-
 
 def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     """Redact API-bound error text before it crosses the HTTP boundary."""
@@ -3601,8 +3558,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
-        final_response = _resolve_media_to_data_urls(
-            result.get("final_response", "") if is_dict else "")
+        final_response = await asyncio.to_thread(
+            _resolve_media_to_data_urls, result.get("final_response", "") if is_dict else "",
+            _api_turn_session_key(session_id, gateway_session_key))
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
             {"object": "hermes.session.chat.completion",
@@ -3678,7 +3636,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
-                final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
+                final_response = await asyncio.to_thread(
+                    _resolve_media_to_data_urls, result.get("final_response", "") if is_dict else "",
+                    _api_turn_session_key(session_id, gateway_session_key))
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
@@ -4222,7 +4182,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.session_context import clear_session_vars
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
-                    chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
+                    chat_id=session_id or "", session_key=_api_turn_session_key(session_id, gateway_session_key),
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,

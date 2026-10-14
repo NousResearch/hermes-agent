@@ -546,8 +546,10 @@ def _codex_reset_guard(payload: dict, available: int, force: bool) -> Optional[C
     )
 
 
-def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
-    """Map the consume response ``code`` to a result (``reset`` also lifts persisted pool cooldowns)."""
+def _codex_reset_outcome(body: dict, available: int, *, redeeming_token: str = "") -> CodexResetRedeemResult:
+    """Map the consume response ``code`` to a result (``reset`` also lifts the redeeming
+    credential's persisted pool cooldown — a banked reset restores only that account's windows,
+    so other pool entries must keep their cooldowns)."""
     code = str(body.get("code", "") or "").strip().lower()
     remaining = max(0, available - 1)
     outcomes: dict[str, tuple[str, int]] = {
@@ -561,11 +563,13 @@ def _codex_reset_outcome(body: dict, available: int) -> CodexResetRedeemResult:
         return _unavailable(f"Unexpected response from the Codex backend: {body!r}")
     windows_reset = 0
     if code == "reset":
-        # Quota is restored upstream — lift persisted pool cooldowns so the credential isn't frozen behind a
-        # stale ``last_error_reset_at``.
+        # Quota is restored upstream — lift the redeeming credential's persisted pool cooldown so
+        # it isn't frozen behind a stale ``last_error_reset_at``. Scoped to *redeeming_token*: an
+        # unscoped clear un-benches every other exhausted pool entry, and with ``fill_first`` the
+        # next turns burn their retries on credentials still at 100% (#138121).
         try:
             from hermes_cli.auth import clear_codex_pool_quota_cooldowns
-            clear_codex_pool_quota_cooldowns()
+            clear_codex_pool_quota_cooldowns(access_token=redeeming_token or None)
         except Exception:
             logger.debug("Failed to clear Codex pool cooldowns after reset redemption", exc_info=True)
         raw = body.get("windows_reset")
@@ -625,7 +629,7 @@ def redeem_codex_reset_credit(
         return _unavailable(f"Codex backend error (HTTP {code}) — try again shortly.")
     except Exception as exc:
         return _unavailable(f"Could not reach the Codex backend: {exc}")
-    return _codex_reset_outcome(body, available)
+    return _codex_reset_outcome(body, available, redeeming_token=token)
 
 
 def _fetch_anthropic_account_usage(

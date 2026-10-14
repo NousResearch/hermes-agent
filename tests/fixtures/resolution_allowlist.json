@@ -559,6 +559,16 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_outside_package",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_packaged_npx_entry",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/process_registry.py",
     "symbol": "_build_systemd_scope_argv",
     "kind": "bare_which"

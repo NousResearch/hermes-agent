@@ -1203,7 +1203,13 @@ def _model_default_declares_model(
         declared_provider, user_providers, custom_providers)
     if not declared_endpoint or not str(base_url or "").strip():
         return False
-    return _normalize_route_url(declared_endpoint) == _normalize_route_url(base_url)
+    try:
+        return _normalize_route_url(declared_endpoint) == _normalize_route_url(base_url)
+    except ValueError:
+        # urlsplit raises on a malformed bracketed host ('https://[broken/v1'). An unparseable
+        # endpoint must decline the override, not raise — and two invalid URLs never compare
+        # equal through a shared empty sentinel.
+        return False
 
 
 def _config_declares_model(

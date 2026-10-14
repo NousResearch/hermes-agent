@@ -435,6 +435,36 @@ describe('failed-turn-aware ordinal space', () => {
     expect(reload?.truncateMessageId).toBeUndefined()
   })
 
+  it('planReload rewinds a persisted failed turn by row id instead of duplicating it', () => {
+    // u1 reached the gateway (rowId 13) before the provider failed the turn:
+    // a plain resubmit would append a second copy of the prompt, so the plan
+    // must aim a row-id cut at the failed user row (no ordinal — both spaces
+    // diverge on failed turns, #86573).
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', 13), failedAssistant('a1')]
+
+    const reload = planReload(messages, 'a1')
+
+    expect(reload?.text).toBe('text u1')
+    expect(reload?.truncateOrdinal).toBeUndefined()
+    expect(reload?.truncateMessageId).toBeUndefined()
+    expect(reload?.truncateRowId).toBe(13)
+  })
+
+  it('planEdit rewinds a persisted failed turn by row id', () => {
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', 13), failedAssistant('a1')]
+
+    const plan = planEdit(messages, {
+      role: 'user',
+      sourceId: 'u1',
+      parentId: null,
+      content: [{ type: 'text', text: 'better text' }]
+    } as never)
+
+    expect(plan?.isFailedTurn).toBe(true)
+    expect(plan?.truncateOrdinal).toBeUndefined()
+    expect(plan?.truncateRowId).toBe(13)
+  })
+
   it('planRestore degrades a failed turn to a plain resubmit', () => {
     const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', undefined), failedAssistant('a1')]
 
@@ -443,6 +473,15 @@ describe('failed-turn-aware ordinal space', () => {
     expect(plan.truncateOrdinal).toBeUndefined()
     expect(plan.truncateRowId).toBeUndefined()
     expect(plan.truncateMessageId).toBeUndefined()
+  })
+
+  it('planRestore rewinds a persisted failed turn by row id', () => {
+    const messages: ChatMessage[] = [user('u0', 11), assistant('a0', 12), user('u1', 13), failedAssistant('a1')]
+
+    const plan = planRestore(messages, 'u1')
+
+    expect(plan.truncateOrdinal).toBeUndefined()
+    expect(plan.truncateRowId).toBe(13)
   })
 
   it('rebindSurvivorRowIds skips failed turns — they hold no survivor slot', () => {
@@ -775,6 +814,50 @@ describe('planConfirmedReload (#133716)', () => {
 
     expect(await submitPlan(await planConfirmedReload(failedLater, 'a1', askAndDecline))).toBeUndefined()
     expect(asked).toBe(2)
+  })
+
+  it('a persisted failed tail retries as a row-id rewind, not a duplicate send', async () => {
+    const failedTail = [
+      row('u1', 'user', 'old prompt', { rowId: 11 }),
+      row('a1', 'assistant', 'old reply'),
+      row('u2', 'user', 'latest prompt', { rowId: 13 }),
+      { ...row('a2', 'assistant', ''), error: 'provider down' }
+    ]
+
+    const tail = await submitPlan(
+      await planConfirmedReload(failedTail, 'a2', async () => {
+        throw new Error('a tail retry must not ask')
+      })
+    )
+
+    expect(tail).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
+    expect(tail?.truncate_before_user_ordinal).toBeUndefined()
+    expect(tail?.confirm_deep_truncate).toBeUndefined()
+  })
+
+  it('a persisted failed turn before later turns asks before the deep rewind', async () => {
+    let asked = 0
+
+    const askAndDecline = async () => {
+      asked += 1
+
+      return false
+    }
+
+    const failedMid = [
+      row('u1', 'user', 'old prompt', { rowId: 11 }),
+      { ...row('a1', 'assistant', ''), error: 'provider down' },
+      row('u2', 'user', 'latest prompt', { rowId: 13 }),
+      row('a2', 'assistant', 'latest reply')
+    ]
+
+    expect(await submitPlan(await planConfirmedReload(failedMid, 'a1', askAndDecline))).toBeUndefined()
+    expect(asked).toBe(1)
+
+    expect(await submitPlan(await planConfirmedReload(failedMid, 'a1', async () => true))).toMatchObject({
+      truncate_before_row_id: 11,
+      confirm_deep_truncate: true
+    })
   })
 })
 

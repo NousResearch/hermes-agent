@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 
@@ -157,36 +157,39 @@ describe('sessionContextDrift: a fresh new-chat submit', () => {
 })
 
 describe('the drift-abort contract on a new-chat submit', () => {
-  it('a drift abort returns false with no text restored — the prompt is lost', () => {
-    // This mirrors abortForSessionSwitch's contract in submit.ts:
-    //   dropOptimistic(optimisticSessionId); releaseBusy(); return false
-    // and the composer's `if (!ok) { setTimeout(...restore...) }` guard, which
-    // ONLY restores when the submit itself THREW. A plain `return false` is
-    // read by dispatchSubmit as "handled", so the draft stash is never replayed
-    // and the composer stays empty.
+  it('a drift abort returns false — and the composer restores the draft, which is why the failure must be announced separately', async () => {
+    // The `false` return alone is NOT the bug: the composer's dispatchSubmit
+    // restores on `accepted === false` as well as on a throw (that path landed
+    // in 474a7f8b2a, 2026-09-12 — a month before the canary the reporter ran).
+    // What a drift abort never did was TELL anyone, so the words come back and
+    // the user is left assuming the prompt was delivered (#138047).
     const abortForSessionSwitch = (_optimisticSessionId: null | string): false => {
       return false
     }
 
     // The composer's restore guard, verbatim in shape from use-composer-submit:
-    const dispatchSubmit = (onSubmit: () => Promise<boolean>) => {
+    // BOTH a rejection and a plain `false` re-stash and re-load the draft.
+    const dispatchSubmit = async (onSubmit: () => Promise<boolean>) => {
       let restored = false
 
-      void onSubmit().catch(() => {
-        // Only a REJECTION re-stashes and re-loads the draft.
-        restored = true
+      await onSubmit().then(accepted => {
+        if (!accepted) {
+          restored = true
+        }
       })
 
       return { restored }
     }
 
-    const outcome = dispatchSubmit(async () => abortForSessionSwitch(null))
+    // The real dispatchSubmit awaits the submit promise before reading back,
+    // so mirror that here: a plain `false` restores just like a throw does.
+    const outcome = await dispatchSubmit(async () => abortForSessionSwitch(null))
 
-    expect(outcome.restored).toBe(false)
+    expect(outcome.restored).toBe(true)
     expect(abortForSessionSwitch(CREATED)).toBe(false)
   })
 
-  it('a thrown submit DOES restore the draft (the asymmetry the lost prompt falls through)', async () => {
+  it('a thrown submit also restores the draft (the same silent-until-announced gap)', async () => {
     let restored = false
 
     const dispatchSubmit = (onSubmit: () => Promise<boolean>) =>

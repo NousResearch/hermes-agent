@@ -1548,6 +1548,8 @@
     "desktop.resumeStrandedBody",
     "desktop.resumeStrandedTitle",
     "desktop.savingImage",
+    "desktop.sendFailedBody",
+    "desktop.sendFailedTitle",
     "desktop.sessionBusy",
     "desktop.sessionExportFailed",
     "desktop.sessionExported",

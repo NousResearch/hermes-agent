@@ -36,6 +36,48 @@ def read_pending(key: str) -> dict | None:
     return record
 
 
+_REQUIRED_RECEIPT_KEYS = ("id", "status", "sequence")
+_QUEUED_RECEIPT_KEYS = ("home", "job", "content", "profile")
+
+
+def _receipt_shape_error(record: dict) -> str | None:
+    """Why a parsed Bot Chat receipt is unusable by the scans, or None when it is well-formed.
+
+    A receipt that parses as a JSON object but lost a field (truncated rewrite,
+    foreign writer, hand edit) used to raise KeyError out of the sequence scan
+    and the drain — wedging admission and delivery for the whole profile the way
+    corrupt JSON did before ``_records`` learned to skip it. Missing keys — and,
+    for a ``queued`` receipt, required keys whose value is unusable (``home``/
+    ``content`` not ``str``, ``job`` not ``dict``, both of which the drain would
+    raise on) — are treated as unreadable: logged once, kept as evidence, skipped.
+    """
+    missing = [key for key in _REQUIRED_RECEIPT_KEYS if key not in record]
+    if record.get("status") == "queued":
+        missing += [key for key in _QUEUED_RECEIPT_KEYS if key not in record]
+    if missing:
+        return f"missing {', '.join(missing)}"
+    if not isinstance(record["sequence"], int) or isinstance(record["sequence"], bool):
+        return "sequence is not an integer"
+    if record["status"] == "queued":
+        # A present-but-unusable value is the same incident class as a missing key: the
+        # drain would raise TypeError/AttributeError out of its loop and leave every peer
+        # behind it ``queued`` on every tick. ``profile`` stays unchecked — it is read
+        # defensively (``record['profile'] or '(own)'``) and a bad one cannot wedge peers.
+        for key, expected in (("home", str), ("content", str), ("job", dict)):
+            if not isinstance(record[key], expected):
+                return f"{key} is not a {expected.__name__}"
+    return None
+
+
+def _skip_receipt(path: Path, reason: str) -> None:
+    # Keep damaged or unreadable receipts as evidence; never replay them or block peers
+    # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
+    # The scheduler drains every tick: ERROR once per receipt per process, DEBUG after.
+    level = logging.DEBUG if path in _warned_unreadable else logging.ERROR
+    _warned_unreadable.add(path)
+    logger.log(level, "Unreadable deferred Bot Chat receipt %s: %s", path, reason)
+
+
 def _records(root: Path) -> list[tuple[Path, dict]]:
     records = []
     for path in root.glob("*.json"):
@@ -44,12 +86,11 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
             if not isinstance(record, dict):
                 raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
-            # Keep damaged or unreadable receipts as evidence; never replay them or block peers
-            # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
-            # The scheduler drains every tick: ERROR once per receipt per process, DEBUG after.
-            level = logging.DEBUG if path in _warned_unreadable else logging.ERROR
-            _warned_unreadable.add(path)
-            logger.log(level, "Unreadable deferred Bot Chat receipt %s: %s", path, exc)
+            _skip_receipt(path, str(exc))
+            continue
+        problem = _receipt_shape_error(record)
+        if problem is not None:
+            _skip_receipt(path, problem)
             continue
         _warned_unreadable.discard(path)
         records.append((path, record))

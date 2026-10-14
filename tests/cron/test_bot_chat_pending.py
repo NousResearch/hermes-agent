@@ -1,5 +1,6 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -195,4 +196,49 @@ def test_non_dict_deferred_receipt_is_skipped_by_the_drain_and_fails_exact_id_re
     assert sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
     with pytest.raises(ValueError):
         queue.defer("e" * 64, {"id": "job"}, "same id", "", tmp_path)
+    assert bad.read_text(encoding="utf-8") == payload
+
+
+def test_object_receipt_missing_keys_is_skipped_by_the_drain_and_new_admissions(
+        tmp_path, monkeypatch, caplog):
+    """Regression for #129601: a receipt that parses as a JSON object but lost a
+    required field (truncated rewrite, foreign writer, hand edit) must degrade to a
+    logged skip like any unreadable file, not raise KeyError out of the sequence
+    scan and wedge every drain and new admission for the profile."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text('{"status": "queued"}', encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+        queue.drain()
+        later = queue.defer("f" * 64, {"id": "job"}, "later", "", tmp_path)
+    assert seen == ["healthy"] and later["status"] == "queued"
+    assert sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
+    assert bad.read_text(encoding="utf-8") == '{"status": "queued"}'
+
+
+@pytest.mark.parametrize("broken", [{"home": None}, {"home": []}, {"home": 123}, {"job": None}])
+def test_queued_receipt_with_an_unusable_field_is_skipped_by_the_drain_and_new_admissions(
+        tmp_path, monkeypatch, caplog, broken):
+    """Regression for #129601: a queued receipt whose required key is present but unusable
+    (``home`` not a str, ``job`` not a dict) passed the shape gate and raised TypeError/
+    AttributeError out of the drain, leaving every peer behind it queued on every tick."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    payload = json.dumps({"id": "e" * 64, "status": "queued", "sequence": 2,
+                          "home": str(tmp_path), "job": {"id": "job"},
+                          "content": "damaged", "profile": "", **broken})
+    bad.write_text(payload, encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+        queue.drain()
+        later = queue.defer("f" * 64, {"id": "job"}, "later", "", tmp_path)
+    assert seen == ["healthy"] and later["status"] == "queued"
+    assert sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1
     assert bad.read_text(encoding="utf-8") == payload

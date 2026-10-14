@@ -249,6 +249,14 @@ When set, the skill is automatically hidden from the system prompt, `skills_list
 
 When a skill response (or any agent response) includes a bare absolute path to a media file — for example `/home/user/screenshots/diagram.png` — the gateway auto-detects it, strips it from the visible text, and delivers the file natively to the user's chat (Telegram photo, Discord attachment, etc.) instead of leaving the raw path in the message.
 
+Operators can reserve a directory for an application-owned delivery workflow by listing it under `gateway.media_delivery_deny_dirs` in `config.yaml`. Model-emitted paths below those roots never auto-attach, even when the directory is inside the normally trusted Hermes cache; explicit connector or tool uploads are unaffected. This is useful when a separate validator must approve an artifact before it is sent.
+
+```yaml
+gateway:
+  media_delivery_deny_dirs:
+    - /absolute/path/to/validated-workflow-scratch
+```
+
 For audio specifically, the `[[audio_as_voice]]` directive promotes audio files to native voice-message bubbles on platforms that support them (Telegram, WhatsApp).
 
 ### Forcing document-style delivery: `[[as_document]]`

@@ -2218,8 +2218,7 @@ DEFAULT_CONFIG = {
         # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
         # honored.
         "trust_env": True,
-        # Media delivery. False: any emitted file path is delivered natively unless under the
-        # credential/system denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env, auth.json). True:
+        # Media delivery. False: paths deliver except the credential/system denylist; True:
         # files must be under the Hermes cache, media_delivery_allow_dirs, or fresher than
         # trust_recent_files_seconds — recommended for public-facing gateways so prompt injection
         # can't exfiltrate host secrets. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
@@ -2229,6 +2228,7 @@ DEFAULT_CONFIG = {
         # os.pathsep-separated string; tildes expanded. Bridged to HERMES_MEDIA_ALLOW_DIRS. Honored
         # in both modes.
         "media_delivery_allow_dirs": [],
+        "media_delivery_deny_dirs": [],
         # Trust files whose mtime is within trust_recent_files_seconds even outside the cache/
         # allowlist (e.g. `pandoc -o /tmp/report.pdf`); system paths stay blocked. False =
         # pure-allowlist mode. Bridged to HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when

@@ -9,6 +9,7 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 from datetime import timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Callable, TypeVar
@@ -17,6 +18,7 @@ _T = TypeVar("_T")
 _ATTEMPTS = 4
 _MAX_DELAY = 30.0
 _HTTP_RETRY = frozenset({408, 429, 500, 502, 503, 504})
+_R2_HOSTS = frozenset({"hermes-assets.nousresearch.com"})
 _NETWORK_ERRNOS = frozenset({
     errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET,
     errno.ENETDOWN, errno.ENETRESET, errno.ENETUNREACH,
@@ -38,6 +40,32 @@ def is_transient(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError, http.client.IncompleteRead)):
         return True
     return isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS
+
+
+def edge_block(exc: BaseException) -> str | None:
+    """Explain a 403/429 that a CDN firewall sent instead of the server, else None.
+
+    A bare "HTTP 403" from a regional block reads as a broken install or a missing
+    file (#128295). Cloudflare marks challenges with ``cf-mitigated`` and Vercel's
+    firewall sets ``x-vercel-mitigated``. Cloudflare's own block page carries
+    neither, but on our R2 custom domain a response without ``cf-cache-status``
+    never reached the bucket (Cloudflare R2 troubleshooting docs); other hosts
+    behind Cloudflare make no such promise, so that fallback is R2-only.
+    """
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
+        return None
+    headers = exc.headers or {}
+    host = urllib.parse.urlsplit(exc.filename or "").hostname or ""
+    if headers.get("x-vercel-mitigated"):
+        cdn = "Vercel"
+    elif headers.get("cf-mitigated") or (
+            host in _R2_HOSTS and (headers.get("server") or "").lower() == "cloudflare"
+            and not headers.get("cf-cache-status")):
+        cdn = "Cloudflare"
+    else:
+        return None
+    return (f"{host or 'the server'}'s CDN firewall ({cdn}) refused this network. Your install is fine; "
+            "retry from another network")
 
 
 def _delay(exc: Exception, attempt: int) -> float:

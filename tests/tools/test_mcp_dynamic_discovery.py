@@ -14,6 +14,14 @@ from tools.registry import ToolRegistry
 def _make_mcp_tool(name: str, desc: str = ""):
     return SimpleNamespace(name=name, description=desc, inputSchema=None)
 
+
+def _make_mcp_tool_with_props(name: str, props):
+    return SimpleNamespace(
+        name=name, description="",
+        inputSchema={"type": "object",
+                     "properties": {p: {"type": "string"} for p in props}},
+    )
+
 class TestRegisterServerTools:
     """Tests for the extracted _register_server_tools helper."""
 
@@ -180,6 +188,42 @@ class TestRefreshTools:
             assert "mcp__restored_srv__live_tool" in mock_registry.get_all_tool_names()
             assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
             assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
+
+class TestReconnectResync:
+    """#126978: a reconnect that keeps its registrations (no parking) must re-sync the
+    registry with what the server now serves — the same diff the list_changed path applies."""
+
+    @pytest.fixture
+    def mock_registry(self):
+        return ToolRegistry()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_prunes_removed_registers_new_and_refreshes_schema(self, mock_registry):
+        """Issue repro: registered [old_tool, keep(x)], server now serves [keep(x, y),
+        new_tool]; running the reconnect discovery path must prune old_tool, add
+        new_tool, and refresh keep's schema props to {x, y}."""
+        server = MCPServerTask("demo")
+        server._config = {}
+        server._tools = [_make_mcp_tool_with_props("old_tool", ["a"]),
+                         _make_mcp_tool_with_props("keep", ["x"])]
+        with patch("tools.registry.registry", mock_registry):
+            server._registered_tool_names = _register_server_tools("demo", server, {})
+            assert {"mcp__demo__old_tool", "mcp__demo__keep"} <= set(server._registered_tool_names)
+
+            server.session = SimpleNamespace(
+                list_tools=AsyncMock(return_value=SimpleNamespace(tools=[
+                    _make_mcp_tool_with_props("keep", ["x", "y"]),
+                    _make_mcp_tool_with_props("new_tool", ["z"]),
+                ]))
+            )
+            await server._discover_tools()  # what _serve_session runs on every reconnect
+
+            names = set(mock_registry.get_all_tool_names())
+            assert "mcp__demo__old_tool" not in names
+            assert {"mcp__demo__keep", "mcp__demo__new_tool"} <= names
+            keep_params = mock_registry.get_schema("mcp__demo__keep")["parameters"]
+            assert set(keep_params["properties"]) == {"x", "y"}
+            assert set(server._registered_tool_names) == {"mcp__demo__keep", "mcp__demo__new_tool"}
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

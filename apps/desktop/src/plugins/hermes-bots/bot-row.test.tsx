@@ -60,9 +60,9 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+  const { container } = render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
-  return screen.getByRole('button')
+  return container.querySelector<HTMLElement>('[data-slot="row-button"]')!
 }
 
 beforeEach(() => {
@@ -228,5 +228,40 @@ describe('age label reflects the last worker run, not only the last conversation
     } as RosterRow)
 
     expect(screen.getByText('3d')).toBeTruthy()
+  })
+})
+
+describe('disclosure control layout', () => {
+  it('keeps the always-visible chevron in the title line before the age', () => {
+    const bot = { name: 'alpha', last_session: { last_active: Date.now() / 1000 - 3600 } } as RosterRow
+    renderRow(bot)
+
+    const caret = screen.getByRole('button', { name: /conversations with alpha/i })
+    const titleLine = caret.closest('[data-bot-title-line]')
+    expect(titleLine).toBeTruthy()
+    expect(caret.className).not.toContain('opacity-0')
+    const age = [...titleLine!.querySelectorAll('span')].find(node => node.textContent === '1h')
+    expect(age).toBeTruthy()
+    expect(caret.compareDocumentPosition(age!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Free width must go between the caret and age, never between name and caret.
+    expect(titleLine!.className).not.toContain('justify-between')
+    expect(age!.className).toContain('ml-auto')
+  })
+
+  it.each(['Enter', 'Space'])('toggles conversations with %s without opening the canonical chat', async key => {
+    const bot = { name: 'alpha' } as RosterRow
+    renderRow(bot)
+    const caret = screen.getByRole('button', { name: /conversations with alpha/i })
+
+    fireEvent.keyDown(caret, { code: key === 'Space' ? 'Space' : 'Enter', key: key === 'Space' ? ' ' : key })
+
+    expect(openRosterBot).not.toHaveBeenCalled()
+  })
+
+  it('does not place the disclosure button inside an interactive row parent', () => {
+    renderRow({ name: 'alpha' } as RosterRow)
+    const caret = screen.getByRole('button', { name: /conversations with alpha/i })
+
+    expect(caret.parentElement?.getAttribute('role')).not.toBe('button')
   })
 })

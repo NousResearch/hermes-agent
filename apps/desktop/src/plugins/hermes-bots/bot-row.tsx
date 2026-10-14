@@ -19,6 +19,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  DisclosureCaret,
   GlyphSpinner,
   haptic,
   host,
@@ -33,6 +34,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { $expandedBotSessions, BotSessionList, toggleBotSessions } from './bot-session-list'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -237,9 +239,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const sections = useValue($botSections)
   const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
+  const sessionsExpanded = useValue($expandedBotSessions).has(rosterKey)
+  const sessionsLabel = `${sessionsExpanded ? 'Hide' : 'Show'} conversations with ${displayName(bot, meta)}`
 
   const row = (
-    <RowButton
+    <div
       aria-busy={isOpening || undefined}
       aria-label={rowTooltip}
       className={cn(
@@ -251,6 +255,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         dragging && 'opacity-40'
       )}
       data-roster-key={rosterKey}
+      data-slot="row-button"
       draggable
       onClick={open}
       onDragEnd={() => $draggingBot.set(null)}
@@ -272,8 +277,16 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1.5">
+        <div className="flex items-baseline gap-1.5" data-bot-title-line>
+          <button
+            aria-label={rowTooltip}
+            className="flex min-w-0 items-center gap-1.5 text-left"
+            onClick={event => {
+              event.stopPropagation()
+              open()
+            }}
+            type="button"
+          >
             {/* The session row's own lead cell, so a bot's name sits on the
                 same left edge as every session name above it in the rail. */}
             <SidebarRowLead>
@@ -292,7 +305,29 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             <Tip label={rowTooltip}>
               <span className="min-w-0 truncate text-[0.8125rem] font-medium">{displayName(bot, meta)}</span>
             </Tip>
-          </div>
+          </button>
+          <button
+            aria-expanded={sessionsExpanded}
+            aria-label={sessionsLabel}
+            className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            onClick={event => {
+              event.stopPropagation()
+              haptic('selection')
+              toggleBotSessions(rosterKey)
+            }}
+            onKeyDown={event => {
+              if (event.key === 'Enter' || event.key === ' ' || event.key === 'Space' || event.code === 'Space') {
+                event.preventDefault()
+                event.stopPropagation()
+                haptic('selection')
+                toggleBotSessions(rosterKey)
+              }
+            }}
+            type="button"
+          >
+            <DisclosureCaret open={sessionsExpanded} />
+          </button>
+
           {attention ? (
             <Tip label={botAttentionHint(attention.reason)}>
               <Codicon
@@ -306,7 +341,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             <GlyphSpinner ariaLabel={b.bot.openingChat} className="shrink-0 text-xs text-(--ui-text-secondary)" />
           ) : null}
           {rowAgeTs ? (
-            <span className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)">
+            <span className="ml-auto shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)">
               {rowAge(rowAgeTs * 1000, t.sidebar.row)}
             </span>
           ) : null}
@@ -323,12 +358,17 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           </div>
         ) : null}
       </div>
-    </RowButton>
+    </div>
   )
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild>
+        <div className="group/botrow relative w-full min-w-0">
+          {row}
+          {sessionsExpanded ? <BotSessionList bot={bot} /> : null}
+        </div>
+      </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
         <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
@@ -596,7 +636,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
         ) : null}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline justify-between gap-2" data-bot-title-line>
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{group}</span>
           {room.pinned ? (
             <Tip label={b.roster.pinned}>

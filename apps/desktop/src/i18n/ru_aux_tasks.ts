@@ -8,5 +8,6 @@ export const ruAuxTasks: AuxTaskCopyMap = {
   mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
   title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
   voice_chat: { label: 'Голосовой чат', hint: 'Ответы в голосовом режиме' },
-  curator: { label: 'Куратор', hint: 'Просмотр использования навыков' }
+  curator: { label: 'Куратор', hint: 'Просмотр использования навыков' },
+  memory_extraction: { label: 'Извлечение памяти', hint: 'Извлечение фактов за ход' }
 }

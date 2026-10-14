@@ -550,7 +550,7 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
 _AUX_TASK_SLOTS: tuple[str, ...] = (
     "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review", "voice_chat",
-    "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
+    "triage_specifier", "kanban_decomposer", "profile_describer", "curator", "memory_extraction",
 )
 
 

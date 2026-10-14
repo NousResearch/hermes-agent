@@ -45,5 +45,6 @@ export const frAuxTasks: AuxTaskCopyMap = {
   curator: {
     label: 'Curateur',
     hint: "Revue d'utilisation des skills"
-  }
+  },
+  memory_extraction: { label: 'Extraction de mémoire', hint: 'Extraction de faits par tour' }
 }

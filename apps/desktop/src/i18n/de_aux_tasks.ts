@@ -45,5 +45,6 @@ export const deAuxTasks: AuxTaskCopyMap = {
   curator: {
     label: 'Kurator',
     hint: 'Skill-Nutzungs-Review'
-  }
+  },
+  memory_extraction: { label: 'Speicherextraktion', hint: 'Faktenextraktion pro Runde' }
 }

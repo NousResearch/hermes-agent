@@ -12,5 +12,6 @@ export const jaAuxTasks: AuxTaskCopyMap = {
   triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
   kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
   profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
-  curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
+  curator: { label: 'キュレーター', hint: 'スキル使用レビュー' },
+  memory_extraction: { label: 'メモリ抽出', hint: 'ターンごとの記憶ファクト抽出' }
 }

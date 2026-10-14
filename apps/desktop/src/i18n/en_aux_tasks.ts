@@ -12,5 +12,6 @@ export const enAuxTasks: AuxTaskCopyMap = {
   triage_specifier: { label: 'Triage specifier', hint: 'Kanban spec fleshing' },
   kanban_decomposer: { label: 'Kanban decomposer', hint: 'Task decomposition' },
   profile_describer: { label: 'Profile describer', hint: 'Auto profile descriptions' },
-  curator: { label: 'Curator', hint: 'Skill-usage review' }
+  curator: { label: 'Curator', hint: 'Skill-usage review' },
+  memory_extraction: { label: 'Memory extraction', hint: 'Per-turn memory fact extraction' }
 }

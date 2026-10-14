@@ -34,7 +34,10 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'triage_specifier' },
   { key: 'kanban_decomposer' },
   { key: 'profile_describer' },
-  { key: 'curator' }
+  { key: 'curator' },
+  // Fork (3a55a0aaf4): call_llm(task='memory_extraction') is a live runtime path
+  // (hybrid_memory per-turn fact extraction) but was absent from this list.
+  { key: 'memory_extraction' }
 ]
 
 // Rows to render: the built-ins above, then every task the backend reported that is not a

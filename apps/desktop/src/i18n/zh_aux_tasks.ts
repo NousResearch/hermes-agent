@@ -12,5 +12,6 @@ export const zhAuxTasks: AuxTaskCopyMap = {
   triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
   kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
   profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
-  curator: { label: '维护器', hint: '技能使用审查' }
+  curator: { label: '维护器', hint: '技能使用审查' },
+  memory_extraction: { label: '记忆提取', hint: '每轮记忆事实提取' }
 }

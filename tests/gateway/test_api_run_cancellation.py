@@ -51,7 +51,7 @@ def test_cancel_fences_delayed_admission_across_connections_and_restart(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_http_cancel_never_launches_and_fails_closed_during_admission(tmp_path):
+async def test_http_cancel_never_launches_and_fails_closed_during_admission(tmp_path, monkeypatch):
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "owner-secret"}))
     adapter._run_idempotency_store.close()
     adapter._run_idempotency_store = RunIdempotencyStore(str(tmp_path / "http.db"))
@@ -70,6 +70,36 @@ async def test_http_cancel_never_launches_and_fails_closed_during_admission(tmp_
         assert (await delayed.json())["error"]["code"] == "idempotency_key_cancelled"
         assert not adapter._active_run_tasks
         assert not adapter._run_streams
+        # Suspend the real admission path after reservation but before execution registration.
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_admit = adapter._admit_to_live_bot_chat
+
+        async def paused_admit(*args):
+            entered.set()
+            await release.wait()
+            return await original_admit(*args)
+
+        monkeypatch.setattr(adapter, "_admit_to_live_bot_chat", paused_admit)
+        racing_headers = {**headers, "Idempotency-Key": "suspended-admission"}
+        submission = asyncio.create_task(client.post(
+            "/v1/runs", headers=racing_headers,
+            json={"input": "Do not execute this", "session_id": "cancel-race-session"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            uncertain = await client.post("/v1/runs/cancel", headers=racing_headers)
+            assert uncertain.status == 409
+            original_id = (await uncertain.json())["run_id"]
+        finally:
+            release.set()
+        accepted = await submission
+        assert accepted.status == 202
+        assert (await accepted.json())["run_id"] == original_id
+        from tests.waiting import async_wait_until
+        await async_wait_until(
+            lambda: adapter._run_statuses[original_id]["status"] == "cancelled", timeout=5)
+        assert not adapter._active_run_agents
+        terminal = await client.post("/v1/runs/cancel", headers=racing_headers)
+        assert (await terminal.json())["status"] == "cancelled"
         # The real store contains an admitted receipt, while no execution task is registered.
         # This is also the state during the asynchronous live-owner mailbox admission.
         from aiohttp.test_utils import make_mocked_request

@@ -185,6 +185,14 @@ class RunIdempotencyStore:
             (scope, key)).fetchone()
         return None if row is None else {"expires_at": row[0]}
 
+    def is_cancelled(self, run_id: str) -> bool:
+        """Check the admission fence again after asynchronous routing finishes."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM run_idempotency r JOIN run_cancellations c "
+                "ON c.scope=r.scope AND c.idempotency_key=r.idempotency_key "
+                "WHERE r.run_id=? AND c.expires_at>?", (run_id, time.time())).fetchone() is not None
+
     def cancel_key(self, scope: str, key: str, *, retention_until: float = 0):
         """Fence an unadmitted key or return the original run without creating work."""
         now = time.time()

@@ -964,7 +964,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("interrupted")
             return
         self._set_run_status(run_id, "running")
-        if run_id in self._stopping_run_ids:
+        # Cancellation may have fenced admission while routing awaited I/O.
+        if run_id in self._stopping_run_ids or self._run_idempotency_store.is_cancelled(run_id):
             _finish("cancelled")
             return
         with self._profile_scope(run.request_profile):

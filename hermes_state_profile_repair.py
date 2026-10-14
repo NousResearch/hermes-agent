@@ -37,7 +37,7 @@ def session_key_profile(session_key: Any) -> Optional[str]:
     parts = session_key.split(":")
     if len(parts) < 3 or parts[0] != "agent" or not parts[1]:
         return None
-    from gateway.session import profile_from_session_key_namespace
+    from hermes_state_keys import profile_from_session_key_namespace
     return profile_from_session_key_namespace(parts[1])
 
 
@@ -56,6 +56,13 @@ def _table_columns(conn, table: str) -> list[str]:
 # ``messages_display_order_insert`` trigger recomputes it from ``display_identity`` (a content hash,
 # store-independent) or the new id.
 _MESSAGE_MOVE_SKIP = frozenset({"id", "display_order"})
+
+
+class SessionLedgeredError(RuntimeError):
+    """A session with gateway admission/worker history cannot be moved between stores."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(f"{session_id} has gateway admission/worker history; not moved")
 
 
 class SessionProfileRepairMixin:
@@ -78,6 +85,7 @@ class SessionProfileRepairMixin:
             "       p.session_key AS parent_session_key "
             "FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id "
             "WHERE s.session_key LIKE 'agent:%' ORDER BY s.started_at, s.id")
+        ledgered = self._ledgered_session_ids()
         found: dict[str, list[dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -91,13 +99,31 @@ class SessionProfileRepairMixin:
             if key_profile != owner:
                 found["foreign"].append({
                     "id": row["id"], "session_key": row["session_key"], "key_profile": key_profile,
-                    "message_count": int(row["message_count"] or 0)})
+                    "message_count": int(row["message_count"] or 0),
+                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered})
             parent_profile = session_key_profile(row["parent_session_key"])
             if parent_profile is not None and parent_profile != key_profile:
                 found["crossed_parents"].append({
                     "id": row["id"], "key_profile": key_profile,
                     "parent_session_id": row["parent_session_id"], "parent_profile": parent_profile})
         return found
+
+    def _ledgered_session_ids(self) -> set[str]:
+        """Sessions the gateway's durable ledger references (``session_admissions`` /
+        ``worker_executions``, both ``ON DELETE RESTRICT``). A move copies only the transcript, so
+        such a row could never leave the source: report it instead of copying it. A store whose
+        schema predates the ledger has none."""
+        def _read(conn):
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('session_admissions', 'worker_executions')")}
+            ids: set[str] = set()
+            if "session_admissions" in tables:
+                ids.update(r[0] for r in conn.execute("SELECT DISTINCT target_session_id FROM session_admissions"))
+            if "worker_executions" in tables:
+                ids.update(r[0] for r in conn.execute("SELECT DISTINCT session_id FROM worker_executions"))
+            return ids
+        return self._read_retrying_ioerr(_read)
 
     def list_gateway_routing_rows(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self._read_all(
@@ -197,7 +223,12 @@ class SessionProfileRepairMixin:
                 "SELECT * FROM session_model_usage WHERE session_id = ?", (session_id,))]
             return {"session": dict(session), "system_prompt": prompt, "tool_pin": tool_pin, "messages": messages,
                     "usage": usage}
-        return self._read_retrying_ioerr(_read)
+        payload = self._read_retrying_ioerr(_read)
+        if payload is not None and session_id in self._ledgered_session_ids():
+            # Re-checked at apply time: the scan may predate a turn, and copying first would leave
+            # the session in both stores once the ledger's RESTRICT FK refuses the source delete.
+            raise SessionLedgeredError(session_id)
+        return payload
 
     def import_moved_session(self, payload: dict[str, Any], *, profile_name: str) -> str:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already

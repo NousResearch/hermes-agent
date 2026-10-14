@@ -252,6 +252,8 @@ class SessionProfileRepairMixin:
             conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            # The session lives on in the target profile; resume here must not recreate it empty.
+            self._record_deleted(conn, [session_id])
             return True
         return bool(self._execute_write(_do))
 

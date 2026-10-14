@@ -157,3 +157,93 @@ def test_resume_minted_key_claimed_by_other_profile_fails_closed(real_db):
 )
 def test_is_server_minted_key_shape(value, expected):
     assert server._is_server_minted_key(value) is expected
+
+# A deleted session leaves no row either, so without a record of the delete it looks exactly like a
+# minted-but-never-persisted key and resume would bring it back as an empty "Untitled" row.
+def _rpc(method, **params):
+    return server.handle_request({"id": "1", "method": method, "params": params})
+
+
+@pytest.mark.parametrize("delete", ["session.delete", "bulk"])
+def test_resume_does_not_resurrect_a_deleted_session(real_db, delete):
+    real_db.create_session(MINTED_KEY, source="desktop", model="test-model")
+    real_db.append_message(MINTED_KEY, "user", "hello")
+    if delete == "session.delete":
+        assert "error" not in _rpc("session.delete", session_id=MINTED_KEY)
+    else:
+        assert real_db.delete_sessions([MINTED_KEY]) == 1
+
+    resp = _resume(session_id=MINTED_KEY)
+
+    assert resp["error"]["code"] == 4007
+    assert real_db.get_session(MINTED_KEY) is None
+
+
+def test_internal_rollback_delete_still_lets_resume_materialize(real_db):
+    # The seeded-row rollbacks delete a row they just wrote so the lazy path can recreate it; that
+    # is not a user delete and must not block the #96793 recovery.
+    real_db.create_session(MINTED_KEY, source="desktop", model="test-model")
+    assert real_db.delete_session(MINTED_KEY, record_deleted=False)
+
+    _assert_resumed_ok(_resume(session_id=MINTED_KEY), MINTED_KEY)
+    assert real_db.get_session(MINTED_KEY) is not None
+
+
+def _materialized_then_ended(db):
+    # Desktop mints the key without a row; one resume materializes it empty; closing ends it.
+    resp = _resume(session_id=MINTED_KEY)
+    _assert_resumed_ok(resp, MINTED_KEY)
+    assert "error" not in _rpc("session.close", session_id=resp["result"]["session_id"])
+    row = db.get_session(MINTED_KEY)
+    assert row is not None and row["ended_at"] is not None and row["message_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "user_delete",
+    [
+        pytest.param(lambda db: db.delete_empty_sessions(), id="dashboard-delete-empty"),
+        pytest.param(lambda db: db.prune_sessions(older_than_days=0), id="retention-prune"),
+        pytest.param(lambda db: db.delete_moved_session(MINTED_KEY), id="profile-move"),
+    ],
+)
+def test_resume_does_not_resurrect_after_other_user_deletes(real_db, user_delete):
+    _materialized_then_ended(real_db)
+    assert user_delete(real_db) in (1, True)
+
+    resp = _resume(session_id=MINTED_KEY)
+
+    assert resp["error"]["code"] == 4007
+    assert real_db.get_session(MINTED_KEY) is None
+
+
+def test_cascaded_delegate_children_are_recorded(real_db):
+    child = "20260828_053122_aaaaaa"
+    real_db.create_session(MINTED_KEY, source="desktop", model="test-model")
+    real_db.create_session(child, source="tui", parent_session_id=MINTED_KEY,
+                           model_config={"_delegate_from": MINTED_KEY})
+    assert real_db.delete_session(MINTED_KEY)
+
+    assert real_db.get_session(child) is None
+    assert real_db.was_deleted(MINTED_KEY) and real_db.was_deleted(child)
+
+
+def test_housekeeping_sweeps_do_not_record(real_db):
+    # Recreating a never-used empty row loses nothing, so these sweeps leave resume free to do it.
+    real_db.create_session(MINTED_KEY, source="desktop", model="test-model")
+    assert real_db.delete_session_if_empty(MINTED_KEY)
+    assert real_db.delete_sessions([EXISTING_KEY, MINTED_KEY], record_deleted=False) == 0
+    assert not real_db.was_deleted(MINTED_KEY)
+
+    _assert_resumed_ok(_resume(session_id=MINTED_KEY), MINTED_KEY)
+
+
+def test_deleted_markers_expire_with_session_retention(real_db):
+    real_db.create_session(MINTED_KEY, source="desktop", model="test-model")
+    real_db.create_session(EXISTING_KEY, source="desktop", model="test-model")
+    assert real_db.delete_sessions([MINTED_KEY, EXISTING_KEY]) == 2
+    # Backdate one record past a 30-day window.
+    real_db.set_meta(f"{real_db._DELETED_SESSION_META_PREFIX}{MINTED_KEY}", "0")
+
+    assert real_db._expire_deleted_markers(older_than_days=30) == 1
+    assert not real_db.was_deleted(MINTED_KEY)
+    assert real_db.was_deleted(EXISTING_KEY)

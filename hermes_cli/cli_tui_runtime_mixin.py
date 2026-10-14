@@ -266,7 +266,13 @@ class CLITuiRuntimeMixin:
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
-        self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except GatewayClientError as exc:
+            # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
         self._show_startup_browser_notice()

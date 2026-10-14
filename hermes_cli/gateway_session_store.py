@@ -129,11 +129,13 @@ class GatewaySessionStore:
         gateway does not know is left as is: main's own "Session not found" path reports it."""
         if getattr(cli, "_resumed", False):
             try:
-                return self._adopt(self.attach(cli.session_id))
+                snapshot = self.attach(cli.session_id)
             except GatewayClientError as exc:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
                 raise
+            _check_resume_launch(launch or {}, snapshot)
+            return self._adopt(snapshot)
         return self.create(launch)
 
     def create(self, launch=None, title=None, *, record_cwd=True):
@@ -392,12 +394,34 @@ def _creation_policy(launch):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
     policy = _requested_policy(argparse.Namespace(**fields, source=None))
     policy.pop("source", None)
-    if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
-        policy["run_budget"] = float(launch["run_budget"])
-    if launch.get("verbose"):  # main's `-v` (the thin client refuses it)
-        policy["verbose"] = True
+    policy.update(_classic_only_policy(launch))
     policy.update(env_launch_flags())
     return policy
+
+
+def _classic_only_policy(launch):
+    """Main's `--run-budget` and `-v`, which the thin client refuses."""
+    policy = {}
+    if launch.get("run_budget") is not None:
+        policy["run_budget"] = float(launch["run_budget"])
+    if launch.get("verbose"):
+        policy["verbose"] = True
+    return policy
+
+
+# Flags a resume may only repeat. Not ``toolsets``: the classic CLI always sends its resolved selection, so
+# an unset ``-t`` cannot be told from an explicit one here.
+_RESUME_CHECKED = tuple(key for key in _LAUNCH_POLICY if key != "toolsets")
+
+
+def _check_resume_launch(launch, snapshot):
+    """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
+    client checks them: the same flags again are fine, a different value is refused, never dropped."""
+    from hermes_cli.gateway_chat import _RESUME_POLICY_MISMATCH, check_resume_policy
+    check_resume_policy(argparse.Namespace(**{key: launch.get(key) for key in _RESUME_CHECKED}), snapshot)
+    frozen = ((snapshot.get("info") or {}).get("launch_request") or {})
+    if any(frozen.get(key) != value for key, value in _classic_only_policy(launch).items()):
+        raise GatewayClientError(_RESUME_POLICY_MISMATCH)
 
 
 def session_store():

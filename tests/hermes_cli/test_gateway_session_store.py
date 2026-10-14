@@ -488,3 +488,89 @@ def test_resume_hands_the_cli_lease_over_while_the_gateway_imports_the_row(store
     client.rpc = rpc
     CLIInitMixin._ensure_gateway_session(h)
     assert events == ["release", ("session.resume", True), ("claim", "local-old")], events
+
+
+# Regressions for #134889 (classic CLI launch flags reaching the gateway-owned session).
+
+def test_skills_flag_reaches_session_create_without_auto_load_names(store, monkeypatch):
+    """CLI-1: `-s/--skills` rides ``session.create`` (the gateway renders it into the session once); the
+    CLI's own system prompt never reaches the gateway. ``skills.auto_load`` names the gateway loads itself."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    monkeypatch.setattr("agent.skill_commands.resolve_auto_load_skills", lambda config=None: ["pinned"])
+    db, client = store
+    host = types.SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["file"],
+                                 session_id="20261012_000000_abcdef", _resumed=False, _session_db=db,
+                                 _preload_skills_requested=["pinned", "arxiv"])
+    CLIInitMixin._ensure_gateway_session(host)
+    assert [p for m, p in client.calls if m == "session.create"][-1]["skills"] == ["arxiv"]
+
+
+def _frozen_launch(client, launch_request):
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        result = await base(method, _timeout=_timeout, **params)
+        if method == "session.resume":
+            result["info"]["launch_request"] = dict(launch_request)
+        return result
+    client.rpc = rpc
+
+
+def test_explicit_flags_on_resume_are_checked_against_the_frozen_route(store):
+    """CLI-2: `--resume` / `-c` with `-m`, `--max-turns`, `--checkpoints`, ... is refused when it would
+    change the frozen route (as the thin client refuses it), never silently ignored; repeating it is fine."""
+    db, client = store
+    _frozen_launch(client, {"model": "m-frozen", "model_requested": "m-alias", "max_turns": 5, "run_budget": 60.0})
+    for launch in ({"max_turns": 1}, {"model": "m-other"}, {"checkpoints": True}, {"run_budget": 30},
+                   {"verbose": True}, {"skills": ["arxiv"]}):
+        with pytest.raises(GatewayClientError, match="Resume retains gateway session policy"):
+            GatewaySessionStore(db.connection).open_session(cli("local-old", resumed=True), launch)
+    for launch in ({}, {"max_turns": 5, "model": "m-alias", "run_budget": 60, "toolsets": ["web"]}):
+        assert GatewaySessionStore(db.connection).open_session(cli("local-old", resumed=True), launch) == "local-old"
+
+
+def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
+    """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
+    AIAgent across /new); only the explicit model route is left to the profile default."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    monkeypatch.setattr("agent.skill_commands.resolve_auto_load_skills", lambda config=None: [])
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True,
+                                 model="m-explicit", _explicit_model_override=True, requested_provider="openrouter",
+                                 enabled_toolsets=["file"], _explicit_max_turns=3, _explicit_checkpoints=True,
+                                 _explicit_run_budget=60, verbose=True, _preload_skills_requested=["arxiv"])
+    CLIInitMixin._new_session_id(host, None)
+    params = [p for m, p in client.calls if m == "session.create"][-1]
+    assert (params["max_turns"], params["checkpoints"], params["run_budget"], params["verbose"],
+            params["skills"], params["toolsets"]) == (3, True, 60.0, True, ["arxiv"], ["file"]), params
+    assert "model" not in params and "provider" not in params
+
+
+def test_branch_carries_a_live_yolo_onto_the_gateway_child(store):
+    """CLI-20: the gateway's branch child starts without the parent's `/yolo` toggle while the CLI moves
+    its own flag over (status bar YOLO); the CLI sets the child's bypass on the gateway too."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from tools import approval
+    db, client = store
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.mutate" and params["operation"] == "branch":
+            client.calls.append((method, params))
+            child = f"local-child-{len(client.calls)}"
+            client.known.add(child)
+            return {"branched_session_id": child, "copied_messages": 0}
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    db.open_session(cli("local-old", resumed=True))
+    host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True)
+    plain = CLIInitMixin._new_session_id(host, None, branch_of="local-old")
+    assert not [p for m, p in client.calls if m == "config.set"]
+    approval.enable_session_yolo("local-old")
+    try:
+        child = CLIInitMixin._new_session_id(host, None, branch_of="local-old")
+    finally:
+        for key in ("local-old", plain, "local-child"):
+            approval.disable_session_yolo(key)
+    assert [p for m, p in client.calls if m == "config.set"] == [{"session_id": child, "key": "yolo", "value": "1"}]

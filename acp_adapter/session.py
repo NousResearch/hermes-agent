@@ -148,6 +148,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Per-session reasoning effort set through ACP ``session/set_config_option``
+    # (``thought_level``): (level, parsed ``reasoning_config`` dict). Carried into agent
+    # rebuilds (model switch, restore, fork) so an editor-set effort outlives them.
+    reasoning_effort: tuple[str, dict] | None = None
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
@@ -201,9 +205,14 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
+        # An ACP-set reasoning effort carries into the fork like every other rebuild.
+        forked_effort = getattr(original, "reasoning_effort", None)
+        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None,
+                                 reasoning_config=(forked_effort[1] if forked_effort else None))
         model = getattr(agent, "model", original.model) or original.model
         state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        if forked_effort:
+            state.reasoning_effort = forked_effort
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -352,6 +361,12 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        effort = getattr(state, "reasoning_effort", None)
+        if isinstance(effort, tuple) and len(effort) == 2:
+            # ACP-set effort rides in model_config so a restart/restore replays it.
+            level, parsed = effort
+            session_meta["reasoning_effort"] = str(level)
+            session_meta["reasoning_config"] = parsed
 
         try:
             if db.get_session(state.session_id) is None:
@@ -467,6 +482,9 @@ class SessionManager:
 
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
+        persisted_effort = None
+        if isinstance(meta.get("reasoning_config"), dict) and meta.get("reasoning_effort"):
+            persisted_effort = (str(meta["reasoning_effort"]), dict(meta["reasoning_config"]))
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
@@ -480,12 +498,15 @@ class SessionManager:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                base_url=meta.get("base_url") or row.get("billing_base_url"),
+                reasoning_config=(persisted_effort[1] if persisted_effort else None))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False)
+        if persisted_effort:
+            state.reasoning_effort = persisted_effort
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -493,7 +514,8 @@ class SessionManager:
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+                    reasoning_config: dict | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
         them from config (fresh session)."""
         if self._agent_factory is not None:
@@ -531,8 +553,10 @@ class SessionManager:
             "cwd": cwd,
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
-            # models). Resolved against the session's model so per-model overrides apply.
-            "reasoning_config": resolve_reasoning_config(config, model or default_model),
+            # models). Resolved against the session's model so per-model overrides apply. An explicit
+            # ``reasoning_config`` (an ACP ``thought_level`` selection carried across a model switch or
+            # restore) outranks config — the editor's last explicit choice wins for this session.
+            "reasoning_config": reasoning_config or resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
         try:

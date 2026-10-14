@@ -2153,10 +2153,12 @@ class GatewayTurnMixin:
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
+        self._session_state(_quick_key).turn.stage = "resolve_session"
         resolved = await self._hmwa_resolve_session(event, source)
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        self._session_state(_quick_key).turn.stage = "prepare_turn"
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2174,6 +2176,7 @@ class GatewayTurnMixin:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
+            self._session_state(_quick_key).turn.stage = "agent_start_hooks"
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
@@ -3291,6 +3294,7 @@ class GatewayTurnMixin:
             return
         turn_state = self._session_state(session_key).turn
         turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
+        turn_state.stage = "running"
         if self._draining:
             self._update_runtime_status("draining")
 

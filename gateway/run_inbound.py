@@ -501,8 +501,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     def _hm_evict_idle_stale_agent(self, _quick_key: str) -> None:
         """Evict a leaked lock from a hung/crashed handler: only when the agent has been *idle* past
         the threshold (active tasks can run for hours), or has no activity tracker and an extreme
-        wall-clock age. The pending sentinel is never evicted (no get_activity_summary() → idle
-        reads inf and would race the async setup path)."""
+        wall-clock age. A pre-agent PENDING sentinel has no activity clock either, but leaving it
+        forever wedges the session (every later message queues silently): evict it past the
+        pending-setup timeout instead (#138358)."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         _quick_state = self._peek_session_state(_quick_key)
@@ -511,6 +512,26 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return
         _stale_age = time.time() - _stale_ts
         _stale_agent = _quick_state.turn.agent
+        if _stale_agent is _AGENT_PENDING_SENTINEL:
+            # A turn wedged anywhere in the pre-agent phase (session resolve, turn
+            # prepare, agent:start hooks) never reaches the inactivity watchdog, and
+            # the 5 s turn-lease wait only bounds lease contention: without this bound
+            # the session queues silently forever (#138358). Default follows
+            # HERMES_AGENT_TIMEOUT so legitimate slow setups (transcript load,
+            # bounded hygiene) are never raced; 0 disables back to never-evict.
+            _pending_timeout = _float_env(
+                "HERMES_GATEWAY_PENDING_SETUP_TIMEOUT",
+                _raw_stale_timeout if _raw_stale_timeout > 0 else 1800.0,
+            )
+            if _pending_timeout > 0 and _stale_age > _pending_timeout:
+                logger.warning(
+                    "Evicting wedged pre-agent turn for %s "
+                    "(pending setup age: %.0fs, timeout: %.0fs, stage: %s)",
+                    _quick_key, _stale_age, _pending_timeout,
+                    getattr(_quick_state.turn, "stage", ""),
+                )
+                self._hm_evict_running_agent(_quick_key, "wedged_preagent_eviction")
+            return
         _stale_idle = float("inf")  # assume idle if we can't check
         _stale_detail = ""
         _activity_summary_valid = False
@@ -1353,6 +1374,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
+        _claim_state.turn.stage = "claimed"
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()

@@ -25,6 +25,9 @@ class TurnState:
     event: Any = None
     ctx: Any = None
     started_ts: float = 0.0  # 0.0 = not running
+    # Pre-agent breadcrumb: claimed -> resolve_session -> prepare_turn ->
+    # agent_start_hooks -> running. A wedged turn's eviction log carries this
+    # instead of a stack dump (#138358).
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
     # Held turn-lease tokens keyed by acquiring run generation: release/rebind resolve the
@@ -36,6 +39,7 @@ class TurnState:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
         self.agent = self.lease = self.event = self.ctx = None
         self.started_ts = self.busy_ack_ts = 0.0
+        self.stage = ""
 
 
 @dataclass

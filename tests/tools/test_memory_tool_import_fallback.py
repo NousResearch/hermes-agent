@@ -4,7 +4,21 @@ import builtins
 import importlib
 import sys
 
+import pytest
+
 from tools.registry import registry
+
+
+@pytest.fixture(autouse=True)
+def _restore_memory_tool(monkeypatch):
+    yield
+    monkeypatch.undo()
+    original = sys.modules.get("tools.memory_tool")
+    if original is None:
+        return
+    sys.modules["tools"].memory_tool = original
+    registry.deregister("memory")
+    importlib.reload(original)
 
 
 def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):

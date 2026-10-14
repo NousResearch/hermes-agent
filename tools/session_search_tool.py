@@ -579,8 +579,11 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               after=None, before=None, exclude_session_ids=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
-    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
-    # split on it and adopt the embedded profile only when none was passed.
+    # A raw `@session:[<profile>/]<id>` link (what _session_link emits) as session_id: drop
+    # the prefix; ids never contain "/", so split on it and adopt the embedded profile only
+    # when none was passed.
+    if isinstance(session_id, str) and session_id.strip().lower().startswith("@session:"):
+        session_id = session_id.strip()[len("@session:"):]
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:

@@ -300,3 +300,120 @@ def test_shared_key_ignored_outside_persistent_docker(monkeypatch):
         assert terminal_tool._resolve_container_task_id(None) == "session:sess-A"
     finally:
         clear_session_vars(tokens)
+
+# --- Session-less cron ownership --------------------------------------------
+
+
+def _new_cron_scope(job_id: str, execution_id: str):
+    """Construct a run in its own Context, matching concurrent scheduler workers."""
+    from contextvars import Context
+    from cron.scheduler_run_scope import _CronRunScope
+
+    context = Context()
+    scope = context.run(_CronRunScope, {"id": job_id}, job_id, execution_id)
+    return context, scope
+
+
+def test_local_cron_runs_own_distinct_terminal_environments(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    first_ctx, first = _new_cron_scope("job-a", "run-1")
+    second_ctx, second = _new_cron_scope("job-b", "run-1")
+    try:
+        first_key = first_ctx.run(
+            terminal_tool._resolve_container_task_id, first.task_id
+        )
+        second_key = second_ctx.run(
+            terminal_tool._resolve_container_task_id, second.task_id
+        )
+        assert first_key == first.task_id
+        assert second_key == second.task_id
+        assert first_key != second_key
+    finally:
+        first_ctx.run(first.exit)
+        first_ctx.run(first.release)
+        second_ctx.run(second.exit)
+        second_ctx.run(second.release)
+
+
+def test_local_cron_delegate_uses_parent_run_environment(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    context, scope = _new_cron_scope("job-a", "run-1")
+    child = "subagent-0-cron-child"
+    terminal_tool.register_container_alias(child, scope.task_id)
+    try:
+        assert context.run(
+            terminal_tool._resolve_container_task_id, child
+        ) == context.run(
+            terminal_tool._resolve_container_task_id, scope.task_id
+        )
+    finally:
+        terminal_tool.clear_task_env_overrides(child)
+        context.run(scope.exit)
+        context.run(scope.release)
+
+
+def test_persistent_docker_cron_keeps_profile_container_scope(monkeypatch):
+    _persistent_docker(monkeypatch)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    context, scope = _new_cron_scope("job-a", "run-1")
+    try:
+        assert context.run(
+            terminal_tool._resolve_container_task_id, scope.task_id
+        ) == "default"
+    finally:
+        context.run(scope.exit)
+        context.run(scope.release)
+
+
+def test_cron_scope_release_restores_sessionless_default(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    context, scope = _new_cron_scope("job-a", "run-1")
+    task_id = scope.task_id
+    context.run(scope.exit)
+    context.run(scope.release)
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
+
+
+def test_local_cron_runs_do_not_share_exported_variables(tmp_path, monkeypatch):
+    """Exercise the real local shell snapshot rather than only the key resolver."""
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    first_ctx, first = _new_cron_scope("job-a", "run-leak")
+    second_ctx, second = _new_cron_scope("job-b", "run-leak")
+    try:
+        first_ctx.run(
+            lambda: terminal_tool.terminal_tool(
+                "export CRON_SCOPE_PROBE=from-job-a", task_id=first.task_id
+            )
+        )
+        own = json.loads(
+            first_ctx.run(
+                lambda: terminal_tool.terminal_tool(
+                    'printf %s "$CRON_SCOPE_PROBE"', task_id=first.task_id
+                )
+            )
+        )
+        other = json.loads(
+            second_ctx.run(
+                lambda: terminal_tool.terminal_tool(
+                    'printf %s "$CRON_SCOPE_PROBE"', task_id=second.task_id
+                )
+            )
+        )
+        assert own["output"] == "from-job-a"
+        assert other["output"] == ""
+    finally:
+        first_ctx.run(cleanup_vm, first.task_id)
+        second_ctx.run(cleanup_vm, second.task_id)
+        first_ctx.run(first.exit)
+        first_ctx.run(first.release)
+        second_ctx.run(second.exit)
+        second_ctx.run(second.release)

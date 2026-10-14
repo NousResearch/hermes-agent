@@ -729,6 +729,14 @@ class WebhookAdapter(BasePlatformAdapter):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
+        # A webhook POST is machine traffic, not a human addressing the bot: no reader is waiting
+        # on the other end of this HTTP 202. ``reply_expected=False`` is the documented contract
+        # ("was this message addressed to this bot? False lets a bare silence marker stand"), so a
+        # route prompt that answers "[SILENT]" on a quiet tick — which webhook.send() already
+        # suppresses on the delivery leg — is not re-inflated into the unexpected-silence warning
+        # by the gateway's turn shaping. Routes whose reply a human genuinely awaits still get a
+        # visible response: the marker only stands when the model chose to emit it.
+        event.reply_expected = False
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))

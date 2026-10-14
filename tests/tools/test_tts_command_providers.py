@@ -321,6 +321,35 @@ class TestRenderCommandTtsTemplate:
         )
         assert '"bob\'s voice"' in rendered
 
+    def test_backslash_adjacent_placeholder_stays_literal(self):
+        """A placeholder directly preceded by a backslash is never substituted (#138361).
+
+        Substituting would splice the template's backslash into the emitted escape
+        sequence and un-escape the value, so the renderer must treat it as literal."""
+        placeholders = {
+            "input_path": "$(echo PWNED)", "text_path": "/tmp/in.txt",
+            "output_path": "/tmp/out.mp3", "format": "mp3",
+            "voice": "", "model": "", "speed": "1.0",
+        }
+        for template in (r'echo "\{input_path}"', r"echo \{input_path}"):
+            rendered = _render_command_tts_template(template, placeholders)
+            assert "\\{input_path}" in rendered
+            assert "$(echo PWNED)" not in rendered
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX sh execution proof")
+    def test_backslash_adjacent_placeholder_cannot_resurrect_substitution(self):
+        """End-to-end on /bin/sh: the old renderer emitted "\\$(...)" — a double
+        backslash that un-escapes the value — so command substitution executed."""
+        rendered = _render_command_tts_template(
+            r'echo "\{input_path}"',
+            {"input_path": "$(echo PWNED)"},
+        )
+        proc = subprocess.run(
+            ["/bin/sh", "-c", rendered], capture_output=True, text=True, timeout=10,
+            check=False,
+        )
+        assert "PWNED" not in proc.stdout
+
 
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior

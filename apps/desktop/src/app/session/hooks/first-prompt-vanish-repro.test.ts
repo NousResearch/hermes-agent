@@ -4,6 +4,7 @@ import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 
 import {
   pinnedOwnerCount,
+  pinnedStoredSessionIdsForOwner,
   pinStoredSessionForOwner,
   releaseStoredSessionPins,
   routeTargetFromToken,
@@ -225,11 +226,18 @@ describe('pin ownership', () => {
   it('a pin survives the owner that pinned it and is released explicitly', () => {
     pinStoredSessionForOwner('owner-a', CREATED)
 
-    expect(pinnedOwnerCount(CREATED)).toBe(1)
+    // pinnedOwnerCount() counts OWNERS still holding a pin (its shipped
+    // contract, locked by session-context-drift.test.ts); the per-session
+    // half of the claim is pinnedStoredSessionIdsForOwner. Assert both so
+    // the test actually covers "this session is pinned" and not just "some
+    // owner is holding something".
+    expect(pinnedOwnerCount()).toBe(1)
+    expect(pinnedStoredSessionIdsForOwner('owner-a')).toContain(CREATED)
 
     releaseStoredSessionPins('owner-a')
 
-    expect(pinnedOwnerCount(CREATED)).toBe(0)
+    expect(pinnedOwnerCount()).toBe(0)
+    expect(pinnedStoredSessionIdsForOwner('owner-a')).not.toContain(CREATED)
   })
 
   it('pins suppress drift only for the owning request; submit pins nothing', () => {

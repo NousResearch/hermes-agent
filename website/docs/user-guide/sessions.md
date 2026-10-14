@@ -486,6 +486,41 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 
 If the title is already in use by another session, an error is shown.
 
+### Copy a Session to Another Profile
+
+```bash
+# Copy from the currently active profile (a unique ID prefix also works)
+hermes sessions copy 20250305_091523_a1b2c3d4 --to-profile coder
+
+# Choose the source profile and an explicit destination ID
+hermes sessions copy 20250305_091523_a1b2c3d4 --from-profile default --to-profile coder --new-session-id auth-review
+```
+
+Both profiles must already exist. Copy is non-destructive: the source is read-only,
+and an existing destination ID gets `-copy`, `-copy-2`, etc. An explicit
+`--new-session-id` collision is an error instead of an overwrite. A titled session
+gets a unique `Title (copy)`, `Title (copy 2)`, etc.; an untitled session stays untitled.
+
+Only the selected session row, its stored messages (including inactive history),
+and its referenced system-prompt and tool-definition payloads are copied. The stored
+prompt may contain historical source-profile context: this is a transcript copy,
+not a sanitized export. Profile memories, config, skills, credentials, cron jobs,
+gateway routing and filesystem session artifacts are not migrated. The copied row
+is owned by the destination profile; source transport routing, parent links, session
+YOLO approval bypass, external Codex thread bindings, compression cache runway and
+Bot Chat/room identity are cleared. A hidden legacy `Group:` room copy becomes
+visible to remove its room identity; unrelated hidden sessions remain hidden.
+Model/provider/reasoning settings are retained.
+Display ordering is rebuilt against destination row IDs while logical message IDs
+and compaction deduplication are preserved, so resumed replies follow copied history.
+If the row belongs to a compression lineage, a warning reports the omitted
+continuation sessions. They are not copied automatically.
+
+Prompt payloads and transcript rows are imported in one transaction. A dangling
+source prompt reference uses its legacy inline fallback when available; a missing
+hashed prompt/tool payload without a fallback refuses the copy rather than silently
+losing context.
+
 ### Pin a Session
 
 Pinning sets a durable "keep" flag: pinned sessions are exempt from the

@@ -19,6 +19,21 @@ def cmd_sessions_lazy(args, **kwargs):
     return cmd_sessions(args, **kwargs)
 
 
+def _build_copy_delete_parsers(sessions_subparsers):
+    sessions_copy = sessions_subparsers.add_parser(
+        "copy", help="Copy one session/conversation to another Hermes profile",
+        description="Copy one session and transcript, not profile memory, config, skills, "
+                    "credentials, cron, or gateway routing. Compression continuations are not copied.")
+    sessions_copy.add_argument("session_id", help="Session ID or unique prefix to copy")
+    sessions_copy.add_argument("--to-profile", required=True, help="Target profile name")
+    sessions_copy.add_argument("--from-profile", help="Source profile (default: currently active profile)")
+    sessions_copy.add_argument("--new-session-id", help="Explicit target ID; collisions are errors")
+
+    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
+    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    add_yes_flag(sessions_delete, "Skip confirmation")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -106,9 +121,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="md/qmd only: after verified single-session export, delete that session (needs --yes)")
     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")
 
-    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
-    add_yes_flag(sessions_delete, "Skip confirmation")
+    _build_copy_delete_parsers(sessions_subparsers)
 
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")

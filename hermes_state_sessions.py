@@ -926,6 +926,15 @@ class SessionSessionsMixin:
         )
         return dict(row) if row else None
 
+    def copy_session_to(
+        self, session_id: str, target_db, *, new_session_id: Optional[str] = None,
+        include_inactive: bool = True,
+    ) -> str:
+        """Copy exactly one session and its messages, never its profile or runtime state."""
+        from hermes_state_session_copy import copy_session_to
+        return copy_session_to(self, session_id, target_db, new_session_id=new_session_id,
+                               include_inactive=include_inactive)
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""
         exact = self.get_session(session_id_or_prefix)

@@ -1185,7 +1185,13 @@ def _cmd_set_journal_mode(args):
     return cmd_set_journal_mode(args)
 
 
+def _cmd_copy(args):
+    from hermes_cli.sessions_cmd_copy import cmd_copy
+    return cmd_copy(args)
+
+
 _PRE_DB_HANDLERS = {
+    "copy": _cmd_copy,  # owns both stores; do not open the active store as a writer
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts

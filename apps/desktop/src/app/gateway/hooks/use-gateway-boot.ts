@@ -66,7 +66,7 @@ import {
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
+import { dismissNotification, notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
@@ -148,6 +148,10 @@ const BOOT_RETRY_MAX_ATTEMPTS = 5
 // Base delay for boot retries. Deliberately slower than the socket reconnect
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
 const BOOT_RETRY_BASE_DELAY_MS = 2_000
+
+// One sticky "backend stopped" toast at a time, retired once the primary
+// socket reopens: its "Restart Hermes" would recycle a backend that is back.
+const BACKEND_STOPPED_TOAST_ID = 'backend-stopped'
 
 // While any of the RECONNECT_ATTEMPT_TIMEOUT_MS-bounded awaits below is
 // pending, `reconnecting` never clears, so scheduleReconnect()/
@@ -858,6 +862,17 @@ export function useGatewayBoot({
           return
         }
 
+        // Main tore the primary down before notifying (backend recycle, mode
+        // apply), so every runtime id it minted is dead and the switch wipe
+        // already dropped their $sessionStates slices. Open tiles keep the
+        // shell mounted but their resume effect only re-arms once the binding
+        // is gone — drop it (and the gone-latch) exactly as attemptReconnect
+        // does after a respawn, or each tab spins forever on a 4001 runtime.
+        resetTileRuntimeBindings(
+          primaryRuntimeConnectionId(conn) ?? { liveConnectionIds: liveSecondaryConnectionIds() }
+        )
+        resetBackgroundPollingGuard()
+
         // Same shape as boot(): profile first (session scope depends on it),
         // then the independent fetches concurrently. refreshActiveProfile is
         // explicit here: the rail's $profiles still shows the PREVIOUS
@@ -1095,6 +1110,7 @@ export function useGatewayBoot({
         livenessProbeFailures = 0
         clearReconnectTimer()
         clearLivenessReprobeTimer()
+        dismissNotification(BACKEND_STOPPED_TOAST_ID)
 
         // A revalidate-driven reconnect can rebuild the backend in place when the
         // cached remote was found dead, which re-drives the boot-progress overlay.
@@ -1414,7 +1430,7 @@ export function useGatewayBoot({
       }
     })
 
-    const offExit = desktop.onBackendExit(() => {
+    const offExit = desktop.onBackendExit(exit => {
       if ($gatewaySwitching.get()) {
         return
       }
@@ -1434,10 +1450,18 @@ export function useGatewayBoot({
         return
       }
 
+      // Main's supervisor is already respawning this backend and the reconnect
+      // loop re-dials it; "Restart Hermes" would SIGTERM the healthy
+      // replacement. Main sends a terminal exit if that recovery gives up.
+      if (exit?.recovering) {
+        return
+      }
+
       // Post-boot: the shell's restart intent recycles a local service via main
       // (or re-dials a remote one) and does not depend on this hook's
       // reconnect gate, unlike reconnectGateway().
       notify({
+        id: BACKEND_STOPPED_TOAST_ID,
         kind: 'error',
         title: translateNow('boot.errors.backendStopped'),
         message: translateNow('boot.errors.backgroundExited'),

@@ -481,9 +481,8 @@ class GatewayTurnMixin:
         stored_session_id = str(binding.get("session_id") or "")
         bound_session_id = stored_session_id
         # A binding pointing at a pre-compression parent is walked forward to the tip so the next
-        # message resumes the compressed child instead of reloading the oversized parent.
-        # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
-        # safe. See #20470, #29712, #33414.
+        # message resumes the compressed child instead of reloading the oversized parent. The input is
+        # unchanged when the session is not a compression parent. See #20470, #29712, #33414.
         if bound_session_id and self._session_db is not None:
             try:
                 canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
@@ -499,9 +498,10 @@ class GatewayTurnMixin:
             # snapshot id lets that win instead of being clobbered by a stale binding.
             switched = await self.async_session_store.switch_session(
                 session_key, bound_session_id, expected_session_id=session_entry.session_id,
-            )
-            if switched is not None:
-                session_entry = switched
+                end_reason="compression" if bound_session_id != stored_session_id else "session_switch")
+            if switched is None:
+                return session_entry
+            session_entry = switched
         if bound_session_id and bound_session_id != stored_session_id:
             # The stored binding pointed at a parent: rewrite it to the canonical descendant.
             await asyncio.to_thread(

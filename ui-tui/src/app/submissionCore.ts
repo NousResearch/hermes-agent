@@ -3,6 +3,7 @@ import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTy
 import type { Msg } from '../types.js'
 
 import { turnController } from './turnController.js'
+import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
@@ -88,7 +89,28 @@ export function submitPrompt(
     deps.setLastUserMsg(text)
 
     if (show) {
-      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+      // A prompt submitted while the previous turn is still live is queued by
+      // the gateway and lands INSIDE that turn (after the next tool result),
+      // so its row must render there too — appending to committed history
+      // paints it above tool rows that already ran before the message was
+      // sent (#136670). Only a turn whose live area is still empty renders
+      // below the transcript tail anyway, so it keeps the plain append.
+      const liveTurn = getTurnState()
+
+      if (
+        liveTurn.streamSegments.length ||
+        liveTurn.tools.length ||
+        liveTurn.streaming ||
+        // A turn still in its first thinking phase has no segments or tools
+        // yet, but its reasoning renders in the live area, so the row belongs
+        // there too (``busy`` can't gate this: markSubmitting sets it first).
+        liveTurn.reasoning ||
+        liveTurn.reasoningActive
+      ) {
+        turnController.pushUserSegment(displayOverride || displayText)
+      } else {
+        deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+      }
     }
 
     patchUiState({ busy: true, status: 'running…' })

@@ -463,6 +463,28 @@ class TurnController {
     this.segmentMessages = appendToolShelfMessage(this.segmentMessages, msg)
   }
 
+  // A prompt submitted while the turn is live is held by the gateway until the
+  // next tool result and becomes part of THIS turn (#136670): appending its row
+  // to committed history renders it above tool rows that already ran before the
+  // message was sent. Flushing the streaming tail first keeps the send order —
+  // the user row lands after everything the turn produced so far — and the
+  // segment then commits with the turn on message.complete / interrupt.
+  // `recordError` salvages it, since the row is the user's own message, not
+  // the agent's failed output.
+  // Placement caveat, deliberate: the gateway may demote the submit to a queue
+  // instead of interrupting (`_handle_busy_submit` in tui_gateway: compression
+  // in flight, media payloads, agents without redirect support). Nothing
+  // interrupts the running turn then, so the row renders inside turn N, above
+  // an answer that never saw it, while the message actually runs as turn N+1.
+  // Showing it at its send point is still the honest choice — the user typed
+  // it mid-turn and saw it land — so don't "fix" this into waiting for the
+  // queue to start.
+  pushUserSegment(text: string) {
+    this.flushStreamingSegment()
+    this.segmentMessages = [...this.segmentMessages, { role: 'user', text }]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
   flushStreamingSegment() {
     const raw = this.bufRef.trimStart()
 
@@ -610,10 +632,15 @@ class TurnController {
     })
   }
 
-  recordError() {
+  recordError(salvageUserRows?: (msg: Msg) => void) {
     // A failed turn discards the whole unsealed turn (flushed segments AND the
     // streaming tail) — unlike recordMessageComplete, which must keep the tail
     // (#61520), and interruptTurn, which preserves it as `partial`.
+    // Busy-input user rows are the user's own message, not the agent's failed
+    // output (#136670), so the caller's transcript writer gets them back before
+    // the discard below empties the segments.
+    const salvagedUserRows = salvageUserRows ? this.segmentMessages.filter(msg => msg.role === 'user') : []
+
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -624,6 +651,10 @@ class TurnController {
 
     // Real turn end: surface any notice held back while busy.
     this.flushPendingNotice()
+
+    for (const msg of salvagedUserRows) {
+      salvageUserRows?.(msg)
+    }
   }
 
   recordMessageComplete(payload: MessageCompletePayload) {

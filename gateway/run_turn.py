@@ -2079,11 +2079,6 @@ class GatewayTurnMixin:
         # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
         title_user_message = event.text or None
 
-        # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
-
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
@@ -2094,6 +2089,7 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
+            history_is_empty = not history  # Commands can touch activity before the first agent turn.
             history = await self._hmwa_run_session_hygiene(
                 event, source, session_entry, session_key, history, _quick_key, run_generation,
             )
@@ -2108,6 +2104,10 @@ class GatewayTurnMixin:
         _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
+
+        _auto = getattr(event, "auto_skill", None)
+        if _auto and (_is_new_session or history_is_empty):
+            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(

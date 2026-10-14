@@ -447,6 +447,11 @@ export class GatewayClient extends EventEmitter {
     const env = { ...process.env }
     const pyPath = env.PYTHONPATH?.trim()
 
+    if (env.HERMES_TUI_INJECTED_NODE_ENV === '1') {
+      delete env.NODE_ENV
+      delete env.HERMES_TUI_INJECTED_NODE_ENV
+    }
+
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     // Tell the gateway child where the Hermes source root is so its import
     // guard can force it ahead of any same-named package in the launch cwd.

@@ -99,12 +99,17 @@ import { GatewayClient } from '../gatewayClient.js'
 describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
   let originalGatewayUrl: string | undefined
   let originalSidecarUrl: string | undefined
+  let originalNodeEnv: string | undefined
+  let originalInjectedNodeEnv: string | undefined
 
   beforeEach(() => {
     originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
     originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
+    originalNodeEnv = process.env.NODE_ENV
+    originalInjectedNodeEnv = process.env.HERMES_TUI_INJECTED_NODE_ENV
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
+    delete process.env.HERMES_TUI_INJECTED_NODE_ENV
     fakeSpawn.mockClear()
     FakeChildProcess.instances.length = 0
   })
@@ -122,8 +127,48 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
     }
 
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV
+    } else {
+      process.env.NODE_ENV = originalNodeEnv
+    }
+
+    if (originalInjectedNodeEnv === undefined) {
+      delete process.env.HERMES_TUI_INJECTED_NODE_ENV
+    } else {
+      process.env.HERMES_TUI_INJECTED_NODE_ENV = originalInjectedNodeEnv
+    }
+
     fakeSpawn.mockClear()
     FakeChildProcess.instances.length = 0
+  })
+
+  it('keeps the TUI launcher NODE_ENV out of the spawned gateway', () => {
+    process.env.NODE_ENV = 'production'
+    process.env.HERMES_TUI_INJECTED_NODE_ENV = '1'
+
+    const gw = new GatewayClient()
+
+    gw.start()
+    const options = fakeSpawn.mock.calls[0]?.[2]
+    const env = options?.env as NodeJS.ProcessEnv
+
+    expect(env.NODE_ENV).toBeUndefined()
+    expect(env.HERMES_TUI_INJECTED_NODE_ENV).toBeUndefined()
+    gw.kill()
+  })
+
+  it('preserves a caller-owned NODE_ENV for the spawned gateway', () => {
+    process.env.NODE_ENV = 'staging'
+
+    const gw = new GatewayClient()
+
+    gw.start()
+    const options = fakeSpawn.mock.calls[0]?.[2]
+    const env = options?.env as NodeJS.ProcessEnv
+
+    expect(env.NODE_ENV).toBe('staging')
+    gw.kill()
   })
 
   it('a killed child late exit does not respawn a replacement gateway', async () => {

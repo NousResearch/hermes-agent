@@ -7350,7 +7350,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
+            # Discover all agent-gateway* units (default + profiles)
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -7366,7 +7366,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd
                             + [
                                 "list-units",
-                                "hermes-gateway*",
+                                "agent-gateway*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",
@@ -7381,7 +7381,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 continue
                             unit = parts[
                                 0
-                            ]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
+                            ]  # e.g. agent-gateway.service or agent-gateway-coder.service
                             if not unit.endswith(".service"):
                                 continue
                             svc_name = unit.removesuffix(".service")
@@ -7631,7 +7631,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
-        # current hermes-gateway.service are enabled, they SIGTERM-fight
+        # current agent-gateway.service are enabled, they SIGTERM-fight
         # for the same bot token (see PR #11909). Flagging here means
         # every `hermes update` surfaces the issue until the user migrates.
         try:
@@ -7649,7 +7649,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"    {path}  ({scope} scope)")
                 print()
                 print("  These pre-rename units (hermes.service) fight the current")
-                print("  hermes-gateway.service for the bot token and cause SIGTERM")
+                print("  agent-gateway.service for the bot token and cause SIGTERM")
                 print("  flap loops. Remove them with:")
                 print()
                 print("    hermes gateway migrate-legacy")
@@ -8385,7 +8385,7 @@ def main():
         description=(
             "Stop, disable, and remove legacy Hermes gateway unit files "
             "(e.g. hermes.service) left over from older installs. Profile "
-            "units (hermes-gateway-<profile>.service) and unrelated "
+            "units (agent-gateway-<profile>.service) and unrelated "
             "third-party services are never touched."
         ),
     )

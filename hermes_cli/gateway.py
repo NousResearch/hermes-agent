@@ -82,7 +82,7 @@ def _get_service_pids() -> set:
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
-                    scope_args + ["list-units", "hermes-gateway*",
+                    scope_args + ["list-units", "agent-gateway*",
                                   "--plain", "--no-legend", "--no-pager"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -878,7 +878,7 @@ def is_windows() -> bool:
 # Service Configuration
 # =============================================================================
 
-_SERVICE_BASE = "hermes-gateway"
+_SERVICE_BASE = "agent-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
@@ -940,8 +940,8 @@ def _profile_arg(hermes_home: str | None = None) -> str:
 def get_service_name() -> str:
     """Derive a systemd service name scoped to this HERMES_HOME.
 
-    Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
-    Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
+    Default ``~/.hermes`` returns ``agent-gateway`` (backward compatible).
+    Profile ``~/.hermes/profiles/coder`` returns ``agent-gateway-coder``.
     Any other HERMES_HOME appends a short hash for uniqueness.
     """
     suffix = _profile_suffix()
@@ -1178,8 +1178,8 @@ def has_conflicting_systemd_units() -> bool:
 
 
 # Legacy service names from older Hermes installs that predate the
-# hermes-gateway rename. Kept as an explicit allowlist (NOT a glob) so
-# profile units (hermes-gateway-*.service) and unrelated third-party
+# agent-gateway rename. Kept as an explicit allowlist (NOT a glob) so
+# profile units (agent-gateway-*.service) and unrelated third-party
 # "hermes" units are never matched.
 _LEGACY_SERVICE_NAMES: tuple[str, ...] = ("hermes.service",)
 
@@ -1211,15 +1211,15 @@ def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
 
     Detects unit files installed by older Hermes versions that used a
     different service name (e.g. ``hermes.service`` before the rename to
-    ``hermes-gateway.service``). When both a legacy unit and the current
-    ``hermes-gateway.service`` are active, they fight over the same bot
+    ``agent-gateway.service``). When both a legacy unit and the current
+    ``agent-gateway.service`` are active, they fight over the same bot
     token — the PR #5646 signal-recovery change turns this into a 30-second
     SIGTERM flap loop.
 
     Safety guards:
 
     * Explicit allowlist of legacy names (no globbing). Profile units such
-      as ``hermes-gateway-coder.service`` and unrelated third-party
+      as ``agent-gateway-coder.service`` and unrelated third-party
       ``hermes-*`` services are never matched.
     * ExecStart content check — only flag units that invoke our gateway
       entrypoint. A user-created ``hermes.service`` running an unrelated
@@ -1262,7 +1262,7 @@ def print_legacy_unit_warning() -> None:
     for name, path, is_system in legacy:
         scope = "system" if is_system else "user"
         print_info(f"    {path}  ({scope} scope)")
-    print_info("  These run alongside the current hermes-gateway service and")
+    print_info("  These run alongside the current agent-gateway service and")
     print_info("  cause SIGTERM flap loops — both try to use the same bot token.")
     print_info("  Remove them with:")
     print_info("    hermes gateway migrate-legacy")
@@ -1783,6 +1783,21 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
+    # Guard: never write a unit file with a test-scoped or temp HERMES_HOME.
+    # A pytest tmp_path leaking into the env was the cause of the 2026-10-13
+    # outage (HERMES_HOME pointed at /tmp/pytest-*; .env never loaded; Discord
+    # token absent; no messaging platforms).
+    if hermes_home.startswith("/tmp") or "/pytest" in hermes_home:
+        import os as _os
+        _fallback = str(Path.home() / ".claude-code")
+        import warnings as _w
+        _w.warn(
+            f"generate_systemd_unit: HERMES_HOME={hermes_home!r} looks like a "
+            f"temp/test path — using {_fallback!r} instead to protect the unit file.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        hermes_home = _fallback
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -1949,7 +1964,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         _require_root_for_system_service("install")
 
     # Offer to remove legacy units (hermes.service from pre-rename installs)
-    # before installing the new hermes-gateway.service. If both remain, they
+    # before installing the new agent-gateway.service. If both remain, they
     # flap-fight for the Telegram bot token on every gateway startup.
     # Only removes units matching _LEGACY_SERVICE_NAMES + our ExecStart
     # signature — profile units are never touched.

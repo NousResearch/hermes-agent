@@ -270,6 +270,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Text-to-speech provider",
         "options": ["edge", "elevenlabs", "openai", "neutts"],
     },
+    "tts.volume": {
+        "type": "range",
+        "description": "Playback volume (applied via ffmpeg). 1.0 = normal, 0.5 = half, 2.0 = double.",
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.1,
+    },
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",

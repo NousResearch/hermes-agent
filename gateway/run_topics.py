@@ -272,6 +272,13 @@ class GatewayTopicThreadsMixin:
 
     # ── Discord auto-thread lanes ───────────────────────────────────────────────────────────
 
+    def _is_discord_thread_lane(self, source: SessionSource) -> bool:
+        """Return True for an existing Discord thread that can receive a title."""
+        return (
+            source.platform == Platform.DISCORD and source.chat_type == "thread"
+            and bool(source.thread_id)
+        )
+
     def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
         """Return True only for Discord threads Hermes just auto-created."""
         return (
@@ -382,7 +389,8 @@ class GatewayTopicThreadsMixin:
         """Best-effort semantic rename of a newly auto-created Discord thread. ``relay_info`` is the
         connector's (thread_id, initial_name) feedback, supplied on the title turn where the source
         is the parent-channel event without auto-thread markers (see _relay_auto_thread_info)."""
-        if relay_info is None and not await asyncio.to_thread(self._is_discord_auto_thread_lane, source):
+        native_thread = await asyncio.to_thread(self._is_discord_thread_lane, source)
+        if relay_info is None and not native_thread:
             # Relay title turn with no feedback captured at schedule time: the title comes off the
             # user's opening message, so it beats the delivery that produces the connector's
             # send-result feedback by the whole length of the turn. None here = a true miss.
@@ -405,7 +413,10 @@ class GatewayTopicThreadsMixin:
         # the initial name.
         rename_kwargs = (
             {"prefer_connector_created": True, "parent_chat_id": str(source.chat_id) if source.chat_id else None}
-            if relay else {"only_if_current_name": getattr(source, "auto_thread_initial_name", None)}
+            if relay else (
+                {"only_if_current_name": getattr(source, "auto_thread_initial_name", None)}
+                if self._is_discord_auto_thread_lane(source) else {}
+            )
         )
         logger.info(
             "discord auto-thread rename: thread=%s lane=%s new_title=%r",
@@ -458,7 +469,7 @@ class GatewayTopicThreadsMixin:
         if not title:
             return
         relay_info = None
-        if not self._is_discord_auto_thread_lane(source):
+        if not self._is_discord_thread_lane(source):
             # Relay title turn: the source is the PARENT channel event (thread didn't exist at
             # ingest). The auto-title races the delivery that fills the send-result cache, so a
             # miss HERE is not a verdict: schedule whenever the SHAPE matches; the async rename

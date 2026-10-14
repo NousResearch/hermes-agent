@@ -878,7 +878,7 @@ class TurnRunner:
             # cache at fire time — gating registration on the cache read meant it never registered.
             if runner._is_telegram_topic_lane(source):
                 lane = "_schedule_telegram_topic_title_rename"
-            elif runner._is_discord_auto_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
+            elif runner._is_discord_thread_lane(source) or runner._is_relay_discord_channel_lane(source):
                 lane = "_schedule_discord_semantic_thread_rename"
             else:
                 return

@@ -42,7 +42,7 @@ the built-in table, so a user `sonnet`/`grok` shadows the built-in.
 # Full form
 model_aliases:
   fav:
-    model: claude-sonnet-4.6
+    model: claude-sonnet-4-6
     provider: anthropic
   local-qwen:
     model: qwen3.5:397b
@@ -55,13 +55,18 @@ model_aliases:
     key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
 
 # Short form ("provider/model"), also via CLI:
-#   hermes config set model.aliases.fav openrouter/anthropic/claude-sonnet-4.6
+#   hermes config set model.aliases.fav openrouter/anthropic/claude-sonnet-4-6
 model:
   aliases:
-    fav: openrouter/anthropic/claude-sonnet-4.6
+    fav: openrouter/anthropic/claude-sonnet-4-6
 ```
 
 `/model fav` — session-scoped; add `--global` to persist as default.
+
+Use the provider's canonical model id as the alias value: model matching
+tolerates a close spelling (dots vs dashes), but a tolerated spelling emits
+`⚠️ Normalized model '<spelled>' to '<canonical>'` on every run — use the exact
+id so the tolerance is never exercised.
 
 An alias with its own `base_url` authenticates with its own credential
 (`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With
@@ -72,3 +77,12 @@ Built-in aliases (catalog-resolved against the active provider): `sonnet`,
 `opus`, `haiku`, `claude`, `gpt5`, `gpt`, `codex`, `o3`, `o4`, `gemini`,
 `deepseek`, `grok`, `llama`, `qwen`, `minimax`, `nemotron`, `kimi`, `glm`,
 `step`, `mimo`, `trinity`.
+
+### Verifying local models
+
+Check each configured local-model identifier against the server's metadata
+endpoint before spending a generation call — Ollama's `POST /api/show` answers
+200 + family/parameter_size for a valid tag with no weights loaded, so a
+multi-tag check costs seconds and no VRAM churn. Then spend **one** generation
+call on one alias: that is what proves `base_url`, credentials and alias
+resolution end to end.

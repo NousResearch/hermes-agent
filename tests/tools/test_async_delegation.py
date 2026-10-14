@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -66,51 +67,57 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
-def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
-    """The delegation ledger is a guest in state.db, not its mode owner."""
-    conn = sqlite3.connect(tmp_path / "state.db")
+def _create_legacy_registry(path, delegation_id="deleg_legacy"):
+    conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
-
-        ad._initialize_schema(conn)
-
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='async_delegations'"
-        ).fetchone() == ("async_delegations",)
+        conn.execute(
+            """CREATE TABLE async_delegations (
+                delegation_id TEXT PRIMARY KEY,
+                origin_session TEXT NOT NULL,
+                state TEXT NOT NULL,
+                dispatched_at REAL NOT NULL,
+                completed_at REAL,
+                updated_at REAL NOT NULL,
+                result_json TEXT,
+                delivery_state TEXT NOT NULL DEFAULT 'pending',
+                delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                origin_session_id TEXT
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, state, dispatched_at, completed_at,
+                updated_at, result_json, delivery_state, delivery_attempts)
+               VALUES (?, 'synthetic-origin', 'completed', 1, 2, 2,
+                       '{"status":"completed"}', 'delivered', 1)""",
+            (delegation_id,),
+        )
+        conn.commit()
     finally:
         conn.close()
 
 
-def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
-    """Schema initialization must not replace an existing WAL mode."""
-    conn = sqlite3.connect(tmp_path / "state.db")
+def test_canonical_and_dedicated_delegation_schema_match():
+    from hermes_state_common import ASYNC_DELEGATIONS_TABLE_SQL, SCHEMA_SQL
+
+    canonical = sqlite3.connect(":memory:")
+    dedicated = sqlite3.connect(":memory:")
     try:
-        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-
-        ad._initialize_schema(conn)
-
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='async_delegations'"
-        ).fetchone() == ("async_delegations",)
+        canonical.executescript(SCHEMA_SQL)
+        dedicated.executescript(ASYNC_DELEGATIONS_TABLE_SQL)
+        canonical_shape = canonical.execute("PRAGMA table_info(async_delegations)").fetchall()
+        dedicated_shape = dedicated.execute("PRAGMA table_info(async_delegations)").fetchall()
+        assert canonical_shape == dedicated_shape
     finally:
-        conn.close()
+        canonical.close()
+        dedicated.close()
 
 
 @pytest.mark.platforms("macos")
-def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+def test_connect_uses_dedicated_wal_store_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
-    """Each ledger connection must carry the macOS write barriers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    seed = sqlite3.connect(tmp_path / "state.db")
-    try:
-        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-    finally:
-        seed.close()
 
     conn = ad._connect()
     try:
@@ -119,6 +126,58 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
     finally:
         conn.close()
+    assert ad._db_path() == tmp_path / "async_delegations.db"
+    assert not (tmp_path / "state.db").exists()
+
+
+def test_legacy_registry_migrates_once_and_normalizes_nullable_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _create_legacy_registry(tmp_path / "state.db")
+
+    row = ad.get_durable_delegation("deleg_legacy")
+    assert row is not None
+    assert row["state"] == "completed"
+    assert row["delivery_state"] == "delivered"
+    assert row["origin_session_id"] == ""
+
+    with ad._transaction() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT value FROM async_delegation_store_meta WHERE key=?",
+            (ad._LEGACY_MIGRATION_KEY,),
+        ).fetchone() == ("copied:1",)
+
+
+def test_concurrent_first_open_migrates_one_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _create_legacy_registry(tmp_path / "state.db")
+    barrier = threading.Barrier(6)
+
+    def read_count(_index):
+        barrier.wait(timeout=5)
+        with ad._transaction() as conn:
+            return conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0]
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        assert list(pool.map(read_count, range(6))) == [1] * 6
+
+
+def test_malformed_registry_fails_closed_without_touching_canonical_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    canonical = sqlite3.connect(tmp_path / "state.db")
+    try:
+        canonical.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
+        canonical.execute("INSERT INTO sentinel VALUES ('preserved')")
+        canonical.commit()
+    finally:
+        canonical.close()
+    before = (tmp_path / "state.db").read_bytes()
+    (tmp_path / "async_delegations.db").write_bytes(b"not a sqlite database")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        ad._connect()
+
+    assert (tmp_path / "state.db").read_bytes() == before
 
 
 
@@ -1159,10 +1218,8 @@ print(json.dumps(q.get_nowait(), sort_keys=True))
 
 
 @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
-def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
-    """``_connect`` shares state.db with hermes_state.SessionDB -- a fresh
-    HERMES_HOME must land the file (and its WAL sidecar, if created) at 0o600
-    even under a permissive process umask, not the SessionDB-only path."""
+def test_connect_creates_delegation_db_0o600_under_permissive_umask(tmp_path, monkeypatch):
+    """The isolated registry and any sidecars remain owner-only."""
     import stat
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1173,11 +1230,11 @@ def test_connect_creates_state_db_0o600_under_permissive_umask(tmp_path, monkeyp
     finally:
         os.umask(old_umask)
 
-    db_path = tmp_path / "state.db"
+    db_path = tmp_path / "async_delegations.db"
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
 
     for suffix in ("-wal", "-shm"):
-        sidecar = tmp_path / f"state.db{suffix}"
+        sidecar = tmp_path / f"async_delegations.db{suffix}"
         if sidecar.exists():
             assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
 

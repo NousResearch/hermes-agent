@@ -6,6 +6,7 @@
 import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
 import { connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
@@ -99,12 +100,14 @@ function isUpdateToastSnoozed(): boolean {
 }
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
-// against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means the backend is older than this
-// GUI, a higher value means this GUI is older than the backend. Both
+// against. Legacy backends report their own value in session runtime info; a
+// lower value (or none — a pre-GUI checkout) means the backend is older than
+// this GUI, a higher value means this GUI is older than the backend. Both
 // directions are GUI<->backend skew and both warn — an old GUI silently
 // driving a newer backend is just as broken as the reverse, it only fails
-// further from the cause.
+// further from the cause. Canonical gateways identify their distinct wire
+// protocol instead. That value does not claim the legacy API features listed
+// below.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
@@ -177,8 +180,12 @@ function isInstallMethodToastSnoozed(): boolean {
  * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
-export function reportBackendContract(contract: number | undefined): void {
-  const reported = contract ?? 0
+export function reportBackendContract(contract: number | undefined, protocol?: string): void {
+  // A canonical gateway speaks exactly the protocol this build targets. An
+  // unknown explicit protocol must not fall back to a legacy version claim, so
+  // it reads as an out-of-date backend.
+  const reported =
+    protocol === undefined ? (contract ?? 0) : protocol === CANONICAL_GATEWAY_PROTOCOL ? REQUIRED_BACKEND_CONTRACT : 0
 
   if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)

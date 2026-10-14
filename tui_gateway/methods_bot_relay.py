@@ -13,8 +13,10 @@ import subprocess
 from pathlib import Path
 
 # Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+# Uses DESKTOP_DELIVER_TIMEOUT_SECONDS from bot_relay.py, which derives its value from
+# HERMES_BOT_RELAY_DELIVER_TIMEOUT_SECONDS environment variable (default: 1320).
 from tools.bot_failure_reasons import delivery_failure_reason
-from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
+from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS, DESKTOP_DELIVER_TIMEOUT_SECONDS
 
 from .method_ctx import HandlerRegistry
 
@@ -207,6 +209,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             # Worst-case handler hold is lock wait (bot_mode.turn_wait_seconds, default 120s) + the 600s
             # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
             # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
+            # Note: DESKTOP_DELIVER_TIMEOUT_SECONDS is used in bot_relay.py for the delivery deadline
+            # and can be configured via HERMES_BOT_RELAY_DELIVER_TIMEOUT_SECONDS environment variable.
             with acquire_turn_lock(root, resolved):
                 proc = _run(resolved, tmp, turn_env)
                 if proc.returncode != 0:

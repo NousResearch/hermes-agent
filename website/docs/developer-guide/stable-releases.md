@@ -113,8 +113,12 @@ default set and edits it:
 ```sh
 # The default: everything except macOS Intel and Termux
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --remote origin
-# Only the Windows bundles (and the Store bundle) and the Docker image, no tests
+# Only the signed Windows bundles and the Docker image, no tests
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows,docker --remote origin
+# Everything except the signed Windows pipeline (the Store bundle still builds and is submitted)
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --without windows --remote origin
+# Only the Store bundle: no Azure signing anywhere
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows-store --remote origin
 # Everything, plus macOS Intel, without the install/update E2E
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --with macos-intel --without install-e2e --remote origin
 ```
@@ -126,7 +130,8 @@ lists every lane.
 | Lane | Default | What it controls |
 |---|---|---|
 | `docker` | on | build and publish the Docker image |
-| `windows` | on | Windows x64 and arm64 MSIX, the universal bundle and the Store bundle (they build together) |
+| `windows` | on | signed Windows x64 and arm64 MSIX and the universal bundle, which feed the update channel |
+| `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
 | `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
 | `macos-intel` | off | macOS Intel DMG and ZIP: unsupported on `main`, and its runner adds over an hour |
 | `termux` | off | Termux (Android aarch64) APT package |
@@ -152,7 +157,8 @@ requires each job they remove to report `skipped`, and every other gated job to
 report `success`. A job that ran although a lane removes it also blocks the
 release. A claim cut before lanes existed (`skipBundles`, `skipTests`,
 `includeMacosIntel`, `includeTermux`) reads as the lane set that gated the same
-jobs.
+jobs. A claim without `lanesRevision` was cut when `windows` also meant the Store
+bundle, so its `windows` reads as `windows` plus `windows-store`.
 
 What a release publishes follows what it built:
 
@@ -163,7 +169,8 @@ What a release publishes follows what it built:
 - **The desktop channel moves only for the full desktop set** (`windows` and
   `macos-arm64`). A partial set still stages its packages, records a candidate
   manifest with exactly the targets it built, and submits the Store bundle when
-  `windows` is on. The protected R2 stable head, the App Installer and macOS
+  `windows-store` is on. A Store-only release has no package rows, only the Store
+  bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
   feeds, the APT channel, downloads page,
   `releases/stable/release-candidates.json` and the signed-package baseline stay
   on the previous full release. Source checkouts on the official repository

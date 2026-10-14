@@ -448,7 +448,7 @@ class GatewayTurnMixin:
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
-            resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id)
+            resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id, event_metadata.get("gateway_proven_session_id") or "", event_metadata.get("gateway_completion_ids") or ())
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
@@ -1315,7 +1315,7 @@ class GatewayTurnMixin:
                 # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
-                    task_id=session_entry.session_id or "default",
+                    task_id=session_entry.session_id or "default", trigger="gateway_hygiene",
                 ),
             )
             # Register the live worker with shutdown NOW, not only once it is deferred: the default
@@ -1408,7 +1408,7 @@ class GatewayTurnMixin:
             )
         return bounded
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, message, internal=False):
+    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
@@ -1417,13 +1417,13 @@ class GatewayTurnMixin:
             return
         human_platform = bool(source.platform) and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
         if human_platform and source.chat_type == "dm" and not await self.async_session_store.has_any_sessions():
-            # Same branch logic as the TUI (offer once when "ask", else plain intro);
+            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
             # first_contact_turn_note already falls back to the plain intro on error.
-            from agent.onboarding import first_contact_turn_note, setup_command
+            from agent.onboarding import first_contact_turn_note
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
-                session_history_empty=True, install_has_prior_sessions=False, message=message,
-                command=setup_command(source.platform.value))
+                session_history_empty=True, install_has_prior_sessions=False,
+            )
             if note:
                 turn_sidecar_notes.append(note)
 
@@ -2101,7 +2101,7 @@ class GatewayTurnMixin:
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
+        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).
@@ -2537,7 +2537,7 @@ class GatewayTurnMixin:
                         )
                         await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
 
-        except Exception as e:
+        except Exception:
             logger.exception("Background task %s failed", task_id)
             # Automatic failure diagnostic (the task produced no requested result to deliver).
             with suppress(Exception):

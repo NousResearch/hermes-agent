@@ -16,17 +16,23 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases import optional_platforms
 from scripts.releases.draft_warning import strip_draft_warning
+from scripts.releases.optional_platforms import require_targets_match_claim
 from scripts.releases.versioning import tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
+OPTIONAL_TARGETS = optional_platforms.TARGETS  # built only when the claim opts in
+REQUIRED_DESKTOP_TARGETS = tuple(t for t in DESKTOP_TARGETS if t not in OPTIONAL_TARGETS)
 SMOKE_JOBS = {
     "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
     "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
     "smoke-win32-arm64": "Windows MSIX (arm64)",
     "smoke-win32-x64": "Windows MSIX (x64)",
 }
+SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos/x64",
+                 "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
 
 
 def admit_claim(tag: str, commit: str, *, on_main) -> dict:
@@ -64,9 +70,11 @@ def require_success(needs: dict, required: list[str]) -> None:
 
 
 # The claim flags that remove stable-release.yml jobs, per job. A job one of
-# the claim's active flags removes must report `skipped`. Every other gated job
-# must report `success`. Jobs not listed here never skip.
+# the claim's active removals removes must report `skipped`. Every other gated
+# job must report `success`. Jobs not listed here never skip.
 CLAIM_FLAGS = ("autopublish", "skipBundles", "skipTests")
+# An opt-in platform left out of the claim removes its jobs too
+# (optional_platforms names the reason and the jobs).
 _TESTS, _BUNDLES = frozenset({"skipTests"}), frozenset({"skipBundles"})
 SKIPPED_BY = {
     **{job: _TESTS for job in ("ci", "nix", "termux-checks", "windows-live", "install-e2e",
@@ -81,6 +89,9 @@ SKIPPED_BY = {
                                           "windows-packaged", "macos-packaged-arm64",
                                           "macos-packaged-x64")},
 }
+for _platform in optional_platforms.PLATFORMS:
+    for _job in _platform.jobs:
+        SKIPPED_BY[_job] = SKIPPED_BY[_job] | {_platform.exclusion}
 
 
 # Each signed-package upgrade arm and the transitions job that plans it.
@@ -89,18 +100,24 @@ PACKAGED_BY = {"macos-packaged-arm64": "transitions-darwin-arm64",
                "windows-packaged": "transitions-win32"}
 
 
-def gate_expectations(required: list[str], *, skip_bundles: bool, skip_tests: bool) -> dict:
-    """Each gated job's required result under the claim's flags."""
+def gate_expectations(required: list[str], *, skip_bundles: bool, skip_tests: bool,
+                      **platforms: bool) -> dict:
+    """Each gated job's required result under the claim's flags (``platforms``:
+    the optional_platforms keys, each false when omitted)."""
     active = {flag for flag, on in (("skipBundles", skip_bundles), ("skipTests", skip_tests)) if on}
+    if set(platforms) - {p.key for p in optional_platforms.PLATFORMS}:
+        raise TypeError(f"Unknown platform flags: {sorted(platforms)}")
+    active |= {p.exclusion for p in optional_platforms.excluded(platforms)}
     return {name: "skipped" if SKIPPED_BY.get(name, frozenset()) & active else "success"
             for name in required}
 
 
-def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_tests: bool) -> None:
+def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_tests: bool,
+                 **platforms: bool) -> None:
     """``require_success`` that also demands a flag-removed job really was skipped."""
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
-    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests)
+    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests, **platforms)
     for packaged, planner in PACKAGED_BY.items():
         # Without a published baseline there is no OLD package, so the planner
         # skips the upgrade arm. Only that planner's own successful output can excuse it.
@@ -114,12 +131,13 @@ def require_gate(needs: dict, required: list[str], *, skip_bundles: bool, skip_t
         raise ValueError("Release blocked: " + ", ".join(failures))
 
 
-def accepted_smoke_results(needs: object) -> dict:
+def accepted_smoke_results(needs: object, *, absent: tuple[str, ...] | frozenset = ()) -> dict:
     """Persist only observed native groups, never infer them from artifacts.
 
     Every group passed, or every group was skipped. Only a claim that skipped
     tests may produce the second shape. ``smokes_skipped`` lets claim-aware
-    readers check that.
+    readers check that. A group whose target the release did not build
+    (``absent``) ran no smoke, so it must be recorded as skipped.
     """
     if not isinstance(needs, dict):
         raise ValueError("Candidate smoke results must be a job-result object")
@@ -128,7 +146,13 @@ def accepted_smoke_results(needs: object) -> dict:
         row = needs.get(job)
         results[job] = {"result": row.get("result") if isinstance(row, dict) else None}
     if {row["result"] for row in results.values()} != {"skipped"}:
-        require_success(results, list(SMOKE_JOBS))
+        built = [job for job in SMOKE_JOBS if SMOKE_TARGETS[job] not in absent]
+        require_success(results, built)
+        unbuilt = [f"{job}={results[job]['result']}" for job in SMOKE_JOBS
+                   if job not in built and results[job]["result"] != "skipped"]
+        if unbuilt:
+            raise ValueError("Smoke results name targets this release did not build: "
+                             + ", ".join(unbuilt))
     return results
 
 
@@ -188,7 +212,7 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
     rows = {}
     for item in manifest["packages"]:
         target = f"{item.get('platform')}/{item.get('arch')}"
-        if target not in (*DESKTOP_TARGETS, "termux/aarch64") or target in rows or item.get("tag") != tag or item.get("commit") != commit:
+        if target not in (*DESKTOP_TARGETS, *OPTIONAL_TARGETS) or target in rows or item.get("tag") != tag or item.get("commit") != commit:
             raise ValueError(f"Invalid or duplicate candidate target: {target}")
         artifact = item.get("artifact", {})
         url = urlsplit(artifact.get("url", ""))
@@ -227,9 +251,10 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
     never is.
     """
     rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
-    accepted_smoke_results(manifest.get("smoke_results"))
-    if any(target not in rows for target in DESKTOP_TARGETS):
-        raise ValueError("Candidate manifest must cover Windows and macOS on both architectures")
+    if any(target not in rows for target in REQUIRED_DESKTOP_TARGETS):
+        raise ValueError("Candidate manifest must cover Windows on both architectures and macOS arm64")
+    accepted_smoke_results(manifest.get("smoke_results"),
+                           absent=frozenset(t for t in OPTIONAL_TARGETS if t not in rows))
     return rows
 
 
@@ -278,7 +303,20 @@ def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[
                               archive=previous.get("archive"))
     new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base,
                               archive=candidate.get("archive"))
-    return [_transition_row(target, old[target], new[target]) for target in DESKTOP_TARGETS]
+    # An opt-in target upgrades only between two releases that both built it.
+    return [_transition_row(target, old[target], new[target]) for target in DESKTOP_TARGETS
+            if target in new and target in old]
+
+
+def baseline_covers(previous: dict, receipt: str, public_base: str) -> bool:
+    """Whether the published baseline built every target of this receipt.
+
+    A release that left macOS Intel out has no OLD Intel package, so the next
+    release that opts back in has nothing to upgrade from on that arch.
+    """
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
+                              archive=previous.get("archive"))
+    return all(target in old for target in RECEIPT_TARGETS[receipt])
 
 
 def plan_receipt_transitions(previous: dict, receipt_manifest: dict, receipt: str,
@@ -400,16 +438,18 @@ def output(argv: list[str]) -> str:
 
 
 def validate_claim(metadata: object, *, version: str, attempt: int, commit: str) -> dict:
-    """The claim message's exact shape. It is the one record of the attempt's policy."""
+    """The claim message's exact shape. It is the one record of the attempt's policy.
+    Opt-in platform flags may be absent (older claims); the copy returned has them."""
     expected = {"schema": 1, "version": version, "attempt": attempt, "commit": commit}
+    required = {*expected, *CLAIM_FLAGS, "claimEpoch"}
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
             or any(not isinstance(metadata.get(flag), bool) for flag in CLAIM_FLAGS)
             or not isinstance(metadata.get("claimEpoch"), int)
             or metadata["claimEpoch"] <= 0
-            or set(metadata) != {*expected, *CLAIM_FLAGS, "claimEpoch"}):
+            or not required <= set(metadata) <= {*required, *optional_platforms.CLAIM_FLAGS}):
         raise ValueError("Stable claim metadata is invalid")
-    return metadata
+    return {**metadata, **optional_platforms.claim_flags(metadata)}
 
 
 def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
@@ -503,7 +543,8 @@ def check_claim(env: dict, run=output) -> dict:
         raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
     return {**admitted, "claim_object": local_object,
             "autopublish": metadata["autopublish"], "skip_bundles": metadata["skipBundles"],
-            "skip_tests": metadata["skipTests"], "claim_epoch": claim_epoch}
+            "skip_tests": metadata["skipTests"], "claim_epoch": claim_epoch,
+            **{p.key: metadata[p.claim_flag] for p in optional_platforms.PLATFORMS}}
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
@@ -619,13 +660,17 @@ def admit(env: dict) -> None:
         "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
         "skip-bundles": "true" if admitted["skip_bundles"] else "false",
         "skip-tests": "true" if admitted["skip_tests"] else "false",
+        **{p.key.replace("_", "-"): "true" if admitted[p.key] else "false"
+           for p in optional_platforms.PLATFORMS},
     }, env)
     skipped = [name for name, on in (("bundles", admitted["skip_bundles"]),
                                      ("tests", admitted["skip_tests"])) if on]
+    opted = [p.label for p in optional_platforms.PLATFORMS if admitted[p.key]]
     summary(
         f"## Stable candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
         f"Version: {admitted['version']}\nPayload tag: {admitted['tag']}\n"
-        f"Skipped: {', '.join(skipped) or 'nothing'}\n",
+        f"Skipped: {', '.join(skipped) or 'nothing'}\n"
+        f"Opt-in packages: {', '.join(opted) or 'none (macOS Intel and Termux are not built)'}\n",
         env,
     )
 
@@ -697,9 +742,10 @@ def transitions(env: dict) -> None:
     previous = _published_baseline(env, base)
     receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
-    if previous is None:
+    if previous is None or not baseline_covers(previous, receipt, base):
         # Native smokes still gate this release. Its packages become the
-        # baseline that the next bundle release must upgrade from.
+        # baseline that the next bundle release must upgrade from. A baseline
+        # that left this receipt's opt-in target out has no OLD package either.
         validate_receipt(receipt_manifest, receipt, receipt_manifest.get("tag"),
                          receipt_manifest.get("commit"), base, archive=receipt_manifest.get("archive"))
         emit({**matrices, "baseline": "none"}, env)
@@ -736,24 +782,28 @@ def candidate_manifest(env: dict) -> None:
     tag, commit, claim = stable_context(env)
     if claim["skip_bundles"]:
         raise ValueError("A claim that skipped bundles has no candidate manifest")
+    handoffs = optional_platforms.claim_handoffs(CANDIDATE_HANDOFFS, claim)
+    # A call the claim did not opt into never ran, so it has no smoke to record.
+    skipped_calls = {p.call for p in optional_platforms.excluded(claim)}
+    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if call not in skipped_calls}
+    smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
     if claim["skip_tests"]:
         # The calls built and staged their groups but ran no smoke. Record
         # that as skipped. Never let a green call stand in for a smoke.
-        require_success(needs, list(CALL_SMOKE_JOBS))
-        smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
+        require_success(needs, list(calls))
     else:
-        smoke = {job: {"result": (needs.get(call) or {}).get("result")}
-                 for call, job in CALL_SMOKE_JOBS.items()}
-        require_success(smoke, list(smoke))
+        ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
+        require_success(ran, list(ran))
+        smoke.update(ran)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        fetch(tag=archive, commit=commit, names=list(CANDIDATE_HANDOFFS), root=root,
+        fetch(tag=archive, commit=commit, names=list(handoffs), root=root,
               includes=list(CANDIDATE_INCLUDES))
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
-                 release_epoch=claim["claim_epoch"], archive=archive)
+                 release_epoch=claim["claim_epoch"], archive=archive, handoffs=handoffs)
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
     emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
           "manifest-sha256": digest}, env)
@@ -782,6 +832,19 @@ def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha25
     }
 
 
+def authenticated_push(ref: str, env: dict | None = None) -> list[str]:
+    """``git push origin <ref>`` that authenticates with GH_TOKEN when it is set.
+
+    The publication checkout runs with persist-credentials: false, so git has
+    no token of its own; gh hands GH_TOKEN to this one push as a credential
+    helper, keeping the token out of argv and out of .git/config.
+    """
+    env = os.environ if env is None else env
+    auth = (["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+            if env.get("GH_TOKEN") else [])
+    return ["git", *auth, "push", "origin", ref]
+
+
 def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_sha256: str | None,
                      docker_manifest_digest: str, release_id: int, run=output) -> str:
     """Create or verify the immutable annotated final tag."""
@@ -806,7 +869,7 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
                     or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit
                     or tag_record(run(["git", "tag", "-l", tag, "--format=%(contents)"])) != expected):
                 raise ValueError("Local final tag collision")
-        run(["git", "push", "origin", ref])
+        run(authenticated_push(ref))
         remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
     remote = dict(line.split()[::-1] for line in remote_raw.splitlines())
     tag_object, peeled = remote.get(ref), remote.get(f"{ref}^{{}}")
@@ -876,14 +939,15 @@ def publish_release_draft(repository: str, release_id: int, tag: str, *, run=out
         raise ValueError("Stable release publication did not persist")
 
 
-def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> str:
+def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> dict:
     """The one ordered publication pass, steps 1-4, each read back before the next.
 
     Explicit publish and autopublish converge here. The manifest digest is
     hashed from the attempt archive (nothing records it earlier), the receipt
     tag is written, the draft is retargeted and stripped while still a draft,
-    and only then does the final call make it public. Returns the Docker
-    manifest digest the receipt binds, for the alias move that follows.
+    and only then does the final call make it public. Returns the two digests
+    the receipt binds (candidate manifest and Docker manifest), so the head
+    advance that follows in the same pass checks the receipt it just wrote.
     """
     from scripts.releases import docker
 
@@ -900,7 +964,7 @@ def publish_attempt(record: dict, *, repository: str, run=output, read_archive) 
                      release_id=record["release_id"], run=run)
     edit_draft_release(repository, record["release_id"], record["tag"], record["commit"], run=run)
     publish_release_draft(repository, record["release_id"], record["tag"], run=run)
-    return docker_digest
+    return {"candidate_manifest_sha256": manifest_sha256, "docker_manifest_digest": docker_digest}
 
 
 def complete(env: dict) -> None:
@@ -912,6 +976,8 @@ def complete(env: dict) -> None:
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=claim["claim_tag"])
     require_smokes_match_claim(candidate, skip_tests=claim["skip_tests"])
+    require_targets_match_claim(candidate, include_macos_intel=claim["include_macos_intel"],
+                                include_termux=claim["include_termux"])
 
 
 def _flag(env: dict, name: str) -> bool:
@@ -928,7 +994,8 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         needs = json.loads(env["RELEASE_NEEDS"])
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
         require_gate(needs, argv[1:], skip_bundles=_flag(env, "SKIP_BUNDLES"),
-                     skip_tests=_flag(env, "SKIP_TESTS"))
+                     skip_tests=_flag(env, "SKIP_TESTS"),
+                     **{p.key: _flag(env, p.key.upper()) for p in optional_platforms.PLATFORMS})
         return
     if argv and argv[0] == "stage-receipt":
         if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:

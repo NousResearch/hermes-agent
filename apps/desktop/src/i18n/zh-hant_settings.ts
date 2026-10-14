@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
   language: {
@@ -76,7 +77,17 @@ export const zhHantSettings = {
         toolsConnected: n => `已連線 ${n} 個工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
         nextChat: '更多工具將在下一次聊天中可用',
-        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`,
+        verified: '已驗證',
+        unverified: '未驗證',
+        reviewedByNous: '已由 Nous 審核。',
+        installsAndEnables: profile => `安裝到 ${profile}，並立即啟用。`,
+        installsOnly: profile => `安裝到 ${profile}。`,
+        advanced: '進階',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
     closeSettings: '關閉設定',
@@ -762,7 +773,8 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      channel: zhHantUpdateChannel
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -793,12 +805,7 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
-      showOptions: '顯示選項',
-      developerTitle: '開發者',
-      resetOnboardingTitle: '重設初始設定',
-      resetOnboardingDesc: '刪除設定聊天、重建設定設定檔，並再次執行首次設定。你自己的設定檔、聊天和外掛都會保留。',
-      resetOnboardingAction: '重設',
-      resetOnboardingFailed: '無法重設初始設定'
+      showOptions: '顯示選項'
     },
     hudModifier: {
       title: '輕按叫出 HUD',

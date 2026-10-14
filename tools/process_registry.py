@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -285,6 +285,7 @@ def _systemd_run_user_scope_available() -> bool:
                             stdin=subprocess.DEVNULL, capture_output=True,
                             timeout=3,
                             env=systemd_user_bus_env(),
+                            check=False,
                         )
                         if not (result.returncode and _SYSTEMD_RUN_NO_EXPAND
                                 and b"expand-environment" in (result.stderr or b"")):
@@ -488,6 +489,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
             timeout=15,
             stdin=subprocess.DEVNULL,
             env=systemd_user_bus_env(),
+            check=False,
         )
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
@@ -1894,10 +1896,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             # drain, so a requeue would pin the event forever. 'async_delegation'
             # is the result itself and is NEVER suppressed.
             _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+            if is_child_process_notification(evt):
                 if surface_child is None:
                     surface_child = self._surface_child_process_notifications()
-                if not surface_child:
+                if not should_surface_notification(evt, surface_child=surface_child):
                     logger.debug(
                         "Suppressed subagent-owned process notification "
                         "(delegation.surface_child_process_notifications=false): "

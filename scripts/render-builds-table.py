@@ -724,6 +724,7 @@ def main() -> int:
         ["gh", "release", "view", args.tag, "--repo", args.repo,
          "--json", "body"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
     )
     if view.returncode != 0:
         print(f"::error::gh release view failed: {view.stderr.strip()}")
@@ -746,6 +747,7 @@ def main() -> int:
          "--notes-file", "-"],
         input=new_body, capture_output=True, text=True, encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if edit.returncode != 0:
         print(f"::error::gh release edit failed: {edit.stderr.strip()}")

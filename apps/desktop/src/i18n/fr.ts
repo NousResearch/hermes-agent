@@ -3,49 +3,25 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frClarify } from './fr_clarify'
+import { frConnectorAccounts } from './fr_connector_accounts'
+import { frConnectorCard } from './fr_connector_card'
+import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frThemePicker } from './fr_theme_picker'
+import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
   sharedMetrics: frSharedMetrics,
+  firstRun: frFirstRun,
   intro: introFr,
-  connectors: {
-    title: 'Connectez vos applications',
-    connect: 'Connecter',
-    skip: 'Pas maintenant',
-    cancel: "Arrêter l'attente",
-    retry: 'Réessayer',
-    grant: 'Reconnecter',
-    connected: 'Connecté',
-    checking: 'Vérification de vos applications…',
-    notConnected: 'Non connecté',
-    skipped: 'Ignoré',
-    disabled: 'Indisponible',
-    failed: 'Connexion impossible',
-    needsAuth: 'Accès expiré',
-    opening: 'Ouverture de la connexion…',
-    waiting: 'Terminez la connexion dans votre navigateur…',
-    timeout: "Toujours en attente de l'autorisation.",
-    refresh: "Actualiser l'état",
-    connectError: "Impossible de démarrer l'autorisation. Réessayez.",
-    connectErrorFor: app => `Impossible de démarrer l'autorisation pour ${app}.`,
-    unavailable: 'Les connecteurs ne sont pas disponibles pour cette session.',
-    ownerMissing: 'Rouvrez cette conversation pour gérer ses connexions.',
-    search: 'Rechercher une application',
-    empty: 'Aucune application correspondante',
-    disclaimer: "La connexion est facultative. N'autorisez que les applications que vous voulez confier à Hermes.",
-    execution: 'Outils des connecteurs',
-    setup: server => `Configurer ${server}`,
-    openInBrowser: 'Ouvrir dans le navigateur',
-    setupCancel: 'Annuler',
-    authorizedToolsUnavailable: 'Autorisé. Outils indisponibles.',
-    required: 'Obligatoire'
-  },
+  connectors: frConnectorCard,
   connectorsPage: {
     title: 'Connecteurs',
     searchPlaceholder: (count: number) => `Rechercher parmi ${count} applications`,
@@ -202,6 +178,9 @@ export const frOverrides = {
       advanced: 'Avancé',
       advancedHint: "l'entrée mcp.json et les journaux"
     },
+
+    accounts: frConnectorAccounts,
+
     tools: {
       title: 'Outils',
       notInstalledBody: "Installez-le sur cet appareil pour voir les outils qu'il apporte.",
@@ -813,11 +792,6 @@ export const frOverrides = {
         profileLabel: 'Installer pour le profil',
         agentTargetLocal: (profile, dir) => `Installe dans le backend ${profile} (${dir})`,
         agentTargetRemote: profile => `S'installe dans le backend ${profile} connecté`,
-        catalogPinned: (name, sha) =>
-          `Entrée « ${name} » du catalogue Hermes — le composant agent sera installé depuis le commit vérifié${sha ? ` ${sha}` : ''}, et non depuis la tête de branche.`,
-        reviewedHeading: 'Entrée du catalogue vérifiée',
-        reviewedIntro:
-          'Cette entrée a été vérifiée manuellement à son commit épinglé. Vous pouvez encore examiner le code exact ci-dessous.',
         toolsConnected: n => (n === 1 ? '1 outil connecté' : `${n} outils connectés`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} prêt` : `${names.length} skills prêts`),
         nextChat: "d'autres outils disponibles dans votre prochaine conversation",
@@ -831,13 +805,11 @@ export const frOverrides = {
         desktopOnlyNote: "Les paquets réservés au Desktop n'installent aucun plugin dans le backend.",
         insecureWarning:
           'Cette URL utilise un protocole non sécurisé ou local. Préférez https:// ou git@ en production.',
-        securityHeading: "Avant l'installation",
         securityIntro:
           'Installez uniquement des sources de confiance — consultez le dépôt ci-dessous pour vérifier ce qui sera ajouté.',
         sourceHeading: 'Code source',
         viewRepository: 'Voir le dépôt',
         viewPluginFiles: 'Voir les fichiers du plugin',
-        gitCloneLabel: 'URL de clonage Git',
         enableAgent: "Activer le plugin de l'agent après l'installation",
         forceReinstall: 'Forcer la réinstallation (remplacer la version existante)',
         pinToCommit: 'Épingler à un commit (facultatif)',
@@ -859,7 +831,17 @@ export const frOverrides = {
           "Hermes n'attend plus le résultat de l'installation, mais le plugin est peut-être encore en cours d'installation. Fermez cette fenêtre et actualisez la liste des plugins avant de relancer l'installation.",
         desktopFailed: "Échec de l'installation du plugin Desktop",
         missingEnv: (name, vars) =>
-          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`
+          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`,
+        verified: 'Vérifié',
+        unverified: 'Non vérifié',
+        reviewedByNous: 'Examiné par Nous.',
+        installsAndEnables: profile => `S’installe pour ${profile} et s’active tout de suite.`,
+        installsOnly: profile => `S’installe pour ${profile}.`,
+        advanced: 'Avancé',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
+        latestCommit: 'Dernier commit',
+        nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
     vault: {
@@ -1565,9 +1547,7 @@ export const frOverrides = {
       screenRecording: "Enregistrement de l'écran",
       driverHealth: 'État du pilote'
     },
-    about: {
-      updates: 'Mises à jour'
-    },
+    about: { updates: 'Mises à jour', channel: frUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Réduire dans la barre d’état',
       minimizeToTrayDesc:
@@ -1605,13 +1585,7 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
-      showOptions: 'Afficher les options',
-      developerTitle: 'Développeur',
-      resetOnboardingTitle: 'Réinitialiser la configuration initiale',
-      resetOnboardingDesc:
-        'Supprimer les chats de configuration, recréer le profil de configuration et relancer la configuration initiale. Vos propres profils, chats et plugins sont conservés.',
-      resetOnboardingAction: 'Réinitialiser',
-      resetOnboardingFailed: 'Impossible de réinitialiser la configuration initiale'
+      showOptions: 'Afficher les options'
     },
     hudModifier: {
       title: 'Toucher pour afficher le HUD',
@@ -4423,20 +4397,6 @@ export const frOverrides = {
         "Le backend ne s'est pas reconnecté. La mise à jour n'est peut-être pas terminée — vérifiez l'hôte du backend."
     }
   },
-  handoffTour: {
-    localTitle: 'Cette machine peut exécuter des modèles en local',
-    localText: (model: string) =>
-      `${model} convient à votre matériel. Il tourne gratuitement et les conversations ne quittent jamais votre ordinateur. Choisissez-le ici, dans le menu des modèles, quand vous voulez.`,
-    profileTitle: 'Votre première tâche utilise le profil par défaut',
-    profileText:
-      "Cette barre change de profil. Celui qui est éclairé est le profil par défaut, où se trouve la session de la tâche. L'autre est le profil de configuration, où se trouve la conversation de bienvenue.",
-    sessionsTitle: 'Chaque profil conserve ses propres sessions',
-    sessionsText:
-      'Cette liste appartient au profil par défaut. Nouvelle session démarre une tâche sur le profil sélectionné. Changez de profil dans la barre et la liste change avec lui.',
-    stayTitle: "Hermes reste à portée d'un clic",
-    stayText:
-      'Passez au profil de configuration et ouvrez Bienvenue dans Hermes lorsque vous avez besoin d’aide. La conversation y reste disponible.'
-  },
   install: {
     stageStates: {
       pending: 'En attente',
@@ -5292,49 +5252,8 @@ export const frOverrides = {
         `Cela ajoute le motif « ${pattern} » à votre liste d'autorisation permanente (~/.hermes/config.yaml). Hermes ne redemandera plus pour ce type de commande — que ce soit dans cette session ou dans une session future.`,
       alwaysAllow: 'Toujours autoriser'
     },
-    clarify: {
-      notReady: "La demande de clarification n'est pas encore prête",
-      gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
-      sendFailed: "Impossible d'envoyer la réponse de clarification",
-      loadingQuestion: 'Chargement de la question…',
-      other: 'Autre (saisissez votre réponse)',
-      placeholder: 'Saisissez votre réponse…',
-      skip: 'Passer',
-      skipped: 'Ignoré',
-      noAnswer: 'Pas de réponse',
-      confirmAndContinueLabel: 'Confirmer et continuer',
-      singleSelectHint: 'Choisir une réponse',
-      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
-      oneQuestion: '1 question',
-      questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      notDelivered:
-        "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Couleur d’accent',
-        connectors: 'Apps',
-        layout: 'Disposition',
-        plugins: 'Plugins',
-        theme: 'Apparence'
-      },
-      loading: 'Chargement des options…',
-      unavailable: 'Cette liste n’est pas disponible pour le moment. Répondez plutôt dans le chat.',
-      findApp: 'Trouver une app',
-      customColor: 'Couleur personnalisée',
-      plugin: 'Plugin',
-      startsLater: 'Nous les configurerons quand vous commencerez.'
-    },
-    startChat: {
-      starting: title => `Démarrage de « ${title} »…`,
-      startingUntitled: 'Démarrage d’un chat…',
-      untitled: 'Nouveau chat',
-      notStarted: 'Le chat n’a pas démarré',
-      retry: 'Réessayer',
-      inProfile: profile => `Dans ${profile}`,
-      open: 'Ouvrir',
-      openFailed: 'Impossible d’ouvrir le chat'
-    },
+    clarify: frClarify,
+    themePicker: frThemePicker,
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
       install: 'Installer',
@@ -5535,12 +5454,6 @@ export const frOverrides = {
           pending: "Recherche dans l'historique de session en cours",
           pendingAction: 'Recherche en cours'
         },
-        setup_choose: {
-          done: 'Question de configuration posée',
-          pending: 'Pose une question de configuration',
-          pendingAction: 'Question en cours'
-        },
-        start_chat: { done: 'Chat démarré', pending: 'Démarrage d’un chat', pendingAction: 'Démarrage' },
         terminal: {
           done: 'Commande exécutée',
           pending: 'Exécution de la commande en cours',

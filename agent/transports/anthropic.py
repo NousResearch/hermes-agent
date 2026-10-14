@@ -43,9 +43,9 @@ class AnthropicTransport(ProviderTransport):
         return "anthropic_messages"
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
-        """Convert OpenAI messages to an Anthropic (system, messages) tuple; ``base_url`` affects thinking-signature handling."""
+        """Convert OpenAI messages to an Anthropic (system, messages) tuple; ``base_url`` and ``model`` pick the thinking-replay policy."""
         from agent.anthropic_message_convert import convert_messages_to_anthropic
-        return convert_messages_to_anthropic(messages, base_url=kwargs.get("base_url"))
+        return convert_messages_to_anthropic(messages, base_url=kwargs.get("base_url"), model=kwargs.get("model"))
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""

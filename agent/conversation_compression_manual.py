@@ -88,6 +88,7 @@ def compress_now(
     summary window exists."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_trigger import MANUAL_TRIGGER_REASON
     from agent.manual_compression_feedback import summarize_manual_compression
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
@@ -128,7 +129,7 @@ def compress_now(
     try:
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
-            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            trigger=MANUAL_TRIGGER_REASON, defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:

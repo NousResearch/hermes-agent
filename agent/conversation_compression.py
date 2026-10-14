@@ -32,6 +32,7 @@ from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
+from agent.conversation_compression_trigger import compaction_reason_clause
 from agent.conversation_compression_telemetry import (
     _emit_aborted_attempt_telemetry, _emit_blocked_attempt_telemetry, _emit_bypassed_attempt_telemetry,
     _emit_compression_attempt_telemetry, _record_committed_attempt_effect, _snapshot_compression_effect_input,
@@ -4088,14 +4089,13 @@ def _refresh_main_credential(agent: Any) -> None:
 
 
 def _announce_compression_start(
-    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
+    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], seed: dict, force: bool
 ) -> _CompactionLifecycle:
-    """Log the attempt, emit the (engine-customisable) compacting status, return the lifecycle."""
-    logger.info(
-        "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r", agent.session_id or "none",
-        message_count, f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic,
-    )
-    status = COMPACTION_STATUS
+    """Log the attempt with its trigger, emit the compacting status (reason SUFFIX: noise filters key on the prefix)."""
+    logger.info("context compression started: session=%s trigger=%s messages=%d tokens=~%s model=%s focus=%r",
+        agent.session_id or "none", seed["trigger_source"], message_count,
+        f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic)
+    status = COMPACTION_STATUS + compaction_reason_clause(seed["trigger_source"], seed["overflow_reason"])
     if not force:
         status = automatic_compaction_status_message(
             agent.context_compressor, phase="compress", default_message=status, approx_tokens=approx_tokens,
@@ -4136,7 +4136,7 @@ def compress_context(
     session state after its caller has moved on. verbatim_tail: The exchanges ``/compress here N`` keeps
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
     trigger: Why this attempt runs (``"overflow"``, ``"pre_api"``, ``"post_tool"``, ``"idle"``, ...); defaults
-    to manual/auto from ``force``. Feeds attempt telemetry only; shared metrics bucket it coarsely.
+    to manual/auto from ``force``. Telemetry (coarse metric buckets), the start log and the status reason clause.
     snapshot_is_current: Optional host snapshot validation after durable lease admission. This protects
     edits completed before admission; it is not a substitute for the host's final publication fence.
     overflow_reason: The error classifier's reason for the provider rejection an ``"overflow"`` attempt
@@ -4180,8 +4180,8 @@ def compress_context(
     # network-bound (connect timeouts stack up through proxies), and until this status lands
     # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
     lifecycle = _announce_compression_start(
-        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
-    )
+        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic,
+        seed=attempt.seed, force=force)
     # After the announce: an expired token's refresh is a blocking network call. Before the probe and summary call.
     _refresh_main_credential(agent)
     # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets

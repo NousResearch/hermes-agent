@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.conversation_compression import compress_context
+from agent.conversation_compression_trigger import MANUAL_TRIGGER_REASON
 from agent.transports.codex_app_server_session import TurnResult
 from gateway.run import run_codex_hygiene_compaction
 
@@ -68,6 +69,7 @@ class LiveCodexAgent:
             awaiting_real_usage_after_compression=False,
         )
         self.local_compress_calls = 0
+        self.compress_triggers = []
         self.warnings = []
 
     # -- surface used by compress_context --------------------------------
@@ -84,6 +86,7 @@ class LiveCodexAgent:
         return "built prompt"
 
     def _compress_context(self, messages, system_message, **kwargs):
+        self.compress_triggers.append(kwargs.get("trigger"))
         return compress_context(self, messages, system_message, **kwargs)
 
 
@@ -328,6 +331,7 @@ def test_manual_compress_routes_to_live_thread():
     )
 
     assert agent._codex_session.compact_calls == 1
+    assert agent.compress_triggers == [MANUAL_TRIGGER_REASON]
     assert reply
 
 

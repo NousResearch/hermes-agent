@@ -34,7 +34,10 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     """Host-visible status for an automatic compaction event; ``None`` = emit nothing.
 
     Engines suppress via ``emit_automatic_compaction_status = False`` or
-    customize via ``get_automatic_compaction_status_message(...)``.
+    customize via ``get_automatic_compaction_status_message(...)``. For the
+    ``compress`` phase, ``default_message`` already ends with the trigger
+    attribution clause (``compaction_reason_clause``); a formatter that
+    discards ``default_message`` also discards it, so preserve or re-append it.
     """
     if not getattr(engine, "emit_automatic_compaction_status", True):
         return None

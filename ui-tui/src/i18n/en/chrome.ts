@@ -50,6 +50,7 @@ export const chromeEn = {
     undoRedo: 'undo / redo input edits',
     deleteWord: 'delete word',
     killLine: 'kill to line start / end (repeat across lines)',
+    sendQueued: 'send the next queued message now',
     jumpWord: 'jump word',
     lineStartEnd: 'start / end of line',
     newline: 'insert newline',

@@ -340,6 +340,7 @@
   "hints.openEditor",
   "hints.paste",
   "hints.redraw",
+  "hints.sendQueued",
   "hints.sessionSwitcher",
   "hints.shell",
   "hints.undoRedo",

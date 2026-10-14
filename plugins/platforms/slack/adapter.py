@@ -2054,6 +2054,25 @@ class SlackAdapter(BasePlatformAdapter):
                 return self._truthy_config(value)
         return False
 
+    def native_task_card_title(self) -> Optional[str]:
+        """Operator-set heading for the native plan/task card, or ``None`` for the localized default.
+
+        The card heading is the one progress surface that names the bot in prose, so a renamed
+        assistant (``platforms.slack.extra.task_card_title``) otherwise announces the product name
+        while its messages, status line and avatar all use the new one. Returning ``None`` rather
+        than a literal keeps ``gateway.progress.task_card_title`` — and its translations — as the
+        default for everyone who sets nothing.
+
+        Not derived from ``typing_status_text``: that is a verb phrase ("is thinking...") Slack
+        renders after the bot name, not a standalone heading.
+        """
+        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+        for key in ("task_card_title", "taskCardTitle"):
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:256]
+        return None
+
     def _native_task_card_key(
         self, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]
     ) -> Optional[tuple[str, str, str]]:

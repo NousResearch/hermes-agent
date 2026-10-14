@@ -349,13 +349,23 @@ class TurnRunner:
         def visible_tasks(self) -> list[dict[str, str]]:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
 
+        def card_title(self) -> str:
+            """The card heading: an adapter's operator-set override, else the localized default.
+
+            Optional on the adapter (``native_task_card_title``), signature-inspected the same way
+            as any other additive plugin surface, so adapters that do not offer one are unaffected.
+            """
+            override = getattr(self.adapter, "native_task_card_title", None)
+            title = override() if callable(override) else None
+            return title if isinstance(title, str) and title.strip() else t("gateway.progress.task_card_title")
+
         def fallback_text(self) -> str:
             labels = {"in_progress": t("gateway.progress.task_status_running"),
                       "complete": t("gateway.progress.task_status_complete"),
                       "error": t("gateway.progress.task_status_error")}
             lines = [t("gateway.progress.task_line", title=task["title"], status=labels.get(task["status"], task["status"]))
                      for task in self.visible_tasks()]
-            return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
+            return self.card_title() + "\n" + "\n".join(lines)
 
         def _upsert(self, call_id: str, title: str) -> dict[str, str]:
             if call_id not in self.tasks:
@@ -432,7 +442,7 @@ class TurnRunner:
                 return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
+                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=st.card_title(),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):

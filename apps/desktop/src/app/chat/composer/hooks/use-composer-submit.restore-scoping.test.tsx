@@ -185,7 +185,6 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     busy: false,
     disabled: false,
     inputDisabled: false,
-    drainNextQueued: async () => false,
     exitQueuedEdit: () => false,
     onCancel: () => {},
     onSteer: actions.redirectPrompt,
@@ -193,7 +192,6 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     onSubmit: onSubmit ?? actions.submitText,
     queueCurrentDraft: () => false,
     queueEdit: null,
-    queuedPrompts: [],
     sessionId: active
   })
 

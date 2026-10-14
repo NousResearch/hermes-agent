@@ -1,6 +1,7 @@
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
-background tasks, MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
-are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.
+background tasks; MCP reload lives in ``run_turn_mcp_reload``. Bound onto ``GatewayRunner`` via the
+MRO; ``gateway.run`` internals are imported lazily inside method bodies (import cycle) so
+``patch("gateway.run.X")`` still works.
 """
 
 from __future__ import annotations
@@ -30,13 +31,13 @@ from gateway.response_filters import (
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
-    SessionSource, _session_key_namespace, build_channel_continuity_note,
+    SessionSource, build_channel_continuity_note,
     build_session_context,
 )
+from gateway.run_turn_mcp_reload import GatewayMcpReloadMixin
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
-from hermes_constants import get_hermes_home_override
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayMcpReloadMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -2547,111 +2548,6 @@ class GatewayTurnMixin:
                     metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
-    def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:
-        """Refresh cached agents so existing sessions see new MCP tools on their next turn without
-        a history-destroying ``/new``. Each agent keeps its build-time toolset selection EXACTLY: a
-        session built with restricted enabled_toolsets (e.g. ["safe"]) must NOT silently gain tools."""
-        try:
-            from tools.mcp_tool_agent import refresh_agent_mcp_tools
-            _cache = getattr(self, "_agent_cache", None)
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
-            if _cache_lock is None or not _cache:
-                return
-            # Multiplex: only this profile's sessions (another profile's agent would get this registry).
-            _ns_prefix = _session_key_namespace(profile) + ":" if multiplex else None
-            with _cache_lock:
-                for _sess_key, _entry in list(_cache.items()):
-                    if _ns_prefix and not str(_sess_key).startswith(_ns_prefix):
-                        continue
-                    _agent = _entry[0] if isinstance(_entry, tuple) else _entry
-                    if _agent is not None:
-                        refresh_agent_mcp_tools(_agent, quiet_mode=True)
-        except Exception as _exc:
-            logger.debug("Failed to update cached agent tools after MCP reload: %s", _exc)
-
-    async def _execute_mcp_reload(self, event: MessageEvent) -> str:
-        """Disconnect, reconnect, and notify MCP tool changes (shared by button / text / no-confirm paths).
-
-        Under multiplex the reload runs inside the requesting profile's runtime scope (entered here
-        when the caller did not) and only that profile's servers are torn down and rediscovered.
-
-        See #95518.
-        """
-        from gateway.run import _profile_runtime_scope
-        multiplex = bool(getattr(self.config, "multiplex_profiles", False))
-        if multiplex and not get_hermes_home_override():
-            profile_home = self._resolve_profile_home_for_source(event.source)
-            with _profile_runtime_scope(Path(profile_home)):
-                return await self._execute_mcp_reload(event)
-        try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
-            from tools.mcp_tool_agent import reprobe_tool_availability
-            from tools.mcp_tool_scope import _key_name
-            from tools.registry import registry
-
-            reload_scope = registry.current_scope_key() if multiplex else None
-
-            def _scoped_server_names() -> set:
-                with _lock:
-                    return {
-                        _key_name(key) for key in _servers
-                        if _server_visible_in_scope(key, reload_scope)
-                    }
-
-            old_servers = _scoped_server_names()
-            await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
-            # Explicit reload also re-probes tool availability (check_fn).
-            reprobe_tool_availability()
-            # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
-            # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
-            from tools.mcp_oauth import suppress_interactive_oauth
-            with suppress_interactive_oauth():
-                new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
-
-            connected_servers = _scoped_server_names()
-            if reload_scope is not None:
-                from tools.mcp_tool import _mcp_tool_server_names
-                with _lock:
-                    new_tools = [n for n in new_tools if _mcp_tool_server_names.get(n) in connected_servers]
-            # (label, i18n key, names); i18n lines list reconnected first, the injected note added first.
-            changes = (
-                ("Reconnected", "gateway.reload_mcp.reconnected", connected_servers & old_servers),
-                ("Added", "gateway.reload_mcp.added", connected_servers - old_servers),
-                ("Removed", "gateway.reload_mcp.removed", old_servers - connected_servers),
-            )
-            lines = [t("gateway.reload_mcp.header")] + [
-                t(key, names=", ".join(sorted(names))) for _label, key, names in changes if names
-            ]
-            if not connected_servers:
-                lines.append(t("gateway.reload_mcp.none_connected"))
-            else:
-                lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
-
-            self._mcp_reload_refresh_cached_agents(multiplex, event.source.profile)
-
-            # Append a note at the END of the history (preserves the prompt-cache prefix).
-            change_parts = [
-                f"{label} servers: {', '.join(sorted(names))}"
-                for label, _key, names in (changes[1], changes[2], changes[0]) if names
-            ]
-            tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
-            change_detail = ". ".join(change_parts) + ". " if change_parts else ""
-            reload_msg = {
-                "role": "user",
-                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
-            }
-            with suppress(Exception):  # Best-effort; don't fail the reload over a transcript write
-                session_entry = await self.async_session_store.get_or_create_session(event.source)
-                await self.async_session_store.append_to_transcript(session_entry.session_id, reload_msg)
-
-            return "\n".join(lines)
-
-        except Exception as e:
-            logger.warning("MCP reload failed: %s", e)
-            return t("gateway.reload_mcp.failed", error=e)
-
     def _get_proxy_url(self) -> Optional[str]:
         """Proxy URL if proxy mode is configured (GATEWAY_PROXY_URL env wins over ``gateway.proxy_url``).
         Per-profile like GATEWAY_PROXY_KEY: under multiplex a raw environ read would ship a secondary's
@@ -3561,7 +3457,31 @@ class GatewayTurnMixin:
     ) -> Any:
         """Poll the executor future (inactivity timeout + backup interrupt checks); return its result,
         or a synthetic failed run dict on inactivity timeout. Polls even with an unlimited timeout
-        so the backup interrupt check runs if monitor_for_interrupt() silently died."""
+        so the backup interrupt check runs if monitor_for_interrupt() silently died.
+
+        Cancelling this await (adapter.cancel_session_processing) does not stop the executor
+        thread, and the turn's finally then releases the slot a later /stop finds the agent
+        through, so a still-running agent is hard-interrupted here. Skipped when the agent is
+        already interrupted (keeps a /stop, /new or shutdown reason) or the turn already
+        published its result (the finalizer cleared the flag; re-arming it would end a cached
+        agent's next turn at once). The short stretch between the finalizer and that publish is
+        not covered: every current canceller also evicts the cached agent, so a flag re-armed
+        there never reaches another turn."""
+        try:
+            return await self._run_agent_poll_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+        except asyncio.CancelledError:
+            from gateway.run import _INTERRUPT_REASON_STOP, request_hard_interrupt
+            agent = turn_ctx.agent_holder[0]
+            if (agent is not None and not worker.worker_done.is_set() and turn_ctx.result_holder[0] is None
+                    and not getattr(agent, "_interrupt_requested", False)):
+                with suppress(Exception):
+                    request_hard_interrupt(agent, _INTERRUPT_REASON_STOP)
+            raise
+
+    async def _run_agent_poll_turn_worker(
+        self, worker: GatewayRunner._RunAgentWorker, turn_ctx: TurnContext,
+        _interrupt_detected: asyncio.Event, interrupt_monitor: asyncio.Task,
+    ) -> Any:
         from gateway.run import _abandon_timed_out_gateway_turn
         agent_holder = turn_ctx.agent_holder
         _warning_fired = False

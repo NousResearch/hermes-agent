@@ -57,6 +57,14 @@ class TestDecideImageInputMode:
         with patch("agent.image_routing._lookup_supports_vision", return_value=None):
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
+    def test_anthropic_claude_is_native_when_catalog_has_no_entry(self):
+        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-5", {}) == "native"
+
+    def test_explicit_false_override_still_disables_known_claude_vision(self):
+        cfg = {"model": {"supports_vision": False}}
+        assert decide_image_input_mode("anthropic", "claude-sonnet-5", cfg) == "text"
+
     def test_auto_explicit_aux_backend_is_the_defacto_route(self):
         """Maintainer decision (2026-08-28, reverses #29135): a user who
         NAMED a dedicated vision backend wants it used — even when the

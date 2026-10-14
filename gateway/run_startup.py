@@ -617,11 +617,11 @@ class GatewayStartupMixin:
             # Claim the slot *before* spawning so an inbound message arriving before the task's first
             # await queues instead of building a duplicate AIAgent.
             _resume_state = self._session_state(entry.session_key)
-            _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
-            _resume_state.turn.started_ts = time.time()
-            self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            from gateway.session_state import claim_turn_slot
+            claim_turn_slot(_resume_state.turn, event, _AGENT_PENDING_SENTINEL)
+            self._persist_active_agents()
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

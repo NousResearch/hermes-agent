@@ -1190,6 +1190,13 @@ agent:
   # the turn (see gateway_timeout). 0 = disable. Default 300.
   # session_stall_timeout: 300
 
+  # Pre-agent setup bound (seconds). A turn stuck in session resolve, turn
+  # prepare or agent:start hooks holds the session with no activity clock;
+  # past this age the next inbound message (or stall-watchdog tick) evicts
+  # the wedged turn, stages a resend notice, and takes the cold path.
+  # 0 = disable (legacy never-evict). Default 1800.
+  # pending_setup_timeout: 1800
+
   # Transcript-sanitiser repeated-heal escalation (#96870). The pre-send
   # sanitiser silently repairs empty non-final turns on the wire copy; after
   # this many heal passes within a 10-minute session window Hermes logs one

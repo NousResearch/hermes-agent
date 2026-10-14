@@ -118,9 +118,17 @@ class GatewaySessionWatchersMixin:
         if getattr(self, "_session_stall_notified", None) is None:  # tests may build bare runners
             self._session_stall_notified = {}
         notified_map = self._session_stall_notified
+        from gateway.run import _AGENT_PENDING_SENTINEL
         sent, now, candidates = 0, time.time(), self._stall_candidates()
         # Every candidate carries a non-None pending event, so has_pending_inbound is always True.
         for session_key, (adapter, pending_event) in list(candidates.items()):
+            # A pre-agent turn wedged with no follow-up traffic never reaches the
+            # admission-time evictor: bound it here too (#138358). Real agents keep
+            # the notify-only path below (contrast gateway_timeout).
+            _watched = (getattr(self, "_running_agents", None) or {}).get(session_key)
+            if _watched is _AGENT_PENDING_SENTINEL:
+                self._hm_evict_idle_stale_agent(session_key)
+                continue
             activity = self._session_activity_for_stall(session_key)
             idle_seconds = resolve_session_idle_seconds_from_activity(activity, now=now)
             if should_clear_session_stall_notification(

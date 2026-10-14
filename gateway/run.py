@@ -1944,6 +1944,7 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
+    "pending_setup_timeout": "HERMES_GATEWAY_PENDING_SETUP_TIMEOUT",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
@@ -3945,13 +3946,16 @@ class GatewayRunner(
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
-            active_work=active_work)
+            oldest_turn_age_s=self._oldest_turn_age_s(), active_work=active_work)
 
     def _persist_active_agents(self) -> None:
-        """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
-        Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
-        would clobber it). Best-effort: a failed write must never disrupt a turn."""
-        _write_runtime_status_quiet(active_agents=self._active_work_count())
+        """Persist live turn freshness to ``gateway_state.json`` at every turn boundary.
+        Passes ONLY turn-scoped freshness (``active_agents``, ``oldest_turn_age_s``) so the
+        read-merge-write keeps lifecycle state (gateway_state=None would clobber it).
+        Best-effort: a failed write must never disrupt a turn."""
+        _write_runtime_status_quiet(
+            active_agents=self._active_work_count(),
+            oldest_turn_age_s=self._oldest_turn_age_s())
 
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of

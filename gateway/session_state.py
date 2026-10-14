@@ -5,6 +5,7 @@ was CLEARED: ``turn`` at the end of every turn; ``conversation`` at conversation
 
 from __future__ import annotations
 
+import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
@@ -12,6 +13,24 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tu
 # /fast stores "priority" or None (explicit normal), so key PRESENCE decides, not truthiness.
 _UNSET_TIER = object()
 SERVICE_TIER_UNSET = _UNSET_TIER  # public alias
+
+# Pre-agent turn stages: claimed -> resolve_session -> prepare_turn ->
+# agent_start_hooks -> running. Single definition site for the breadcrumb
+# stamped across the claim paths and read by the wedge evictor (#138358).
+TURN_STAGE_CLAIMED = "claimed"
+TURN_STAGE_RESOLVE_SESSION = "resolve_session"
+TURN_STAGE_PREPARE_TURN = "prepare_turn"
+TURN_STAGE_AGENT_START_HOOKS = "agent_start_hooks"
+TURN_STAGE_RUNNING = "running"
+
+
+def claim_turn_slot(turn: "TurnState", event: Any, sentinel: Any) -> None:
+    """Claim a turn slot for pre-agent setup. Shared by the cold path and
+    startup resume so the claim triple cannot drift between the two."""
+    turn.agent = sentinel
+    turn.event = event
+    turn.started_ts = time.time()
+    turn.stage = TURN_STAGE_CLAIMED
 
 
 @dataclass
@@ -25,6 +44,9 @@ class TurnState:
     event: Any = None
     ctx: Any = None
     started_ts: float = 0.0  # 0.0 = not running
+    # Pre-agent breadcrumb (one of TURN_STAGE_* below): a wedged turn's
+    # eviction log carries the stage instead of a stack dump (#138358).
+    stage: str = ""
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
     # Held turn-lease tokens keyed by acquiring run generation: release/rebind resolve the
@@ -36,6 +58,7 @@ class TurnState:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
         self.agent = self.lease = self.event = self.ctx = None
         self.started_ts = self.busy_ack_ts = 0.0
+        self.stage = ""
 
 
 @dataclass

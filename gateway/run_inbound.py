@@ -501,8 +501,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     def _hm_evict_idle_stale_agent(self, _quick_key: str) -> None:
         """Evict a leaked lock from a hung/crashed handler: only when the agent has been *idle* past
         the threshold (active tasks can run for hours), or has no activity tracker and an extreme
-        wall-clock age. The pending sentinel is never evicted (no get_activity_summary() → idle
-        reads inf and would race the async setup path)."""
+        wall-clock age. A pre-agent PENDING sentinel has no activity clock either, but leaving it
+        forever wedges the session (every later message queues silently): evict it past the
+        pending-setup timeout instead (#138358)."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         _quick_state = self._peek_session_state(_quick_key)
@@ -511,6 +512,36 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return
         _stale_age = time.time() - _stale_ts
         _stale_agent = _quick_state.turn.agent
+        if _stale_agent is _AGENT_PENDING_SENTINEL:
+            # A turn wedged anywhere in the pre-agent phase (session resolve, turn
+            # prepare, agent:start hooks) never reaches the inactivity watchdog, and
+            # the 5 s turn-lease wait only bounds lease contention: without this bound
+            # the session queues silently forever (#138358). The default is
+            # independent of HERMES_AGENT_TIMEOUT (inactivity): 1800 s covers the
+            # lease wait, transcript load and the 600 s hygiene ceiling with
+            # headroom; 0 disables back to never-evict.
+            # Config: agent.pending_setup_timeout (config.yaml wins over env).
+            _pending_timeout = _float_env("HERMES_GATEWAY_PENDING_SETUP_TIMEOUT", 1800.0)
+            if _pending_timeout > 0 and _stale_age > _pending_timeout:
+                _wedged_stage = getattr(_quick_state.turn, "stage", "")
+                _wedged_event = getattr(_quick_state.turn, "event", None)
+                _wedged_text = str(getattr(_wedged_event, "text", "") or "")[:80].replace("\n", " ")
+                logger.warning(
+                    "Evicting wedged pre-agent turn for %s "
+                    "(pending setup age: %.0fs, timeout: %.0fs, stage: %s, msg=%r id=%s)",
+                    _quick_key, _stale_age, _pending_timeout, _wedged_stage,
+                    _wedged_text, getattr(_wedged_event, "message_id", None),
+                )
+                self._hm_evict_running_agent(_quick_key, "wedged_preagent_eviction")
+                # The wedged message itself is lost: stage a one-shot resend notice
+                # for the next agent run (age in text so a delayed delivery stays
+                # truthful; consumed one-shot by run_sync like all sidecar notes).
+                self._append_turn_sidecar_notes(_quick_key, [
+                    "[System note: your previous message wedged during turn setup "
+                    f"(stage {_wedged_stage}, {_stale_age:.0f}s with no agent activity) "
+                    "and was discarded; please resend it.]",
+                ])
+            return
         _stale_idle = float("inf")  # assume idle if we can't check
         _stale_detail = ""
         _activity_summary_valid = False
@@ -579,6 +610,21 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason,
             tool_reason=_INTERRUPT_TOOL_REASON_EVICTED)
         self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
+
+    def _oldest_turn_age_s(self, now: Optional[float] = None) -> Optional[float]:
+        """Age of the oldest in-flight turn in seconds, PENDING sentinels included:
+        the pre-agent phase has no activity clock, so only wall age exposes a wedge
+        to external monitors (#138358). None when no turn is running."""
+        _now = time.time() if now is None else now
+        _oldest: Optional[float] = None
+        for _state in self._sessions_map().values():
+            _turn = getattr(_state, "turn", None)
+            if getattr(_turn, "agent", None) is None or not getattr(_turn, "started_ts", 0.0):
+                continue
+            _age = _now - _turn.started_ts
+            if _oldest is None or _age > _oldest:
+                _oldest = _age
+        return _oldest
 
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: MessageEvent, *, merge_text: bool = False
@@ -1350,9 +1396,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
-        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.event = event
-        _claim_state.turn.started_ts = time.time()
+        from gateway.session_state import claim_turn_slot
+        claim_turn_slot(_claim_state.turn, event, _AGENT_PENDING_SENTINEL)
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()

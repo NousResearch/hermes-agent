@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import contextlib
 from hermes_cli.cli_output import line_input
+from hermes_cli.gateway_host_record import _discard_dead_host_record, _forget_host_gateway_probe
 import json
 import logging
 import os
@@ -5374,17 +5375,6 @@ def _stop_host_multiplexer(owner) -> int:
         return 0
 
 
-def _discard_dead_host_record() -> bool:
-    """Drop the host rendezvous record once its owner is provably gone (after a confirmed stop)."""
-    try:
-        from gateway.host_rendezvous import ROLE_GATEWAY, discard_dead_record
-
-        return discard_dead_record(ROLE_GATEWAY)
-    except Exception:
-        logger.debug("Host record retraction failed", exc_info=True)
-        return False
-
-
 def _restart_all(system: bool) -> None:
     from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb
     owner = _host_multiplexer_for_all_verb()
@@ -5424,6 +5414,8 @@ def _restart_all_as_host(owner, system: bool) -> None:
     # Retract the stopped owner's rendezvous record. Leaving it made this very function a silent
     # no-op: the re-entered `gateway run` below read the corpse's record and ATTACHED to it.
     _discard_dead_host_record()
+    # The retraction only invalidates when it removed a record; the pre-stop memo must go either way.
+    _forget_host_gateway_probe()
 
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
@@ -5561,6 +5553,7 @@ def _cmd_restart(args):
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     _wait_for_api_server_port_free()
+    _forget_host_gateway_probe()
     print("Starting gateway...")
     run_gateway(verbose=0, force=force)
 

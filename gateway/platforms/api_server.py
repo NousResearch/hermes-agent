@@ -1119,8 +1119,8 @@ class _ProviderAuthResolutionError(RuntimeError):
 
 
 class _SessionEventQueue:
-    """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
-    session_id/run_id/seq/ts; ``enqueue`` is executor-thread safe (hops onto the owning loop)."""
+    """Ordered session SSE queue: callbacks, terminal events and EOS share one loop writer.
+    ``payload`` stamps session_id/run_id/seq/ts; ``enqueue`` is executor-thread safe."""
 
     def __init__(self, session_id: str, run_id: str):
         self.loop = asyncio.get_running_loop()
@@ -1138,16 +1138,17 @@ class _SessionEventQueue:
         return name, payload
 
     def enqueue(self, name: str, payload: dict[str, Any]) -> None:
-        event = self.payload(name, payload)
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
+        # Schedule terminal events too: awaiting a fast worker may not yield.
+        # Only the owning loop stamps sequence numbers and writes to the queue.
         with suppress(RuntimeError):
-            if running_loop is self.loop:
-                self.queue.put_nowait(event)
-            else:
-                self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
+            self.loop.call_soon_threadsafe(self._put, name, payload)
+
+    def _put(self, name: str, payload: dict[str, Any]) -> None:
+        self.queue.put_nowait(self.payload(name, payload))
+
+    def close(self) -> None:
+        self.enqueue("done", {})
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
 
 
 def _room_grant_delegate(name: str):
@@ -3632,7 +3633,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         events = _SessionEventQueue(session_id, run_id)
-        queue, _event_payload = events.queue, events.payload
+        queue = events.queue
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.
         # See #93689.
@@ -3666,11 +3667,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {
+                events.enqueue("run.started", {
                     "user_message": {"role": "user", "content": user_message},
-                    "runtime": runtime_meta}))
+                    "runtime": runtime_meta})
                 self._set_run_status(run_id, "running", last_event="run.started")
-                await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+                events.enqueue("message.started", {"message": {"id": message_id, "role": "assistant"}})
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
@@ -3685,12 +3686,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # Terminal status and flags come from the result (interrupted -> cancelled,
                 # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
                 status, fields = _api_runs.terminal_run_status(result if is_dict else {})
-                await queue.put(_event_payload("assistant.completed", {
+                events.enqueue("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, **fields, "runtime": effective_runtime}))
-                await queue.put(_event_payload(f"run.{status}", {
+                    "content": final_response, **fields, "runtime": effective_runtime})
+                events.enqueue(f"run.{status}", {
                     "session_id": effective_session_id, "message_id": message_id, **fields,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime})
                 self._set_run_status(
                     run_id, status, session_id=effective_session_id,
                     # The reply text, so a caller whose stream died can still read it from
@@ -3704,13 +3705,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.exception("[api_server] session chat stream failed")
                 self._set_run_status(
                     run_id, "failed", error=_redact_api_error_text(exc), last_event="run.failed")
-                await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
+                events.enqueue("error", {"message": _redact_api_error_text(exc)})
             finally:
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
-                await queue.put(_event_payload("done", {}))
-                await queue.put(None)
+                events.close()
 
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())

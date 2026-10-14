@@ -687,7 +687,9 @@ def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
 # climbs, so ``./dev/sdk/token.json`` stays a relative file, and ``build/../dev/sda`` is a path under the
 # working directory, not the device (``build/../../dev/sda`` climbs above it and is). What no spelling
 # rule can see -- ``D=/dev; wipefs -a $D/sda``, ``cd /dev && wipefs -a sda`` -- is the execution
-# boundary's to resolve.
+# boundary's to resolve, and so is everything that is not one unquoted literal word: quotes inside the
+# path (``/dev/"sda"``), globs and braces (``/dev/[s]da``, ``/dev/{sda,sdb}``) and links
+# (``/proc/self/root/dev/sda``). The user guide states the same bound.
 # The head is what the path starts from: a variable, a tilde (``~``, ``~root``, ``~+``: the shell
 # expands all three to a directory before the kernel sees the path, review F8 on #122771),
 # ``.``/``..``, a plain relative segment (``build``), or nothing for an absolute path. A plain

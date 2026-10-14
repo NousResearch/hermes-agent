@@ -19,9 +19,11 @@ from hermes_cli import mcp_startup
 def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
+    saved_no_config = mcp_startup._mcp_no_config_logged
     try:
         mcp_startup._mcp_discovery_started = set()
         mcp_startup._mcp_discovery_thread = {}
+        mcp_startup._mcp_no_config_logged = set()
         yield
     finally:
         thread = mcp_startup._current_home_thread()
@@ -29,6 +31,7 @@ def _reset_mcp_startup_state():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
         mcp_startup._mcp_discovery_thread = saved_thread
+        mcp_startup._mcp_no_config_logged = saved_no_config
 
 
 def _agent_args(**overrides) -> Namespace:
@@ -311,6 +314,135 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     )
 
     assert mcp_startup._has_configured_mcp_servers() is True
+
+
+def test_background_mcp_discovery_warns_when_profile_has_no_mcp_servers(monkeypatch):
+    """Multiplexed profile with no mcp_servers must log once and must not mark started (#138622)."""
+    warnings: list[str] = []
+    calls = {"mcp": 0}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=dict),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+        ),
+    )
+
+    logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda msg, *args, **_k: warnings.append(msg % args if args else msg),
+        info=lambda *_a, **_k: None,
+    )
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp-discovery")
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp-discovery")
+
+    assert calls["mcp"] == 0
+    assert mcp_startup._mcp_discovery_started == set()
+    assert mcp_startup._current_home_thread() is None
+    assert len(warnings) == 1
+    assert "no mcp_servers configured for this profile" in warnings[0]
+    assert "0 MCP tools available" in warnings[0]
+
+
+def test_background_mcp_discovery_no_config_mentions_shared_servers(monkeypatch):
+    """When another profile already connected MCP, the warning points at mirroring config."""
+    warnings: list[str] = []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=dict),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+    # Pretend the MCP stack is loaded with one live connection (launch profile).
+    fake_lock = threading.Lock()
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(_lock=fake_lock, _servers={"demo": object()}),
+    )
+
+    logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda msg, *args, **_k: warnings.append(msg % args if args else msg),
+        info=lambda *_a, **_k: None,
+    )
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp-discovery")
+
+    assert len(warnings) == 1
+    assert "1 server(s) connected in-process" in warnings[0]
+    assert "mirror mcp_servers" in warnings[0]
+    assert mcp_startup._mcp_discovery_started == set()
+
+
+def test_background_mcp_discovery_runs_after_config_appears(monkeypatch):
+    """Skipping the no-config gate must not block a later discovery once mcp_servers is added."""
+    calls = {"mcp": 0}
+    config = {"mcp_servers": {}}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=lambda: config),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+        ),
+    )
+
+    logger = types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda *_a, **_k: None,
+        info=lambda *_a, **_k: None,
+    )
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp-discovery")
+    assert calls["mcp"] == 0
+    assert mcp_startup._mcp_discovery_started == set()
+
+    config["mcp_servers"] = {"demo": {"transport": "stdio"}}
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="test-mcp-discovery")
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    thread.join(timeout=1.0)
+    assert calls["mcp"] == 1
+
+
 
 
 

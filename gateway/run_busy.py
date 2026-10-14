@@ -840,6 +840,15 @@ class GatewayBusySessionMixin:
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
+        handled, result = await self._hm_try_busy_exec_quick_command(event, event.source)
+        if handled:
+            # Execution has already consumed the event. A delivery failure must not let the
+            # base adapter enqueue it and execute it again after the active turn ends.
+            try:
+                await self._send_busy_ack_reply(event, adapter, result)
+            except Exception:
+                logger.exception("Failed to deliver busy exec quick-command reply")
+            return True
         # Internal synthetic events (delegation / background completions) must never interrupt or
         # steer; they surface as a NEW turn when idle. Plugin events carry untrusted payload text, so
         # queue them through the FIFO (security metadata kept apart).

@@ -63,3 +63,78 @@ def test_slash_command_dispatched_not_queued():
 
     assert seen.get("cmd") == "/status"
     assert c._pending_input.empty()
+
+
+def test_busy_slash_command_queued_not_dispatched():
+    """A non-inline slash command submitted while the agent runs queues, like Enter.
+
+    Dispatching it here runs on the prompt_toolkit thread while ``chat()`` owns the
+    turn: ``/compress`` would compact the live conversation and rotate
+    ``agent.session_id`` underneath the running turn, and ``_chat_settle_turn`` then
+    overwrites the compacted history with the turn's own messages. Enter routes the
+    same command to ``_pending_input`` (``cli_tui_mixin._tui_handle_enter``), where
+    the process loop — blocked inside ``chat()`` for the whole turn — picks it up at
+    the turn boundary.
+    """
+    c = _make(agent_running=True)
+    called = []
+    c.process_command = lambda command: called.append(command) or True
+    buf = _FakeBuf("/compress")
+
+    c._submit_editor_buffer(buf)
+
+    assert called == []
+    assert c._pending_input.get_nowait() == "/compress"
+    assert buf.reset_called
+
+
+def test_busy_inline_slash_command_still_dispatched():
+    """The mid-run dispatch set (/model, /steer, /queue, /bg, /btw) is unchanged."""
+    c = _make(agent_running=True)
+    called = []
+    c.process_command = lambda command: called.append(command) or True
+
+    c._submit_editor_buffer(_FakeBuf("/steer keep going"))
+
+    assert called == ["/steer keep going"]
+    assert c._pending_input.empty()
+
+
+def test_busy_bang_command_queued_not_run():
+    """A `!shell` submission via Ctrl+G queues while the agent runs, like Enter.
+
+    Enter treats a bang command as a local dispatch and queues it. Running it here on the
+    prompt_toolkit thread would block the input loop for the command's whole duration.
+    """
+    c = _make(agent_running=True)
+    ran = []
+    c.handle_bang_shell = lambda text: ran.append(text) or True
+    buf = _FakeBuf("!sleep 30")
+
+    c._submit_editor_buffer(buf)
+
+    assert ran == []
+    assert c._pending_input.get_nowait() == "!sleep 30"
+    assert buf.reset_called
+
+
+def test_busy_steer_mode_steers_editor_draft():
+    """In steer mode a Ctrl+G draft steers the running turn instead of queueing."""
+    c = _make(agent_running=True, busy="steer")
+
+    class _Agent:
+        def __init__(self):
+            self.steered = []
+
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    c.agent = _Agent()
+    buf = _FakeBuf("keep going")
+
+    c._submit_editor_buffer(buf)
+
+    assert c.agent.steered == ["keep going"]
+    assert c._pending_input.empty()
+    assert buf.reset_called

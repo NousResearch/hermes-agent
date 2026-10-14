@@ -157,6 +157,24 @@ def _peek_session_id(store, session_key: str):
     return getattr(entry, "session_id", None) if entry else None
 
 
+# Origin platforms with no native chat adapter to resume: waking them would loop back into this adapter.
+_UNWAKEABLE_ORIGIN_PLATFORMS = frozenset({"webhook", "local", "api_server"})
+
+
+def validate_wake_origin_config(name: str, route: dict, secret: Any) -> None:
+    """``wake_origin_session`` injects a prompt into a live chat session, so it needs real HMAC auth and
+    cannot share a route with another dispatch mode."""
+    if not route.get("wake_origin_session"):
+        return
+    if secret == _INSECURE_NO_AUTH:
+        raise ValueError(f"[webhook] Route '{name}' sets wake_origin_session but uses INSECURE_NO_AUTH. Waking a "
+                         f"chat session requires a real HMAC secret.")
+    for other in ("deliver_only", "cron_job", "coalesce"):
+        if route.get(other):
+            raise ValueError(f"[webhook] Route '{name}' sets both wake_origin_session and {other}. They are "
+                             f"mutually exclusive dispatch modes.")
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -257,6 +275,7 @@ class WebhookAdapter(BasePlatformAdapter):
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
         validate_coalesce_config(name, route)
+        validate_wake_origin_config(name, route, secret)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -405,6 +424,7 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
             validate_coalesce_config(name, route)
+            validate_wake_origin_config(name, route, effective_secret)
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
             return False
@@ -684,6 +704,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        if route_config.get("wake_origin_session"):
+            return await self._handle_wake_origin_session(payload, prompt, route_name, event_type, delivery_id,
+                                                          profile)
         if route_config.get("cron_job"):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
@@ -697,6 +720,74 @@ class WebhookAdapter(BasePlatformAdapter):
                                       "delivery_id": delivery_id}, status=202)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
+
+    async def _handle_wake_origin_session(self, payload: Any, prompt: str, route_name: str, event_type: str,
+                                          delivery_id: str, profile) -> web.Response:
+        """Resume the session that opened the watch; the failure reason stays in the log, not the response."""
+        try:
+            await self._wake_origin_session(payload, prompt, profile)
+        except Exception:
+            logger.exception("[webhook] origin-session wake failed route=%s delivery=%s", route_name, delivery_id)
+            return web.json_response({"status": "error", "error": "Origin-session wake failed",
+                                      "delivery_id": delivery_id}, status=502)
+        return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
+                                  "delivery_id": delivery_id, "mode": "origin_session"}, status=202)
+
+    async def _wake_origin_session(self, payload: Any, prompt: str, route_profile: Optional[str]) -> None:
+        """Inject ``prompt`` into the session recorded in ``payload.watch.origin`` through its own platform adapter.
+        Fails closed on any identity mismatch: platform, routed profile, recomputed session key, or a session
+        replaced by /new or /reset since the watch was opened. A session that merely rotated through context
+        compression is followed to its live tip."""
+        watch = payload.get("watch") if isinstance(payload, dict) else None
+        origin = watch.get("origin") if isinstance(watch, dict) else None
+        if not isinstance(origin, dict):
+            raise ValueError("payload.watch.origin is required")
+
+        def field(key: str) -> str:
+            return str(origin.get(key) or "").strip()
+
+        platform_name, chat_id, chat_type = field("platform").lower(), field("chatId"), field("chatType")
+        if not (platform_name and chat_id and chat_type):
+            raise ValueError("origin platform/chatId/chatType are required")
+        if platform_name in _UNWAKEABLE_ORIGIN_PLATFORMS:
+            raise ValueError(f"origin platform '{platform_name}' cannot be woken by this route")
+        runner = self.gateway_runner
+        if runner is None:
+            raise RuntimeError("gateway runner is unavailable")
+        # A route under /p/<profile>/ may only wake that profile's sessions; a bare route only the default's.
+        route_profile = route_profile if route_profile and route_profile != "default" else None
+        origin_profile = field("profile")
+        if (origin_profile if origin_profile != "default" else "") != (route_profile or ""):
+            raise ValueError("origin profile does not match the route's profile")
+
+        from gateway.session import SessionSource
+        from gateway.wake import deliver_wake
+
+        platform = Platform(platform_name)
+        adapter = self._find_adapter(platform, route_profile)
+        if adapter is None:
+            raise RuntimeError(f"origin platform adapter '{platform_name}' is not connected")
+        source = SessionSource(
+            platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=field("threadId") or None,
+            user_id=field("userId") or None, user_id_alt=field("userIdAlt") or None, profile=route_profile,
+            scope_id=field("scopeId") or None)
+        session_key = runner._session_key_for_source(source)
+        if field("sessionKey") and field("sessionKey") != session_key:
+            raise ValueError("origin session key does not match the supplied platform/chat/thread source")
+        session_id = _peek_session_id(runner.session_store, session_key)
+        expected = field("sessionId")
+        if expected and session_id and session_id != expected:
+            tip = await self._compression_tip(runner, session_key, expected)
+            if tip != session_id:
+                raise ValueError("origin session was replaced since the watch was created")
+        await deliver_wake(adapter, text=prompt, session_id=session_id or expected, source=source,
+                           profile=route_profile)
+
+    @staticmethod
+    async def _compression_tip(runner, session_key: str, session_id: str) -> Optional[str]:
+        """Live tip of ``session_id``'s compression chain; ``session_id`` itself when it never rotated."""
+        db = runner.session_store._db_for_key(session_key)
+        return await asyncio.to_thread(db.get_compression_tip, session_id)
 
     def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> web.Response:

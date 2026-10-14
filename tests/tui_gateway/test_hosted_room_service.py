@@ -1780,6 +1780,27 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     assert peer.dispatches == []
 
 
+def test_route_status_failure_after_admission_still_returns():
+    import sqlite3
+
+    class _Admitted:
+        def recover_dispatch(self, **_kwargs):
+            return {"status": "accepted", "run_id": "run-live"}
+
+    ready = []
+
+    def on_ready():
+        ready.append(True)
+        raise sqlite3.OperationalError("database is locked")
+
+    tracked = _RouteStatusPeerClient(
+        _Admitted(), on_ready=on_ready, on_reauthorization=lambda: None,
+        on_unavailable=lambda: None, on_refreshed=lambda *_args: None)
+    result = tracked.recover_dispatch()
+    assert result["run_id"] == "run-live"
+    assert ready == [True]
+
+
 def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(

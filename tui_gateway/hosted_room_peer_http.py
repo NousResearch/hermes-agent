@@ -475,15 +475,15 @@ class PeerRunsHTTPClient:
             try:
                 result = admit()
             except PeerRunsHTTPError as replay_error:
-                # A replay that is merely unreachable does not prove the first POST missed.
-                # A 429 is different: this server emits it only before reserve, so that
-                # retry did not admit the generation and must not enter the recovery hold.
-                rate_limited = replay_error.status_code == 429 and bool(replay_error.not_admitted)
+                # The first POST was already ambiguous: it may have reserved the run.
+                # A later 429 does not prove that POST missed. This server emits 429
+                # before reserve, but the first request can be past that check and not
+                # yet reserved, and a proxy can return 429 as HTML. Keep the hold.
                 raise PeerRunsHTTPError(
                     str(replay_error),
                     retryable=(first_error.retryable or replay_error.retryable),
-                    ambiguous=not rate_limited,
-                    not_admitted=rate_limited,
+                    ambiguous=True,
+                    not_admitted=False,
                     status_code=replay_error.status_code,
                     error_code=replay_error.error_code,
                 ) from replay_error
@@ -497,11 +497,17 @@ class PeerRunsHTTPClient:
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
             "task_id": checked.task_id, "execution_generation": checked.execution_generation}
-        if self.receipt_db_path is not None:
-            from gateway import hosted_rooms
-            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+        # The peer has already admitted this generation. A locked profile database must
+        # not drop the in-memory receipt: the caller would treat the POST as unsent and
+        # defer the turn beside the live run. The next recovery reads this receipt.
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
+        if self.receipt_db_path is not None:
+            try:
+                from gateway import hosted_rooms
+                hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+            except Exception:
+                logger.exception("peer run receipt could not be persisted after admission")
         return self._accepted(
             checked, run_id=run_id, session_id=session_id,
             replayed=bool(result.get("replayed", False)))

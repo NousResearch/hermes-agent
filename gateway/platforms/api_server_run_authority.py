@@ -31,16 +31,21 @@ _PREDECESSOR_EPOCH_CAP = 64
 
 
 def _predecessor_epochs(epoch: int) -> list[int]:
-    """Epochs strictly below ``epoch``, capped so one grant cannot hash millions of scopes."""
+    """Epochs strictly below ``epoch``, capped so one grant cannot hash millions of scopes.
+
+    The kept epochs are the newest half and the oldest half. Build those ranges directly.
+    ``list(range(epoch))`` is held inside the idempotency write lock; a caller-supplied
+    epoch must not allocate that list before the cap is applied.
+    """
     if epoch <= 1:
         return []
-    span = list(range(epoch - 1, 0, -1))
-    if len(span) <= _PREDECESSOR_EPOCH_CAP:
-        return span
+    span = epoch - 1
+    if span <= _PREDECESSOR_EPOCH_CAP:
+        return list(range(span, 0, -1))
     half = _PREDECESSOR_EPOCH_CAP // 2
     chosen = []
     seen = set()
-    for older in span[:half] + list(range(1, half + 1)):
+    for older in (*range(span, span - half, -1), *range(1, half + 1)):
         if older in seen or older < 1 or older >= epoch:
             continue
         seen.add(older)
@@ -48,14 +53,17 @@ def _predecessor_epochs(epoch: int) -> list[int]:
     return chosen
 
 
-def predecessor_scopes(claims, previous=None, previous_home=None):
+def predecessor_scopes(claims, previous=None, previous_home=None, extra_gateways=None):
     """Scopes whose unstamped rows belong to this grant's lineage.
 
     Returns ``(scope, epoch)`` pairs. Predecessor epochs share every claim except
-    ``authority_epoch``. A takeover also rebuilds those epochs under the previous
-    ``authority_gateway_id``: that id is not part of the canonical authority key, but
-    it is part of the scope hash a pre-column row was stored under. An explicit home
-    move adds the named predecessor as well.
+    ``authority_epoch``. A takeover also rebuilds those epochs under every gateway this
+    lineage has already used: that id is not part of the canonical authority key, but
+    it is part of the scope hash a pre-column row was stored under. ``extra_gateways``
+    carries ids recorded before this grant (the watermark, the reservation, and any
+    gateway named by ``previous``). An explicit home move adds the named predecessor
+    as well. The hash still includes this grant's home and member, so another
+    member's or home's gateway id cannot select their row.
     """
     if not isinstance(claims, dict) or "authority_epoch" not in claims:
         return []
@@ -77,10 +85,12 @@ def predecessor_scopes(claims, previous=None, previous_home=None):
         scopes.append((scope, int(prior_epoch)))
 
     gateway_ids = []
-    for gateway_id in (
-        claims.get("authority_gateway_id"),
-        None if previous is None else previous[2],
-    ):
+    candidates = [claims.get("authority_gateway_id")]
+    if previous is not None:
+        candidates.append(previous[2])
+    if extra_gateways:
+        candidates.extend(extra_gateways)
+    for gateway_id in candidates:
         if gateway_id is None:
             continue
         text = str(gateway_id)
@@ -119,7 +129,38 @@ def initialize(conn):
         PRIMARY KEY(authority_key, idempotency_key))""")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempts ON run_idempotency(room_authority_key, room_authority_epoch)")
     conn.execute("CREATE INDEX IF NOT EXISTS run_room_attempt_identity ON run_idempotency(room_authority_key, idempotency_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS run_idempotency_lineage ON run_idempotency(room_lineage_key, idempotency_key)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS run_room_seen_gateways (
+        authority_key TEXT NOT NULL, gateway_id TEXT NOT NULL,
+        PRIMARY KEY(authority_key, gateway_id))""")
     strip_stored_fence_bodies(conn)
+
+
+def remember_seen_gateways(conn, authority_key, gateway_ids):
+    """Remember gateway ids that have carried this canonical lineage.
+
+    The scope hash is not reversible. A later grant can recompute a pre-column row's
+    scope only for a gateway id it has actually stored. Ids are an append-only set:
+    replacing the watermark must not forget the gateway that admitted the live row.
+    """
+    if not authority_key:
+        return
+    for gateway_id in gateway_ids or ():
+        text = str(gateway_id or "")
+        if not text:
+            continue
+        conn.execute(
+            """INSERT INTO run_room_seen_gateways(authority_key, gateway_id) VALUES(?,?)
+               ON CONFLICT(authority_key, gateway_id) DO NOTHING""",
+            (authority_key, text))
+
+
+def seen_gateway_ids(conn, authority_key):
+    if not authority_key:
+        return []
+    return [row[0] for row in conn.execute(
+        "SELECT gateway_id FROM run_room_seen_gateways WHERE authority_key=?", (authority_key,))]
 
 
 def canonical(conn, authority):
@@ -188,7 +229,16 @@ def superseded(conn, authority):
     return row is not None and (epoch <= row[2] or epoch < row[0] or (epoch == row[0] and gateway != row[1]))
 
 
-def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
+def _stamp_unstamped_scope(conn, key, scope, epoch):
+    """Bind one pre-column scope to this lineage without adopting a different member."""
+    conn.execute(
+        """UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?,room_lineage_key=?
+           WHERE scope=? AND room_authority_key IS NULL""",
+        (key, int(epoch), key, scope))
+
+
+def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None, claims=None,
+            extra_gateways=None):
     """Bind old receipts on authenticated observation, then advance one room/member watermark."""
     key, epoch, gateway = successor(conn, authority, previous)
     if not namespace_matches(conn, namespace, (key, epoch, gateway)):
@@ -202,15 +252,36 @@ def observe(conn, scope, authority, previous=None, previous_home=None, namespace
         conn.execute("""INSERT INTO run_room_authority_aliases(home_key,authority_key,origin_home)
             VALUES(?,?,?) ON CONFLICT(home_key) DO NOTHING""",
             (authority[0], key, origin_home(conn, previous, previous_home)))
-    conn.execute("""UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?
-        WHERE scope=? AND room_authority_key IS NULL""", (key, epoch, scope))
+    # Read the watermark before this grant replaces it. Production POST /v1/runs does not
+    # receive previous_authority; the gateway that admitted the live row is whatever this
+    # lineage last stored, plus every gateway remembered since.
+    stored = conn.execute(
+        "SELECT gateway_id FROM run_room_authorities WHERE authority_key=?", (key,)).fetchone()
+    gateways = []
+    for gateway_id in (
+            gateway, None if stored is None else stored[0], *seen_gateway_ids(conn, key),
+            *(extra_gateways or ())):
+        text = str(gateway_id or "")
+        if text and text not in gateways:
+            gateways.append(text)
+    remember_seen_gateways(conn, key, gateways)
+    _stamp_unstamped_scope(conn, key, scope, epoch)
     # Rows written before room_authority_key existed stay NULL. Their scope hash includes
-    # the epoch, so the successor's own scope does not match them. Stamp the predecessor
-    # scopes this grant is allowed to carry, keeping the old epoch so compact can still
-    # tell those generations from the current one.
-    for prior_scope, prior_epoch in predecessor_scopes(claims, previous, previous_home):
-        conn.execute("""UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?
-            WHERE scope=? AND room_authority_key IS NULL""", (key, prior_epoch, prior_scope))
+    # the gateway and the epoch, so the successor's own scope does not match them. Stamp
+    # every predecessor scope this lineage is allowed to carry, keeping the old epoch so
+    # compact can still tell those generations from the current one.
+    for prior_scope, prior_epoch in predecessor_scopes(
+            claims, previous, previous_home, extra_gateways=gateways):
+        _stamp_unstamped_scope(conn, key, prior_scope, prior_epoch)
+    # A row that already carries this lineage key is the same home and member at any
+    # gateway and any epoch distance. Public client keys stay client_replay and are not
+    # adopted. Scope recompute above is only how a pre-column NULL row is found the
+    # first time; after that the key does not depend on the epoch walk.
+    conn.execute(
+        """UPDATE run_idempotency
+           SET room_authority_key=?, room_authority_epoch=COALESCE(room_authority_epoch, ?)
+           WHERE room_lineage_key=? AND room_authority_key IS NULL AND client_replay=0""",
+        (key, epoch, key))
     if superseded(conn, authority):
         compact(conn, key)
         return False

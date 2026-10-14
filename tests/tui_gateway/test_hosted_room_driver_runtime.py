@@ -1172,10 +1172,11 @@ def test_retry_cannot_advance_generation_while_original_attempt_is_active(
     rpc.states[session_id]["execution_generation"] = attempt.execution_generation
     runtime = _runtime(db, rpc, clock=clock)
 
-    with pytest.raises(state.InvalidTaskTransitionError, match="still active"):
-        runtime.retry_indeterminate(identity)
+    retried = runtime.retry_indeterminate(identity)
 
     task = state.get_task(db, identity)
+    assert retried["status"] == "indeterminate"
+    assert retried["execution_generation"] == attempt.execution_generation
     assert task["status"] == "indeterminate"
     assert task["execution_generation"] == attempt.execution_generation
     assert not [call for call in rpc.calls if call[0] == "submit"]

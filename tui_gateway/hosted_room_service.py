@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -26,6 +27,8 @@ from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
+
+logger = logging.getLogger(__name__)
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
@@ -635,6 +638,11 @@ class _RouteStatusPeerClient:
                     self._on_unavailable()
                 raise
             if name != "prepare":
-                self._on_ready()
+                try:
+                    self._on_ready()
+                except Exception:
+                    # Admission already returned. A locked route-status write is local:
+                    # raising here makes the driver treat the generation as unsent.
+                    logger.exception("room route status could not be recorded after admission")
             return result
         return tracked

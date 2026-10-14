@@ -363,6 +363,21 @@ def _room_permission_for(request: web.Request) -> str:
     return "status" if request.method == "GET" else "dispatch"
 
 
+def _known_reservation_gateways(claims) -> list[str]:
+    """Gateway ids still stored for this member, read before observe replaces the watermark.
+
+    A wrong id only fails the scope hash. The hash includes this grant's home and member,
+    so another reservation's gateway cannot select that other row.
+    """
+    from gateway import hosted_rooms
+    with hosted_rooms._transaction(hosted_rooms.default_db_path()) as conn:
+        rows = conn.execute(
+            """SELECT authority_gateway_id FROM hosted_room_peer_reservations
+               WHERE room_id=? AND member_id=? AND target_profile=?""",
+            (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchall()
+    return [str(row[0]) for row in rows if row[0]]
+
+
 def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
     """Opaque auth/profile namespace; never persist bearer credentials."""
     if self._room_grant_token(request):
@@ -376,9 +391,12 @@ def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
             request._hermes_room_run_authority = authority
         scope = room_run_scope(claims)
         # A refused lineage must not fall through to reservation currency. observe()
-        # records the watermark only when this grant is allowed to admit.
+        # records the watermark only when this grant is allowed to admit. POST /v1/runs
+        # never receives previous_authority; the reservation still names the gateway that
+        # admitted this member, including one the watermark is about to replace.
         request._hermes_room_lineage_rejected = not self._run_idempotency_store.observe_room_authority(
-            scope, authority, namespace=room_namespace(claims), claims=claims)
+            scope, authority, namespace=room_namespace(claims), claims=claims,
+            extra_gateways=_known_reservation_gateways(claims))
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",

@@ -38,7 +38,10 @@ _MIGRATIONS = {
     "room_authority_epoch": "INTEGER",
     # Public Idempotency-Keys are not legacy room rows. Room reserves stamp an authority;
     # a reserve without one is a client key and must stay eligible for prune.
-    "client_replay": "INTEGER NOT NULL DEFAULT 0"}
+    "client_replay": "INTEGER NOT NULL DEFAULT 0",
+    # Canonical room identity without gateway or epoch. A NULL room_authority_key row
+    # that already carries this key is the same home and member at any later grant.
+    "room_lineage_key": "TEXT"}
 
 
 def _encode_status(status: dict[str, Any]) -> str:
@@ -166,7 +169,8 @@ class RunIdempotencyStore:
         if room_authority is None:
             return None, None, None
         from gateway.platforms.api_server_run_authority import canonical
-        authority_key = canonical(self._conn, room_authority)[0]
+        canonical_authority = canonical(self._conn, room_authority)
+        authority_key = canonical_authority[0]
         # Prefer a real receipt over an absent barrier when a pre-fix duplicate pair exists.
         found = self._conn.execute(
             """SELECT scope, fingerprint, run_id, status_json, owner_pid, owner_started, updated_at
@@ -175,6 +179,23 @@ class RunIdempotencyStore:
             (authority_key, key)).fetchone()
         if found is not None:
             return "row", found[0], found[1:]
+        # Same home and member, any gateway and any epoch. The scope hash is not reversible,
+        # so this is the lookup a grant can do when POST /v1/runs did not name a predecessor.
+        # client_replay stays out: a public key must not be adopted as this room generation.
+        unstamped = self._conn.execute(
+            """SELECT scope, fingerprint, run_id, status_json, owner_pid, owner_started, updated_at
+               FROM run_idempotency
+               WHERE room_lineage_key=? AND idempotency_key=? AND client_replay=0
+                 AND room_authority_key IS NULL
+               ORDER BY (fingerprint = '') ASC, updated_at DESC""",
+            (authority_key, key)).fetchone()
+        if unstamped is not None:
+            self._conn.execute(
+                """UPDATE run_idempotency
+                   SET room_authority_key=?, room_authority_epoch=COALESCE(room_authority_epoch, ?)
+                   WHERE scope=? AND idempotency_key=? AND room_authority_key IS NULL""",
+                (authority_key, int(canonical_authority[1]), unstamped[0], key))
+            return "row", unstamped[0], unstamped[1:]
         fenced = self._conn.execute(
             """SELECT run_id, status_json FROM run_room_fenced_attempts
                WHERE authority_key=? AND idempotency_key=?""",
@@ -237,8 +258,11 @@ class RunIdempotencyStore:
             if room_authority is not None:
                 from gateway.platforms.api_server_run_authority import canonical
                 room_authority = canonical(self._conn, room_authority)
-                self._conn.execute("UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=? WHERE run_id=?",
-                                   (*room_authority[:2], run_id))
+                self._conn.execute(
+                    """UPDATE run_idempotency
+                       SET room_authority_key=?, room_authority_epoch=?, room_lineage_key=?
+                       WHERE run_id=?""",
+                    (*room_authority[:2], room_authority[0], run_id))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
@@ -300,12 +324,25 @@ class RunIdempotencyStore:
         with self._lock:
             return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
 
-    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None):
+    def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None,
+                               extra_gateways=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
-            current = observe(self._conn, scope, authority, previous, previous_home, namespace, claims)
+            current = observe(
+                self._conn, scope, authority, previous, previous_home, namespace, claims, extra_gateways)
             self._conn.commit()
         return current
+
+    def remember_room_gateways(self, claims, gateway_ids):
+        """Record gateway ids for this lineage. Caller already holds ``_immediate_txn``.
+
+        ``threading.Lock`` is not reentrant. Invitation reads the reservation inside that
+        transaction, before ``reserve_peer_room`` overwrites the gateway id.
+        """
+        from gateway.platforms.api_server_run_authority import (
+            canonical, remember_seen_gateways, room_authority)
+        authority_key = canonical(self._conn, room_authority(claims))[0]
+        remember_seen_gateways(self._conn, authority_key, gateway_ids)
 
     def commit_room_invitation(self, claims, previous, previous_home, commit_reservation):
         """Grant writer precedes this lock; keep admissions fenced through both commits.

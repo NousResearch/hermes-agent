@@ -951,3 +951,40 @@ def test_failed_stop_is_counted(tmp_path: Path):
     assert task["status"] == "failed"
     assert task["result"]["retryable"] is False
     assert (cancelled, stopping) == (1, 0)
+
+
+def test_explicit_retry_holds_when_route_status_lock_fails_after_admission(tmp_path, monkeypatch):
+    """A local database lock after the peer has admitted must not defer the generation."""
+    import sqlite3
+
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    db = tmp_path / "state.db"
+    peer = _UnreachablePeerClient()
+    service = _peer_room(db, peer)
+    service.runtime.clock = clock
+    service.runtime.lease_ttl_seconds = 120
+    service.runtime.indeterminate_defer_seconds = 5
+    queued, binding, _lease, _attempt = _crash_to_indeterminate(service, db, clock, now)
+    now[0] = 108.0
+    service.runtime._run_room_once(binding)
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    peer.reachable = True
+    peer.history = lambda **_kwargs: []
+    peer.status = lambda **_kwargs: {
+        "active": True, "status": "running",
+        "task_id": queued["identity"].task_id, "execution_generation": 1}
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("gateway.hosted_room_links.mark_room_link_status", locked)
+    retried = service.runtime.retry_indeterminate(queued["identity"])
+    task = driver.get_task(db, queued["identity"])
+    assert retried["status"] == "indeterminate"
+    assert retried["execution_generation"] == 1
+    assert task["status"] == "indeterminate"
+    assert task["execution_generation"] == 1

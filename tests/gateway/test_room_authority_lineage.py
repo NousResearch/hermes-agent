@@ -1,5 +1,6 @@
 """Target-authorized succession links homes without merging unrelated room origins."""
 import asyncio
+import hashlib
 import json
 import time
 from unittest.mock import MagicMock
@@ -583,6 +584,235 @@ def test_public_room_shaped_key_is_pruned(tmp_path):
             "SELECT run_id FROM run_idempotency WHERE run_id='run-other'").fetchone()[0] == 'run-other'
     finally:
         store.close()
+
+
+def _forget_room_stamp(store):
+    """Drop the authority stamp the way a pre-column row was stored. Keep the scope."""
+    columns = {str(row[1]) for row in store._conn.execute('PRAGMA table_info(run_idempotency)')}
+    assignment = 'room_authority_key=NULL, room_authority_epoch=NULL'
+    if 'room_lineage_key' in columns:
+        assignment += ', room_lineage_key=NULL'
+    store._conn.execute(f'UPDATE run_idempotency SET {assignment}')
+    store._conn.commit()
+
+
+def test_predecessor_epochs_do_not_allocate_the_full_span():
+    from gateway.platforms.api_server_run_authority import _predecessor_epochs
+    started = time.perf_counter()
+    epochs = _predecessor_epochs(8_000_000)
+    assert time.perf_counter() - started < 0.05
+    assert len(epochs) <= 64
+    assert 1 in epochs and 7_999_999 in epochs
+    assert 4_000_000 not in epochs
+    # The middle of a jump past the cap stays outside the hash walk. Epoch 1 does not.
+    assert 40 not in _predecessor_epochs(100)
+    assert 1 in _predecessor_epochs(100) and 99 in _predecessor_epochs(100)
+    assert set(_predecessor_epochs(10)) == set(range(1, 10))
+
+
+def test_lineage_key_replays_across_gateway_and_epoch_without_previous(tmp_path):
+    """The lineage key finds the row when the epoch walk does not, on another gateway."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        original = _member_claims(authority_gateway_id='gateway-a', authority_epoch=40)
+        scope, authority = room_run_scope(original), room_authority(original)
+        assert store.observe_room_authority(scope, authority, claims=original)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp', 'run-live', {'status': 'running'},
+            room_authority=authority)[0] == 'created'
+        store._conn.execute(
+            "UPDATE run_idempotency SET room_authority_key=NULL, room_authority_epoch=NULL "
+            "WHERE run_id='run-live'")
+        store._conn.commit()
+        jumped = _member_claims(authority_gateway_id='gateway-b', authority_epoch=100)
+        started = time.perf_counter()
+        assert store.observe_room_authority(
+            room_run_scope(jumped), room_authority(jumped), claims=jumped)
+        outcome, record = store.reserve(
+            room_run_scope(jumped), 'room:task-1:1', 'fp-2', 'run-again', {'status': 'queued'},
+            room_authority=room_authority(jumped))
+        assert time.perf_counter() - started < 0.5
+        assert outcome == 'reused' and record['run_id'] == 'run-live'
+        other = _member_claims(
+            member_id='member-2', authority_gateway_id='gateway-b', authority_epoch=100)
+        assert store.observe_room_authority(
+            room_run_scope(other), room_authority(other), claims=other)
+        other_outcome, other_record = store.reserve(
+            room_run_scope(other), 'room:task-1:1', 'fp', 'run-other', {'status': 'queued'},
+            room_authority=room_authority(other))
+        assert other_outcome == 'created' and other_record['run_id'] == 'run-other'
+        assert store.stop_requested('run-live') is False
+        store.request_stop(
+            room_run_scope(other), 'run-other', room_authority=room_authority(other))
+        assert store.stop_requested('run-live') is False
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 2
+    finally:
+        store.close()
+
+
+def test_remembered_gateway_replays_a_null_row_across_later_hops(tmp_path):
+    """Naming only the immediate predecessor still finds the gateway that admitted the row."""
+    store = RunIdempotencyStore(str(tmp_path / 'runs.db'))
+    try:
+        original = _member_claims(authority_gateway_id='gateway-a')
+        scope, authority = room_run_scope(original), room_authority(original)
+        assert store.observe_room_authority(scope, authority, claims=original)
+        assert store.reserve(
+            scope, 'room:task-1:1', 'fp', 'run-live', {'status': 'running'},
+            room_authority=authority)[0] == 'created'
+        _forget_room_stamp(store)
+        second = _member_claims(authority_gateway_id='gateway-b', authority_epoch=2)
+        assert store.observe_room_authority(
+            room_run_scope(second), room_authority(second), claims=second)
+        _forget_room_stamp(store)
+        third = _member_claims(authority_gateway_id='gateway-c', authority_epoch=3)
+        assert store.observe_room_authority(
+            room_run_scope(third), room_authority(third), room_authority(second), claims=third)
+        outcome, record = store.reserve(
+            room_run_scope(third), 'room:task-1:1', 'fp-3', 'run-again', {'status': 'queued'},
+            room_authority=room_authority(third))
+        assert outcome == 'reused' and record['run_id'] == 'run-live'
+        store.request_stop(
+            room_run_scope(third), 'run-live', room_authority=room_authority(third))
+        assert store.stop_requested('run-live') is True
+        assert store._conn.execute('SELECT COUNT(*) FROM run_idempotency').fetchone()[0] == 1
+        foreign = _member_claims(home_install_id='other-home', authority_gateway_id='gateway-c',
+                                 authority_epoch=3, member_id='member-1')
+        with pytest.raises(ValueError, match='previous room authority is not current'):
+            store.observe_room_authority(
+                room_run_scope(foreign), room_authority(foreign), room_authority(second), claims=foreign)
+        assert store.stop_requested('run-live') is True
+        assert store._conn.execute(
+            "SELECT room_authority_key FROM run_idempotency WHERE run_id='run-live'"
+        ).fetchone()[0] == room_authority(original)[0]
+    finally:
+        store.close()
+
+
+def _dispatch_for(body, catalog, *, gateway, epoch, member, task_id='task-1'):
+    prompt = body['input']
+    return {
+        'protocol_version': 2, 'room_id': 'room-1', 'home_install_id': 'home',
+        'authority_gateway_id': gateway, 'authority_epoch': epoch, 'member_id': member,
+        'target_install_id': catalog['installation_id'], 'target_profile': 'default',
+        'task_id': task_id, 'execution_generation': 1, 'source_event_seq': 1,
+        'cancellation_scope_id': 'cancel-1', 'prompt': prompt,
+        'prompt_digest': hashlib.sha256(prompt.encode()).hexdigest(),
+        'capability_digest': catalog['catalog_digest'],
+        'execution_policy_digest': catalog['execution_policy']['policy_digest'],
+        'trace_id': 'trace-1'}
+
+
+@pytest.mark.asyncio
+async def test_http_takeover_without_previous_replays_an_unstamped_row(tmp_path, monkeypatch):
+    """POST /v1/runs never sends previous_authority. A later gateway must still replay."""
+    adapter = _adapter(tmp_path / 'runs.db')
+    create = MagicMock(return_value=_finishing_agent())
+    monkeypatch.setattr(adapter, '_create_agent', create)
+    try:
+        application = app(adapter)
+        application.router.add_post('/v1/runs/{run_id}/stop', adapter._handle_stop_run)
+        async with TestClient(TestServer(application)) as cli:
+            invited = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+                'authority_epoch': 1, 'member_id': 'member-1'})
+            assert invited.status == 201, await invited.text()
+            invitation = await invited.json()
+            grant, catalog = invitation['grant'], invitation['catalog']
+            prompt = 'Run this generation once.'
+            body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                {'input': prompt}, catalog, gateway='gateway-a', epoch=1, member='member-1')}
+            first = await cli.post('/v1/runs', headers=_headers(grant), json=body)
+            assert first.status == 202, await first.text()
+            run_id = (await first.json())['run_id']
+            await _await_runs(adapter)
+            assert create.call_count == 1
+
+            async def takeover(gateway, epoch):
+                _forget_room_stamp(adapter._run_idempotency_store)
+                next_invite = await invite(cli, {
+                    'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': gateway,
+                    'authority_epoch': epoch, 'member_id': 'member-1'})
+                assert next_invite.status == 201, await next_invite.text()
+                next_grant = (await next_invite.json())['grant']
+                replay_body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                    {'input': prompt}, catalog, gateway=gateway, epoch=epoch, member='member-1')}
+                replay = await cli.post(
+                    '/v1/runs', headers={**_headers(next_grant), 'Idempotency-Key': 'room:task-1:1'},
+                    json=replay_body)
+                payload = await replay.json()
+                assert replay.status == 202, payload
+                assert payload['run_id'] == run_id and payload['replayed'] is True
+                assert create.call_count == 1
+                return next_grant
+
+            await takeover('gateway-b', 2)
+            grant_c = await takeover('gateway-c', 3)
+            status = await cli.get(f'/v1/runs/{run_id}', headers=_headers(grant_c))
+            assert status.status == 200, await status.text()
+            assert (await status.json())['run_id'] == run_id
+
+            other_claims = {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-c',
+                'authority_epoch': 3, 'member_id': 'member-2', 'target_profile': 'default',
+                'target_install_id': catalog['installation_id']}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=other_claims, expires_at=time.time() + 3600)
+            other_grant = issue_room_grant(
+                adapter._room_grant_secret(), grant_id='member-2', room_id='room-1',
+                home_install_id='home', authority_gateway_id='gateway-c', authority_epoch=3,
+                member_id='member-2', target_install_id=catalog['installation_id'],
+                target_profile='default',
+                execution_policy_digest=catalog['execution_policy']['policy_digest'],
+                permissions=('dispatch', 'status', 'stop'))
+            other_body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                {'input': prompt}, catalog, gateway='gateway-c', epoch=3, member='member-2')}
+            # Admission stop does not open a room session, so it cannot collide with the
+            # live generation's title. It must still not adopt that generation.
+            other = await cli.post('/v1/runs/stop', headers={
+                'Authorization': f'HermesRoom {other_grant}', 'Idempotency-Key': 'room:task-1:1'},
+                json=other_body)
+            other_payload = await other.json()
+            assert other.status == 200, other_payload
+            assert other_payload['run_id'] != run_id
+            assert create.call_count == 1
+            assert adapter._run_idempotency_store.stop_requested(run_id) is False
+            denied = await cli.get(f'/v1/runs/{run_id}', headers={
+                'Authorization': f'HermesRoom {other_grant}'})
+            assert denied.status == 404
+            denied_stop = await cli.post(f'/v1/runs/{run_id}/stop', headers={
+                'Authorization': f'HermesRoom {other_grant}'}, json={})
+            assert denied_stop.status == 404
+            assert adapter._run_idempotency_store.stop_requested(run_id) is False
+
+            foreign_home = {
+                'room_id': 'room-1', 'home_install_id': 'other-home',
+                'authority_gateway_id': 'gateway-c', 'authority_epoch': 3,
+                'member_id': 'member-9', 'target_profile': 'default'}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=foreign_home, expires_at=time.time() + 3600)
+            foreign_grant = issue_room_grant(
+                adapter._room_grant_secret(), grant_id='other-home', room_id='room-1',
+                home_install_id='other-home', authority_gateway_id='gateway-c', authority_epoch=3,
+                member_id='member-9', target_install_id=catalog['installation_id'],
+                target_profile='default',
+                execution_policy_digest=catalog['execution_policy']['policy_digest'],
+                permissions=('status', 'stop'))
+            foreign_get = await cli.get(f'/v1/runs/{run_id}', headers={
+                'Authorization': f'HermesRoom {foreign_grant}'})
+            assert foreign_get.status == 404, await foreign_get.text()
+            foreign_stop = await cli.post(f'/v1/runs/{run_id}/stop', headers={
+                'Authorization': f'HermesRoom {foreign_grant}'}, json={})
+            assert foreign_stop.status == 404, await foreign_stop.text()
+            assert create.call_count == 1
+            assert adapter._run_idempotency_store.stop_requested(run_id) is False
+
+            stopped = await cli.post(
+                f'/v1/runs/{run_id}/stop', headers=_headers(grant_c), json={})
+            assert stopped.status == 200, await stopped.text()
+            assert adapter._run_idempotency_store.stop_requested(run_id) is True
+    finally:
+        adapter._run_idempotency_store.close()
 
 
 def test_unbound_invitation_does_not_reserve_peer_room(monkeypatch):

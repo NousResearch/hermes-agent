@@ -146,6 +146,14 @@ def _record_invitation(self, claims, body, *, db_path=None):
     # both through grant commit closes the captured-writer publication window.
     with hosted_rooms._transaction(db_path, immediate=True) as conn:
         def commit_reservation(known):
+            # Capture the gateway this member was admitted under before the upsert replaces it.
+            # The idempotency transaction is already open; do not take its lock again.
+            prior_gateways = conn.execute(
+                """SELECT authority_gateway_id FROM hosted_room_peer_reservations
+                   WHERE room_id=? AND member_id=? AND target_profile=?""",
+                (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchall()
+            self._run_idempotency_store.remember_room_gateways(
+                claims, [row[0] for row in prior_gateways])
             if previous is None and not known and conn.execute(
                     "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
                     (claims["room_id"], claims["target_profile"])).fetchone() is not None:

@@ -6,6 +6,7 @@ import errno
 import io
 import json
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -1234,7 +1235,7 @@ def test_stop_receipt_marks_a_codeless_run_id_404():
     assert _stop_route_missing(caught.value) is False
 
 
-def test_second_attempt_not_admitted_is_not_cleared(monkeypatch):
+def test_second_attempt_429_stays_ambiguous(monkeypatch):
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
     calls = {"n": 0}
 
@@ -1243,16 +1244,51 @@ def test_second_attempt_not_admitted_is_not_cleared(monkeypatch):
         if calls["n"] == 1:
             raise PeerRunsHTTPError("peer failed", status_code=500, ambiguous=True, retryable=True)
         raise PeerRunsHTTPError(
-            "rate limited", status_code=429, error_code="rate_limited", not_admitted=True, retryable=True)
+            "rate limited", status_code=429, error_code="rate_limit_exceeded",
+            not_admitted=True, retryable=True)
 
     client._request = request
     client._session_id = lambda *_args, **_kwargs: "sess-1"
     with pytest.raises(PeerRunsHTTPError) as caught:
         client._admit_dispatch(_dispatch_checked(), grant="signed.room.grant")
-    assert caught.value.not_admitted is True
-    assert caught.value.ambiguous is False
+    assert caught.value.not_admitted is False
+    assert caught.value.ambiguous is True
     assert caught.value.status_code == 429
-    assert caught.value.error_code == "rate_limited"
+    assert caught.value.error_code == "rate_limit_exceeded"
+
+
+def test_second_attempt_html_429_stays_ambiguous(monkeypatch):
+    """A proxy 429 is not proof the first POST missed."""
+    calls = []
+
+    def rejected(*_args, **_kwargs):
+        calls.append(1)
+        status = 500 if len(calls) == 1 else 429
+        body = b'{"error":"unavailable"}' if status == 500 else b"<html>rate limited</html>"
+        raise urllib.error.HTTPError(
+            "https://peer.example.test/v1/runs", status, "limited", {}, io.BytesIO(body))
+
+    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert caught.value.status_code == 429
+    assert len(calls) == 2
+
+
+def test_remember_run_keeps_the_receipt_when_persistence_fails(monkeypatch):
+    client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="", receipt_db_path="rooms.db")
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("gateway.hosted_rooms.upsert_remote_run_receipt", locked)
+    accepted = client._remember_run(
+        _dispatch_checked(), {"run_id": "run-live"}, session_id="sess-1")
+    assert accepted["run_id"] == "run-live"
+    assert client._runs[("task-1", 1)]["run_id"] == "run-live"
 
 
 def _dispatch_checked():

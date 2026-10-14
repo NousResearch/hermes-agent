@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+
+logger = logging.getLogger(__name__)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -268,9 +271,12 @@ class HostedRoomRuntime:
                 state.resolve_indeterminate_cancellation, binding, task, lease,
                 cancel_id=f"remote-cancel:{task['execution_generation']}")
         if inspection.active:
+            # The original generation is running. Follow it. Requeue would mint another
+            # attempt beside that run, and raising leaves the RPC failed while the reply
+            # is still on its way.
             self._set_blocked(identity.room_id, True)
-            raise state.InvalidTaskTransitionError(
-                "cannot retry while the original task attempt is still active")
+            self.wakeup()
+            return task
         return self._requeue(state.requeue_indeterminate_task, task, lease, identity.room_id)
 
     def _retry_deferred(
@@ -745,10 +751,15 @@ class HostedRoomRuntime:
             if task["status"] == "stopping":
                 try:
                     lease = self._renew_lease_if_needed(lease)
-                    if self._stopping_expired(task):
-                        self._settle_expired_stop(binding, task, lease)
+                    # Same order as the sweeper: a peer that already cancelled this
+                    # generation is not a stop deadline, even when the turn budget has passed.
+                    if self._peer_stop_acknowledged(binding, task):
+                        self._complete_cancel(task)
                         return None
                     if self._finish_stop(binding, task, lease):
+                        return None
+                    if self._stopping_expired(task):
+                        self._settle_expired_stop(binding, task, lease)
                         return None
                 except Exception as exc:
                     if self._settle_stop_error(
@@ -1036,6 +1047,7 @@ class HostedRoomRuntime:
         try:
             self._finish_stop(binding, task, lease)
         except Exception as exc:
+            logger.exception("stop of an admitted room generation failed")
             if self._settle_stop_error(binding, task, lease, exc) is None:
                 self._record_error(_STOP_PENDING.format(exc=exc))
 

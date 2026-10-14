@@ -729,6 +729,8 @@ class CLIInfoMixin:
 
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         compressor = agent.context_compressor
         last_prompt = max(0, compressor.last_prompt_tokens)
@@ -744,6 +746,10 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         _label_row("cli.usage.label_model", str(agent.model))
         _label_row("cli.usage.label_input_tokens", f"{input_tokens:>10,}")
+        if cache_read_tokens:
+            print(f"  {'Cache read tokens:':<26} {cache_read_tokens:>10,}")
+        if cache_write_tokens:
+            print(f"  {'Cache write tokens:':<26} {cache_write_tokens:>10,}")
         _label_row("cli.usage.label_output_tokens", f"{output_tokens:>10,}")
         if reasoning_tokens:
             _label_row("cli.usage.label_reasoning_subset", f"{reasoning_tokens:>10,}")

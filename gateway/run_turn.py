@@ -34,6 +34,7 @@ from gateway.session import (
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
+from gateway.trusted_transport import bind_agentcrew_transport
 from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
@@ -2044,8 +2045,7 @@ class GatewayTurnMixin:
         title_user_message: Optional[str] = None
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
-        """Everything between session resolution and the agent run: session open, task-local env,
-        context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
+        """Session open, task-local env, context prompt, notes, lease, transcript and inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
@@ -2053,8 +2053,8 @@ class GatewayTurnMixin:
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_session_yolo(session_key, session_entry.yolo is True)  # a restarted gateway's set starts empty
         context = build_session_context(source, self.config, session_entry)
-        # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+        bind_agentcrew_transport(event, source, session_entry.session_id)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message

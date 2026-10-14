@@ -699,8 +699,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
-
         effective_busy_input_mode = self._effective_busy_input_mode(source)
+        if self._agentcrew_turn_requires_fresh_transport(_quick_key): effective_busy_input_mode = "queue"
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None
 

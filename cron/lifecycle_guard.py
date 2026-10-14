@@ -764,7 +764,102 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     if not contains_gateway_lifecycle_command(text):
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+    masked = _mask_data_sink_arguments(normalized)
+    # LOCAL PATCH 205: an ssh to a REMOTE host is masked the same way — that gateway is a
+    # different process on a different machine, so our SIGTERM can never reach this one.
+    masked = _mask_remote_ssh_payloads(masked)
+    return contains_gateway_lifecycle_command(masked)
+
+
+_SSH_EXECUTABLES = frozenset({"ssh", "autossh"})
+# Hosts that are THIS machine. An ssh to any of these is not remote, so the lifecycle command
+# still runs in the gateway's own process tree and stays blocked.
+_LOCAL_SSH_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "local", ""})
+# ssh options that take a separate value; the value is not the target host.
+_SSH_VALUE_OPTIONS = frozenset({
+    "-o", "-i", "-p", "-l", "-F", "-c", "-m", "-b", "-D", "-e", "-I",
+    "-J", "-L", "-O", "-Q", "-R", "-S", "-W", "-w", "-E",
+})
+
+
+def _ssh_target_is_remote(segment: list[str], index: int) -> bool:
+    """Does this ssh segment target a DIFFERENT machine?
+
+    Sam, 2026-08-31: "je bent niet de Mac, dus je kan nog prima herstarten van buitenaf."
+    Restarting a gateway on another host over ssh is the correct, supported way to do it — the
+    SIGTERM that makes a self-restart impossible stays on the remote box and cannot reach this
+    process. Blocking it made the guard refuse the one safe form of the operation.
+
+    Fail closed: an ssh whose target cannot be determined, or that resolves to this machine, is
+    treated as local and stays blocked. LOCAL PATCH 205 (re-cut after the v0.21.1 refactor).
+    """
+    position = index + 1
+    while position < len(segment):
+        token = segment[position]
+        if token in _SSH_VALUE_OPTIONS:
+            position += 2
+            continue
+        if token.startswith("-"):
+            position += 1
+            continue
+        host = token.split("@")[-1].strip().lower()
+        if host.startswith("["):
+            host = host.strip("[]")
+        return host not in _LOCAL_SSH_HOSTS
+    return False  # no host operand found: not provably remote
+
+
+def _mask_remote_ssh_payloads(text: str) -> str:
+    """Neutralize the command arguments of an ssh to a remote host.
+
+    Same shape and same fail-closed contract as ``_mask_data_sink_arguments``: it can only ever
+    ALLOW something the plain regex would block, never the other way round, and it is skipped
+    entirely when the line pipes into an interpreter or cannot be tokenized.
+    """
+    lines_out: list[str] = []
+    changed = False
+    for line in text.splitlines() or [text]:
+        if _PIPE_TO_INTERPRETER.search(line):
+            lines_out.append(line)
+            continue
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            lines_out.append(line)
+            continue
+
+        segments: list[list[str]] = []
+        current: list[str] = []
+        for token in tokens:
+            if token and set(token) <= _CONTROL_CHARS:
+                segments.append(current)
+                segments.append([token])
+                current = []
+                continue
+            current.append(token)
+        segments.append(current)
+
+        rebuilt: list[str] = []
+        for segment in segments:
+            if not segment:
+                continue
+            index = _command_token_index(segment)
+            if (
+                index is not None
+                and Path(segment[index]).name in _SSH_EXECUTABLES
+                and _ssh_target_is_remote(segment, index)
+            ):
+                changed = True
+                rebuilt.extend("arg" for _ in segment)
+                continue
+            rebuilt.extend(segment)
+        lines_out.append(" ".join(rebuilt))
+    if not changed:
+        return text
+    return "\n".join(lines_out)
 
 
 def _direct_lifecycle_scan(command: str) -> bool:

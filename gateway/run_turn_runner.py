@@ -39,6 +39,7 @@ logger = logging.getLogger("gateway.run")
 # Consecutive turns a session's persisted transcript may lag its live cached history before
 # _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
 _TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+_CHILD_PROGRESS_LOCK = threading.Lock()
 
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
@@ -81,6 +82,8 @@ class TurnRunner:
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._progress_closed = False
+        self._child_progress = None
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -127,6 +130,9 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Delegated children outlive this turn: their card is bound to it but not gated on it being current.
+        if event_type in {"subagent.start", "subagent.tool", "subagent.complete"}:
+            self._child_progress_event(event_type, tool_name, preview, args, kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -178,6 +184,44 @@ class TurnRunner:
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
             self._progress_emit(msg)
+
+    def _child_progress_event(self, event_type, tool_name, preview, args, kwargs: dict) -> None:
+        """Feed this turn's delegated-child card (#128008). Created on the first child start with the
+        turn's own adapter/route, so events after the turn ends never re-resolve against a newer one."""
+        try:
+            with _CHILD_PROGRESS_LOCK:  # parallel children start concurrently: exactly one card per turn
+                owner = getattr(self, "_child_progress", None) or self._new_child_progress(event_type)
+            if owner is not None:
+                owner.on_event(event_type, tool_name, preview, args, kwargs)
+        except Exception:
+            logger.debug("delegated child progress failed", exc_info=True)
+
+    def _new_child_progress(self, event_type):
+        """Discord only, under the turn's own tool_progress (not off/log) and notification mute gates."""
+        ctx = self._ctx
+        if (event_type != "subagent.start" or ctx.source is None or ctx.source.platform != Platform.DISCORD
+                or not ctx.tool_progress_enabled or ctx.mute_notification_reply or ctx._loop_for_step is None):
+            return None
+        adapter = self._runner._delivery_adapter_for(ctx.source)
+        edit = getattr(type(adapter), "edit_message", None)
+        if adapter is None or edit is None or edit is BasePlatformAdapter.edit_message:
+            return None
+        from agent.display import get_tool_preview_max_len
+        from gateway.delegated_child_progress import DelegatedChildProgress
+        # While this turn is live, child activity rides the SAME native tool-activity presentation the
+        # parent's own tool lines use — the children are not a second dashboard beside it.
+        # Cleanup transfers this same publisher/cursor to the retained post-turn task.
+        native_sink = (ctx.progress_queue.put if not self._progress_closed and ctx._run_still_current()
+                       else None)
+        self._child_progress = DelegatedChildProgress(
+            adapter=adapter, loop=ctx._loop_for_step, chat_id=ctx.source.chat_id,
+            metadata=ctx._progress_metadata, reply_to=ctx._progress_reply_to,
+            verbose=ctx.progress_mode == "verbose", preview_cap=self._preview_cap(),
+            verbose_cap=get_tool_preview_max_len(), retain=getattr(self._runner, "_retain_background_task", None),
+            native_sink=native_sink, on_result=lambda result: (
+                self._track_progress_result(result) if not self._progress_closed else None),
+        )
+        return self._child_progress
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -567,7 +611,8 @@ class TurnRunner:
             # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
-            _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            _edit_accepts_metadata=(bool(ctx._progress_metadata) or ctx.source.platform == Platform.DISCORD)
+                and _accepts_keyword(adapter.edit_message, "metadata"),
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
@@ -576,7 +621,7 @@ class TurnRunner:
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
-            kwargs["metadata"] = ctx._progress_metadata
+            kwargs["metadata"] = self._progress_wire_metadata()
         return await st.adapter.edit_message(**kwargs)
 
     @staticmethod
@@ -595,10 +640,17 @@ class TurnRunner:
             current = candidate
         return groups + ([current] if current else [])
 
+    def _progress_wire_metadata(self):
+        ctx = self._ctx
+        if ctx.source.platform == Platform.DISCORD:
+            return {**(ctx._progress_metadata or {}), "progress": True}
+        return ctx._progress_metadata
+
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
         result = await st.adapter.send(
-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to,
+            metadata=self._progress_wire_metadata(),
         )
         self._track_progress_result(result)
         return result
@@ -709,6 +761,67 @@ class TurnRunner:
             st.progress_msg_id = result.message_id
         return True
 
+    def end_progress_turn(self):
+        self._progress_closed = True
+        owner = self._child_progress
+        if owner is not None:
+            if owner._children and not owner._settled():
+                # The parent final answer must not delete a still-running child's lane.
+                retained = {owner._msg_id, *owner._chunk_ids}
+                self._ctx._cleanup_msg_ids[:] = [
+                    mid for mid in self._ctx._cleanup_msg_ids if mid not in retained
+                ]
+            owner.end_turn()
+
+    async def _send_discord_progress_messages(self, owner):
+        """Discord's actual native activity lane is the progress queue, not text streaming.
+
+        The shared publisher keeps its exact cursor at cleanup. No child dashboard runs
+        beside this queue, and cancellation cannot discard dequeued-but-unacked records.
+        """
+        ctx = self._ctx
+
+        def absorb():
+            while True:
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(raw, str):
+                    owner.add_activity(raw)
+                elif self._is_reset_marker(raw):
+                    owner._sealed = True
+                elif raw[0] == "__dedup__":
+                    owner.add_activity(f"{raw[1]} (×{raw[2] + 1})")
+
+        try:
+            while ctx._run_still_current():
+                absorb()
+                # Do not cancel an in-flight POST at turn end: an accepted but unacked
+                # request cannot be safely replayed by the post-turn owner.
+                delivery = asyncio.create_task(owner._deliver_chunks())
+                try:
+                    await asyncio.shield(delivery)
+                except asyncio.CancelledError:
+                    # Pre-wire pacing/backoff can be cancelled immediately; retain its
+                    # deadline and cursor. There is no await between inspection and cancel,
+                    # so the event-loop-owned delivery cannot start a request in between.
+                    if not owner._request_in_flight:
+                        delivery.cancel()
+                    try:
+                        await asyncio.wait_for(delivery, 3.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        # Delivery owns transport ambiguity, not the timer: it may have
+                        # finished a request and entered backoff before this cancellation.
+                        pass
+                    raise
+                await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            absorb()
+            self.end_progress_turn()
+
     async def send_progress_messages(self):
         ctx = self._ctx
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
@@ -724,6 +837,12 @@ class TurnRunner:
         if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
             self._drain_progress_queue()
             return
+        if ctx.source.platform == Platform.DISCORD and ctx.tool_progress_enabled and not ctx.mute_notification_reply:
+            with _CHILD_PROGRESS_LOCK:
+                owner = self._child_progress or self._new_child_progress("subagent.start")
+            if owner is not None:
+                await self._send_discord_progress_messages(owner)
+                return
         st = self._progress_edit_state(adapter)
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)

@@ -2044,7 +2044,12 @@ The command string must match the configured hook command exactly. A path-keyed 
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
 | `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
-| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
+| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time. **Exits `1` when it reports any issue, `0` when every hook is healthy (including when none are configured)**, so a script or CI step can gate on it. |
+
+`hermes hooks` with no subcommand exits `2` (usage error), matching what a mistyped subcommand
+already returns. The exit code is a *report*, not an interlock: a drifted hook still fires at
+runtime, and drift detection is mtime-based, so a hook edited with its mtime preserved is not
+flagged and `doctor` exits `0`.
 
 ### Security
 

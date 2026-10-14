@@ -712,6 +712,30 @@ class TestManagedGateway:
         assert "429" in result["error"]
         assert "concurrency" in result["error"].lower()
 
+    @pytest.mark.parametrize("status, error_type, portal_hint", [
+        (400, "invalid_argument", False),
+        (409, "api_error", True),
+    ])
+    def test_kreas_own_refusal_passes_through_without_the_portal_hint(self, monkeypatch, status, error_type, portal_hint):
+        import requests as req_lib
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        resp = req_lib.Response()
+        resp.status_code = status
+        resp._content = b'{"error": {"message": "One or more selected LoRA styles are incompatible with the selected model."}}'
+        resp.headers["Content-Type"] = "application/json"
+        resp.raise_for_status = MagicMock(side_effect=req_lib.HTTPError(response=resp))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == error_type
+        assert "incompatible with the selected model" in result["error"]
+        assert ("enabled/priced" in result["error"]) is portal_hint
+
 
 class TestExplicitModelOverride:
     def test_model_kwarg_overrides_config(self, monkeypatch):

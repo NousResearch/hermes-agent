@@ -501,8 +501,13 @@ def _submit_job(
         if failure.kind == "http":
             status, err_msg = failure.status, failure.message
             logger.error("Krea submit failed (%d): %s", status, err_msg)
-            # Managed 4xx: model not enabled/priced on the Portal, or shared-key concurrency cap (429).
-            if managed and 400 <= status < 500:
+            # Krea refused the request itself (a style not trained for this model, a bad field):
+            # its message says why and a retry cannot help.
+            if status in (400, 422):
+                return None, submit_fail(f"Krea rejected the request (HTTP {status}): {err_msg}", "invalid_argument")
+            # Managed refusals: not enabled/priced on the Portal (403/409) or the shared-key
+            # concurrency cap (429).
+            if managed and status in (403, 409, 429):
                 hint = (
                     "Krea's shared-key concurrency cap was hit — retry shortly." if status == 429 else
                     f"Model '{model_id}' may not be enabled/priced on the Nous Portal's Krea gateway. "

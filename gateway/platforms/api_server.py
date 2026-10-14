@@ -160,6 +160,7 @@ from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_sessions import HIDDEN_RESERVED_FOR_PLUMBING
 
 
 logger = logging.getLogger(__name__)
@@ -299,7 +300,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import (
-    _request_reasoning_config, _request_service_tier)
+    _request_reasoning_config, _request_relay_metadata, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -353,16 +354,6 @@ def _request_agent_overrides(
     if isinstance(model_options, dict):
         overrides["model_options"] = dict(model_options)
     return overrides
-
-
-def _request_relay_metadata(body: Any) -> dict[str, Any]:
-    """Extract Relay metadata from an OpenAI request body."""
-    if not isinstance(body, dict):
-        return {}
-    metadata = body.get("metadata")
-    if not isinstance(metadata, dict):
-        return {}
-    return dict(metadata)
 
 
 def _is_compressed_summary_message(message: Any) -> bool:
@@ -3225,6 +3216,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
                              ("pinned", db.set_session_pinned)):
             if flag in body:
+                # ``hidden`` is not client-writable for ordinary conversations (#125534): only
+                # internal plumbing identities (canonical Bot Chat / Agent Inbox / Group: room
+                # seats / deny-listed internal sources) may be hidden through this endpoint.
+                if flag == "hidden" and body[flag] and not await asyncio.to_thread(
+                        db.session_hide_authorized, session_id):
+                    return _error_response(HIDDEN_RESERVED_FOR_PLUMBING, 400, code="hidden_requires_plumbing")
                 await asyncio.to_thread(setter, session_id, body[flag])
         if "unread" in body:
             await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])

@@ -5774,6 +5774,7 @@ class TestSessionPatchUnread:
         db = SessionDB()
         try:
             db.create_session(session_id="s1", source="cli")
+            db.set_session_title("s1", "Bot Chat")  # #125534: hidden is plumbing-only
             db.append_message(session_id="s1", role="user", content="hi")
             db.set_session_read("s1")  # start read, like a conversation you opened
         finally:
@@ -5811,9 +5812,7 @@ class TestSessionPatchUnread:
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert all(s["id"] != "s1" for s in rows)
 
-        restored = self.auth_client.patch(
-            "/api/sessions/s1", json={"hidden": False}
-        )
+        restored = self.auth_client.patch("/api/sessions/s1", json={"hidden": False})
         assert restored.status_code == 200
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False

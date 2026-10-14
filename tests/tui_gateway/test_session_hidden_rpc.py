@@ -39,8 +39,11 @@ def _seed(db, sid: str) -> None:
 
 
 def test_set_hidden_resolves_stored_id_without_live_session(db):
-    """A stored (non-live) session id must be hideable — the sweep path."""
+    """A stored (non-live) plumbing session id must be hideable — the sweep path. Bot Mode's
+    hide sweep only ever targets its plumbing titles (#125534 makes that the rule); an
+    ordinary stored row is refused, see test_session_hidden_invariant.py."""
     _seed(db, "stored-chat")
+    assert db.set_session_title("stored-chat", "Bot Chat")
     assert srv._find_live_session_by_key("stored-chat") is None
 
     envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": True})

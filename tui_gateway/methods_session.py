@@ -123,6 +123,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
 
 
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+from hermes_state_sessions import HIDDEN_RESERVED_FOR_PLUMBING
 
 
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
@@ -280,53 +281,6 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         raise
 
 
-def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
-    """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
-    renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
-    try:
-        with _session_db(record) as db:
-            if db is None:
-                return
-            _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
-                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            model=_session_default_route(record)[0], compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
-            record["pending_title"] = None
-            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
-            record["_branch_seed_persisted"] = True
-    except Exception:
-        logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
-                       exc_info=True)
-
-
-def _seed_row(record: dict) -> None:
-    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
-    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
-    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
-    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
-    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
-    key = record.get("session_key")
-    try:
-        if _ensure_session_db_row(record) is False:
-            return
-        _persist_branch_seed(record)
-    except Exception:
-        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
-    if not record.get("_branch_seed_persisted"):
-        with contextlib.suppress(Exception), _session_db(record) as db:
-            if db is not None:
-                db.delete_session(key)
-        return
-    try:
-        if title := record.get("pending_title"):
-            with _session_db(record) as db:
-                if db is not None and db.set_session_title(key, title):
-                    record["pending_title"] = None
-    except Exception:
-        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
-
-
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -426,6 +380,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
+            # Deferred intent only (#125534): the lazy row write / set_hidden authorize it against
+            # the session's plumbing identity before anything is persisted hidden.
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
@@ -1296,13 +1252,23 @@ def _(rid, params: dict) -> dict:
         try:
             if session is not None:
                 key = session["session_key"]
+                # #125534: `hidden` is reserved for internal plumbing (canonical Bot Chat, Agent Inbox,
+                # Group:/room seats, internal sources). A live session is judged by its own facts first,
+                # then by its durable row (the registry title may have landed already). A hide with NO
+                # row yet is deferred, not refused: an older client may hide a plumbing session before
+                # its registry title exists — the lazy row write re-authorizes (and drops) the flag there.
+                if hidden and db.get_session(key) is not None and not (
+                        _client_hide_authorized(session) or db.session_hide_authorized(key)):
+                    return _err(rid, 4027, HIDDEN_RESERVED_FOR_PLUMBING)
                 if not db.set_session_hidden(key, hidden):
-                    session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row is born hidden
+                    session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row applies (authorized there)
             else:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
                     return _err(rid, 4001, "session not found")
+                if hidden and not db.session_hide_authorized(key):
+                    return _err(rid, 4027, HIDDEN_RESERVED_FOR_PLUMBING)
                 db.set_session_hidden(key, hidden)
             return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:

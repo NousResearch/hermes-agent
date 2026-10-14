@@ -505,6 +505,19 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 
 
+def _client_hide_authorized(session: dict) -> bool:
+    """#125534: a live session's own facts mark it as internal plumbing a client flag may hide —
+    a pending registry title ("Bot Chat" / "Agent Inbox" / a "Group: …" room seat), the room-plumbing
+    create flag, or an internal (deny-listed / hosted-room) source. Ordinary user conversations
+    stay listed no matter what flag the client sent."""
+    from hermes_state_sessions import hidden_plumbing_identity
+
+    return hidden_plumbing_identity(
+        title=str(session.get("pending_title") or ""),
+        source=str(session.get("source") or ""),
+        room_plumbing=bool(session.get("room_plumbing")))
+
+
 def _ensure_session_db_row(session: dict) -> bool:
     """Idempotently persist the session's DB row on first real activity (prompt.submit), so abandoned drafts never
     leave an empty "Untitled" session. INSERT OR IGNORE: re-calls and the AIAgent's lazy create are no-ops. Returns
@@ -548,13 +561,23 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
-            # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
+            # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the
+            # deferred intent — but only for internal plumbing identities (#125534): a client flag must
+            # never persist hidden=1 on an ordinary user conversation, or the chat vanishes from the
+            # sidebar and search while its transcript stays intact. The row just created is still
+            # untitled, so the live session's facts are the authority here (pending title, room plumbing,
+            # internal source); the durable-row check covers a row that already carries its title.
             if session.get("pending_hidden"):
-                try:
-                    if db.set_session_hidden(key, True):
-                        session.pop("pending_hidden", None)
-                except Exception:
-                    logger.debug("failed to apply pending hidden flag", exc_info=True)
+                if _client_hide_authorized(session) or db.session_hide_authorized(key):
+                    try:
+                        if db.set_session_hidden(key, True):
+                            session.pop("pending_hidden", None)
+                    except Exception:
+                        logger.debug("failed to apply pending hidden flag", exc_info=True)
+                else:
+                    session.pop("pending_hidden", None)
+                    logger.warning(
+                        "dropped client hidden flag on non-plumbing session %s (#125534)", key)
             # Same deferral for session.archive before the row existed (mirrors pending_hidden).
             if session.get("pending_archived"):
                 try:
@@ -568,6 +591,53 @@ def _ensure_session_db_row(session: dict) -> bool:
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
+    """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
+    renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
+    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    try:
+        with _session_db(record) as db:
+            if db is None:
+                return
+            _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
+                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            model=_session_default_route(record)[0], compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+            record["pending_title"] = None
+            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
+            record["_branch_seed_persisted"] = True
+    except Exception:
+        logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
+                       exc_info=True)
+
+
+def _seed_row(record: dict) -> None:
+    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
+    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
+    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
+    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
+    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
+    key = record.get("session_key")
+    try:
+        if _ensure_session_db_row(record) is False:
+            return
+        _persist_branch_seed(record)
+    except Exception:
+        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
+    if not record.get("_branch_seed_persisted"):
+        with contextlib.suppress(Exception), _session_db(record) as db:
+            if db is not None:
+                db.delete_session(key)
+        return
+    try:
+        if title := record.get("pending_title"):
+            with _session_db(record) as db:
+                if db is not None and db.set_session_title(key, title):
+                    record["pending_title"] = None
+    except Exception:
+        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
 def _schedule_row_git_meta(session: dict, key: str, db) -> None:

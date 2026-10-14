@@ -30,6 +30,7 @@ from hermes_cli.web_routers._common import (
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_state_sessions import HIDDEN_RESERVED_FOR_PLUMBING
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -914,6 +915,12 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         for flag, setter in _RENAME_FLAG_SETTERS:
             value = getattr(body, flag)
             if value is not None:
+                # ``hidden`` is not client-writable for ordinary conversations (#125534): only
+                # internal plumbing identities (canonical Bot Chat / Agent Inbox / Group: room
+                # seats / deny-listed internal sources) may be hidden through this endpoint —
+                # Bot Mode's hide sweep and the pin/unhide flows keep working unchanged.
+                if flag == "hidden" and value and not db.session_hide_authorized(sid):
+                    raise HTTPException(status_code=400, detail=HIDDEN_RESERVED_FOR_PLUMBING)
                 setter(db, sid, value)
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""

@@ -1247,6 +1247,34 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_patch_session_hidden_is_reserved_for_plumbing(adapter, session_db):
+    """#125534: a client ``hidden`` flag only hides internal plumbing identities.
+
+    An ordinary conversation is refused (the flag is never written), while a
+    plumbing-titled row hides through the same seam — Bot Mode's hide sweep, the
+    flag's only desktop caller, only ever targets those titles. Unhiding stays
+    unrestricted.
+    """
+    ordinary = session_db.create_session("ordinary-hide-session", "api_server")
+    plumbing = session_db.create_session("bot-hide-session", "api_server")
+    assert session_db.set_session_title(plumbing, "Bot Chat")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch(f"/api/sessions/{ordinary}", json={"hidden": True})
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["error"]["code"] == "hidden_requires_plumbing"
+        assert bool(session_db.get_session(ordinary)["hidden"]) is False
+
+        resp = await cli.patch(f"/api/sessions/{plumbing}", json={"hidden": True})
+        assert resp.status == 200, await resp.text()
+        assert bool(session_db.get_session(plumbing)["hidden"]) is True
+
+        resp = await cli.patch(f"/api/sessions/{ordinary}", json={"hidden": False})
+        assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.asyncio
 async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     adapter, session_db
 ):

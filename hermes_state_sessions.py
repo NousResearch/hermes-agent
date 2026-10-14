@@ -235,6 +235,35 @@ def _delete_delegate_children(conn, parent_ids: list[str]) -> list[str]:
 # console — excludes them. A deny-list, so new interactive platforms surface automatically.
 INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
 
+# ``sessions.hidden`` is reserved for internal session plumbing (#125534): a client flag may only hide a
+# conversation that is not a user-visible chat. The identities that may be hidden:
+# - the canonical Bot Chat registry title (``SessionDB.CANONICAL_BOT_CHAT_TITLE``) and the bot-to-bot
+#   "Agent Inbox" handoff — the same titles Bot Mode's hide sweep treats as plumbing;
+# - "Group: …" room member seats (``tui_gateway.hosted_room_driver.room_session_title``) and the
+#   ``room_plumbing`` create flag they are created with;
+# - rows minted by the deny-listed internal sources, plus hosted-room rows (``ROOM_SESSION_SOURCE`` —
+#   named literally so hermes_state never imports tui_gateway).
+# Every wire seam that writes ``hidden`` from client input authorizes against THIS predicate, so an
+# ordinary Desktop chat can never be persisted hidden=1 and vanish from the sidebar and search while
+# its transcript stays intact.
+HIDDEN_PLUMBING_TITLES = frozenset({"Bot Chat", "Agent Inbox"})
+HIDDEN_PLUMBING_TITLE_PREFIXES = ("Group:",)
+HIDDEN_PLUMBING_SOURCES = frozenset((*INTERNAL_LISTING_SOURCES, "bot_room"))
+HIDDEN_RESERVED_FOR_PLUMBING = (
+    "hidden is reserved for internal plumbing sessions (Bot Chat, Agent Inbox, Group:/room plumbing, internal sources)"
+)
+
+
+def hidden_plumbing_identity(*, title: str = "", source: str = "", room_plumbing: bool = False) -> bool:
+    """True when these identity facts mark a session as internal plumbing that may be hidden (#125534)."""
+    resolved_title = (title or "").strip()
+    return (
+        resolved_title in HIDDEN_PLUMBING_TITLES
+        or resolved_title.startswith(HIDDEN_PLUMBING_TITLE_PREFIXES)
+        or bool(room_plumbing)
+        or (source or "").strip().lower() in HIDDEN_PLUMBING_SOURCES
+    )
+
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"
 SESSION_STATUS_ERROR = "error"
@@ -1090,6 +1119,27 @@ class SessionSessionsMixin:
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
         return self._set_lineage_column("hidden", session_id, int(hidden))
+
+    def session_hide_authorized(self, session_id: str) -> bool:
+        """True when the durable identity of this session (or any row of its compression lineage —
+        the registry title may live on the root while the tip is untitled) marks it as internal
+        plumbing that a client flag may hide (#125534). A missing row is never authorized: callers
+        holding live-session facts judge those before the row exists."""
+        rows = self._read_all(
+            _LINEAGE_CTE_SQL + """
+            SELECT title, source, model_config FROM sessions
+            WHERE id IN (SELECT id FROM lineage)
+            """,
+            (session_id, session_id),
+        )
+        return any(
+            hidden_plumbing_identity(
+                title=row["title"] or "",
+                source=row["source"] or "",
+                room_plumbing=bool(_parse_model_config(row["model_config"]).get("room_plumbing")),
+            )
+            for row in rows
+        )
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
         """Mark read/unread across the compression lineage. ``last_read_at`` is a watermark: unread when

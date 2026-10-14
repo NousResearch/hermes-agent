@@ -4603,10 +4603,8 @@ def _respawn_storm_backoff() -> None:
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard."""
-    _guard_official_docker_root_gateway()
-    _attach_to_host_gateway_or_guard(force=force, replace=replace)
-    _guard_supervised_gateway_conflict(force=force)
-    _guard_existing_gateway_process_conflict(replace=replace)
+    from hermes_cli.gateway_run_guards import apply_gateway_run_guards
+    apply_gateway_run_guards(force=force, replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process

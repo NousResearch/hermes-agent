@@ -69,21 +69,26 @@ def test_probe_message_id_is_guid_shaped_and_unique() -> None:
         process.stdout.write(JSON.stringify({ first, second }));
         """
     )
-    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    # Apple message GUIDs are uppercase; a lowercase id is rejected by the server as malformed.
+    guid_re = r"^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$"
     assert re.fullmatch(guid_re, out["first"])
     assert re.fullmatch(guid_re, out["second"])
     assert out["first"] != out["second"]
 
 def test_probe_rejection_classification_is_strict() -> None:
-    """Only not-found-shaped rejections prove liveness; everything else is
-    inconclusive — a rejected probe is NEVER treated as alive (#45580's
-    original /probe treated any rejection as alive, which was too loose)."""
+    """Only answers the server itself produced (not-found, or invalid-argument off the wire) prove
+    liveness; everything else is inconclusive — a rejected probe is NEVER treated as alive on its
+    own (#45580's original /probe treated any rejection as alive, which was too loose)."""
     out = _run_staleness_harness(
         """
         const results = {
           notFoundCode: classifyProbeRejection({ code: 5, message: "5 NOT_FOUND: nope" }),
           notFoundText: classifyProbeRejection(new Error("message not found")),
           sdkNotFound: classifyProbeRejection({ code: "notFound", message: "missing" }),
+          serverInvalid: classifyProbeRejection({ code: "invalidArgument", grpcCode: 3, cause: new Error("3 INVALID_ARGUMENT"),
+                                                  message: "[spectrum-imessage] Expected message resource GUID" }),
+          rawInvalid: classifyProbeRejection({ code: 3, message: "3 INVALID_ARGUMENT: bad guid" }),
+          clientValidation: classifyProbeRejection({ code: "invalidArgument", grpcCode: 3, message: "chat must start with any;-;" }),
           unavailable: classifyProbeRejection({ code: 14, message: "14 UNAVAILABLE: connect failed" }),
           deadline: classifyProbeRejection({ code: 4, message: "4 DEADLINE_EXCEEDED" }),
           generic: classifyProbeRejection(new Error("socket hang up")),
@@ -92,12 +97,13 @@ def test_probe_rejection_classification_is_strict() -> None:
         process.stdout.write(JSON.stringify(results));
         """
     )
-    # Completed round-trips (server said not-found for our synthetic id).
-    for name in ("notFoundCode", "notFoundText", "sdkNotFound"):
+    # Completed round-trips (server said not-found, or rejected the id's shape itself).
+    for name in ("notFoundCode", "notFoundText", "sdkNotFound", "serverInvalid", "rawInvalid"):
         assert out[name]["alive"] is True, name
         assert out[name]["inconclusive"] is False, name
     # Everything else: not alive AND explicitly inconclusive.
-    for name in ("unavailable", "deadline", "generic", "weird"):
+    # clientValidation: the SDK's own argument check (no wire cause) never left the process.
+    for name in ("clientValidation", "unavailable", "deadline", "generic", "weird"):
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
 

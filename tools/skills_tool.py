@@ -4,11 +4,12 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import contextvars
 import json
 import logging
 import os
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -95,7 +96,12 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 def load_env() -> dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
-    installs the profile scope, so a captured value never differs from the served one)."""
+    installs the profile scope, so a captured value never differs from the served one). A frozen-policy
+    worker never opens the profile ``.env``: ``hermes_cli.config.load_env`` owns that short-circuit."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     from agent.secret_scope import load_env_file
 
     return load_env_file(get_hermes_home() / ".env")
@@ -104,6 +110,21 @@ def load_env() -> dict[str, str]:
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
     _secret_capture_callback = callback
+
+
+# A turn-scoped capture callback (the session owner binds one per local-viewer turn): it wins over the
+# process-global slot and over the gateway-surface "unsupported" hint, because that turn's viewer can
+# answer. A ContextVar, so tool worker threads started with ``propagate_context_to_thread`` inherit it.
+_turn_secret_capture = contextvars.ContextVar("turn_secret_capture", default=None)
+
+
+@contextmanager
+def bind_turn_secret_capture(callback):
+    token = _turn_secret_capture.set(callback)
+    try:
+        yield
+    finally:
+        _turn_secret_capture.reset(token)
 
 
 def _skill_utils_delegate(attr: str):

@@ -435,6 +435,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
             return claim_object if argv[-1] == ref else commit
         if argv[1] == "tag":
             return json.dumps(message)
+        if argv[1] == "for-each-ref":
+            return "refs/remotes/origin/release/1.2.3"
         return ""
 
     assert check_claim(env, git) == {

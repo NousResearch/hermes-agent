@@ -1745,7 +1745,13 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
 
 
 def _persist_live_session_runtime(session: dict | None) -> None:
-    """Persist active session runtime so future resumes restore the same footer."""
+    """Persist active session runtime so future resumes restore the same footer.
+
+    A live model switch is first durable activity for an otherwise empty desktop draft: make its
+    row before updating the runtime or appending the switch marker (#138260).
+    """
+    if session is None or _ensure_session_db_row(session) is False:
+        return
     live = _live_session_agent_db(session)
     if live is None:
         return

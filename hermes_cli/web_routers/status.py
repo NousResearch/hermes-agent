@@ -12,7 +12,9 @@ import re
 import asyncio
 import os
 import sys
+import threading
 import time
+from agent.memory_provider import spawn_context_thread
 from fastapi import APIRouter
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _display_system_platform
@@ -245,20 +247,45 @@ def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms:
 # module-level probe references are handed to the resolver so the long-standing
 # `monkeypatch.setattr(gateway.status, "get_running_pid_cached", ...)` seam used across the test-suite still
 # intercepts them.
+_health_probe_lock = threading.Lock()
+_health_probe_inflight: concurrent.futures.Future | None = None
+
+
+def _start_health_probe() -> concurrent.futures.Future:
+    future: concurrent.futures.Future = concurrent.futures.Future()
+
+    def _run() -> None:
+        try:
+            future.set_result(_probe_gateway_health())
+        except BaseException as exc:  # health: allow BLE001 -- forwarded to every waiter via the future
+            future.set_exception(exc)
+
+    spawn_context_thread(_run, name="api-status-health-probe").start()
+    return future
+
+
 def _bounded_health_probe():
     """Health probe with the route's blocking-call budget preserved. The resolver only
     reaches this rung when the local PID probe came up empty, so the timeout is paid at
-    most once per request and only in the cross-container case that needs it."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_probe_gateway_health)
-        try:
-            return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
-                         _GATEWAY_HEALTH_ROUTE_TIMEOUT)
-            return False, None
-        except Exception:
-            return False, None
+    most once per request and only in the cross-container case that needs it.
+
+    A ``with ThreadPoolExecutor`` block would join the slow worker on ``__exit__`` and blow
+    the deadline (#138388), so the worker is a daemon thread the route stops waiting on.
+    Polls arriving while it still runs share it instead of starting another, which keeps a
+    hung gateway from accumulating one stuck thread per /api/status poll."""
+    global _health_probe_inflight
+    with _health_probe_lock:
+        future = _health_probe_inflight
+        if future is None or future.done():
+            future = _health_probe_inflight = _start_health_probe()
+    try:
+        return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        _log.warning("/api/status gateway health probe exceeded %.2fs; using local status",
+                     _GATEWAY_HEALTH_ROUTE_TIMEOUT)
+        return False, None
+    except Exception:
+        return False, None
 
 
 def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | None,

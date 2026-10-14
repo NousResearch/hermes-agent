@@ -410,14 +410,14 @@ def _two_window_session(server, sid):
     from tui_gateway import server_requests
     from tui_gateway.transport import FanoutTransport
 
-    # The fanout awaits a WS peer's write_async on its loop; a peer without one is pruned on first write.
+    # The fanout awaits a WS peer's batched send (write_many_async) on its loop.
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, daemon=True).start()
     windows = (_silent_ws(), _silent_ws())
     for window in windows:
-        async def _write_async(obj, window=window):
-            return window.write(obj)
-        window._loop, window.write_async = loop, _write_async
+        async def _write_many_async(frames, window=window):
+            return all([window.write(frame) for frame in frames])
+        window._loop, window.write_many_async = loop, _write_many_async
         server_requests.advertise(window, True)
     _ws_session(server, sid, FanoutTransport(*windows))
     return windows

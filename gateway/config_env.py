@@ -448,7 +448,12 @@ def _enable_plugin_platforms_from_env(config: GatewayConfig) -> None:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
+        from gateway.platform_activation import configured_plugin_entries
+        # Only platforms with activation evidence (config block, env/.env, credential pool) are
+        # imported; an unconfigured adapter has nothing to enable. See gateway.platform_activation.
+        # config.yaml blocks already materialized their adapters in load_yaml_layer (and every merged
+        # block is in config.platforms), so the YAML is not parsed a second time here.
+        for entry in configured_plugin_entries(platform_registry, yaml_cfg={}, platform_names=config.platforms):
             _enable_plugin_platform(config, entry)
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

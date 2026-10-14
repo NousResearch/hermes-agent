@@ -22,6 +22,7 @@ import httpx
 from agent.bounded_response import read_streaming_error_body
 from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
+from agent.tool_result_chaining import fold_tool_result_hint
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
@@ -379,7 +380,17 @@ def _translate_tool_result_to_gemini(
     # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema (e.g. tool_describe
     # output for an MCP tool) must therefore be forwarded as opaque text, not as a structured response.
     structured = isinstance(parsed, dict) and not _looks_like_json_schema(parsed)
-    function_response: dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
+    _ref_hint = message.get("_tool_result_hint")
+    if structured:
+        # Keep the structured payload's shape; the hint rides as a namespaced sibling key
+        # so the model can still form {{tool_result:...}} references to this result. A
+        # pathological payload already carrying that key is never overwritten.
+        response_payload: Any = parsed
+        if _ref_hint and "_hermes_tool_result_hint" not in parsed:
+            response_payload = {**parsed, "_hermes_tool_result_hint": str(_ref_hint).strip()}
+    else:
+        response_payload = {"output": fold_tool_result_hint(content, _ref_hint)}
+    function_response: dict[str, Any] = {"name": name, "response": response_payload}
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
     # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.

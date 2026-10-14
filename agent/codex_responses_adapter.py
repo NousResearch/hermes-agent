@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Ty
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.tool_result_chaining import fold_tool_result_hint
 from hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
@@ -604,6 +605,8 @@ def _tool_output_items(msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
     tool_content = msg.get("content")
     is_parts = isinstance(tool_content, list)
     output_value: Any = (_chat_content_to_responses_parts(tool_content) or "") if is_parts else str(tool_content or "")
+    # Fold the sibling-key tool-result reference hint into the model-visible output.
+    output_value = fold_tool_result_hint(output_value, msg.get("_tool_result_hint"), part_type="input_text")
     wire_call_id = wire_ids.for_output(call_id) if wire_ids else _clamp_responses_call_id(call_id)
     return [{"type": "function_call_output", "call_id": wire_call_id, "output": output_value}]
 

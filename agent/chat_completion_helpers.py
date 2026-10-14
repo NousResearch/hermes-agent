@@ -2212,9 +2212,9 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Thinking-only assistant turns 400 on Anthropic-family providers; _thinking_prefill must
     # survive until here so the drop pass recognizes stubs after reasoning is stripped.
     api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
-    for api_msg in api_messages:  # underscore scaffolding: the transport's sweeper is bypassed here
+    for api_msg in api_messages:  # underscore scaffolding; the ref hint rides for the transport's wire fold
         if isinstance(api_msg, dict):
-            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_") and k != "_tool_result_hint"]:
                 del api_msg[internal_key]
     # Same closing normalization as assemble_api_request so the summary's prefix stays
     # bit-identical to the main loop's (a diverging early row defeats prefix caching).

@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.errors import EmptyStreamError
+from agent.tool_result_chaining import fold_tool_result_hint
 
 logger = logging.getLogger(__name__)
 
@@ -948,6 +949,8 @@ def convert_messages_to_converse(
             system_blocks.extend(_system_blocks(content))
         elif role == "tool":
             result_content = content if isinstance(content, str) else json.dumps(content)
+            # Fold the sibling-key tool-result reference hint into the model-visible text.
+            result_content = fold_tool_result_hint(result_content, msg.get("_tool_result_hint"))
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":

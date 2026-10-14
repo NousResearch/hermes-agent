@@ -1139,12 +1139,13 @@ _MAX_TAIL_MESSAGE_FLOOR = 8
 # See #60451.
 _FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 
-# Expected-savings guard: never pay for a summary when the reclaimable middle is a
-# negligible fraction of the trigger — the protected head and tail dominate, so the pass
-# cannot clear the threshold and only burns wall time. Runs BEFORE the first attempt
+# Expected-savings guard: never pay for a summary when the reclaimable middle cannot cover the
+# over-threshold deficit — the protected head and tail dominate, so the pass cannot clear the
+# threshold and only burns wall time. Runs BEFORE the first attempt
 # (unlike _FEASIBILITY_SKIP_MIDDLE_FRACTION, which only armed after a strike) and DEFERS
 # without dropping messages. Forced runs and sessions near the hard context limit bypass it.
-_DEFER_NEGLIGIBLE_MIDDLE_FRACTION = 0.10
+# Conservative share of the middle a summary is assumed to reclaim.
+_DEFER_ASSUMED_RECLAIM_RATIO = 0.5
 # Within this fraction of the real context window the expected-savings defer is bypassed so a
 # smaller-but-still-useful reclaim can run before the provider's hard limit is hit.
 _RECLAIM_DEFER_HARD_LIMIT_MARGIN = 0.10
@@ -5342,10 +5343,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         )
 
     def _expected_savings_defer(
-        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
+        self, telemetry: dict[str, Any], turns_to_summarize: list[dict[str, Any]],
         compress_start: int, compress_end: int, current_tokens: Optional[int],
     ) -> bool:
-        """Defer a pass whose reclaimable middle is negligible BEFORE paying for the summary.
+        """Defer a pass whose reclaimable middle cannot cover the deficit BEFORE paying for the summary.
 
         The trigger can fire while the protected head and tail already hold nearly all the tokens:
         the middle is then too small to reclaim the deficit, so the summary cannot clear the
@@ -5353,7 +5354,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         seconds each). This gate runs on the FIRST attempt too — unlike ``_feasibility_skip``,
         which only arms after a prior ineffectiveness strike, letting that first expensive pass
         through. It DEFERS (returns the transcript unchanged, no messages dropped, no summary
-        call) and re-defers while the compressible middle stays below the negligible fraction,
+        call) and re-defers while the compressible middle (at an assumed reclaim ratio) stays below the deficit,
         so it does not re-scan every turn until real material accumulates.
 
         Bypassed by ``force`` (manual ``/compress``) and when the session is near the provider's
@@ -5370,18 +5371,18 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
         middle_tokens = telemetry.get("middle_window_tokens")
         middle_tokens = estimate_messages_tokens_rough(turns_to_summarize) if middle_tokens is None else middle_tokens
-        threshold = max(1, int(self.threshold_tokens * _DEFER_NEGLIGIBLE_MIDDLE_FRACTION))
-        if middle_tokens >= threshold:
-            # Enough compressible material to be worth a summary: do not defer.
+        deficit = current_tokens - self.threshold_tokens
+        if middle_tokens * _DEFER_ASSUMED_RECLAIM_RATIO >= deficit:
+            # The middle can plausibly cover the deficit: do not defer.
             return False
         self._last_reclaim_deferred = True
         telemetry["reclaim_deferred"] = True
         telemetry["failure_class"] = "reclaim_deferred"
         if not self.quiet_mode:
             logger.info(
-                "Compression deferred: reclaimable middle (%d tokens at indices %d-%d) is a negligible "
-                "fraction of the %d-token threshold — avoiding a summary with no material benefit.",
-                middle_tokens, compress_start, compress_end, self.threshold_tokens,
+                "Compression deferred: reclaimable middle (%d tokens at indices %d-%d) cannot cover "
+                "the %d-token deficit over the %d-token threshold — avoiding a summary with no material benefit.",
+                middle_tokens, compress_start, compress_end, current_tokens - self.threshold_tokens, self.threshold_tokens,
             )
         return True
 
@@ -5391,7 +5392,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         return int(window * (1.0 - _RECLAIM_DEFER_HARD_LIMIT_MARGIN))
 
     def _feasibility_skip(
-        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
+        self, telemetry: dict[str, Any], turns_to_summarize: list[dict[str, Any]],
         compress_start: int, compress_end: int,
     ) -> bool:
         """Pre-LLM skip after a real-usage ineffectiveness strike (reads the counter, never writes)."""

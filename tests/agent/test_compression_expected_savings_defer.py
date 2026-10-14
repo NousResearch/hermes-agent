@@ -3,7 +3,7 @@
 The pre-existing `_feasibility_skip` only arms `_FEASIBILITY_SKIP_MIDDLE_FRACTION`
 AFTER a real-usage ineffectiveness strike, so the FIRST expensive low-reclaim pass
 always goes through. The expected-savings guard runs on the first attempt too: when
-the reclaimable middle is a negligible fraction of the trigger, it DEFERS the pass
+the reclaimable middle cannot cover the over-threshold deficit, it DEFERS the pass
 (transcript returned unchanged, no summary LLM call, no messages dropped). Forced
 runs and sessions near the provider's hard context limit bypass it.
 
@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
 
-# Trigger pinned in the tests so 10% == 4000 tokens: a middle below that is negligible.
+# Trigger pinned in the tests; deficit = current_tokens - threshold.
 _PINNED_THRESHOLD = 40000
 # Real calibrations that the auto caller passes: over the trigger, below the hard-limit bypass.
 _OVER_TRIGGER = 45000
@@ -125,14 +125,14 @@ def test_below_trigger_and_unknown_tokens_keep_legacy_behavior():
 
     for current in (None, _PINNED_THRESHOLD - 1):
         compressor._last_reclaim_deferred = False
-        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary"):
             compressor.compress(list(msgs), force=False, current_tokens=current)
         # Not the expected-savings defer; whatever other guard fires is the legacy behavior.
         assert compressor._last_reclaim_deferred is False
 
 
 def test_grown_middle_attempts_again_after_defer():
-    """Once the compressible middle grows past the negligible fraction, a fresh attempt runs."""
+    """Once the compressible middle can cover the deficit, a fresh attempt runs."""
     compressor = _compressor()
 
     with patch.object(compressor, "_generate_summary") as mock_gen:
@@ -141,7 +141,18 @@ def test_grown_middle_attempts_again_after_defer():
     assert compressor._last_reclaim_deferred is True
 
     with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
-        compressor.compress(list(_grown_middle()), force=False, current_tokens=_OVER_TRIGGER)
+        compressor.compress(list(_grown_middle()), force=False, current_tokens=_PINNED_THRESHOLD + 2000)
+
+    mock_gen.assert_called_once()
+    assert compressor._last_reclaim_deferred is False
+
+
+def test_small_deficit_is_not_deferred_even_with_small_middle():
+    """Reviewer scenario: barely over threshold, a small middle can still clear the deficit."""
+    compressor = _compressor()
+
+    with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+        compressor.compress(list(_negligible_middle()), force=False, current_tokens=_PINNED_THRESHOLD + 100)
 
     mock_gen.assert_called_once()
     assert compressor._last_reclaim_deferred is False

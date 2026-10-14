@@ -472,6 +472,7 @@ export interface ConfigGetResult {
   tool_progress?: string | null
   model?: string | null
   provider?: string | null
+  scope?: string | null
   providers?: ConfigProviderRef[] | null
   home?: string | null
   cwd?: string | null

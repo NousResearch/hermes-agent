@@ -3,10 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.credential_pool import (
-    credential_pool_matches_provider,
-    resolve_runtime_pool_key,
-)
+import agent.credential_pool as credential_pool_module
+from agent.credential_pool_identity import credential_pool_matches_provider, resolve_runtime_pool_key
 from hermes_cli import runtime_provider as rp
 
 
@@ -14,6 +12,22 @@ def test_provider_match_requires_exact_non_custom_identity():
     assert credential_pool_matches_provider("deepseek", "deepseek")
     assert not credential_pool_matches_provider("openai-codex", "deepseek")
     assert not credential_pool_matches_provider("", "deepseek")
+
+
+def test_credential_pool_compatibility_exports_forward_to_identity_boundary():
+    assert credential_pool_module.credential_pool_matches_provider("deepseek", "deepseek")
+    assert not credential_pool_module.credential_pool_matches_provider("openai-codex", "deepseek")
+    assert credential_pool_module.resolve_runtime_pool_key("deepseek", None) == "deepseek"
+
+
+def test_runtime_helper_compatibility_export_forwards_to_route_binding():
+    import agent.agent_runtime_helpers as runtime_helpers
+
+    sentinel = object()
+    with patch("agent.route_binding.restore_primary_runtime", return_value=sentinel) as restore:
+        agent = object()
+        assert runtime_helpers.restore_primary_runtime(agent) is sentinel
+        restore.assert_called_once_with(agent)
 
 
 def test_custom_pool_match_is_scoped_by_endpoint():

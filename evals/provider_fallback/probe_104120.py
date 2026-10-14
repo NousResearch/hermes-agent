@@ -99,7 +99,7 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 url = f"http://127.0.0.1:{server.server_port}/v1"
 from run_agent import AIAgent
 from agent.error_classifier import classify_api_error
-from agent.agent_runtime_helpers import restore_primary_runtime
+from agent.route_binding import restore_primary_runtime
 
 results = []
 for label, model, chain in [

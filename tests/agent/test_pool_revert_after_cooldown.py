@@ -10,7 +10,8 @@ its whole life. Credential-only: it must not touch the model/base_url/compressor
 import time
 
 import agent.credential_pool as cp
-from agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
+from agent.agent_runtime_helpers import recover_with_credential_pool
+from agent.route_binding import restore_primary_runtime
 from agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
 
 _BASE = "https://api.anthropic.com"

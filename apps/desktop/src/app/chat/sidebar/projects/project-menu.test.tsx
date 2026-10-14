@@ -70,13 +70,20 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('@/store/projects', () => ({
+  // The default-model picker reads the project's pinned route from this store.
+  $projects: {
+    get: () => [],
+    listen: () => () => {},
+    subscribe: () => () => {}
+  },
   copyPath: vi.fn(),
   deleteProject: vi.fn(),
   openProjectAddFolder: vi.fn(),
   openProjectRename: vi.fn(),
   revealPath: vi.fn(),
   setActiveProject: vi.fn(),
-  setProjectAppearance: vi.fn().mockResolvedValue(false)
+  setProjectAppearance: vi.fn().mockResolvedValue(false),
+  setProjectModelRoute: vi.fn()
 }))
 
 const project = {

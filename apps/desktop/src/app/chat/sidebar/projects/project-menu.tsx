@@ -35,6 +35,7 @@ import {
 } from '@/store/projects'
 
 import { ProjectAppearancePicker } from './project-appearance'
+import { ProjectModelSubmenu } from './project-model-picker'
 import type { SidebarProjectTree } from './workspace-groups'
 
 // Shared per-project state + handlers, so the kebab dropdown and the row's
@@ -265,6 +266,8 @@ export function ProjectMenu({
             <>
               {identityItems.slice(0, 1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               {appearanceItem}
+              {/* Default model route — explicit projects only (an auto repo has no row to pin). */}
+              <ProjectModelSubmenu kit={DROPDOWN_KIT} projectId={project.id} />
               {identityItems.slice(1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               <DropdownMenuSeparator />
             </>
@@ -348,6 +351,7 @@ export function ProjectContextMenu({
           </kit.SubContent>
         </kit.Sub>
       )}
+      {!project.isAuto && <ProjectModelSubmenu kit={kit} projectId={project.id} />}
       {(identityItems.length > 0 || canTheme) && <kit.Separator />}
       {pathItems.map(item => renderActionItem(kit, item))}
       <kit.Separator />

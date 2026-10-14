@@ -11,6 +11,8 @@ import { $sessionColorById, $sessionColorOverrides, sessionColorFor, setSessionC
 function makeProject(id: string, folders: string[], color: null | string): ProjectInfo {
   return {
     archived: false,
+    model: null,
+    provider: null,
     board_slug: null,
     color,
     created_at: 0,

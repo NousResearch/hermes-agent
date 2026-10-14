@@ -759,3 +759,23 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+
+
+def test_projects_update_accepts_a_model_route(tmp_path):
+    """The desktop's project settings write the default model route through projects.update."""
+    from hermes_cli import projects_db as pdb
+
+    pid = _call("projects.create", {"name": "Pinned", "folders": [str(tmp_path)]})["project"]["id"]
+
+    updated = _call("projects.update", {"id": pid, "model": "deepseek-v4-flash", "provider": "opencode-go"})
+    assert updated["project"]["model"] == "deepseek-v4-flash"
+    assert updated["project"]["provider"] == "opencode-go"
+
+    with pdb.connect_closing() as conn:
+        assert pdb.project_model_for_path(conn, str(tmp_path))[0] == "deepseek-v4-flash"
+
+    # "" clears (the desktop maps an explicit null to ""), putting the profile default back in charge.
+    cleared = _call("projects.update", {"id": pid, "model": "", "provider": ""})
+    assert cleared["project"]["model"] is None
+    with pdb.connect_closing() as conn:
+        assert pdb.project_model_for_path(conn, str(tmp_path)) is None

@@ -1200,12 +1200,18 @@ export async function renameProject(id: string, name: string): Promise<void> {
   await updateProject(id, { name })
 }
 
-// Patch top-level project fields (name / appearance). Optimistic: the cached
-// tree + list update instantly so a color/icon/name change has no round-trip
-// lag; only a failed write reconciles from the server.
+// Patch top-level project fields (name / appearance / default model route).
+// Optimistic: the cached tree + list update instantly so a color/icon/name
+// change has no round-trip lag; only a failed write reconciles from the server.
 export async function updateProject(
   id: string,
-  patch: { name?: string; color?: null | string; icon?: null | string }
+  patch: {
+    name?: string
+    color?: null | string
+    icon?: null | string
+    model?: null | string
+    provider?: null | string
+  }
 ): Promise<void> {
   const context = await activeProjectsContext(writableProjectProfile())
   const snap = snapshotProjects()
@@ -1225,7 +1231,7 @@ export async function updateProject(
   $projects.set(snap.projects.map(proj => (proj.id === id ? { ...proj, ...patch } : proj)))
 
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
-  // Map explicit null → "" so "no color"/"no icon" actually clear.
+  // Map explicit null → "" so "no color"/"no icon"/"profile default" actually clear.
   await persistOrRollback(snap, () =>
     gatewayRequestOn(
       context.gateway,
@@ -1235,11 +1241,24 @@ export async function updateProject(
           id,
           ...patch,
           ...(patch.color === null && { color: '' }),
-          ...(patch.icon === null && { icon: '' })
+          ...(patch.icon === null && { icon: '' }),
+          // Clearing the route sends BOTH fields: a lone provider with no model is refused.
+          ...(patch.model === null && { model: '', provider: '' })
         },
         context.profile
       )
     )
+  )
+}
+
+// The project's default model route, or null for "follow the profile default".
+export async function setProjectModelRoute(
+  id: string,
+  route: null | { model: string; provider?: null | string }
+): Promise<void> {
+  await updateProject(
+    id,
+    route === null ? { model: null } : { model: route.model, provider: route.provider ?? null }
   )
 }
 

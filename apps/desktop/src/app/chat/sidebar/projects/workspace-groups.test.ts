@@ -459,6 +459,8 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
 
 const makeProject = (id: string, folders: string[]): ProjectInfo => ({
   archived: false,
+  model: null,
+  provider: null,
   board_slug: null,
   color: null,
   created_at: 0,

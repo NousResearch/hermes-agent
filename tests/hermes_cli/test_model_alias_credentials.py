@@ -664,6 +664,17 @@ class TestOneShotUsesTheSameHostInvariant:
             DirectAlias("c", "anthropic", "https://evil.test/v1")
         ) == ("custom", None)
 
+    def test_canonical_codex_endpoint_keeps_codex_oauth_provider(self):
+        """A direct alias for the provider's own endpoint is not a foreign-host route."""
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias(
+                "gpt-5.6-luna", "openai-codex",
+                "https://chatgpt.com/backend-api/codex",
+            )
+        ) == ("openai-codex", None)
+
     def test_declared_key_is_carried_through(self, monkeypatch):
         from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
 

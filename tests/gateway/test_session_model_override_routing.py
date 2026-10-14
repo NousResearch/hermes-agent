@@ -140,3 +140,70 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "sk-openrouter"
 
 
+def test_gateway_expands_configured_direct_alias_before_creating_agent(monkeypatch):
+    """A gateway turn must send a direct alias's wire model, not its short name."""
+    runner = _make_runner()
+    direct_runtime = {
+        "provider": "openrouter", "api_key": "alias-key",
+        "base_url": "https://openrouter.example/v1", "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(
+        gateway_run, "_resolve_direct_alias_agent_runtime",
+        lambda model: ("z-ai/glm-5.3-flash", dict(direct_runtime)) if model == "zdr-flash" else None,
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs",
+        lambda: {"provider": "fallback", "api_key": "fallback-key", "base_url": "https://fallback.example/v1"},
+    )
+
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key="agent:sharik:signal:dm:test",
+        user_config={"model": {"default": "zdr-flash"}},
+    )
+
+    assert model == "z-ai/glm-5.3-flash"
+    assert runtime == direct_runtime
+
+
+def test_gateway_direct_alias_uses_canonical_startup_route(monkeypatch):
+    """Gateway aliases use the same resolver and credential boundary as other callers."""
+    from hermes_cli import model_switch, runtime_provider
+
+    route = model_switch.StartupModelRoute(
+        model="z-ai/glm-5.3-flash",
+        provider="openrouter",
+        base_url="https://openrouter.example/v1",
+        api_key="alias-key",
+    )
+    monkeypatch.setattr(model_switch, "_ensure_direct_aliases", lambda: None)
+    monkeypatch.setitem(
+        model_switch.DIRECT_ALIASES, "zdr-flash",
+        model_switch.DirectAlias("z-ai/glm-5.3-flash", "openrouter", "https://openrouter.example/v1"),
+    )
+    monkeypatch.setattr(
+        model_switch, "resolve_startup_model_route",
+        lambda model: route if model == "zdr-flash" else None,
+    )
+    seen = {}
+
+    def resolve_runtime_provider(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "openrouter", "api_key": "alias-key",
+            "base_url": "https://openrouter.example/v1", "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", resolve_runtime_provider)
+
+    model, runtime = gateway_run._resolve_direct_alias_agent_runtime("zdr-flash")
+
+    assert model == route.model
+    assert seen == {
+        "requested": route.provider,
+        "explicit_base_url": route.base_url,
+        "explicit_api_key": route.api_key,
+        "target_model": route.model,
+    }
+    assert runtime["provider"] == route.provider
+
+

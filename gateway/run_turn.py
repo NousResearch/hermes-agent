@@ -178,7 +178,8 @@ class GatewayTurnMixin:
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _resolve_direct_alias_agent_runtime, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
@@ -201,6 +202,9 @@ class GatewayTurnMixin:
             }
             override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
             if override_runtime.get("api_key"):
+                direct_alias_runtime = _resolve_direct_alias_agent_runtime(override_model)
+                if direct_alias_runtime is not None:
+                    return direct_alias_runtime
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
@@ -269,6 +273,14 @@ class GatewayTurnMixin:
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
+
+        # Gateway-created agents pass their selected model explicitly, so resolve a
+        # configured direct alias only after session and channel precedence is final.
+        # This atomically replaces the runtime route; a short alias must never reach
+        # a provider transport, including through a persisted /model override.
+        direct_alias_runtime = _resolve_direct_alias_agent_runtime(model)
+        if direct_alias_runtime is not None:
+            model, runtime_kwargs = direct_alias_runtime
 
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.

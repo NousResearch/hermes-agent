@@ -454,7 +454,9 @@ async function syncRelayRosters() {
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     // One profiles.list per connection: its routes share a socket and answer one profile set.
-    const firstRoutes = connections.filter((connection, index) => connections.findIndex(other => other.id === connection.id) === index)
+    const firstRoutes = connections.filter(
+      (connection, index) => connections.findIndex(other => other.id === connection.id) === index
+    )
     await Promise.all(
       firstRoutes.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
@@ -583,7 +585,9 @@ async function drainRelayOutboxes() {
         const pending = pendingRelaysFor(sender)
 
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
-          if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+          if (envelope.id && !pending.has(envelope.id)) {
+            pending.set(envelope.id, structuredClone(envelope))
+          }
         }
 
         // Every claimed-but-unACKed envelope rides again: a delivery that
@@ -662,7 +666,14 @@ function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, en
 /** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS
  *  envelope posts back; anything else stays retained for recovery. */
 async function settleRelayDelivery(
-  res: { status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string },
+  res: {
+    status?: string
+    delivery_id?: string
+    admission_id?: string
+    reply?: string
+    error?: string
+    reason?: string
+  },
   envelopeId: string,
   attentionKey: string,
   postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
@@ -674,7 +685,9 @@ async function settleRelayDelivery(
   }
 
   if (res.status !== 'settled' && res.status !== 'failed') {
-    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+    if (res.status === 'ambiguous') {
+      noteBotAttention(attentionKey, 'unknown_execution')
+    }
 
     return
   }
@@ -734,7 +747,14 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
+    const res = await host.requestProfile<{
+      status?: string
+      delivery_id?: string
+      admission_id?: string
+      reply?: string
+      error?: string
+      reason?: string
+    }>(
       { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
       relayDeliverParams(sender, envelope, envelopeId),
@@ -752,7 +772,9 @@ async function deliverRelayEnvelope(
     noteBotAttention(attentionKey, reason || error?.message || error)
 
     // A transport exception can follow a committed admission; never settle it as failure.
-    if (!reason || reason === 'runtime_unavailable') {return}
+    if (!reason || reason === 'runtime_unavailable') {
+      return
+    }
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason

@@ -305,8 +305,11 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
         refuse()
         const outcome = await pending
 
-        if (refusal === 'error') {expect(outcome).toBeInstanceOf(Error)}
-        else {expect(outcome).toBe(false)}
+        if (refusal === 'error') {
+          expect(outcome).toBeInstanceOf(Error)
+        } else {
+          expect(outcome).toBe(false)
+        }
       })
       emit({ payload: { text: ' after' }, session_id: SID, type: 'message.delta' })
       await flushDeltas()
@@ -322,24 +325,41 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     }
   })
 
-  it.each([false, true])('a delayed accepted redirect does not move its correction past a new reply (tile=%s)', async tile => {
-    await mountHarness(tile)
-    emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.delta' })
-    await flushDeltas()
-    let accept!: () => void
-    requestGatewayMock.mockImplementationOnce(() => new Promise(resolve => { accept = () => resolve({ status: 'redirected' }) }))
-    let pending!: Promise<unknown>
-    act(() => { pending = redirect!('correction') })
-    emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.complete' })
-    emit({ payload: {}, session_id: SID, type: 'message.start' })
-    emit({ payload: { text: 'new reply' }, session_id: SID, type: 'message.delta' })
-    await flushDeltas()
-    const newStreamId = states.get(SID)!.streamId
-    await act(async () => { accept(); await pending })
-    expect(states.get(SID)!.streamId).toBe(newStreamId)
-    expect(states.get(SID)!.messages.map(message => chatMessageText(message))).toEqual(['old reply', 'correction', 'new reply'])
-  })
+  it.each([false, true])(
+    'a delayed accepted redirect does not move its correction past a new reply (tile=%s)',
+    async tile => {
+      await mountHarness(tile)
+      emit({ payload: {}, session_id: SID, type: 'message.start' })
+      emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      let accept!: () => void
+      requestGatewayMock.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            accept = () => resolve({ status: 'redirected' })
+          })
+      )
+      let pending!: Promise<unknown>
+      act(() => {
+        pending = redirect!('correction')
+      })
+      emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.complete' })
+      emit({ payload: {}, session_id: SID, type: 'message.start' })
+      emit({ payload: { text: 'new reply' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      const newStreamId = states.get(SID)!.streamId
+      await act(async () => {
+        accept()
+        await pending
+      })
+      expect(states.get(SID)!.streamId).toBe(newStreamId)
+      expect(states.get(SID)!.messages.map(message => chatMessageText(message))).toEqual([
+        'old reply',
+        'correction',
+        'new reply'
+      ])
+    }
+  )
 
   it('a redirect the gateway rejects discards the optimistic bubble instead of stranding it', async () => {
     await mountHarness()

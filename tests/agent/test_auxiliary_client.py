@@ -5667,3 +5667,61 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             )
 
         assert resolved_provider == "xai-oauth"
+
+
+class TestNousAuxModelPrefill:
+    """#138309: ``auxiliary.title_generation`` pinned to ``provider: nous`` with
+    no model must leave ``model`` unset so the Nous branch's Portal tier-aware
+    recommendation wins. Pre-filling the main chat model sends that slug to
+    the Nous Portal, which answers HTTP 400 ``model not found`` -- the aux
+    task (title generation) hard-fails. The pre-fill carve-out previously
+    covered only nous + vision; nous text had the same defect.
+    """
+
+    @staticmethod
+    def _stub_nous(monkeypatch, recommended="Nous-Portal-Rec-Txt-Model"):
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setattr(
+            ac, "_get_auxiliary_task_config", lambda task: {"provider": "nous"}
+        )
+        monkeypatch.setattr(
+            ac, "_try_nous", lambda vision=False: (MagicMock(), recommended)
+        )
+        monkeypatch.setattr(
+            ac, "_read_main_model_for_aux", lambda: "main-chat-model-slug"
+        )
+        return ac
+
+    def test_nous_text_without_model_uses_portal_recommendation(self, monkeypatch):
+        ac = self._stub_nous(monkeypatch)
+
+        client, wire_model = ac.resolve_provider_client(
+            "nous", model=None, task="title_generation", is_vision=False,
+        )
+
+        assert client is not None
+        assert wire_model == "Nous-Portal-Rec-Txt-Model"
+
+    def test_nous_vision_carveout_still_uses_portal_recommendation(self, monkeypatch):
+        """The pre-existing nous+vision carve-out must not regress."""
+        ac = self._stub_nous(monkeypatch, recommended="Nous-Portal-Rec-Vision-Model")
+
+        client, wire_model = ac.resolve_provider_client(
+            "nous", model=None, task="vision", is_vision=True,
+        )
+
+        assert client is not None
+        assert wire_model == "Nous-Portal-Rec-Vision-Model"
+
+    def test_nous_explicit_caller_model_is_respected(self, monkeypatch):
+        """An explicit caller model still overrides the Portal recommendation."""
+        ac = self._stub_nous(monkeypatch)
+
+        client, wire_model = ac.resolve_provider_client(
+            "nous", model="caller-explicit-model",
+            task="title_generation", is_vision=False,
+        )
+
+        assert client is not None
+        assert wire_model == "caller-explicit-model"

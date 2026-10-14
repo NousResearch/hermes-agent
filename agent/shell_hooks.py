@@ -1,7 +1,8 @@
 """Shell-script hooks bridge: ``hooks:`` config → first-use consent per ``(event, command)`` →
 callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
 Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
-JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
+JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``;
+``transform_tool_result`` takes ``{"result": "<string>"}`` as the replacement tool result.
 Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
 from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
@@ -43,6 +44,11 @@ BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
 _BLOCKING_EVENTS = frozenset({"pre_tool_call"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
+# Events honoring the per-tool ``matcher`` regex: transform_tool_result fires per tool
+# result, so per-tool scoping applies there too.
+_MATCHER_EVENTS = _TOOL_EVENTS | {"transform_tool_result"}
+# A hook's contribution: a wire-shape directive dict, a transform_tool_result replacement string, or None.
+_HookReply = Optional[Union[Dict[str, Any], str]]
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
 # kwargs promoted to top-level payload keys; everything else lands under ``extra``.
@@ -252,9 +258,10 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
     if matcher is not None and not isinstance(matcher, str):
         warn(".matcher must be a string regex; ignoring")
         matcher = None
-    if matcher is not None and event not in _TOOL_EVENTS:
+    if matcher is not None and event not in _MATCHER_EVENTS:
         warn(".matcher=%r will be ignored at runtime — the matcher field is only honored for "
-             "pre_tool_call / post_tool_call.  The hook will fire on every %s event.", matcher, event)
+             "pre_tool_call / post_tool_call / transform_tool_result.  The hook will fire on every %s event.",
+             matcher, event)
         matcher = None
     try:
         timeout = int(raw.get("timeout", DEFAULT_TIMEOUT_SECONDS))
@@ -365,11 +372,11 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     return result
 
 
-def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]]]:
+def _make_callback(spec: ShellHookSpec) -> Callable[..., _HookReply]:
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
-    def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
-        if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
+    def _callback(**kwargs: Any) -> _HookReply:
+        if spec.event in _MATCHER_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
@@ -383,7 +390,7 @@ def _fail_closed_block(spec: ShellHookSpec, reason: str) -> dict[str, Any]:
 
 def _evaluate_result(
     spec: ShellHookSpec, r: dict[str, Any],
-) -> Optional[dict[str, Any]]:
+) -> _HookReply:
     """Turn a :func:`_spawn` diagnostic dict into the hook's contribution.
 
     Single place that encodes the failure semantics:
@@ -496,11 +503,19 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_transform(data: dict[str, Any]) -> Optional[str]:
+    """transform_tool_result dialect: a string ``{"result": "..."}`` (``""`` included) replaces the tool
+    result (model_tools takes the first string return); a missing or non-string ``result`` means "keep it"."""
+    result = data.get("result")
+    return result if isinstance(result, str) else None
 
 
-def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
-    """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], _HookReply]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "transform_tool_result": _parse_transform}
+
+
+def _parse_response(event: str, stdout: str) -> _HookReply:
+    """Translate stdout JSON into a Hermes wire-shape dict (a replacement string for transform_tool_result), or ``None``."""
     stdout = (stdout or "").strip()
     if not stdout:
         return None

@@ -209,9 +209,12 @@ def declare_stateless_channel() -> None:
 
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.  False for
-    stateless channels (:func:`declare_stateless_channel`) and Kanban workers
-    (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    stateless channels (:func:`declare_stateless_channel`), Kanban workers
+    (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn) and
+    registered worker processes: a managed worker exits at its turn boundary, so detached work
+    it scheduled would be lost (recovered ``unknown``) and its completion queue has no reader."""
+    from agent.runtime_session_store import is_worker_process
+    if os.environ.get("HERMES_KANBAN_TASK") or is_worker_process():
         return False
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)

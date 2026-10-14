@@ -227,13 +227,13 @@ curl -s -X POST \
 
 ### Submit a Formal Review (Approve / Request Changes)
 
-**With gh:**
+**Not with gh.** Prefer the API form below, whose `event` you choose deliberately — a
+formal APPROVE is a gate signal, and gates are not something an agent may assert on its
+own judgement:
 
-```bash
-gh pr review 123 --approve --body "LGTM!"
-gh pr review 123 --request-changes --body "See inline comments."
-gh pr review 123 --comment --body "Some suggestions, nothing blocking."
-```
+- `COMMENT` — the only event an agent should normally submit.
+- `REQUEST_CHANGES` — allowed; it blocks rather than advances.
+- `APPROVE` — reserved for a human. Do not submit it on your own judgement.
 
 **With curl — multi-comment review submitted atomically:**
 
@@ -393,14 +393,13 @@ Go through each category: Correctness, Security, Code Quality, Testing, Performa
 
 Collect your findings and submit them as a formal review with inline comments.
 
-**With gh:**
-```bash
-# If no issues — approve
-gh pr review $PR_NUMBER --approve --body "Reviewed by Hermes Agent. Code looks clean — good test coverage, no security concerns."
+**Not with gh** (see the formal-review note above). Post via the API, choosing `event`
+by what you found:
 
-# If issues found — request changes with inline comments
-gh pr review $PR_NUMBER --request-changes --body "Found a few issues — see inline comments."
-```
+- Issues found → `REQUEST_CHANGES`, with the findings as inline comments.
+- Nothing found → `COMMENT` stating that. An agent does not `APPROVE`; approval is a
+  human gate, and the review artifact an agent posts is what a human or a deterministic
+  gate then reads.
 
 **With curl — atomic review with multiple inline comments:**
 ```bash

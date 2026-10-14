@@ -1,3 +1,7 @@
+import type { PointerEvent as ReactPointerEvent } from 'react'
+
+import { startSessionDrag } from '@/app/chat/session-drag'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   pinSession,
   setPinnedSessionOrder,
@@ -75,5 +79,33 @@ export const sessionsHost = {
    *  a hand-picked colour are one value. */
   setColor: (storedSessionId: string, color: null | string): void => {
     setSessionColorOverride(durableSessionPinId(storedSessionId), color)
+  },
+
+  /** Start dragging a session from a plugin surface — the SAME pointer drag a
+   *  sidebar row starts, with the same drop language: a chat zone's tab strip
+   *  stacks it as a tab, an edge splits it into a tile, the composer links it
+   *  as an `@session` chip, a project row moves it. Call it from the source
+   *  element's `onPointerDown` with the React pointer event. Only a primary
+   *  press starts a drag; a release before the drag threshold stays an
+   *  ordinary click (the element's own `onClick` still fires — or pass
+   *  `onTap`), and an engaged drag swallows its release click so it never
+   *  doubles as an activation. A loaded row supplies the live id, profile and
+   *  title; `profile` / `title` label a session this window hasn't loaded. */
+  startDrag: (
+    storedSessionId: string,
+    event: ReactPointerEvent<HTMLElement>,
+    options: { onTap?: () => void; profile?: string; title?: string } = {}
+  ): void => {
+    const session = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+    startSessionDrag(
+      {
+        id: session?.id ?? storedSessionId,
+        profile: session?.profile || options.profile || 'default',
+        title: session ? sessionTitle(session) : (options.title ?? '')
+      },
+      event,
+      { onTap: options.onTap }
+    )
   }
 }

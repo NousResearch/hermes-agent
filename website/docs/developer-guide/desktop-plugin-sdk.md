@@ -593,6 +593,7 @@ host.sessions.pin(storedSessionId: string, pinned?: boolean, index?: number): vo
 host.sessions.reorder(storedSessionIds: string[]): void   // Recents; [] = clear manual order → default sort
 host.sessions.reorderPinned(storedSessionIds: string[]): void  // Pinned section; omitted pins keep their slot
 host.sessions.setColor(storedSessionId: string, color: string | null): void
+host.sessions.startDrag(storedSessionId: string, event: PointerEvent, options?: { onTap?, profile?, title? }): void
 ```
 
 Ids are STORED session ids: a live id is resolved to its durable lineage root,
@@ -606,6 +607,24 @@ internally — the Recents order store is keyed by the live id, like the drag
 path. `pin(id, true, index)` slots the pin at that position in the
 Pinned list (a drop target between two pins); without `index` it appends, like
 the row's ⇧-click.
+
+`startDrag` lets a plugin's own session list drag like a sidebar row — same
+pointer drag, same drop language: a chat zone's tab strip stacks the session
+as a tab, an edge splits it into a tile, the composer links it as an
+`@session` chip, a project row moves it. Call it from the element's
+`onPointerDown`; only a primary press starts a drag, a release before the drag
+threshold stays an ordinary click (your `onClick` still fires), and an engaged
+drag swallows its release click:
+
+```tsx
+<div onClick={() => host.openSession(id)} onPointerDown={e => host.sessions.startDrag(id, e, { title })}>
+  {title}
+</div>
+```
+
+A loaded row supplies the live id, profile and title; `profile` / `title` only
+label a session this window hasn't loaded. Feature-detect on older desktops
+(`typeof host.sessions.startDrag === 'function'`).
 
 **Arbitration.** The verbs are discrete user-triggered edits of user data —
 last write wins, exactly as if the user had clicked, and no plugin owns the
@@ -1125,6 +1144,7 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.sessions.startDrag(storedSessionId, pointerEvent, opts?)  // drag a session like a sidebar row (stack / split / link)
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state

@@ -272,7 +272,14 @@ def record_is_stale(record: Optional[HostRecord]) -> bool:
 
 
 def liveness_is_proven(record: HostRecord) -> bool:
-    """True only when the record's process-incarnation probe positively matched (never on ``None``)."""
+    """True only when the record's process-incarnation probe positively matched (never on ``None``).
+
+    A record with neither ``createTime`` nor ``startTime`` cannot prove incarnation:
+    ``_same_incarnation`` treats a missing create_time as a match, so a recycled pid would
+    otherwise look alive forever. Topology already refused that shape; attach did not.
+    """
+    if record.create_time is None and record.start_time is None:
+        return False
     return _record_incarnation_matches(record) is True
 
 
@@ -462,6 +469,28 @@ def owns_host_lock(role: str) -> bool:
     return _lock_handles.get(_lock_key(_validated_role(role))) is not None
 
 
+def host_lock_is_held(role: str) -> Optional[bool]:
+    """Whether any process currently holds the host lock for ``role``.
+
+    ``True`` / ``False`` when the flock can be observed; ``None`` when the lock file cannot
+    be opened. Never retains a lock. This process's handle is authoritative: re-probing our
+    own flock succeeds on POSIX, so a second open would lie.
+    """
+    role = _validated_role(role)
+    if owns_host_lock(role):
+        return True
+    path = lock_path(role)
+    if not path.exists():
+        return False
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    from gateway.status import _probe_lock_file
+
+    return _probe_lock_file(handle)
+
+
 def publish_record(
     role: str,
     *,
@@ -527,7 +556,10 @@ def discard_dead_record(role: str) -> bool:
     if record is None:
         return False
     if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
-        return False
+        # A recycled pid can still look like the same incarnation. The publisher holds the
+        # host lock for its life, so a free flock is proof the recorded owner is gone.
+        if host_lock_is_held(role) is not False:
+            return False
     for path in (record_path(role), token_path(role)):
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)

@@ -202,6 +202,16 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     # address it chose; proving the PID first is also what keeps a stale record from naming a peer.
     if not hr.liveness_is_proven(record):
         return None
+    # Every live publisher holds host-gateway.lock for its lifetime; the OS releases it on
+    # death. A leftover record can still name a live pid (recycle, or start-tick collision
+    # after reboot). If the flock is free, that pid is not the owner — treating it as a
+    # silent-but-live gateway is the never-expiring transient refuse (#138343, #133744).
+    if hr.host_lock_is_held(record.role) is False:
+        logger.info(
+            "Host record names pid %s but the host lock is free; treating the owner as gone.",
+            record.pid,
+        )
+        return None
     home = record_home(record)
     deadline = time.monotonic() + max(0.0, wait_for_channel)
     while True:

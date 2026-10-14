@@ -226,3 +226,73 @@ def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
 
     assert status._get_lock_dir().is_absolute()
     assert status._get_lock_dir() == tmp_path / ".local" / "state" / "hermes" / status._LOCKS_DIRNAME
+
+
+def _gateway_record(*, pid: int, create_time, start_time, home: str) -> hr.HostRecord:
+    return hr.HostRecord(
+        role=hr.ROLE_GATEWAY,
+        pid=pid,
+        create_time=create_time,
+        start_time=start_time,
+        host="",
+        port=None,
+        protocol_version=hr.HOST_PROTOCOL_VERSION,
+        token_fingerprint="",
+        profiles=("default",),
+        updated_at="2026-01-01T00:00:00+00:00",
+        home=home,
+    )
+
+
+def test_missing_incarnation_fields_do_not_prove_a_live_pid(host_dir):
+    """``_same_incarnation`` treats ``create_time=None`` as a match, so a recycled pid looks live.
+
+    A record with neither createTime nor startTime therefore cannot prove incarnation — the
+    attach path used that false proof to refuse forever (#138343). Topology already rejected
+    this shape; the shared liveness predicate did not.
+    """
+    record = _gateway_record(
+        pid=os.getpid(), create_time=None, start_time=None, home=str(host_dir),
+    )
+    assert hr.liveness_is_proven(record) is False
+
+
+def test_free_host_lock_means_attach_does_not_treat_a_recycled_pid_as_owner(host_dir, monkeypatch):
+    """Every live publisher holds ``host-gateway.lock`` for its lifetime; the OS releases it on death.
+
+    A leftover record can still name a live pid (recycle, or start-tick collision after reboot).
+    If the flock is free, that pid is not the owner, and ``decide()`` must START instead of the
+    never-expiring transient refuse that wedged supervised units in #138343 / #133744.
+    """
+    from gateway.host_attach import START, decide, invalidate_host_gateway_cache
+    from gateway.status import get_process_start_time
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        record = _gateway_record(
+            pid=child.pid,
+            create_time=hr.process_create_time(child.pid),
+            start_time=get_process_start_time(child.pid),
+            home=str(host_dir),
+        )
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
+        monkeypatch.setattr("gateway.host_attach._identify", lambda home: None)
+        invalidate_host_gateway_cache()
+        home = host_dir / "home"
+        home.mkdir()
+        decision = decide(home)
+        assert decision.outcome == START
+        assert decision.owner is None
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+def test_holding_the_host_lock_keeps_a_matching_incarnation_live(host_dir):
+    """The boot-race window: lock is claimed before the socket binds, so a silent socket stays transient."""
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None
+    assert hr.host_lock_is_held(hr.ROLE_GATEWAY) is True
+    assert hr.liveness_is_proven(record) is True

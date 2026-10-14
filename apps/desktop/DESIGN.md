@@ -51,7 +51,10 @@ one-off at the call site.
   remain in shell chrome. Do not hide a distinct product noun inside an
   unrelated page. A full page renders as a layer ABOVE the session view, not in
   its place: the chat stays mounted beneath it, so returning to a session is a
-  route change, never a remount.
+  route change, never a remount. The way back out of a page stands at the MAIN
+  view's top-left — the zone the page renders in — never over the sidebar; when
+  that zone starts under the window controls (a collapsed or dragged-in
+  sidebar), the control clamps to the right of them.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
   Agents, and Starmap render as `OverlayView` cards and return to the previous
   route on close. Model/session pickers and dialogs layer above the current

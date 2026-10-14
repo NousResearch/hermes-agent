@@ -92,7 +92,7 @@ import {
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { $canGoBack, backVisible, noteViewChange } from '@/store/view-history'
+import { noteViewChange } from '@/store/view-history'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -1235,12 +1235,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const shownTool = shownInMode(interfaceMode)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const canGoBack = useStore($canGoBack)
-  // The back affordance leads the left cluster on every view that is not the
-  // session view — the SAME rule the button reads, so the band reserved here is
-  // always the space the button takes and never one button short.
-  const backToolCount = backVisible(currentView, canGoBack) ? 1 : 0
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount + backToolCount, 0, interfaceMode)
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =

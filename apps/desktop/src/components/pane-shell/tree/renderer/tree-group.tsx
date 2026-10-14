@@ -56,6 +56,7 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
+import { useMainZoneAnchor } from '../main-zone-anchor'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
@@ -376,6 +377,10 @@ export function TreeGroup({
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
   const measuredBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
+  // The zone a page renders in publishes where its band starts, so the way back
+  // out of a page stands at the MAIN view's top-left instead of over the
+  // sidebar — clamped clear of the window controls (main-zone-anchor.ts).
+  useMainZoneAnchor(ref, node.panes.includes('workspace'))
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
   // STATE, not a ref: the menu items (incl. Close's visibility) are JSX

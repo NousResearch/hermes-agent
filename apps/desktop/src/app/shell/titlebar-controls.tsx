@@ -7,8 +7,8 @@ import { hudTargetSessionId } from '@/app/hud/handoff'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
-import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { $mainZoneLeft } from '@/components/pane-shell/tree/main-zone-anchor'
+import { $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -194,6 +194,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
   const canGoBack = useStore($canGoBack)
+  const mainZoneLeft = useStore($mainZoneLeft)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
@@ -312,24 +313,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const view = appViewForPath(location.pathname)
-
-  // Back leads the cluster: it is the way OUT of the view, so it stands before
-  // everything that configures one. `backVisible` is the same rule the wiring's
-  // width reservation reads, so a visible button always has reserved space.
-  const leadingTools: TitlebarTool[] = backVisible(view, canGoBack)
-    ? [
-        {
-          icon: <TitlebarIcon name="arrow-left" />,
-          id: 'back',
-          label: t.titlebar.back,
-          onSelect: () => {
-            if (goBackToPreviousView(navigate)) {
-              triggerHaptic('tap')
-            }
-          }
-        }
-      ]
-    : []
+  // One rule for the affordance, read here and inside BackViewButton: the
+  // overlay branch needs to know whether its lone cluster exists at all.
+  const backShown = backVisible(view, canGoBack)
 
   // Route changes can replace measured clusters without resizing the panels.
   useEffect(() => {
@@ -348,15 +334,36 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // lone button there covers nothing, and it is the way out of an overlay. It
   // carries no `data-titlebar-cluster` marker, so the band-measurement hooks
   // read exactly what they read today.
+  // An overlay CARD starts below the band and covers the zone, so the way out
+  // keeps the window's own left edge there; on a page route it anchors to the
+  // main view instead (see the page cluster below).
   if (isOverlayView(view)) {
-    return leadingTools.length > 0 ? (
+    return backShown ? (
       <div className={leftClusterClass}>
-        {leadingTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
+        <BackViewButton />
       </div>
     ) : null
   }
+
+  // The whole reason this stands apart from the left cluster: it belongs to the
+  // MAIN VIEW — the zone a page renders in — not to the window. So it is
+  // anchored where that zone starts, and clamped clear of the window controls
+  // when the sidebar is too narrow to leave room (main-zone-anchor.ts). No
+  // `data-titlebar-cluster` marker: the band-measurement hooks must not read it
+  // as chrome competing with the page's own band.
+  const backCluster =
+    backShown && mainZoneLeft !== null ? (
+      <div
+        className={cn(
+          titlebarToolClusterClass,
+          'top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+        )}
+        data-titlebar-back=""
+        style={{ left: `${mainZoneLeft}px` }}
+      >
+        <BackViewButton />
+      </div>
+    ) : null
 
   // A contributed full page (`extension`) yields the fixed clusters only while
   // it actually projects chrome into the band — page-mounted `titleBar.*` slots
@@ -365,11 +372,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
-    const pageTools = [...leadingTools, ...leftTools, ...tools].filter(visibleTool)
+    const pageTools = [...leftTools, ...tools].filter(visibleTool)
 
     // Both markers are required even when a page contributes to only one side.
     return (
       <>
+        {backCluster}
         <div className={leftClusterClass} data-titlebar-cluster="left">
           {pageTools.map(tool => (
             <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -387,7 +395,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const visibleLeftTools = [
-    ...leadingTools,
     ...(appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools])
   ].filter(visibleTool)
 
@@ -397,6 +404,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   return (
     <>
+      {backCluster}
       <div aria-label={t.shell.windowControls} className={leftClusterClass} data-titlebar-cluster="left">
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
@@ -433,6 +441,40 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         <Slot area="titleBar.right" />
       </div>
     </>
+  )
+}
+
+/**
+ * The way back out of a view — the same glyph, label and handler wherever it
+ * stands: alone in the band over an overlay card, and in the page cluster
+ * anchored to the main view on a page route. Both hosts render it as-is, so the
+ * affordance cannot drift between them.
+ */
+export function BackViewButton() {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const canGoBack = useStore($canGoBack)
+  const view = appViewForPath(location.pathname)
+
+  if (!backVisible(view, canGoBack)) {
+    return null
+  }
+
+  return (
+    <TitlebarToolButton
+      navigate={navigate}
+      tool={{
+        icon: <TitlebarIcon name="arrow-left" />,
+        id: 'back',
+        label: t.titlebar.back,
+        onSelect: () => {
+          if (goBackToPreviousView(navigate)) {
+            triggerHaptic('tap')
+          }
+        }
+      }}
+    />
   )
 }
 

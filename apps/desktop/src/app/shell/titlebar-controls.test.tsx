@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { setMainZoneLeft } from '@/components/pane-shell/tree/main-zone-anchor'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
@@ -325,9 +326,13 @@ describe('titlebar app-action cluster', () => {
 describe('back affordance', () => {
   const resetHistory = () => $viewHistory.set({ entries: [], index: -1 })
 
-  beforeEach(resetHistory)
+  beforeEach(() => {
+    resetHistory()
+    setMainZoneLeft(null)
+  })
   afterEach(() => {
     resetHistory()
+    setMainZoneLeft(null)
     cleanup()
   })
 
@@ -340,15 +345,30 @@ describe('back affordance', () => {
     expect(screen.queryByLabelText('Back')).toBeNull()
   })
 
-  it('leads the left cluster on a page view and returns to the view it came from', () => {
+  it('leaves a page route to the main view, not to the window cluster', () => {
     noteViewChange('/session-1')
     noteViewChange('/capabilities')
 
     renderControls('/capabilities')
 
-    const back = screen.getByLabelText('Back')
+    // The zone the page renders in owns the affordance (`main-zone-anchor.ts`);
+    // a second one in the window-controls cluster would sit over the sidebar.
+    expect(windowControls()?.querySelector('[aria-label="Back"]') ?? null).toBeNull()
+    expect(screen.queryByLabelText('Back')).toBeNull()
+  })
 
-    expect(within(screen.getByLabelText('Window controls')).getByLabelText('Back')).toBe(back)
+  it('anchors to the main zone and returns to the view it came from', () => {
+    noteViewChange('/session-1')
+    noteViewChange('/capabilities')
+    setMainZoneLeft(412)
+
+    renderControls('/capabilities')
+
+    const back = screen.getByLabelText('Back')
+    const cluster = back.closest('[data-titlebar-back]')
+
+    // The cluster the page's back button stands in is anchored to the main zone.
+    expect(cluster?.getAttribute('style')).toContain('412px')
 
     act(() => back.click())
 

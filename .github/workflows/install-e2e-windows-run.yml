@@ -45,6 +45,10 @@ name: install-e2e windows leg
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How OLD gets installed. Supported: desktop-installer@latest (website exe, AHK-clicked), installer-script (irm | iex install.ps1) and installer-script+desktop (the same with -IncludeDesktop). Declared-but-TODO methods skip.'
         required: true
@@ -100,6 +104,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
@@ -109,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
       - name: Set up driver tools only
         uses: ./.github/actions/setup-pm
         with:
@@ -191,7 +199,7 @@ jobs:
       # in that clone. A shallow checkout cannot serve either need.
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       # Old installers refresh PATH after winget installs ripgrep, dropping the

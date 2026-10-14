@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from scripts.releases import optional_platforms
+from scripts.releases import optional_platforms, stable
 from scripts.releases.draft_warning import draft_body
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
@@ -117,17 +117,26 @@ def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None
     return outstanding[0] if outstanding else None
 
 
+RUN_FIELDS = "databaseId,url,headBranch,headSha,displayTitle,status"
+
+
+def _is_claim_run(row: dict, claim_tag: str, commit: str) -> bool:
+    return stable.is_claim_run(
+        title=row.get("displayTitle"), head_branch=row.get("headBranch"),
+        head_sha=row.get("headSha"), claim_tag=claim_tag, commit=commit)
+
+
 def _attempt_run(execute, repository: str, ref: str, commit: str) -> dict | None:
     """The workflow run for ``ref`` at ``commit``, or None when none is listed."""
     raw = execute([
-        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-        "--branch", ref, "--json", "databaseId,url,headBranch,headSha,status",
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+        "--json", RUN_FIELDS,
     ])
     try:
         rows = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return None
-    return next((row for row in rows if isinstance(row, dict) and row.get("headSha") == commit
+    return next((row for row in rows if isinstance(row, dict) and _is_claim_run(row, ref, commit)
                  and row.get("url") and row.get("databaseId") is not None), None)
 
 
@@ -332,7 +341,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         finally:
             os.unlink(file.name)
         execute([
-            "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
+            "gh", "workflow", "run", WORKFLOW, "--ref", stable.CONTROLLER_BRANCH, "--repo", repository,
             "--raw-field", f"tag={tag}",
         ])
         run_url = _await_run(execute, repository, tag, wait=run_wait, sleep=sleep)
@@ -354,8 +363,8 @@ def _await_run(execute, repository: str, tag: str, *, wait: float, sleep) -> str
     polls = int(wait // RUN_POLL_SECONDS)
     for poll in range(polls + 1):
         run_url = _dispatched_run(execute([
-            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-            "--branch", tag, "--json", "databaseId,url,headBranch,status",
+            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+            "--json", RUN_FIELDS,
         ]), tag)
         if run_url or poll == polls:
             return run_url
@@ -369,7 +378,8 @@ def _dispatched_run(raw: str, tag: str) -> str:
         rows = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return ""
-    matched = [row for row in rows if isinstance(row, dict) and row.get("headBranch") == tag and row.get("url")]
+    matched = [row for row in rows if isinstance(row, dict) and row.get("url")
+               and row.get("displayTitle") == stable.claim_run_title(tag)]
     if len(matched) != 1:
         return ""
     return str(matched[0]["url"])
@@ -442,13 +452,13 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
+def _in_progress_runs(inspect, repository: str, tag: str, commit: str) -> list[dict]:
     """Release runs of ``tag`` that have not completed, as ``gh run list`` rows."""
     rows = json.loads(inspect([
-        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-        "--branch", tag, "--json", "databaseId,url,status", "--limit", "100",
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+        "--json", RUN_FIELDS,
     ]) or "[]")
-    return [row for row in rows if row["status"] != "completed"]
+    return [row for row in rows if row["status"] != "completed" and _is_claim_run(row, tag, commit)]
 
 
 def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote: str,
@@ -458,7 +468,7 @@ def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote
         draft = _release_view(tag, repository, inspect)
         if draft is not None and draft.get("isDraft") is not True:
             raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
-        for run in _in_progress_runs(inspect, repository, tag):
+        for run in _in_progress_runs(inspect, repository, tag, _claim_commit(repo, tag)):
             execute(["gh", "run", "cancel", str(run["databaseId"]), "--repo", repository, "--force"])
             cancelled.append(run["url"])
         if draft is not None:

@@ -1,6 +1,6 @@
 """``/queue``, ``/steer`` and the edit-policy mode on the gateway path, against a fake owner."""
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import acp
 import pytest
@@ -120,3 +120,39 @@ async def test_only_the_owners_edit_policy_can_be_selected():
     with pytest.raises(GatewayClientError, match='acp_edit_policy_mutation_unavailable'):
         await agent.set_session_mode('accept_edits', 's')
     agent._gateway.rpc.assert_not_awaited()
+
+
+def _context_shown(agent):
+    return [(call.kwargs['update'].size, call.kwargs['update'].used)
+            for call in agent._conn.session_update.await_args_list
+            if call.kwargs['update'].session_update == 'usage_update']
+
+
+def _boundary_agent(messages):
+    """/reset and /compress commit, then evict the owner's agent: ``session.stats`` has no window."""
+    async def rpc(method, **params):
+        if method == 'session.resume':
+            return {'execution_generation': 8, 'messages': messages}
+        assert method == 'session.stats', method
+        return {'input_tokens': 0, 'context_tokens': 0, 'context_length': None}
+
+    agent = _agent(rpc)
+    agent._usage['s'] = {'context_length': 200000, 'context_tokens': 150000}
+    agent._mutations = MagicMock(apply=AsyncMock(return_value={'status': 'applied', 'summary': {}}))
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_reset_empties_the_editors_context_indicator():
+    agent = _boundary_agent([])
+    await agent.prompt([acp.text_block('/reset')], 's')
+    assert _context_shown(agent) == [(200000, 0)]
+
+
+@pytest.mark.asyncio
+async def test_compress_shows_the_compressed_transcripts_occupancy():
+    from agent.model_metadata import estimate_request_tokens_rough
+    kept = [{'role': 'user', 'content': 'summary of the earlier turns ' * 40}]
+    agent = _boundary_agent(kept)
+    await agent.prompt([acp.text_block('/compress')], 's')
+    assert _context_shown(agent) == [(200000, estimate_request_tokens_rough(kept))]

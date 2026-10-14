@@ -85,11 +85,27 @@ async def _mutate(agent, client, session_id, command, arg):
         reply = _summary_text(result) or 'No changes from compression.'
     else:
         agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        if operation in {'reset', 'compress'}:
+            await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),
                  'compress': lambda: _summary_text(result) or 'Context compressed.',
                  'reset': lambda: 'Conversation history cleared.'}[operation]()
     agent._mutations.acknowledge(session_id, operation, payload)
     return reply
+
+
+async def _refresh_context(agent, client, session_id, operation):
+    """The editor's context indicator after /reset or /compress. Both are session boundaries that
+    evict the owner's agent, so ``session.stats`` has no window until the next turn builds one: the
+    window shown stays (the model is unchanged) and its occupancy is the new transcript's, nothing
+    after a reset, the compressed messages' estimate (the summary's own figure) after a compress."""
+    stats = await client.rpc('session.stats', session_id=session_id)
+    if stats.get('context_length') is None:
+        from agent.model_metadata import estimate_request_tokens_rough
+        messages = agent._snapshots[session_id].get('messages') or []
+        stats = {**stats, 'context_length': (agent._usage.get(session_id) or {}).get('context_length'),
+                 'context_tokens': estimate_request_tokens_rough(messages) if operation == 'compress' else 0}
+    await agent._project_usage(session_id, agent._editor_id(session_id), stats)
 
 
 def _summary_text(result):

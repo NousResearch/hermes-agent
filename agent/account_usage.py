@@ -493,6 +493,34 @@ def _fetch_codex_account_usage_impl(
                      identity=_codex_snapshot_identity(token), raw=payload)
 
 
+def fetch_codex_usage_for_token(
+    access_token: str, base_url: Optional[str] = None, *, timeout: float = 5.0,
+) -> Optional[AccountUsageSnapshot]:
+    """Probe exactly one subscription token without refreshing or selecting another account."""
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+    try:
+        payload = _get_json(
+            _codex_backend_urls(_codex_pool_route_base_url(base_url))[0],
+            _codex_headers(access_token, None), timeout=timeout,
+        )
+        rate_limit = payload.get("rate_limit") or {}
+        labels = []
+        for key, label in _codex_window_labels(rate_limit):
+            seconds = (rate_limit.get(key) or {}).get("limit_window_seconds")
+            if _is_num(seconds):
+                label = ("Session" if seconds <= 86400 else
+                         "Weekly" if seconds <= 604800 else "Monthly")
+            labels.append((key, label))
+        windows = _usage_windows(rate_limit, tuple(labels), "used_percent", "reset_at")
+        return _snapshot("openai-codex", "pool_usage_api", windows, [],
+                         plan=_title_case_slug(payload.get("plan_type")))
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError, OverflowError) as exc:
+        # Usage is advisory; endpoint failure must leave reactive rotation available.
+        logger.debug("Codex pool usage probe unavailable (%s)", type(exc).__name__)
+        return None
+
+
 def _codex_snapshot_identity(token: str) -> Optional[str]:
     """Trusted per-account identity of a Codex credential: the decoded JWT principal
     (``chatgpt_account_id`` + ``sub``), never the token itself. Two credentials for one

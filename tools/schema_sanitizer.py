@@ -289,7 +289,7 @@ def _normalize_type_array(value: list, out: dict) -> None:
     if len(non_null) == 1:
         out["type"] = non_null[0]
     else:
-        out["anyOf"] = [{"type": t} for t in non_null]
+        out["anyOf"] = [{"type": t, "items": {}} if t == "array" else {"type": t} for t in non_null]
     if has_null:
         out.setdefault("nullable", True)
 
@@ -309,7 +309,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
         if node in _BARE_TYPE_NAMES:
             logger.debug("schema_sanitizer[%s]: replacing bare-string schema %r with {'type': %r}",
                          path, node, node)
-            return _empty_object() if node == "object" else {"type": node}
+            return _empty_object() if node == "object" else ({"type": node, "items": {}} if node == "array" else {"type": node})
         logger.debug("schema_sanitizer[%s]: replacing non-schema string %r "
                      "with empty object schema", path, node)
         return _empty_object()
@@ -373,6 +373,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
         required = out.get("required")
         out["required"] = ([r for r in required if isinstance(r, str) and r in out["properties"]]
                            if isinstance(required, list) else [])
+    # Untyped lists still need an element schema on strict function-call backends.
+    if out.get("type") == "array" and "items" not in out and "prefixItems" not in out:
+        out["items"] = {}
     return out
 
 

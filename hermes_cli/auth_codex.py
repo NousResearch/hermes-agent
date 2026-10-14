@@ -925,14 +925,22 @@ def _pool_codex_credential() -> tuple[str, str]:
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.credential_pool import _exhausted_ttl, _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token = entry.get("access_token")
+            if entry.get("last_status") == "dead":
+                continue
             # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
             # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
+            if reset_at is None and entry.get("last_status") == "exhausted":
+                status_at = _parse_absolute_timestamp(entry.get("last_status_at"))
+                if status_at is None:
+                    continue  # No recovery time: re-auth/reset must clear this status.
+                reset_at = status_at + _exhausted_ttl(
+                    entry.get("last_error_code"), failure_reason=entry.get("failure_reason"))
             in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
                 return token.strip(), _stripped(entry.get("base_url"))

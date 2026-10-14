@@ -1,0 +1,27 @@
+name: session-mirror
+repo: https://github.com/rrrrnmtsu/hermes-session-mirror
+sha: aa5bbd7c732176e5abead503fae86d36b9cd5acb
+description: >-
+  Mirrors Hermes Desktop, CLI and ACP conversations into Discord: one public thread per session in a
+  channel you choose, one post per turn (your message and the reply), so work started on a desktop
+  can be followed from the phone. Posting runs on a background thread and never delays or breaks a turn.
+  Disclosure — register() adds one post_llm_call hook; every turn's text is sent to the Discord REST API
+  (discord.com) using the bot token you configure, after Hermes's redact_for_egress plus a local
+  token-pattern filter; mentions are disabled and tool calls/outputs are not sent. The token is read via
+  agent.secret_scope or the environment; an optional token_command (empty by default, never run unless
+  you set it) can print the token from a password-manager CLI. Session-to-thread ids are stored in
+  $HERMES_HOME/state/session-mirror.json. No other files, telemetry or long-running processes beyond one
+  daemon sender thread.
+maintainer: rrrrnmtsu
+tier: community
+category: platform
+requires_hermes: ">=0.21"
+docs_url: https://github.com/rrrrnmtsu/hermes-session-mirror
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -137,8 +137,8 @@ class DownloadTransportError(DownloadError):
         self.fallback_allowed = (
             self.status in (401, 403, 404, 410) or unresolved or is_transient(cause)
         )
-        refused = edge_block(cause) or "the host refused access"
-        reason = f"{cause}; {refused}" if self.status in (401, 403) else str(cause)
+        refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
+        reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
 
 

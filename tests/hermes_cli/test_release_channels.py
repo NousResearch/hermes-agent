@@ -141,12 +141,13 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert waits == []
 
 
-@pytest.mark.parametrize(("headers", "blocked"), [
-    ({"Server": "cloudflare", "Content-Type": "text/html"}, True),
-    ({"Server": "cloudflare", "cf-cache-status": "DYNAMIC"}, False),
+@pytest.mark.parametrize(("base", "headers", "blocked"), [
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "Content-Type": "text/html"}, True),
+    ("https://hermes-assets.nousresearch.com", {"Server": "cloudflare", "cf-cache-status": "DYNAMIC"}, False),
+    ("https://other-r2.example", {"Server": "cloudflare", "Content-Type": "text/html"}, False),
 ])
-def test_cdn_firewall_403_names_the_network_not_the_install(headers, blocked):
-    """#128295: a Cloudflare block that never reached the bucket must not read as a bare HTTP 403."""
+def test_cdn_firewall_403_names_the_network_not_the_install(base, headers, blocked):
+    """#128295: a Cloudflare block that never reached our bucket must not read as a bare HTTP 403."""
     from email.message import Message
     from urllib.error import HTTPError
     from hermes_cli.release_channels import ChannelError, ChannelReader
@@ -159,8 +160,8 @@ def test_cdn_firewall_403_names_the_network_not_the_install(headers, blocked):
         raise HTTPError(request.full_url, 403, "Forbidden", hdrs, None)
 
     with pytest.raises(ChannelError) as raised:
-        ChannelReader("https://hermes-assets.example", opener=opener).read_bytes("releases/channels/pm-preview.json")
-    assert ("hermes-assets.example's CDN firewall (Cloudflare) refused this network" in str(raised.value)) is blocked
+        ChannelReader(base, opener=opener).read_bytes("releases/channels/pm-preview.json")
+    assert ("CDN firewall (Cloudflare) refused this network" in str(raised.value)) is blocked
     assert str(raised.value).startswith("Channel read unavailable: HTTP 403")
 
 

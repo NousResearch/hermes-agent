@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import urllib.parse
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
@@ -1088,8 +1089,18 @@ def _aggregator_catalog_match(new_model: str, catalog: list) -> str | None:
 
 
 def _normalize_route_url(url: str) -> str:
-    """Comparable form of an endpoint: case and a trailing slash are not route changes."""
-    return str(url or "").strip().rstrip("/").casefold()
+    """Comparable form of an endpoint: scheme/host case and a trailing path slash are not route
+    changes. Path and query values keep their case (RFC 3986 §6.2.2.1 folds only the scheme and
+    host), and the trailing-slash fold touches the path alone, never a query value."""
+    text = str(url or "").strip()
+    parts = urllib.parse.urlsplit(text)
+    if not parts.scheme or not parts.netloc:
+        # Not an absolute URL: no scheme/host to fold; compare the bare string as-is.
+        return text
+    userinfo, sep, hostport = parts.netloc.rpartition("@")
+    netloc = f"{userinfo}@{hostport.lower()}" if sep else hostport.lower()
+    return urllib.parse.urlunsplit(
+        (parts.scheme.lower(), netloc, parts.path.rstrip("/"), parts.query, parts.fragment))
 
 
 def _provider_route_identities(name: str) -> frozenset[str]:

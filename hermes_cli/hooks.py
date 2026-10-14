@@ -11,7 +11,7 @@ def hooks_command(args) -> None:
     """Entry point for ``hermes hooks`` — dispatches to the requested action."""
     sub = getattr(args, "hooks_action", None)
     if not sub:
-        print("Usage: hermes hooks {list|test|revoke|doctor}")
+        print("Usage: hermes hooks {list|accept|test|revoke|doctor}")
         print("Run 'hermes hooks --help' for details.")
         return
     handler = _ACTIONS.get(sub)
@@ -94,6 +94,47 @@ def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
     if mtime_now > mtime_at:
         return True, mtime_at, mtime_now
     return (False if mtime_now == mtime_at else None), mtime_at, mtime_now
+
+
+# ---------------------------------------------------------------------------
+# accept
+# ---------------------------------------------------------------------------
+
+def _cmd_accept(args) -> None:
+    """Record first-use consent for configured hooks without an interactive prompt.
+
+    Non-TTY runs (gateway / cron / CI) cannot answer the first-use prompt, and ``--accept-hooks`` /
+    ``HERMES_ACCEPT_HOOKS`` only take effect on a start-up pass. This writes the same
+    ``(event, command)`` entry the prompt writes, so an operator approves by command instead of
+    hand-editing ``~/.hermes/shell-hooks-allowlist.json``.
+    """
+    from hermes_cli.config import load_config
+    from agent import shell_hooks
+
+    specs = shell_hooks.iter_configured_hooks(load_config())
+    if not specs:
+        print("No shell hooks configured in ~/.hermes/config.yaml — nothing to approve.")
+        return
+    wanted = list(getattr(args, "hook_command", None) or [])
+    if wanted:
+        configured = {s.command for s in specs}
+        for command in wanted:
+            if command not in configured:
+                print(f"No configured hook matches command: {command}")
+        targets = [s for s in specs if s.command in wanted]
+    else:
+        targets = list(specs)
+    recorded = 0
+    for spec in targets:
+        if shell_hooks.allowlist_entry_for(spec.event, spec.command) is not None:
+            print(f"  already allowlisted [{spec.event}] {spec.command}")
+            continue
+        shell_hooks.record_approval(spec.event, spec.command)
+        print(f"  ✓ approved [{spec.event}] {spec.command}")
+        recorded += 1
+    print(f"{recorded} new approval(s) recorded in {shell_hooks.allowlist_path()}")
+    if recorded:
+        print("Currently running CLI / gateway processes pick this up on next restart.")
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +390,7 @@ def _doctor_one(spec, shell_hooks) -> int:
 
 _ACTIONS = {
     "list": _cmd_list, "ls": _cmd_list,
+    "accept": _cmd_accept,
     "test": _cmd_test,
     "revoke": _cmd_revoke, "remove": _cmd_revoke, "rm": _cmd_revoke,
     "doctor": _cmd_doctor,

@@ -598,6 +598,15 @@ def _record_approval(event: str, command: str) -> None:
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, event, command)] + [entry]
 
 
+def record_approval(event: str, command: str) -> None:
+    """Persist first-use consent for ``(event, command)`` — the exact entry the TTY prompt writes.
+
+    Public entry point for ``hermes hooks accept``: a non-TTY run (gateway / cron / CI) has no prompt
+    to answer, so approving a hook must not require hand-editing ``shell-hooks-allowlist.json``.
+    """
+    _record_approval(event, command)
+
+
 def revoke(command: str) -> int:
     """Remove every allowlist entry for ``command``; returns the count. Live callbacks stay registered until restart."""
     with _locked_update_approvals() as data:

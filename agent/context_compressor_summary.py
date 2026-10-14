@@ -37,6 +37,11 @@ class SummaryDispatchMixin:
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
         The main route is complete even with empty fields: an authoritative task keeps compression
         policy but never fills an unset endpoint/key/wire mode from the failed aux route (#130895).
+
+        When fallen back, pin provider/model/base_url/api_mode but **not** ``api_key``. A stored
+        OAuth snapshot can be revoked while the main loop still works (#138469); omitting the key
+        lets ``call_llm`` resolve a live credential from the pool / refresh holders. ``main_runtime``
+        may still carry ``self.api_key`` for custom endpoints that cannot pool-resolve.
         """
         if pinned:
             # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
@@ -52,11 +57,12 @@ class SummaryDispatchMixin:
         from agent.auxiliary_task_config import authoritative_auxiliary_task
 
         call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
+        # Drop any caller-supplied snapshot so a revoked token cannot win over pool resolution (#138469).
+        call_kwargs.pop("api_key", None)
         for key, value in (
             ("provider", self.provider),
             ("model", self.model),
             ("base_url", self.base_url),
-            ("api_key", self.api_key),
             ("api_mode", getattr(self, "api_mode", "")),
         ):
             if value:

@@ -243,6 +243,18 @@ export function reconcilePersistedLiveTurn(
     localStart >= 0 ? previous.slice(0, localStart + 1) : previous
   )
 
+  const anchoredPromptIndex = result.findIndex(
+    message => message.role === 'user' && message.rowId === turn.prompt.rowId
+  )
+
+  if (anchoredPromptIndex >= 0) {
+    result[anchoredPromptIndex] = {
+      ...result[anchoredPromptIndex],
+      ...(inflight.client_message_id ? { clientMessageId: inflight.client_message_id } : {}),
+      ...(inflight.user_timestamp !== undefined ? { timestamp: inflight.user_timestamp } : {})
+    }
+  }
+
   const turnStart = result.length
 
   let pairedLocal = localStart >= 0
@@ -317,12 +329,17 @@ export function reconcilePersistedLiveTurn(
 
     const parts = [textPart(projection.queued.user)]
 
+    const queueEnvelope = {
+      ...(projection.queued.client_message_id ? { clientMessageId: projection.queued.client_message_id } : {}),
+      ...(projection.queued.user_timestamp !== undefined ? { timestamp: projection.queued.user_timestamp } : {})
+    }
+
     // The anchored turn has one next-turn queue slot. Refresh its projection
     // in place; equal correction/optimistic user text is a different occurrence.
     if (queuedIndex >= 0) {
-      result[queuedIndex] = { ...result[queuedIndex], parts }
+      result[queuedIndex] = { ...result[queuedIndex], parts, ...queueEnvelope }
     } else {
-      result.push({ id, role: 'user', parts })
+      result.push({ id, role: 'user', parts, ...queueEnvelope })
     }
   }
 

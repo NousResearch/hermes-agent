@@ -32,6 +32,8 @@ export type ChatMessage = {
   id: string
   role: SessionMessage['role']
   parts: ChatMessagePart[]
+  /** Client-authored identity for an optimistic/durable user-message occurrence. */
+  clientMessageId?: string
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'

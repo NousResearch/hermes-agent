@@ -165,6 +165,11 @@ import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import {
+  appendLiveSessionProjection,
+  dedupeInflightUserAgainstTranscript,
+  removeRepresentedLocalLiveProjection
+} from './live-session-projection'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -178,13 +183,11 @@ import {
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
-  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   cachedSessionRow,
   chatMessageArraysEquivalent,
-  dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
   goneSessionVerdict,
@@ -194,7 +197,6 @@ import {
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
-  removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,

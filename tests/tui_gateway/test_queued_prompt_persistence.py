@@ -9,7 +9,10 @@ stored raw transcript stays [user, assistant, user, assistant] and the turn adop
 instead of writing a duplicate.
 """
 
+import threading
 import types
+
+import pytest
 
 from agent.turn_context import _stage_turn_user_message
 from hermes_state import SessionDB
@@ -105,6 +108,187 @@ def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_pat
         db.close()
 
 
+def test_busy_queue_rolls_back_completely_when_accept_time_persistence_raises(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    session["attached_images"] = ["/tmp/retry.png"]
+    original_queue = {"text": "already accepted", "transport": "ws-old"}
+    session["queued_prompt"] = original_queue
+    client_message_id = "client-disk-full-retry"
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "_persist_queued_user_row", disk_full)
+    try:
+        response = server._handle_busy_submit(
+            "failed", sid, session, "must not run later", "ws-1", queued=True,
+            display_kind=None, user_timestamp=1_790_594_548.125,
+            client_message_id=client_message_id,
+        )
+
+        assert response["error"]["data"]["code"] == "disk_full"
+        assert session.get("queued_prompt") == original_queue
+        assert not session.get("queued_prompts")
+        assert session["attached_images"] == ["/tmp/retry.png"]
+        assert client_message_id not in session.get("_client_message_admissions", {})
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+@pytest.mark.parametrize("client_message_id", ["client-send", None])
+def test_snapshots_carry_exactly_the_send_envelope_their_source_carries(client_message_id):
+    """A reconnecting client rebuilds the live and the queued bubble from these snapshots: each
+    carries the send's timestamp, its client id only when the send had one, and nothing private."""
+    envelope = {"user_timestamp": 1_790_594_548.125,
+                **({"client_message_id": client_message_id} if client_message_id else {})}
+    inflight_session = {}
+    server._start_inflight_turn(inflight_session, "resume me", **envelope)
+    queued_session = {"queued_prompt": {"text": "run next", "transport": "ws-1", **envelope}}
+
+    assert server._inflight_snapshot(inflight_session) == {
+        "user": "resume me", "assistant": "", "streaming": True, **envelope}
+    assert server._queued_prompt_snapshot(queued_session) == {"user": "run next", **envelope}
+
+
+def test_identity_bearing_repeat_of_inflight_prose_is_queued_and_survives_sanitization():
+    """A deliberate re-send of the live prompt's prose is a distinct occurrence (#84417's
+    self-duplicate suppression is for identity-less copies only)."""
+    session = {
+        "inflight_turn": {
+            "user": "same repeated prompt",
+            "display_metadata": {"client_message_id": "client-old"},
+        }
+    }
+
+    envelope = server._enqueue_prompt(
+        session, "same repeated prompt", "ws-1", client_message_id="client-new")
+    server._drop_queued_duplicates_of_inflight_user(session)
+
+    assert session["queued_prompt"] is envelope
+    assert envelope["client_message_id"] == "client-new"
+
+
+def test_retried_queued_client_message_id_returns_original_ack_without_duplicate(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    request = {"id": "first", "method": "prompt.submit", "params": {
+        "session_id": sid,
+        "text": "queued idempotency probe",
+        "queued": True,
+        "submitted_at": 1_790_594_548.125,
+        "client_message_id": "desktop-queued-idempotent",
+    }}
+    try:
+        first = server.handle_request(request)
+        retry = server.handle_request({**request, "id": "retry"})
+
+        assert retry["result"] == first["result"]
+        assert session["queued_prompt"]["client_message_id"] == "desktop-queued-idempotent"
+        assert not session.get("queued_prompts")
+        assert len(db.get_messages_as_conversation(key, include_row_ids=True)) == 1
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_drained_queue_retry_keeps_the_original_queued_ack(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    _busy(session)
+    try:
+        accepted = server._handle_busy_submit(
+            "accept", sid, session, "queued ack probe", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-drained"},
+            user_timestamp=1_790_594_548.125, client_message_id="client-drained",
+        )["result"]
+        assert accepted["status"] == "queued"
+        assert isinstance(accepted.get("user_row_id"), int)
+
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+
+        def begin_drained_turn(_rid, _sid, drained_session, text, **kwargs):
+            server._start_inflight_turn(
+                drained_session, text,
+                user_timestamp=kwargs.get("user_timestamp"),
+                client_message_id=kwargs.get("client_message_id"),
+                submit_ack=kwargs.get("submit_ack"),
+            )
+
+        monkeypatch.setattr(server, "_run_prompt_submit", begin_drained_turn)
+
+        assert server._drain_queued_prompt("drain", sid, session) is True
+        assert session["inflight_turn"]["_submit_ack"] == accepted
+        assert server._client_message_ack(session, "client-drained") == accepted
+        assert accepted["user_row_id"] != session["_submit_user_row"]["_row_id"]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_identity_bearing_busy_prompts_stay_separate_and_keep_their_envelopes(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        first = server._handle_busy_submit(
+            "r1", sid, session, "first queued", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-first"},
+            user_timestamp=1_790_594_548.125, client_message_id="client-first")
+        second = server._handle_busy_submit(
+            "r2", sid, session, "second queued", "ws-1", queued=True, display_kind=None,
+            display_metadata={"client_message_id": "client-second"},
+            user_timestamp=1_790_594_549.25, client_message_id="client-second")
+
+        assert first["result"] == {
+            "status": "queued", "client_message_id": "client-first",
+            "user_timestamp": 1_790_594_548.125,
+            "user_row_id": first["result"]["user_row_id"],
+        }
+        assert second["result"]["client_message_id"] == "client-second"
+        assert [session["queued_prompt"]["text"], session["queued_prompts"][0]["text"]] == [
+            "first queued", "second queued"]
+
+        rows = db.get_messages_as_conversation(
+            key, repair_alternation=False, include_row_ids=True)
+        assert [row["timestamp"] for row in rows] == [1_790_594_548.125, 1_790_594_549.25]
+        assert [row["display_metadata"]["client_message_id"] for row in rows] == [
+            "client-first", "client-second"]
+
+        db.append_message(key, "assistant", content="reply A")
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        dispatched = {}
+        monkeypatch.setattr(
+            server, "_run_prompt_submit",
+            lambda _rid, _sid, _session, _text, **kwargs: dispatched.update(kwargs))
+
+        assert server._drain_queued_prompt("r3", sid, session) is True
+        assert dispatched["display_metadata"] == {"client_message_id": "client-first"}
+        assert dispatched["user_timestamp"] == 1_790_594_548.125
+        active = db.get_messages_as_conversation(
+            key, repair_alternation=False, include_row_ids=True)
+        queued_rows = [row for row in active if row["content"] in {"first queued", "second queued"}]
+        assert [(row["timestamp"], row["display_metadata"]["client_message_id"])
+                for row in queued_rows] == [
+            (1_790_594_548.125, "client-first"),
+            (1_790_594_549.25, "client-second"),
+        ]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tmp_path):
     """The accept-time row lands BEFORE the in-flight turn's assistant rows (raw [uA, uB, aA]);
     the drain must re-place it at the transcript end, so the repaired projection keeps FOUR
@@ -120,6 +304,7 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
         every = db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
         superseded = [r for r in every if "QUEUED-MARKER" in str(r["content"]) and r["_row_id"] != active[0]["_row_id"]]
         assert len(superseded) == 1  # durable history, never deleted
+        assert active[0]["message_uid"] == superseded[0]["message_uid"]
     finally:
         server._sessions.pop(sid, None)
         db.close()
@@ -127,12 +312,20 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
 
 def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
     """A queued prompt is durable at accept: a brand-new SessionDB on the same file (the shape a
-    restarted backend opens) reads the queued message back."""
+    restarted backend opens) reads the queued message back. A client retry after the restart is
+    acknowledged from the row the transcript shows: a drained prompt by its live replacement row
+    ("streaming"); a prompt ``reopen_session`` retired (#125577) not at all, so the retry runs it
+    instead of being told "queued" for a prompt that will never run."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         _busy(session)
+        for client_message_id in ("client-drained", "client-retired"):
+            server._handle_busy_submit(
+                client_message_id, sid, session, f"queued {client_message_id}", "ws-1", queued=True,
+                display_kind=None, display_metadata={"client_message_id": client_message_id},
+                user_timestamp=1_790_594_548.125, client_message_id=client_message_id)
         server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
                                    queued=True, display_kind=None)
         fresh = SessionDB(db_path=tmp_path / "state.db")  # a restarted backend opens a new handle
@@ -140,6 +333,27 @@ def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
             assert any(r["role"] == "user" and "queued text QUEUED-MARKER" in str(r["content"])
                        for r in fresh.get_messages_as_conversation(key, repair_alternation=True,
                                                                    include_row_ids=True))
+        finally:
+            fresh.close()
+
+        with session["history_lock"]:
+            session["running"] = False
+            server._clear_inflight_turn(session)
+        monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args, **_kwargs: None)
+        assert server._drain_queued_prompt("drain", sid, session) is True  # "client-drained" only
+        drained_row_id = session["_submit_user_row"]["_row_id"]
+
+        # The process dies: queue, admissions and in-flight turn are gone with it.
+        fresh = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            fresh.reopen_session(key)
+            monkeypatch.setattr(server, "_get_db", lambda: fresh)
+            restarted = {"history_lock": threading.RLock(), "session_key": key}
+
+            assert server._client_message_ack(restarted, "client-retired") is None
+            assert server._client_message_ack(restarted, "client-drained") == {
+                "status": "streaming", "client_message_id": "client-drained",
+                "user_timestamp": 1_790_594_548.125, "user_row_id": drained_row_id}
         finally:
             fresh.close()
     finally:

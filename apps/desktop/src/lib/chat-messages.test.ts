@@ -114,6 +114,24 @@ describe('toChatMessages', () => {
     expect(JSON.stringify(message.parts)).not.toContain('sigxyz')
   })
 
+  it('hydrates the durable client identity without changing its authored timestamp', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'timestamp identity probe',
+        row_id: 42,
+        timestamp: 1_790_594_548.125,
+        display_metadata: { client_message_id: 'desktop-message-abc' }
+      } as SessionMessage
+    ])
+
+    expect(message).toMatchObject({
+      clientMessageId: 'desktop-message-abc',
+      rowId: 42,
+      timestamp: 1_790_594_548.125
+    })
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;

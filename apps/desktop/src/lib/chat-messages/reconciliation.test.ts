@@ -207,6 +207,21 @@ it('does not re-append a failed turn whose prompt hydration carries under a new 
   ])
 })
 
+it.each([
+  { local: 'without a row id', localRow: {} },
+  { local: 'with a replaced row id', localRow: { rowId: 41 } }
+])('client identity bridges a durable rewrite/replacement (local row $local)', ({ localRow }) => {
+  const merged = preserveLocalAssistantErrors(
+    [row('stored-user', 'user', 'rewritten durable prompt', { clientMessageId: 'client-rewrite', rowId: 57 })],
+    [
+      row('local-user', 'user', 'original prompt', { clientMessageId: 'client-rewrite', ...localRow }),
+      row('local-failure', 'assistant', '', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['stored-user', 'local-failure'])
+})
+
 it('moves a local error onto the durable row it already represents (#119326)', () => {
   const merged = preserveLocalAssistantErrors(
     [

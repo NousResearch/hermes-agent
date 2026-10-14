@@ -223,6 +223,7 @@ describe('ContribWiring background queue: independent remote owner', () => {
     expect.soft(fixture.submitText).toHaveBeenCalledExactlyOnceWith('continue remotely', {
       attachments: [],
       fromQueue: true,
+      sendEnvelope: { clientMessageId: expect.any(String), submittedAt: expect.any(Number) },
       sessionId: 'rt-remote',
       storedSessionId: 'stored-remote'
     })

@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 
 from model_tools import (
     handle_function_call,
@@ -555,3 +556,49 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
         shutil.copy2(other, cfg)
         os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert _tool_defs_cache_key(None, None, False) != before
+
+
+# =========================================================================
+# Empty / no-op payload rejection
+# =========================================================================
+
+class TestNoopPayloadRejection:
+    """A terminal/execute_code call whose payload is empty or a bare no-op (``:``, ``pass``) ran and
+    "succeeded" with no output, so a stalling model never learned its call was empty."""
+
+    @pytest.mark.parametrize(("tool", "args"), [
+        ("terminal", {"command": ":"}),
+        ("terminal", {"command": "  true "}),
+        ("terminal", {"command": "exit 0"}),
+        ("terminal", {"command": ""}),
+        ("terminal", {"command": "   "}),
+        ("terminal", {}),
+        ("execute_code", {"code": ""}),
+        ("execute_code", {"code": "\n  \n"}),
+        ("execute_code", {"code": "pass"}),
+    ])
+    def test_rejected_before_dispatch(self, tool, args):
+        import model_tools
+
+        with patch.object(model_tools, "_execute_tool") as execute:
+            result = handle_function_call(tool, dict(args), task_id="t", skip_pre_tool_call_hook=True)
+
+        execute.assert_not_called()
+        error = json.loads(result)["error"]
+        assert "Re-emit the complete" in error
+        assert tool in error
+
+    @pytest.mark.parametrize(("tool", "args"), [
+        ("terminal", {"command": "ls -la"}),
+        ("terminal", {"command": ": > /tmp/truncate-me"}),
+        ("terminal", {"command": "true && echo ok"}),
+        ("execute_code", {"code": "print(1)"}),
+        ("web_search", {"query": ""}),  # only terminal and execute_code are screened
+    ])
+    def test_real_payload_is_dispatched(self, tool, args):
+        import model_tools
+
+        with patch.object(model_tools, "_execute_tool", return_value='{"ok": true}') as execute:
+            handle_function_call(tool, dict(args), task_id="t", skip_pre_tool_call_hook=True)
+
+        execute.assert_called_once()

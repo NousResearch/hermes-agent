@@ -1123,7 +1123,7 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_z(self, event):
         """Ctrl+Z suspends the process (Unix only)."""
-        from cli import _DIM, _RST, _cprint
+        from cli import _DIM, _RST, _cprint, _disable_focus_reporting, _enable_focus_reporting
         if sys.platform == 'win32':
             _cprint(f"\n{_DIM}{t('cli.tui.suspend_unsupported')}{_RST}")
             event.app.invalidate()
@@ -1135,8 +1135,13 @@ class CLITuiMixin:
         msg = "\n" + t("cli.tui.suspended", agent_name=agent_name)
 
         def _suspend():
-            os.write(1, msg.encode())
-            os.kill(0, _sig.SIGTSTP)
+            _disable_focus_reporting(event.app.output)
+            try:
+                os.write(1, msg.encode())
+                os.kill(0, _sig.SIGTSTP)
+            finally:
+                # Execution continues here only after SIGCONT / fg.
+                _enable_focus_reporting(event.app.output)
         run_in_terminal(_suspend)
 
     def _tui_handle_ctrl_d(self, event):

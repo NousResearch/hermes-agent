@@ -25,7 +25,7 @@ from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
-from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, iter_sync_roots, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         container_base = self._remote_hermes_dir()
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files(container_base),
+            get_sync_roots_fn=lambda: iter_sync_roots(container_base),
             upload_fn=lambda host_path, remote_path: self._vercel_bulk_upload([(host_path, remote_path)]),
             delete_fn=self._vercel_delete,
             bulk_upload_fn=self._vercel_bulk_upload, bulk_download_fn=self._vercel_bulk_download)

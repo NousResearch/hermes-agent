@@ -6,6 +6,11 @@ export const frNotices = {
     message: reason =>
       `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter les scintillements.`
   },
+  previewDraft: {
+    discardTitle: 'Abandonner les modifications non enregistrées ?',
+    discardBody: label => `${label} contient des modifications non enregistrées. Fermer l'onglet les supprime.`,
+    discardConfirm: 'Abandonner les modifications'
+  },
   butterbar: {
     goTo: (index, total) => `Afficher l'avis ${index} sur ${total}`,
     legal: {
@@ -16,4 +21,4 @@ export const frNotices = {
       after: '.'
     }
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'previewDraft' | 'butterbar'>

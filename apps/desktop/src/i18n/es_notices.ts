@@ -6,6 +6,11 @@ export const esNotices = {
     message: reason =>
       `Renderizado por software activo — se detectó una pantalla remota (${reason}). Se desactivó la aceleración por GPU para evitar parpadeos.`
   },
+  previewDraft: {
+    discardTitle: '¿Descartar los cambios sin guardar?',
+    discardBody: label => `${label} tiene cambios sin guardar. Si cierras la pestaña, se perderán.`,
+    discardConfirm: 'Descartar cambios'
+  },
   butterbar: {
     goTo: (index, total) => `Mostrar aviso ${index} de ${total}`,
     legal: {
@@ -16,4 +21,4 @@ export const esNotices = {
       after: '.'
     }
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'previewDraft' | 'butterbar'>

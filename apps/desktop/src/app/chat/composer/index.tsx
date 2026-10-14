@@ -408,6 +408,26 @@ export function ChatBar({
         mode: busyInputMode
       })
 
+  // The hotkey help must show the action that can actually execute, not an
+  // unreachable Steer when the gateway has no steer carrier or is compacting.
+  const enterHintAction = cardWaiting
+    ? 'composer.send'
+    : busyAction === 'queue'
+      ? 'composer.queue'
+      : busyAction === 'steer'
+        ? 'composer.steer'
+        : 'composer.send'
+  const alternateCanSteer =
+    busy &&
+    !cardWaiting &&
+    !compacting &&
+    !blockingPrompt &&
+    !!onSteerHidden &&
+    attachments.length === 0 &&
+    isSteerableText
+  const alternateHintAction =
+    cardWaiting ? 'composer.send' : busyInputMode === 'queue' && alternateCanSteer ? 'composer.steer' : 'composer.queue'
+
   // The submit engine — the orchestration seam where draft + queue meet.
   const { queueDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
@@ -1414,7 +1434,9 @@ export function ChatBar({
             }}
             ref={composerRef}
           >
-            {isHelpHint && <HelpHint busy={busy} />}
+            {isHelpHint && (
+              <HelpHint alternateAction={alternateHintAction} busy={busy} enterAction={enterHintAction} />
+            )}
             {trigger && !argStageEmpty && (
               <ComposerTriggerPopover
                 activeIndex={triggerActive}

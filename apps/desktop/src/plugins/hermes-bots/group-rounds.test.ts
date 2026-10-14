@@ -1648,3 +1648,57 @@ describe('stopGroupThread (#91868/#94569)', () => {
     expect(reply).toBe('finished anyway')
   })
 })
+
+
+// The mention tokenizer used an ASCII-only character class, so a Bot whose
+// handle is CJK, Cyrillic or accented was unreachable — and silently so:
+// `@阿珂` / `@Максим` matched no token at all, while `@José` tokenized down to
+// `Jos`, which no roster form resolves either (`mentionNameForms` was ASCII-only
+// too, and registered `os` for `José`). The ASCII path and the `@everyone` /
+// `@user` keywords must not move.
+describe('non-ASCII mention names', () => {
+  it('resolves a CJK handle to its member', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [
+      { name: '阿珂', title: '' },
+      { name: 'builder', title: '' }
+    ]
+
+    const parsed = rounds.parseGroupChatMentions('@阿珂 请看一下', members)
+
+    expect(parsed.mentioned.has('阿珂')).toBe(true)
+    expect(parsed.mentioned.size).toBe(1)
+  })
+
+  it('resolves an accented and a Cyrillic handle instead of dropping them', async () => {
+    const { rounds } = await loadRoom()
+
+    const members: GroupMember[] = [
+      { name: 'José', title: '' },
+      { name: 'Максим', title: '' }
+    ]
+
+    // On the base both resolve to nobody: the tokenizer stops at the first
+    // non-ASCII character ("@José" -> "Jos") and the ASCII-only roster forms
+    // never contain that token.
+    const jose = rounds.parseGroupChatMentions('@José review this', members)
+
+    expect(jose.mentioned.has('José')).toBe(true)
+    expect(jose.mentioned.size).toBe(1)
+
+    const maxim = rounds.parseGroupChatMentions('@Максим take this', members)
+
+    expect(maxim.mentioned.has('Максим')).toBe(true)
+    expect(maxim.mentioned.size).toBe(1)
+  })
+
+  it('leaves ASCII handles and the @everyone / @user keywords unchanged', async () => {
+    const { rounds } = await loadRoom()
+
+    const parsed = rounds.parseGroupChatMentions('@builder @everyone @user', MEMBERS)
+
+    expect(parsed.everyone).toBe(true)
+    expect([...parsed.mentioned]).toEqual(['builder'])
+  })
+})

@@ -125,9 +125,27 @@ def test_selected_plugin_sync_failure_never_falls_back(tmp_path, monkeypatch):
     assert not (home / "installs").exists()
 
 
-def test_extras_only_refresh_failure_keeps_selection_and_logs_safe_category(tmp_path, monkeypatch):
+@pytest.mark.parametrize("baked_extras, expected_extras, requested_extras", [
+    (None, ["hindsight"], None),
+    (["messaging", "hindsight", "all", "messaging"],
+     ["hindsight", "all", "messaging"], ["all", "messaging"]),
+])
+def test_extras_only_refresh_failure_keeps_selection_and_logs_safe_category(
+    tmp_path, monkeypatch, baked_extras, expected_extras, requested_extras,
+):
     core = tmp_path / "core"
     core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname = "fixture-core"\nversion = "1.0.0"\n'
+        '[project.optional-dependencies]\nhindsight=[]\nall=[]\nmessaging=[]\n',
+        encoding="utf-8",
+    )
+    from pm.lock import Facts
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr("pm.paths.store_root", lambda: store)
+    if baked_extras is not None:
+        Facts(store / "facts.json").record_state("venv", "image-stamp", baked_extras)
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text("memory:\n  provider: builtin\n", encoding="utf-8")
@@ -140,17 +158,24 @@ def test_extras_only_refresh_failure_keeps_selection_and_logs_safe_category(tmp_
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
     monkeypatch.setattr("pm.install.venv_is_current", lambda **kw: False)
 
+    calls = []
+
     def offline(extras=None, **kw):
+        calls.append((extras, kw))
         raise RuntimeError("No solution found at https://user:private-index@index.invalid/simple")
 
     monkeypatch.setattr("pm.client.sync_venv", offline)
     assert recovery.refresh_dependencies(core) == "fallback"
+    assert calls == [(requested_extras, {"explicit": True})]
     recorded = json.loads(facts.read_text())["packages"]["venv"]
     assert recorded["stamp"] == "recorded-stamp"
-    assert recorded["extras"] == ["hindsight"]
+    assert recorded["extras"] == expected_extras
+    assert "environment" not in recorded
     log = home / "logs" / "dependency-refresh.log"
     assert "state=fallback category=resolver-conflict" in log.read_text()
     assert "private-index" not in log.read_text()
+    assert "index.invalid" not in log.read_text()
+    assert "Traceback" not in log.read_text()
     assert log.stat().st_mode & 0o777 == 0o600
 
 

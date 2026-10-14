@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, UTC
 
 # fcntl is Unix-only; Windows uses msvcrt
@@ -3045,6 +3045,10 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    # Token/cost snapshot read from the live agent at run end (feature: per-job token-spend
+    # budget). Empty dict for no_agent script runs or runs that never built an agent; recorded
+    # beside the terminal ledger row, never used to gate this run.
+    usage: dict = field(default_factory=dict)
 
 
 def _save_compose_deliver(
@@ -3200,7 +3204,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome,
+        usage=d.usage)
     return True
 
 
@@ -3299,6 +3304,22 @@ def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token
     elif (record := mark_execution_running(execution_id)) is None:
         return None
     return enter_cron_execution(job, execution_id, record or {})
+
+
+def _capture_run_usage(job: dict, deferred_agents: list) -> dict:
+    """Token/cost snapshot from the live agent a run built (feature: per-job token-spend budget).
+
+    Empty dict for no_agent script runs (no AIAgent) or when capture fails — usage accounting must
+    never break a completed run. Read-only; never gates the run it measures.
+    """
+    if job.get("no_agent"):
+        return {}
+    try:
+        from cron.executions import usage_from_agent
+        return usage_from_agent(deferred_agents[-1] if deferred_agents else None)
+    except Exception:
+        logger.debug("Job '%s': token-usage capture failed", job.get("id"), exc_info=True)
+        return {}
 
 
 def _run_one_job_body(
@@ -3403,6 +3424,9 @@ def _run_one_job_body(
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
         d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        # Snapshot token/cost usage from the live agent BEFORE teardown (feature: per-job
+        # token-spend budget). Read-only; never gates this run.
+        d.usage = _capture_run_usage(job, _deferred_agents)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

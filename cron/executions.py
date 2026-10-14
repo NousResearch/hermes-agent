@@ -92,6 +92,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    # Token/cost accounting (feature: per-job token-spend budget). NULL for no_agent script
+    # jobs (no AIAgent, no tokens) and for runs that never reached the model.
+    add_column_if_missing(conn, "executions", "prompt_tokens", "prompt_tokens INTEGER")
+    add_column_if_missing(conn, "executions", "completion_tokens", "completion_tokens INTEGER")
+    add_column_if_missing(conn, "executions", "total_tokens", "total_tokens INTEGER")
+    add_column_if_missing(conn, "executions", "reasoning_tokens", "reasoning_tokens INTEGER")
+    add_column_if_missing(conn, "executions", "estimated_cost_usd", "estimated_cost_usd REAL")
+    add_column_if_missing(conn, "executions", "cost_status", "cost_status TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -311,20 +319,34 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, usage: Optional[Dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten."""
+    """Write a terminal result once; terminal attempts cannot be rewritten.
+
+    ``usage``: optional token/cost snapshot recorded beside the terminal state (feature: per-job
+    token-spend budget). Keys, all optional: ``prompt_tokens``, ``completion_tokens``,
+    ``total_tokens``, ``reasoning_tokens``, ``estimated_cost_usd``, ``cost_status``. NULL/absent
+    keys stay NULL — no fabrication: a no_agent script run or a run that never reached the model
+    records no usage rather than a zero that would read as "measured and spent nothing".
+    """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
+    usage = usage or {}
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL, delivery_outcome=?,
+                   prompt_tokens=?, completion_tokens=?, total_tokens=?,
+                   reasoning_tokens=?, estimated_cost_usd=?, cost_status=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, delivery_outcome,
+             usage.get("prompt_tokens"), usage.get("completion_tokens"),
+             usage.get("total_tokens"), usage.get("reasoning_tokens"),
+             usage.get("estimated_cost_usd"), usage.get("cost_status"),
+             execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None
@@ -333,6 +355,43 @@ def finish_execution(
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     record_cron_finish(record, delivery_outcome)
     return record
+
+
+def usage_from_agent(agent: Any) -> Dict[str, Any]:
+    """Read a live AIAgent's session token/cost counters into an execution-usage snapshot.
+
+    Best-effort and never fabricates: any counter the agent doesn't expose (no_agent runs have no
+    agent at all; some providers report ``cost_status='unknown'``) is left absent so it persists as
+    NULL, not a zero. Only ``total_tokens`` is back-filled from prompt+completion when the agent
+    didn't carry a total of its own.
+    """
+    if agent is None:
+        return {}
+    def _num(attr: str):
+        val = getattr(agent, attr, None)
+        return int(val) if isinstance(val, (int, float)) and val >= 0 else None
+    prompt = _num("session_prompt_tokens")
+    completion = _num("session_completion_tokens")
+    total = _num("session_total_tokens")
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    usage: Dict[str, Any] = {}
+    if prompt is not None:
+        usage["prompt_tokens"] = prompt
+    if completion is not None:
+        usage["completion_tokens"] = completion
+    if total is not None:
+        usage["total_tokens"] = total
+    reasoning = _num("session_reasoning_tokens")
+    if reasoning is not None:
+        usage["reasoning_tokens"] = reasoning
+    cost = getattr(agent, "session_estimated_cost_usd", None)
+    if isinstance(cost, (int, float)) and cost >= 0:
+        usage["estimated_cost_usd"] = float(cost)
+    cost_status = getattr(agent, "session_cost_status", None)
+    if isinstance(cost_status, str) and cost_status:
+        usage["cost_status"] = cost_status
+    return usage
 
 
 _OWNER_GONE_REASON = (

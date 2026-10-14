@@ -22,6 +22,17 @@ def test_search_returns_at_most_ten_name_matches_and_the_total():
     assert result["total_matches"] == 12
     assert len(result["styles"]) == 10
     assert result["styles"][0] == {"id": "sty_0", "name": "Watercolor 0"}
+    assert "note" not in result
+
+
+def test_search_asks_for_the_managed_model_and_notes_an_empty_library(monkeypatch):
+    monkeypatch.setattr(ig, "_managed_model_plugin", lambda: ("krea", "krea-2-large"))
+    with patch("plugins.image_gen.krea.list_styles", return_value=([], None)) as list_styles:
+        result = json.loads(ig._handle_image_style_search({"query": "water"}))
+
+    list_styles.assert_called_once_with("krea-2-large")
+    assert result["styles"] == [] and result["total_matches"] == 0
+    assert "no styles for the active Krea 2 model" in result["note"]
 
 
 def test_search_reports_an_unavailable_library():

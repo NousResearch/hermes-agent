@@ -911,7 +911,7 @@ _CREATIVE_CONTROL_PARAMS = {
     },
     "style": {
         "type": "string",
-        "description": "A style from Krea's public library, by name or id. Find one with image_style_search.",
+        "description": "A Krea public library style trained for the active model, by name or id. Find one with image_style_search.",
     },
 }
 
@@ -1005,7 +1005,8 @@ _STYLE_SEARCH_LIMIT = 10
 IMAGE_STYLE_SEARCH_SCHEMA = {
     "name": "image_style_search",
     "description": (
-        "Find styles in Krea's public library for image_generate's `style` parameter. "
+        "Find styles in Krea's public library that run on the active Krea 2 model, for image_generate's "
+        "`style` parameter. "
         f"Matches the query against style names; returns at most {_STYLE_SEARCH_LIMIT} matches "
         "and the total count, so narrow the query when there are more."
     ),
@@ -1037,11 +1038,15 @@ def _handle_image_style_search(args, **kw):
     if not query:
         return tool_error("query is required")
     from plugins.image_gen.krea import list_styles
-    styles, error = list_styles()
+    managed = _managed_model_plugin()
+    styles, error = list_styles(managed[1] if managed else None)
     if error is not None:
         return tool_error(f"Krea style library unavailable: {error}")
     matches = [style for style in styles if query in style["name"].lower()]
-    return tool_result(styles=matches[:_STYLE_SEARCH_LIMIT], total_matches=len(matches))
+    result = {"styles": matches[:_STYLE_SEARCH_LIMIT], "total_matches": len(matches)}
+    if not styles:
+        result["note"] = "Krea's public library has no styles for the active Krea 2 model yet."
+    return tool_result(**result)
 
 
 registry.register(

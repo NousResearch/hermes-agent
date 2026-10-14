@@ -579,10 +579,10 @@ class TestLibraryStyles:
     def test_resolves_a_style_by_id_exact_name_or_unique_prefix(self, monkeypatch, style, style_id, error):
         import plugins.image_gen.krea as krea_mod
 
-        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token: (self._CATALOG, None))
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, style_base: (self._CATALOG, None))
 
         resolved, err = krea_mod._resolve_style(
-            style, "https://k", "tok", lambda message, error_type: {"error": message, "error_type": error_type})
+            style, "https://k", "tok", "k2", lambda message, error_type: {"error": message, "error_type": error_type})
 
         assert resolved == style_id
         if error is None:
@@ -596,7 +596,7 @@ class TestLibraryStyles:
         from plugins.image_gen.krea import KreaImageGenProvider
 
         monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
-        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token: (self._CATALOG, None))
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, style_base: (self._CATALOG, None))
         with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()) as mock_post, \
              patch("plugins.image_gen.krea.requests.get", return_value=_poll_response(_completed_job())), \
              patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
@@ -614,15 +614,15 @@ class TestLibraryStyles:
             _poll_response({"items": [{"id": "sty_b", "title": None}], "next_cursor": None}),
         ]
         with patch("plugins.image_gen.krea.requests.get", side_effect=pages) as mock_get:
-            first, err = krea_mod._load_styles("https://krea-gateway.example.com", "tok")
-            second, _ = krea_mod._load_styles("https://krea-gateway.example.com", "tok")
+            first, err = krea_mod._load_styles("https://krea-gateway.example.com", "tok", "k2")
+            second, _ = krea_mod._load_styles("https://krea-gateway.example.com", "tok", "k2")
 
         assert err is None
         assert first == [{"id": "sty_a", "name": "A"}, {"id": "sty_b", "name": ""}]
         assert second is first
         assert mock_get.call_count == 2
         assert mock_get.call_args_list[0].args[0] == "https://krea-gateway.example.com/styles"
-        assert mock_get.call_args_list[0].kwargs["params"] == {"filter": "public", "limit": 1000}
+        assert mock_get.call_args_list[0].kwargs["params"] == {"filter": "public", "model": "k2", "limit": 1000}
         assert mock_get.call_args_list[1].kwargs["params"]["cursor"] == "c2"
         assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer tok"
 
@@ -634,11 +634,26 @@ class TestLibraryStyles:
         resp.raise_for_status.side_effect = req_lib.HTTPError(response=resp)
         resp.json.return_value = {"error": {"message": "down"}}
         with patch("plugins.image_gen.krea.requests.get", return_value=resp):
-            styles, err = krea_mod._load_styles("https://k", "tok")
+            styles, err = krea_mod._load_styles("https://k", "tok", "k2")
 
         assert styles is None
         assert err == "HTTP 503: down"
         assert krea_mod._STYLE_CATALOG == {}
+
+    @pytest.mark.parametrize("model, style_base", [
+        ("krea-2-medium", "k2"),
+        ("krea-2-medium-turbo", "k2"),
+        ("krea-2-large", "k2-large"),
+    ])
+    def test_library_is_asked_for_the_styles_trained_for_the_model(self, monkeypatch, model, style_base):
+        import plugins.image_gen.krea as krea_mod
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        asked = []
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, base: asked.append(base) or ([], None))
+
+        assert krea_mod.list_styles(model) == ([], None)
+        assert asked == [style_base]
 
 
 class TestManagedGateway:

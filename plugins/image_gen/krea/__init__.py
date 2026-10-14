@@ -29,25 +29,27 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.krea.ai"
 
-# ``path`` is Krea's URL segment. ``upscale`` (Enhance pass) is opt-in for every tier:
+# ``path`` is Krea's URL segment; ``style_base`` is the training base a library style must
+# name to run on the model (Krea refuses styles trained for anything else). ``upscale``
+# (Enhance pass) is opt-in for every tier:
 # default-on enhance degraded output quality, and Large is 2K native anyway.
 _MODELS: dict[str, dict[str, Any]] = {
     "krea-2-medium": {
         "display": "Krea 2 Medium", "speed": "~15-25s",
         "strengths": "Illustration, anime, painting, expressive styles. Faster + cheaper.",
         "price": "$0.030 (text) / $0.035 (style refs) / $0.040 (moodboards)",
-        "path": "medium", "upscale": False,
+        "path": "medium", "style_base": "k2", "upscale": False,
     },
     "krea-2-large": {
         "display": "Krea 2 Large", "speed": "~25-60s",
         "strengths": "Photorealism, raw textured looks (motion blur, grain), expressive styles.",
         "price": "$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)",
-        "path": "large", "upscale": False,
+        "path": "large", "style_base": "k2-large", "upscale": False,
     },
     "krea-2-medium-turbo": {
         "display": "Krea 2 Medium Turbo", "speed": "~8-15s",
         "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
-        "price": "$0.015 (text) / $0.0175 (style refs)", "path": "medium-turbo", "upscale": False,
+        "price": "$0.015 (text) / $0.0175 (style refs)", "path": "medium-turbo", "style_base": "k2", "upscale": False,
     },
 }
 KREA_MODEL_IDS = frozenset(_MODELS)
@@ -376,20 +378,23 @@ def _inline_local_style_refs(
     return inlined, None
 
 
-_STYLE_CATALOG: dict[str, list[dict[str, str]]] = {}
+_STYLE_CATALOG: dict[tuple[str, str], list[dict[str, str]]] = {}
 
 
-def _load_styles(base_url: str, auth_token: str) -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
-    """Krea's public style library as ``[{id, name}]``, fetched once per process and endpoint;
-    ``(None, reason)`` when a page could not be read (nothing is cached then)."""
-    cached = _STYLE_CATALOG.get(base_url)
+def _load_styles(
+    base_url: str, auth_token: str, style_base: str
+) -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
+    """Krea's public library styles trained for ``style_base`` as ``[{id, name}]``, fetched once
+    per process, endpoint and base; ``(None, reason)`` when a page could not be read (nothing is
+    cached then)."""
+    cached = _STYLE_CATALOG.get((base_url, style_base))
     if cached is not None:
         return cached, None
     headers = _headers(auth_token, managed=False, json_body=False)
     styles: list[dict[str, str]] = []
     cursor: Optional[str] = None
     for _ in range(_MAX_STYLE_PAGES):
-        params: dict[str, Any] = {"filter": "public", "limit": _STYLE_PAGE_SIZE}
+        params: dict[str, Any] = {"filter": "public", "model": style_base, "limit": _STYLE_PAGE_SIZE}
         if cursor:
             params["cursor"] = cursor
         try:
@@ -410,27 +415,30 @@ def _load_styles(base_url: str, auth_token: str) -> tuple[Optional[list[dict[str
         cursor = page.get("next_cursor")
         if not isinstance(cursor, str) or not cursor:
             break
-    _STYLE_CATALOG[base_url] = styles
+    _STYLE_CATALOG[(base_url, style_base)] = styles
     return styles, None
 
 
-def list_styles() -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
-    """Krea's public style library for the active backend; ``(None, reason)`` without one."""
+def list_styles(model: Optional[str] = None) -> tuple[Optional[list[dict[str, str]]], Optional[str]]:
+    """Krea's public library styles that run on ``model`` (the configured model when ``None``)
+    for the active backend; ``(None, reason)`` without one."""
     endpoint = _resolve_endpoint(_resolve_managed_krea_gateway())
     if endpoint is None:
         return None, "no Krea backend configured"
-    return _load_styles(*endpoint)
+    _, meta = _resolve_model(model)
+    return _load_styles(*endpoint, meta["style_base"])
 
 
 def _resolve_style(
-    value: Any, base_url: str, auth_token: str, fail: ErrorFn
+    value: Any, base_url: str, auth_token: str, style_base: str, fail: ErrorFn
 ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
-    """Library style id for a ``style`` name or id: an id as is, else the name case-insensitively,
-    exact match first, then a unique prefix. ``(None, None)`` when no style was asked for."""
+    """Library style id for a ``style`` name or id among the styles trained for ``style_base``:
+    an id as is, else the name case-insensitively, exact match first, then a unique prefix.
+    ``(None, None)`` when no style was asked for."""
     if not isinstance(value, str) or not value.strip():
         return None, None
     wanted = value.strip()
-    styles, error = _load_styles(base_url, auth_token)
+    styles, error = _load_styles(base_url, auth_token, style_base)
     if error is not None:
         return None, fail(f"Krea style library unavailable: {error}", "api_error")
     if any(style["id"] == wanted for style in styles):
@@ -442,7 +450,8 @@ def _resolve_style(
         return candidates[0]["id"], None
     if not candidates:
         return None, fail(
-            f"No Krea library style named '{wanted}'. Use image_style_search to find one.", "invalid_argument")
+            f"No Krea library style named '{wanted}' for this model. Use image_style_search to find one.",
+            "invalid_argument")
     listed = ", ".join(f"{style['name']} ({style['id']})" for style in candidates[:10])
     return None, fail(f"'{wanted}' matches several Krea styles: {listed}. Pick one by full name or id.", "invalid_argument")
 
@@ -594,7 +603,7 @@ class KreaImageGenProvider(StaticImageGenProvider):
         model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
         fail = error_factory("krea", aspect, model=model_id, prompt=prompt)
-        style_id, err = _resolve_style(kwargs.get("style"), base_url, auth_token, fail)
+        style_id, err = _resolve_style(kwargs.get("style"), base_url, auth_token, meta["style_base"], fail)
         if err is not None:
             return err
         payload = _build_payload(prompt, krea_ar, creativity, style_refs, kwargs, style_id=style_id)

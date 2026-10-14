@@ -427,3 +427,18 @@ def test_the_builds_table_render_cannot_block_the_release_and_has_its_r2_inputs(
     assert str(step.get("continue-on-error")).lower() == "true"  # base YAML loader: a string
     assert {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
             "CLOUDFLARE_R2_BUCKET", "CLOUDFLARE_R2_PUBLIC_URL", "RELEASE_CLAIM_TAG"} <= set(step["env"])
+
+
+@pytest.mark.parametrize("arch", ["arm64", "x64"])
+def test_macos_smoke_runs_without_a_receipt_outside_the_candidate_phase(arch):
+    """Only a candidate stages a receipt; a canary's skipped stage-receipt must not skip the smoke,
+    or its publish gate (which needs every job to succeed) fails on every canary."""
+    smoke = workflow("desktop-bundled-release.yml")["jobs"][f"smoke-darwin-{arch}"]["if"]
+    base = {"validate": {"result": "success", "outputs": {"sha": "a" * 40, f"darwin-{arch}": "true"}},
+            f"build-darwin-{arch}": {"result": "success"}}
+    inputs = {"release-phase": "", "upload_release": True, "skip-tests": False}
+    skipped = {**base, f"stage-receipt-darwin-{arch}": {"result": "skipped"}}
+    staged = {**base, f"stage-receipt-darwin-{arch}": {"result": "success"}}
+    assert gate(smoke, inputs, skipped)
+    assert not gate(smoke, {**inputs, "release-phase": "candidate"}, skipped)
+    assert gate(smoke, {**inputs, "release-phase": "candidate"}, staged)

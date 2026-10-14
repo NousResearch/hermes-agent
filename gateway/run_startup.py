@@ -19,7 +19,7 @@ from contextvars import copy_context
 from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.delivery import looks_like_telegram_private_chat_id
+from gateway.delivery import augment_telegram_dm_topic_direct_id, looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -452,7 +452,11 @@ class GatewayStartupMixin:
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            metadata = (
+                augment_telegram_dm_topic_direct_id(
+                    {"thread_id": row["thread_id"]}, row.get("platform"), row.get("chat_id"), row["thread_id"])
+                if row.get("thread_id") else None
+            )
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:
@@ -1849,7 +1853,11 @@ class GatewayStartupMixin:
             return
         # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        send_metadata = (
+            augment_telegram_dm_topic_direct_id(
+                {"thread_id": dest.effective_thread_id}, dest.platform, str(dest.home.chat_id), dest.effective_thread_id)
+            if dest.effective_thread_id else None
+        )
         try:
             result = await dest.transport.send(
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,

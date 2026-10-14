@@ -146,7 +146,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             logger.warning(
                 "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
                 source_job_id, job.get("id"), job.get("name"),
-                _delivery._cron_job_origin_log_suffix(job),
+                _delivery_origin._cron_job_origin_log_suffix(job),
             )
             continue
         try:
@@ -447,4 +447,5 @@ def _block_and_pause_job(
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched
 from cron import scheduler_delivery as _delivery
+from cron import scheduler_delivery_origin as _delivery_origin
 from cron import scheduler_script as _script

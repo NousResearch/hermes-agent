@@ -548,6 +548,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
                         **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+            from gateway.delivery import augment_telegram_dm_topic_direct_id
+            metadata = augment_telegram_dm_topic_direct_id(metadata, platform_name, chat_id, thread_id)
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,

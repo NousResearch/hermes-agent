@@ -290,6 +290,22 @@ class TestDMTopicSyntheticSendRouting:
         )
         assert result == {"message_thread_id": 42}
 
+    def test_same_direct_topic_and_thread_id_uses_native_direct_route(self):
+        """A native DM-topic ID must not be sent as a forum thread ID."""
+        metadata = {
+            "thread_id": "31189",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "31189",
+            "telegram_reply_to_message_id": "9494",
+        }
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "31189", metadata, reply_to_message_id=9494,
+        )
+        assert result == {
+            "message_thread_id": None,
+            "direct_messages_topic_id": 31189,
+        }
+
     @pytest.mark.asyncio
     async def test_send_synthetic_loop_wakeup_lands_in_topic(self, adapter_factory):
         """send() for an anchor-less synthetic event delivers in-topic."""

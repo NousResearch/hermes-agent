@@ -178,6 +178,7 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_dm_topics import TelegramDMTopicsMixin
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -511,7 +512,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramDMTopicsMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -994,50 +995,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return self._should_pass_unauthorized_dm_for_pairing(source)
 
     @classmethod
-    def _metadata_thread_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[str]:
-        thread_id = (metadata or {}).get("thread_id") or (metadata or {}).get("message_thread_id")
-        return str(thread_id) if thread_id is not None else None
-
-    @classmethod
-    def _metadata_direct_messages_topic_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[str]:
-        topic_id = (metadata or {}).get("direct_messages_topic_id") or (metadata or {}).get("telegram_direct_messages_topic_id")
-        return str(topic_id) if topic_id is not None else None
-
-    @classmethod
-    def _metadata_reply_to_message_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[int]:
-        reply_to = (metadata or {}).get("telegram_reply_to_message_id")
-        return int(reply_to) if reply_to is not None else None
-
-    @staticmethod
-    def _dm_topic_fallback(metadata: Optional[dict[str, Any]]) -> bool:
-        """True for Hermes private-chat topic lanes (``telegram_dm_topic_reply_fallback``)."""
-        return bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
-
-    @classmethod
-    def _is_private_dm_topic_send(cls, chat_id: str, thread_id: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
-        if cls._metadata_direct_messages_topic_id(metadata) is not None:
-            return cls._dm_topic_fallback(metadata) and cls._metadata_reply_to_message_id(metadata) is not None
-        if metadata and metadata.get("telegram_dm_topic_created_for_send"):
-            return False
-        return bool(thread_id) and cls._dm_topic_fallback(metadata)
-
-    @staticmethod
-    def _dm_topic_missing_anchor_error() -> str:
-        return "Telegram DM topic delivery requires a reply anchor; refusing to send outside the requested topic"
-
-    @classmethod
-    def _reply_to_message_id_for_send(
-        cls, reply_to: Optional[str], metadata: Optional[dict[str, Any]] = None, reply_to_mode: Optional[str] = None) -> Optional[int]:
-        if reply_to:
-            return int(reply_to)
-        if cls._dm_topic_fallback(metadata) and reply_to_mode != "off":
-            return cls._metadata_reply_to_message_id(metadata)
-        return None
-
-    @classmethod
     def _thread_kwargs_for_send(
         cls, chat_id: str, thread_id: Optional[str], metadata: Optional[dict[str, Any]] = None,
-        reply_to_message_id: Optional[int] = None, reply_to_mode: Optional[str] = None) -> dict[str, Any]:
+        reply_to_message_id: Optional[int] = None, reply_to_mode: Optional[str] = None,
+        native_direct: bool = True) -> dict[str, Any]:
         """Telegram send kwargs for forum and direct-message topic routing.
 
         Forum topics use ``message_thread_id``; native Bot API DM topics opt in via explicit ``direct_messages_topic_id``
@@ -1052,6 +1013,18 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         DM-topic id does not match the Hermes topic lane and can render the message in a different chat
         lane.
         """
+        # Native Telegram direct-message topics use ``direct_messages_topic_id``.
+        # When the inbound direct-topic id equals the local thread id, that id
+        # is not a forum ``message_thread_id``: sending it through the latter
+        # field is rejected as "thread not found".  Preserve the existing
+        # separate-lane behavior, where the two IDs deliberately differ.
+        # A reply anchor remains independent and is added by the caller.
+        # ``native_direct=False`` (draft sends) keeps the legacy message_thread_id route.
+        direct_kwargs = cls._direct_topic_kwargs(metadata)
+        direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+        if native_direct and direct_kwargs is not None and thread_id is not None and str(direct_topic_id) == str(thread_id):
+            return direct_kwargs
+
         fallback = cls._dm_topic_fallback(metadata)
         if fallback and reply_to_mode != "off":
             if reply_to_message_id is None:
@@ -1067,25 +1040,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     return {"message_thread_id": thread_message_id}
                 return cls._direct_topic_kwargs(metadata) or {}
         elif not fallback:
-            direct_kwargs = cls._direct_topic_kwargs(metadata)
+            # Non-topic send with an explicit native DM-topic id: keep the historical direct route.
             if direct_kwargs is not None:
                 return direct_kwargs
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
-
-    @classmethod
-    def _direct_topic_kwargs(cls, metadata: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-        """Native Bot API DM-topic routing kwargs, or None when no ``direct_messages_topic_id``."""
-        direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
-        if direct_topic_id is None:
-            return None
-        return {"message_thread_id": None, "direct_messages_topic_id": int(direct_topic_id)}
 
     def _thread_kwargs_for_draft(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Routing kwargs for ``sendMessageDraft`` / ``sendRichMessageDraft`` (integer
         ``message_thread_id`` for DM topics — Telegram rejects the raw string ``thread_id``)."""
         kwargs = self._thread_kwargs_for_send(
             chat_id, self._metadata_thread_id(metadata), metadata, reply_to_message_id=self._reply_to_message_id_for_send(None, metadata),
-            reply_to_mode=getattr(self, "_reply_to_mode", None))
+            reply_to_mode=getattr(self, "_reply_to_mode", None), native_direct=False)
         return {k: v for k, v in kwargs.items() if v is not None}
 
     @classmethod
@@ -4795,6 +4760,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 if thread_id is not None:
                     meta: dict[str, Any] = {"thread_id": str(thread_id)}
                     reply_to_id = None
+                    if is_private_chat and str(thread_id) not in {"", "1"}:
+                        # Native DM topics: pair the lane id with direct_messages_topic_id so the
+                        # follow-up routes into the topic (message_thread_id is rejected there).
+                        meta["direct_messages_topic_id"] = str(thread_id)
                     if is_private_chat and prompt_message_id is not None:
                         reply_to_id = send_kwargs["reply_to_message_id"] = int(prompt_message_id)
                         meta["telegram_dm_topic_reply_fallback"] = True

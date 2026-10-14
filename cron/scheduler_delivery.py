@@ -388,23 +388,6 @@ def _seed_cron_channel_session(
         return False
 
 
-def _cron_job_origin_log_suffix(job: dict) -> str:
-    """Secret-free provenance suffix (origin platform/chat/source-IP fields) for security warnings
-    about a bad stored ``context_from`` reference, where no live request object exists."""
-    origin = job.get("origin")
-    if not isinstance(origin, dict):
-        return ""
-    fields = []
-    for key in ("platform", "chat_id", "thread_id", "source_ip", "remote", "forwarded_for"):
-        value = origin.get(key)
-        if value is None:
-            continue
-        text = str(value).replace("\r", " ").replace("\n", " ").strip()
-        if text:
-            fields.append(f"origin_{key}={text[:200]!r}")
-    return " " + " ".join(fields) if fields else ""
-
-
 def _plugin_cron_env_var(platform_name: str) -> str:
     """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
     with contextlib.suppress(Exception):
@@ -1429,7 +1412,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     forum topic vs channel DM topic need OPPOSITE routing) — see ``_is_channel_dm_topic``.
     ``thread_id`` rides in ``route_metadata`` to bypass the router's private-chat anchor rule."""
     from gateway.config import Platform
-    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    from gateway.delivery import _looks_like_int, augment_telegram_dm_topic_direct_id, looks_like_telegram_private_chat_id
     job = t.job
     thread_id = t.thread_id
     is_ambiguous_telegram_topic = (
@@ -1461,6 +1444,12 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
             media_metadata["thread_id"] = thread_id
+
+    # Native Telegram DM topic lanes (private chat, numeric thread): pair the id with
+    # direct_messages_topic_id so the adapter does not send a forum-style message_thread_id
+    # that Bot API rejects ("message thread not found") and then silently drop the lane.
+    augment_telegram_dm_topic_direct_id(route_metadata, t.platform, t.chat_id, thread_id)
+    augment_telegram_dm_topic_direct_id(media_metadata, t.platform, t.chat_id, thread_id)
 
     # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
     # after a restart. See cron/scheduler_delivery_origin.py.

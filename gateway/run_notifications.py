@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.delivery import augment_telegram_dm_topic_direct_id
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -1242,20 +1243,6 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         while len(self._completion_deliveries_delivered) > self._completion_delivery_retention:
             self._completion_deliveries_delivered.popitem(last=False)
 
-    def _completion_identity_seen(self, identity, *, claim: bool = False) -> bool:
-        """True when ``identity`` is inflight or already delivered this gateway lifecycle.
-
-        With ``claim`` an unseen identity is atomically marked inflight (same lock hold).
-        """
-        with self._completion_delivery_lock:
-            seen = (
-                identity in self._completion_deliveries_inflight
-                or identity in self._completion_deliveries_delivered
-            )
-            if claim and not seen:
-                self._completion_deliveries_inflight.add(identity)
-            return seen
-
     async def _classify_completion_target(self, parent_session_id: str, session_key: str = "") -> str:
         """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
         session live or compression-rotated with a live continuation; the resolver still retargets),
@@ -1858,6 +1845,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         if adapter and chat_id:
             with _log_suppressed(logging.ERROR, "Watcher delivery error: %s"):
                 send_meta = {"thread_id": thread_id} if thread_id else None
+                augment_telegram_dm_topic_direct_id(send_meta, platform_name, chat_id, thread_id)
                 await adapter.send(
                     chat_id, message_text, metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                 )

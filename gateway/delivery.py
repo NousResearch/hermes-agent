@@ -100,6 +100,29 @@ def _looks_like_int(value: Optional[str]) -> bool:
         return False
 
 
+def augment_telegram_dm_topic_direct_id(
+    metadata: Optional[dict], platform: Any, chat_id: Optional[str], thread_id: Optional[str]
+) -> Optional[dict]:
+    """Add ``direct_messages_topic_id`` when (platform, chat, thread) is a Telegram private-chat DM topic lane.
+
+    Native Telegram DM topics accept sends only via ``direct_messages_topic_id``; a bare
+    ``message_thread_id`` send is rejected ("message thread not found") and degrades to a thread-less
+    DM message. Callers that know the target should route through this so replies, redeliveries and
+    notifications land in the lane the user is reading. Never overwrites a caller-supplied value;
+    returns *metadata* for chaining.
+    """
+    if metadata is None or thread_id is None:
+        return metadata
+    platform_name = getattr(platform, "value", platform)
+    if str(platform_name or "").lower() != "telegram":
+        return metadata
+    tid = str(thread_id)
+    if tid in {"", "1"} or not _looks_like_int(tid) or not looks_like_telegram_private_chat_id(chat_id):
+        return metadata
+    metadata.setdefault("direct_messages_topic_id", tid)
+    return metadata
+
+
 def _send_result_error(result: Any) -> Optional[str]:
     """Error string of a failed SendResult object / plain result dict ("" if none), or None on success."""
     get = result.get if isinstance(result, dict) else (lambda name, default=None: getattr(result, name, default))
@@ -317,6 +340,9 @@ class DeliveryRouter:
                     )
                 else:
                     send_metadata["telegram_dm_topic_reply_fallback"] = True
+                    # Native DM topic lane: also provide the direct-topic id so the adapter does not
+                    # fall back to a forum-style message_thread_id send, which Bot API rejects.
+                    augment_telegram_dm_topic_direct_id(send_metadata, target.platform, target.chat_id, thread_id)
 
         for retry in (False, True):
             result = await transport.send(target.platform, target.chat_id, content, metadata=send_metadata or None)

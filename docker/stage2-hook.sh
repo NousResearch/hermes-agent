@@ -677,6 +677,7 @@ print("[stage2] collected", len(removed), "unused dependency generations")
     # The child may have printed arbitrary installer output on stdout. Never
     # relay it, even on success; only echo one of our known state tokens.
     case "$dependency_output" in
+        *"[stage2] dependency environment: restored "*) dependency_state=rebuilt ;;
         *"[stage2] dependency environment: rebuilt"*) dependency_state=rebuilt ;;
         *"[stage2] dependency environment: current"*) dependency_state=current ;;
         *"[stage2] dependency environment: fallback"*) dependency_state=fallback ;;

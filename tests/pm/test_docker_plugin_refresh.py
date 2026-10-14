@@ -75,7 +75,7 @@ def test_cold_image_rebuilds_whole_profile_union_once(tmp_path, monkeypatch):
     from pm import install
     from pm.environments import selected_venv, runtime_facts_path
     from pm.lock import Facts
-    monkeypatch.setattr("pm.client.sync_venv", lambda **kw: install.sync_venv(**kw))
+    monkeypatch.setattr("pm.client.sync_venv", lambda extras=None, **kw: install.sync_venv(extras, **kw))
     assert not runtime_facts_path(core).exists()
     assert recovery.refresh_dependencies(core) == "rebuilt"
     selected = selected_venv(core)
@@ -117,7 +117,7 @@ def test_selected_plugin_sync_failure_never_falls_back(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
     monkeypatch.setattr("pm.install.venv_is_current", lambda **kw: False)
-    def reject(**kw):
+    def reject(extras=None, **kw):
         raise RuntimeError("impossible selection")
     monkeypatch.setattr("pm.client.sync_venv", reject)
     with pytest.raises(RuntimeError, match="impossible selection"):
@@ -140,7 +140,7 @@ def test_extras_only_refresh_failure_keeps_selection_and_logs_safe_category(tmp_
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
     monkeypatch.setattr("pm.install.venv_is_current", lambda **kw: False)
 
-    def offline(**kw):
+    def offline(extras=None, **kw):
         raise RuntimeError("No solution found at https://user:private-index@index.invalid/simple")
 
     monkeypatch.setattr("pm.client.sync_venv", offline)

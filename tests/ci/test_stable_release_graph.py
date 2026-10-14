@@ -149,10 +149,15 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     for name in ("candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes).smoke }}", name
-    # The Store submission follows the windows lane.
-    assert jobs["publish-bundles"]["with"]["store"] == "${{ fromJSON(needs.admit.outputs.lanes).windows }}"
+    # Which Windows packages the shared builds make follows the two Windows lanes, and the Store
+    # submission follows the Store lane.
+    store_off = "${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}"
+    for name in ("candidates-win32-arm64", "candidates-win32-x64", "candidates-win32-bundle"):
+        assert jobs[name]["with"]["skip-signed"] == "${{ !fromJSON(needs.admit.outputs.lanes).windows }}", name
+        assert jobs[name]["with"]["skip-store"] == store_off, name
+    assert jobs["publish-bundles"]["with"]["skip-store"] == store_off
     desktop = workflow("desktop-bundled-release.yml")["jobs"]
-    assert "inputs.store" in desktop["stable-store"]["if"]
+    assert "inputs.skip-store" in desktop["stable-store"]["if"]
     assert {"lanes", "jobs"} <= set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate_step = next(step for step in jobs[name]["steps"]
@@ -161,6 +166,18 @@ def test_lane_inputs_reach_the_workflows_they_configure():
                                     "LANES": "${{ needs.admit.outputs.lanes }}"}
         gated = gate_step["run"].split(" gate ", 1)[1].split()
         assert set(gated) <= set(direct_needs(jobs, name)), name
+
+
+def test_a_store_only_build_is_handed_no_signing_variables():
+    """after-pack and electron-builder sign whenever AZURE_SIGN_* are set; the Azure login is skipped
+    with the signed lane, so the build step must see them empty."""
+    jobs = workflow("desktop-bundled-release.yml")["jobs"]
+    step = next(step for step in jobs["build-win32-x64-release"]["steps"] if step.get("name") == "Build and package")
+    azure = {key: value for key, value in step["env"].items() if key.startswith("AZURE_") and key != "AZURE_TOKEN_CREDENTIALS"}
+    assert set(azure) == {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_SIGN_PUBLISHER",
+                          "AZURE_CLIENT_ID", "AZURE_TENANT_ID"}
+    for key, value in azure.items():
+        assert value == f"${{{{ inputs.skip-signed != true && vars.{key} || '' }}}}", key
 
 
 def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):

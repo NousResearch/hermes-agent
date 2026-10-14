@@ -273,3 +273,29 @@ class TestCorruptCacheRowDegradation:
             out = mod.cached_provider_model_ids("openrouter")
         assert out == ["live-model"]
         live.assert_called_once()
+
+
+class TestExternalProcessFingerprint:
+    """Regression for #129094: a CLI rewriting its OAuth file on token refresh must not
+    change the catalog fingerprint of an external_process provider."""
+
+    def test_token_file_rewrite_keeps_fingerprint(self, tmp_path, monkeypatch):
+        import types
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path)))
+        cred = tmp_path / ".claude" / ".credentials.json"
+        cred.parent.mkdir()
+        cred.write_text("{}")
+        profile = types.SimpleNamespace(
+            auth_type="external_process", process_command_env_vars=(), process_args_env_var="")
+        monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+
+        before = mod._credential_fingerprint("ext-proc")
+        cred.write_text('{"token": "rotated"}')
+        os.utime(cred, ns=(1, 1))
+        assert mod._credential_fingerprint("ext-proc") == before
+
+        profile.auth_type = "api_key"
+        assert mod._credential_fingerprint("ext-proc") != before

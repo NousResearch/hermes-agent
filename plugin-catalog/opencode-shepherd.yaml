@@ -6,13 +6,13 @@
 # never fetched by the plugin itself.
 name: opencode-shepherd
 repo: https://github.com/okazakee/opencode-shepherd
-sha: "77a129099939259e7bf3c6b26d7e972c4818d3a3"   # tag v0.2.4
+sha: "207a1443a5daa20e20824d13776794c0057cd539"   # tag v0.2.5
 description: "Watch over opencode sessions from anywhere: alerts for stopped turns, questions and permissions, plus a dependency-free CLI to reply."
 maintainer: okazakee
 tier: community
 category: automation
 requires_hermes: ">=0.21"
-version: "0.2.4"
+version: "0.2.5"
 docs_url: https://github.com/okazakee/opencode-shepherd#readme
 platforms: []
 capabilities:

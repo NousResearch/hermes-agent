@@ -100,7 +100,6 @@ def _release_db(db) -> None:
 
 from .session_titles import _branch_title
 
-
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:

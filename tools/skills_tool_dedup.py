@@ -1,5 +1,5 @@
-"""skill_view repeat-view dedup registry: per-task cache of (skill name, file_path) ->
-(skill file mtime+size). A repeat view of an UNCHANGED file returns a short stub — the earlier
+"""skill_view repeat-view dedup registry: per-task cache of (requested name, file_path) ->
+(source fingerprint, resolved name). A repeat view of an UNCHANGED file returns a short stub — the earlier
 tool result already carries the content verbatim. Cleared via ``reset_skill_view_dedup()`` on
 context compression AND on a committed proactive tool-result prune, because both replace the
 original content with a one-line marker.
@@ -41,10 +41,12 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
         return
     if (fp := _skill_view_fingerprint(payload)) is None:
         return
-    key = (str(payload.get("name") or name), file_path or "")
+    # Different category/plugin lookups can return the same frontmatter name.
+    # Only an identical lookup may reuse this result without resolving again.
+    key = (str(name), file_path or "")
     with _skill_view_tracker_lock:
         cache = _skill_view_tracker.setdefault(str(task_id), {})
-        cache[key] = fp
+        cache[key] = (*fp, str(payload.get("name") or name))
         while len(cache) > _SKILL_VIEW_DEDUP_CAP:  # FIFO eviction
             del cache[next(iter(cache))]
 
@@ -54,31 +56,25 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
     is unchanged on disk; None otherwise."""
     if not task_id:
         return None
-    n = str(name)
+    key = (str(name), file_path or "")
     with _skill_view_tracker_lock:
         if not (cache := _skill_view_tracker.get(str(task_id))):
             return None
-        # Record key is the RESOLVED name; match raw and resolved forms so
-        # 'category/skill' and bare-name views coalesce.
-        for key, (src, mtime_ns, size) in list(cache.items()):
-            rec_name, rec_fp = key
-            if rec_fp != (file_path or "") or (
-                    rec_name != n and not n.endswith("/" + rec_name)
-                    and not rec_name.endswith("/" + n) and n.split(":")[-1] != rec_name):
-                continue
-            try:
-                st = os.stat(src)
-                changed = (st.st_mtime_ns, st.st_size) != (mtime_ns, size)
-            except OSError:
-                changed = True
-            if changed:
-                cache.pop(key, None)
-                return None
-            return json.dumps({
-                "success": True, "status": "unchanged", "name": rec_name,
-                "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,
-                "message": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
-    return None
+        if (record := cache.get(key)) is None:
+            return None
+        src, mtime_ns, size, rec_name = record
+        try:
+            st = os.stat(src)
+            changed = (st.st_mtime_ns, st.st_size) != (mtime_ns, size)
+        except OSError:
+            changed = True
+        if changed:
+            cache.pop(key, None)
+            return None
+        return json.dumps({
+            "success": True, "status": "unchanged", "name": rec_name,
+            "file": file_path or "SKILL.md", "dedup": True, "content_returned": False,
+            "message": _SKILL_VIEW_DEDUP_MESSAGE}, ensure_ascii=False)
 
 
 def reset_skill_view_dedup(task_id: str | None = None) -> None:

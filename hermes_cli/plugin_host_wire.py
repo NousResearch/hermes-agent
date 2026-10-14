@@ -151,6 +151,8 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
         return value
     if "__record__" in value:
         record_name = value["__record__"]
+        if record_name == "MemoryObservationPayload":
+            return value.get("fields")
         fields = decode(value.get("fields") or {}, resolve)
         if record_name == "MemoryObservation":
             from agent.memory_provider import (

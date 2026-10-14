@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -237,6 +237,33 @@ describe('ChatSidebar project entry', () => {
     sessionCount: 0
   }
 
+  // The backend seeds a declared folder as a repo even with 0 sessions, and
+  // both dead-end shapes hinge on that repo: the single-repo drill-in
+  // suppresses its header, and the overview filter drops zero-session autos.
+  const renderEnteredEmptyProject = (extra: { isAuto?: boolean } = {}) => {
+    $projectTree.set([
+      {
+        ...project,
+        ...extra,
+        repos: [
+          {
+            groups: [],
+            id: project.path,
+            label: project.label,
+            path: project.path,
+            sessionCount: 0
+          }
+        ]
+      }
+    ])
+    $projectScope.set(project.id)
+    $sessions.set([])
+    $sessionsLoading.set(false)
+    $sessionsLoadError.set(false)
+
+    renderSidebar('/', 'chat')
+  }
+
   beforeEach(() => {
     setSidebarAgentsGrouped(true)
     $projectTree.set([project])
@@ -272,6 +299,53 @@ describe('ChatSidebar project entry', () => {
     renderSidebar('/', 'chat')
 
     expect($currentCwd.get()).toBe(project.path)
+  })
+
+  it('shows the empty state for a session-less single-folder project', () => {
+    // Counting the seeded folder repo as content suppressed the empty state,
+    // while the single-repo drill-in also suppresses its repo header — the
+    // body rendered blank: no sessions, no way forward.
+    renderEnteredEmptyProject()
+
+    expect(screen.getByText('All projects')).toBeTruthy()
+    expect(screen.getByText('No sessions yet')).toBeTruthy()
+  })
+
+  it('enters a session-less auto project instead of dropping back to the overview', () => {
+    // Zero-session auto projects stay out of the overview list (noise control),
+    // but selecting one — the palette still offers "Open <project>" — must
+    // enter its drill-in; the scoped lookup used to miss and scope the user out.
+    renderEnteredEmptyProject({ isAuto: true })
+
+    expect(screen.getByText('All projects')).toBeTruthy()
+    expect(screen.getByText('No sessions yet')).toBeTruthy()
+  })
+
+  it('keeps locally discovered worktree lanes for a session-less project', async () => {
+    // A successful local git probe injects visual lanes — the home checkout and
+    // linked worktrees — with their own new-session actions; the empty state
+    // must not swallow them.
+    const originalDesktop = window.hermesDesktop
+    window.hermesDesktop = {
+      ...window.hermesDesktop,
+      git: {
+        ...window.hermesDesktop?.git,
+        worktreeList: async () => [
+          { branch: 'main', detached: false, isMain: true, locked: false, path: project.path },
+          { branch: 'feature', detached: false, isMain: false, locked: false, path: `${project.path}-feature` }
+        ]
+      }
+    } as unknown as typeof window.hermesDesktop
+
+    try {
+      renderEnteredEmptyProject()
+
+      await waitFor(() => expect(screen.getByRole('button', { name: 'New session in feature' })).toBeTruthy())
+      expect(screen.getByRole('button', { name: 'New session in main' })).toBeTruthy()
+      expect(screen.queryByText('No sessions yet')).toBeNull()
+    } finally {
+      window.hermesDesktop = originalDesktop
+    }
   })
 })
 

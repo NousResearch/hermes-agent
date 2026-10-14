@@ -980,13 +980,12 @@ export function ChatSidebar({
   )
 
   // ── Projects: the single top-level model (authoritative, from the backend) ──
-  // `projects.tree` already unifies explicit projects + auto repos and folds
-  // linked worktrees under their main repo. The desktop only layers local view
-  // state on top: dismissed auto-projects, persisted repo/lane order, and the
-  // overview sort. Membership is the backend tree's — never re-derived here.
+  // `projects.tree` unifies explicit projects + auto repos and folds linked
+  // worktrees under their main repo; membership stays the backend tree's — local
+  // state layers on dismissed autos, repo/lane order, sort, and the entered scope.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects), projectScope)
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -1026,6 +1025,7 @@ export function ChatSidebar({
   }, [
     projectTree,
     dismissedAutoProjects,
+    projectScope,
     orderRepos,
     activeProjectId,
     projectFilter,

@@ -194,6 +194,24 @@ interface SidebarSessionsSectionProps {
   card?: boolean
 }
 
+// A project counts as content only while something renders for it: multi-repo
+// projects show per-repo headers (the row that starts a session in that
+// folder), existing lanes survive filtering, and a successful local probe
+// injects visual worktree lanes — with none of those, the single-repo drill-in
+// suppresses its repo header and a session-less single-folder project renders a
+// blank body, so treat it as empty and show the empty state instead.
+function hasRenderableProjectContent(
+  project: SidebarProjectTree | undefined,
+  repoWorktrees?: Record<string, HermesGitWorktree[]>
+): boolean {
+  return Boolean(
+    project &&
+      (project.sessionCount > 0 ||
+        project.repos.length > 1 ||
+        project.repos.some(repo => repo.groups.length > 0 || (repoWorktrees?.[repo.path ?? '']?.length ?? 0) > 0))
+  )
+}
+
 export function SidebarSessionsSection({
   label,
   open,
@@ -254,11 +272,7 @@ export function SidebarSessionsSection({
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
 
-  // Declared repos are content even before their first session: each repo header owns the action that starts
-  // a session in that folder. Lanes likewise survive filtering and must still render.
-  const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.length > 0)
-  )
+  const hasProjectContent = hasRenderableProjectContent(projectContent, projectRepoWorktrees)
 
   const showEmptyState =
     forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)

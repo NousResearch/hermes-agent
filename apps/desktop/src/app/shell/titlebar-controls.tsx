@@ -317,10 +317,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // overlay branch needs to know whether its lone cluster exists at all.
   const backShown = backVisible(view, canGoBack)
 
-  // Route changes can replace measured clusters without resizing the panels.
+  // Route changes can replace measured clusters without resizing the panels,
+  // and the anchored back control is a measurement input for the zone's own
+  // band (panel-titlebar.ts reserves its width): it mounts late — once
+  // main-zone-anchor.ts publishes where the zone starts — and moves with the
+  // zone, so the band has to re-read it.
   useEffect(() => {
     window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
-  }, [location.pathname, pageOwnsTitlebar])
+  }, [location.pathname, pageOwnsTitlebar, backShown, mainZoneLeft])
 
   const leftClusterClass = cn(
     titlebarToolClusterClass,

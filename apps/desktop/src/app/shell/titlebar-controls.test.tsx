@@ -377,6 +377,32 @@ describe('back affordance', () => {
     expect(screen.queryByLabelText('Back')).toBeNull()
   })
 
+  it('announces its chrome when the anchored control arrives, so the band reserves it', () => {
+    noteViewChange('/session-1')
+    noteViewChange('/capabilities')
+
+    const listener = vi.fn()
+    window.addEventListener(TITLEBAR_CHROME_CHANGED_EVENT, listener)
+
+    try {
+      renderControls('/capabilities')
+
+      // The control is anchored to the main zone, whose start is measured after
+      // the first paint — so the zone's own band has to hear about it arriving,
+      // or it never reserves the width the button stands on (and the band's
+      // remaining space is a native drag region that swallows its clicks).
+      expect(screen.queryByLabelText('Back')).toBeNull()
+
+      listener.mockClear()
+      act(() => setMainZoneLeft(412))
+
+      expect(screen.queryByLabelText('Back')).not.toBeNull()
+      expect(listener).toHaveBeenCalled()
+    } finally {
+      window.removeEventListener(TITLEBAR_CHROME_CHANGED_EVENT, listener)
+    }
+  })
+
   it('renders alone in the titlebar band on an overlay, without claiming a cluster', () => {
     noteViewChange('/session-1')
     noteViewChange('/settings')

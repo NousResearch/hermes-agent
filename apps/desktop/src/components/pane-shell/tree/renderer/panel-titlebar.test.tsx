@@ -71,6 +71,42 @@ describe('usePanelTitlebar', () => {
     expect(element.style.getPropertyValue('--panel-titlebar-left')).toBe('86px')
   })
 
+  it("reserves the way back out of a page, which stands at the zone's left edge", () => {
+    const element = document.createElement('div')
+    element.getBoundingClientRect = () => rect(500, 1000)
+    document.body.append(element)
+    const back = document.createElement('div')
+    back.dataset.titlebarBack = ''
+    back.getBoundingClientRect = () => rect(500, 24)
+    document.body.append(back)
+
+    renderHook(() => usePanelTitlebar({ current: element }, true, false))
+
+    // The cluster sits far LEFT of this zone, so none of its own band is
+    // reserved for the window controls — but the button anchored to this zone's
+    // left edge must clear it too (24px + the 12px gap). The band's flexible
+    // remainder is a native drag region (the drag handle, or a titlebar tab
+    // strip), and a drag region wins hit-testing over anything painted above it,
+    // so a button inside it is visible and dead.
+    expect(element.style.getPropertyValue('--panel-titlebar-left')).toBe('36px')
+  })
+
+  it('leaves a zone that starts right of the back control alone', () => {
+    const element = document.createElement('div')
+    element.getBoundingClientRect = () => rect(0, 1000)
+    document.body.append(element)
+    const back = document.createElement('div')
+    back.dataset.titlebarBack = ''
+    back.getBoundingClientRect = () => rect(500, 24)
+    document.body.append(back)
+
+    renderHook(() => usePanelTitlebar({ current: element }, true, false))
+
+    // The button belongs to a zone further right: this one keeps exactly its
+    // window-controls reservation (cluster right 160 + 12).
+    expect(element.style.getPropertyValue('--panel-titlebar-left')).toBe('172px')
+  })
+
   it('ignores connection updates that leave the chrome where it is', () => {
     const element = document.createElement('div')
     element.getBoundingClientRect = () => rect(0, 1000)

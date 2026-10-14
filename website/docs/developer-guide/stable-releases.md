@@ -19,15 +19,20 @@ files on `main`.
    version line. A cut whose next version already has a final `vX.Y.Z` tag is
    refused until that publication finishes.
 2. Push an annotated `rc.<N>-vX.Y.Z` attempt ref atomically, create one
-   non-prerelease GitHub draft on it, and dispatch `Stable Release` on that exact
-   ref. The attempt number comes from the existing attempt refs of that version.
+   non-prerelease GitHub draft on it, and dispatch `Stable Release` from the
+   default branch with that ref as its `tag` input. The attempt number comes from the existing attempt refs of that version.
    The claim message binds its commit, attempt number, autopublish policy,
    `skipBundles`, `skipTests`, `includeMacosIntel` and `includeTermux` flags, and
    one monotonically allocated epoch. That epoch is the release date and native
    packaging clock for every matrix leg and retry. One outstanding attempt, of
    any version, blocks a new `release`.
-3. Admit the exact remote annotated tag-object SHA, peeled commit, `GITHUB_REF`,
-   `GITHUB_SHA`, checked-out `HEAD`, and ancestry on `origin/main`.
+3. Admit the exact remote annotated tag-object SHA, its peeled commit, and that
+   commit's ancestry on `origin/main`. The run itself must be the default-branch
+   dispatch of `Stable Release`. Its workflows and release scripts come from
+   `main`, so its Actions caches share one scope across attempts. `GITHUB_SHA` is
+   `main`'s tip, never the commit under test. Every lane that tests or builds the
+   payload is passed the admitted commit, and the commit-threading lint in
+   `tests/ci/test_stable_release_commit_threading.py` enforces that.
 4. Run the whole source, Docker, Nix, PM bundle, install/update, Windows,
    signed-package, and native-upgrade acceptance graph (plus macOS Intel and
    Termux when the claim opted into them).
@@ -213,7 +218,7 @@ writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
 
-Do not manually dispatch `Stable Release` from a final tag. Recovery keeps the
+Do not manually dispatch `Stable Release` with a final tag. Recovery keeps the
 original claim ref, object SHA, commit, draft database ID, autopublish policy,
 and skip flags.
 

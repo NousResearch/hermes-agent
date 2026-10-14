@@ -724,6 +724,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_active_null
 -- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.
 CREATE INDEX IF NOT EXISTS idx_messages_session_uid
     ON messages(session_id, message_uid) WHERE active = 1;
+-- Display lineage must find archived generations without scanning the transcript.
+CREATE INDEX IF NOT EXISTS idx_messages_display_uid
+    ON messages(session_id, message_uid) WHERE message_uid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer

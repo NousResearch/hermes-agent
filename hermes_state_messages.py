@@ -22,6 +22,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_display_provenance import inherit_display_provenance, recover_display_rows
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
@@ -840,6 +841,7 @@ class SessionMessagesMixin:
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
+            inherit_display_provenance(self, conn, session_id, messages)
             kept = kept_tool_calls = 0
             if archive_dropped:
                 # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
@@ -1019,6 +1021,7 @@ class SessionMessagesMixin:
                 if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
                     raise SessionCompressionInProgressError(
                         f"Compression lease for {session_id!r} lost before commit; refusing to publish a stale compaction")
+            inherit_display_provenance(self, conn, session_id, compacted_messages)
             patch = model_config_patch is not None
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
@@ -1436,6 +1439,8 @@ class SessionMessagesMixin:
             rows = self._read_all(sql, params)
             if latest:
                 rows.reverse()
+        if include_compacted:
+            rows = recover_display_rows(self, rows, session_id)
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
     def find_pr_url_messages(self, session_ids: list[str]) -> list[dict[str, Any]]:
@@ -1528,9 +1533,9 @@ class SessionMessagesMixin:
         cannot merge with an original user turn; the stored transcript is never mutated."""
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            self._active_clause(include_inactive, include_compacted), with_session_id=include_compacted)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows)
+            rows = recover_display_rows(self, self._dedupe_display_generations(rows), session_id)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)

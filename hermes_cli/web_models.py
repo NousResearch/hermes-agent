@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StringConstraints, field_validator, model_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -234,11 +234,37 @@ class DebugShareRequest(BaseModel):
 class TTSSpeakRequest(BaseModel):
     text: str
 
+_LiveUUID = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")]
+_LiveGeneration = Annotated[int, Field(strict=True, ge=0)]
+
+
+class VoiceLiveCancelRequest(BaseModel):
+    """Cancel only an authenticated owner's operation, never a provider session ID."""
+    model_config = ConfigDict(extra="forbid")
+    operation_id: _LiveUUID
+    client_instance_id: _LiveUUID
+    owner_generation: _LiveGeneration
+
+
+class VoiceLiveKeepaliveRequest(VoiceLiveCancelRequest):
+    """Renew the same authenticated operation owner; no provider IDs or offer data."""
+
+
 class VoiceLiveSessionRequest(BaseModel):
-    """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
-    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    """Byte-exact SDP/history; legacy callers omit ALL three admission identity fields."""
+    model_config = ConfigDict(extra="forbid")
     sdp: str
     history: Optional[list[dict[str, Any]]] = None
+    operation_id: Optional[_LiveUUID] = None
+    client_instance_id: Optional[_LiveUUID] = None
+    owner_generation: Optional[_LiveGeneration] = None
+
+    @model_validator(mode="after")
+    def complete_identity(self):
+        fields = {"operation_id", "client_instance_id", "owner_generation"}
+        if fields & self.model_fields_set and any(getattr(self, field) is None for field in fields):
+            raise ValueError("Send operation_id, client_instance_id and owner_generation together")
+        return self
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease

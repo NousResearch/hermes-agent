@@ -905,18 +905,32 @@ export async function findRemoteOwnerProfileForSession(
     return null
   }
 
-  const params = new URLSearchParams()
-  params.set('limit', '200')
-  params.set('offset', '0')
+  const scanProfile = async (profile: string): Promise<null | string> => {
+    // The backend caps /api/sessions page size at 100 (`le=100`): a limit=200
+    // probe is rejected with 422, which used to abort the whole owner sweep and
+    // strand the open on the local backend. Page through 100-row windows until
+    // the id is found or the remote list is exhausted.
+    const PAGE = 100
 
-  const matches = await Promise.all(
-    remoteProfiles.map(async profile => {
+    for (let offset = 0; ; offset += PAGE) {
+      const params = new URLSearchParams()
+      params.set('limit', String(PAGE))
+      params.set('offset', String(offset))
+
       const list = await listForProfile(profile, params).catch(() => null)
       const rows = Array.isArray(list?.sessions) ? (list.sessions as Array<Record<string, unknown>>) : []
 
-      return rows.some(row => row?.id === sessionId || row?._lineage_root_id === sessionId) ? profile : null
-    })
-  )
+      if (rows.some(row => row?.id === sessionId || row?._lineage_root_id === sessionId)) {
+        return profile
+      }
+
+      if (rows.length < PAGE) {
+        return null
+      }
+    }
+  }
+
+  const matches = await Promise.all(remoteProfiles.map(scanProfile))
 
   return matches.find(profile => profile !== null) ?? null
 }
@@ -939,7 +953,11 @@ function recencyOf(row: any): number {
 }
 
 function sortedWindow(rows: unknown[], key: (row: any) => number, offset: number, limit: number): unknown[] {
-  return mergeProfileSessionWindow([...rows].sort((a, b) => key(b) - key(a)), offset, limit)
+  return mergeProfileSessionWindow(
+    [...rows].sort((a, b) => key(b) - key(a)),
+    offset,
+    limit
+  )
 }
 
 function failedProfiles(errors: SessionScanError[]): Record<string, { failed: true; retry: true; error: string }> {
@@ -969,7 +987,7 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
   let first: any
   const rows: unknown[] = []
 
-  for (let offset = 0; ; ) {
+  for (let offset = 0; ;) {
     const params = new URLSearchParams(url.searchParams)
     const limit = Math.min(PROFILE_SESSION_PAGE_CAP, Math.max(0, want - offset))
     params.set('limit', String(limit))
@@ -992,7 +1010,10 @@ async function allProfilesSessionList(url: URL, profiles: readonly string[], fet
   const limit = Math.max(0, Number(url.searchParams.get('limit') ?? 20) || 0)
   const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
   const created = url.searchParams.get('order') === 'created'
-  const reads = await readEachProfile(profiles, profile => readProfileSessionRows(url, profile, limit + offset, fetchPage))
+
+  const reads = await readEachProfile(profiles, profile =>
+    readProfileSessionRows(url, profile, limit + offset, fetchPage)
+  )
 
   const rows: unknown[] = []
   const totals: Record<string, number> = {}
@@ -1029,7 +1050,11 @@ async function allProfilesSidebar(url: URL, profiles: readonly string[], fetchPa
   const cap = (key: string, fallback: number) =>
     Math.min(Math.max(Number(url.searchParams.get(key)) || fallback, 1), PROFILE_SESSION_PAGE_CAP)
 
-  const caps = { recents: cap('recents_limit', 20), cron: cap('cron_limit', 50), messaging: cap('messaging_limit', 100) }
+  const caps = {
+    recents: cap('recents_limit', 20),
+    cron: cap('cron_limit', 50),
+    messaging: cap('messaging_limit', 100)
+  }
 
   const reads = await readEachProfile(profiles, profile => {
     const params = new URLSearchParams(url.searchParams)
@@ -1089,7 +1114,12 @@ async function allProfilesSidebar(url: URL, profiles: readonly string[], fetchPa
   const live = profiles.filter(profile => !(profile in storage))
 
   if (live.length && !contributed && live.every(profile => failed.some(err => err.profile === profile))) {
-    const failedSlice = (extra = {}) => ({ failed: true, retry: true, errors: failed.map(err => ({ ...err })), ...extra })
+    const failedSlice = (extra = {}) => ({
+      failed: true,
+      retry: true,
+      errors: failed.map(err => ({ ...err })),
+      ...extra
+    })
 
     return {
       recents: failedSlice({ profiles_truncated: {}, profiles_usage: {} }),
@@ -1170,7 +1200,9 @@ export function isAllProfilesAggregateRequest(method: string | undefined, path: 
   return (
     (verb === 'GET' && pathname === '/api/profiles/projects/tree') ||
     (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests') ||
-    (verb === 'GET' && pathname === '/api/cron/jobs' && (url.searchParams.get('profile') || 'all').trim().toLowerCase() === 'all')
+    (verb === 'GET' &&
+      pathname === '/api/cron/jobs' &&
+      (url.searchParams.get('profile') || 'all').trim().toLowerCase() === 'all')
   )
 }
 
@@ -1334,7 +1366,9 @@ export async function fetchAllProfilesAggregatePerProfile(
   })
 
   if (!reads.some(read => !('error' in read))) {
-    throw new Error(reads.map(read => ('error' in read ? `${read.profile}: ${read.error}` : '')).join('; ') || 'No profiles to read')
+    throw new Error(
+      reads.map(read => ('error' in read ? `${read.profile}: ${read.error}` : '')).join('; ') || 'No profiles to read'
+    )
   }
 
   const pathname = url.pathname.replace(/\/+$/, '')

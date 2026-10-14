@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Hermes-opdragte**\n"
     skill_header: "\n⚡ **Vaardigheidsopdragte** ({count} aktief):"
     more_use_commands: "\n... en nog {count}. Gebruik `/commands` vir die volledige bladsy-lys."
+    filtered_by: "\nGefilter volgens '{query}'. Voer `/help` uit vir die volledige lys."
   insights:
     invalid_days: "Ongeldige --days waarde: {value}"
     error: "Fout met genereer van insigte: {error}"

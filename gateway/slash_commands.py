@@ -606,7 +606,8 @@ class GatewaySlashCommandsMixin(
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         return self._telegramized_command_reply(
-            event, _execute("help", options=self._catalog_options(event)).text)
+            event, _execute("help", args=event.get_command_args(),
+                            options=self._catalog_options(event)).text)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         # Page size is a surface parameter (Telegram messages are shorter).

@@ -105,22 +105,59 @@ def _skill_commands() -> dict:
         return {}
 
 
+def _skill_collision_notes() -> list[str]:
+    """One line per installed skill that gets no command because a built-in uses its name."""
+    try:
+        from agent.skill_commands import skill_command_collision_note
+        from tools.skills_tool import _find_all_skills
+        names = sorted(s["name"] for s in _find_all_skills())
+        return [f"⚠ {note}" for note in filter(None, map(skill_command_collision_note, names))]
+    except Exception:
+        return []
+
+
+def _skill_rows(skill_cmds: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    return [f"`{cmd}` — {skill_cmds[cmd]['description']}" for cmd in sorted(skill_cmds)]
+
+
 def _exec_help(ctx: CommandContext) -> CommandReply:
-    """Core gateway /help body (pre platform mention decoration)."""
-    from hermes_cli.commands import gateway_help_lines
+    """Core gateway /help body (pre platform mention decoration).
+
+    The arguments follow the CLI's ``/help``. ``skills`` (or ``skill``) lists every skill command
+    and the skills that a built-in shadows; a gated non-admin gets neither. Any other text keeps
+    only the commands and skills whose name or description contains it (``help_query_matches``).
+    """
+    from hermes_cli.commands import gateway_help_lines, help_query_matches
     # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
     # policy lets this user run; skill commands are hidden too since the gate refuses them.
     allowed = ctx.options.get("allowed_commands")
-    lines = [t("gateway.help.header"), *gateway_help_lines(allowed)]
     skill_cmds = _skill_commands() if allowed is None else {}
+    query = (ctx.args or "").strip()
+
+    if query.lower() in ("skills", "skill"):
+        lines = ([t("gateway.help.skill_header", count=len(skill_cmds)), *_skill_rows(skill_cmds)]
+                 if skill_cmds else [t("cli.help.no_skill_commands")])
+        if allowed is None:
+            lines.extend(_skill_collision_notes())
+        return CommandReply("\n".join(lines), format="markdown")
+
+    if query:
+        lines = [t("gateway.help.header"), *gateway_help_lines(allowed, query=query)]
+        matched_skills = {cmd: info for cmd, info in skill_cmds.items()
+                          if help_query_matches(query, cmd, info["description"])}
+        if matched_skills:
+            lines.extend(["", t("gateway.commands.skill_header"), *_skill_rows(matched_skills)])
+        lines.append(t("gateway.help.filtered_by", query=query))
+        return CommandReply("\n".join(lines), format="markdown")
+
+    lines = [t("gateway.help.header"), *gateway_help_lines(allowed)]
     try:
         if skill_cmds:
             lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
-            sorted_cmds = sorted(skill_cmds)  # first 10, then point to /commands for the rest
-            lines.extend(f"`{cmd}` — {skill_cmds[cmd]['description']}"
-                         for cmd in sorted_cmds[:10])
-            if len(sorted_cmds) > 10:
-                lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
+            rows = _skill_rows(skill_cmds)  # first 10, then point to /commands for the rest
+            lines.extend(rows[:10])
+            if len(rows) > 10:
+                lines.append(t("gateway.help.more_use_commands", count=len(rows) - 10))
     except Exception:
         pass
     return CommandReply("\n".join(lines), format="markdown")
@@ -146,11 +183,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
-        # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
-        from agent.skill_commands import skill_command_collision_note
-        from tools.skills_tool import _find_all_skills
-        entries.extend(f"⚠ {note}" for note in filter(None, map(
-            skill_command_collision_note, sorted(s["name"] for s in _find_all_skills()))))
+        entries.extend(_skill_collision_notes())
     except Exception:
         pass
 

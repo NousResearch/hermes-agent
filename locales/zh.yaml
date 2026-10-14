@@ -206,6 +206,7 @@ gateway:
     header: "📖 **Hermes 命令**\n"
     skill_header: "\n⚡ **技能命令**（{count} 个活跃）："
     more_use_commands: "\n... 还有 {count} 个。使用 `/commands` 查看完整分页列表。"
+    filtered_by: "\n已按“{query}”过滤。运行 `/help` 查看完整列表。"
   insights:
     invalid_days: "无效的 --days 值：{value}"
     error: "生成洞察时出错：{error}"

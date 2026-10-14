@@ -823,3 +823,35 @@ def test_openrouter_startup_key_never_holds_a_real_openai_key(env, expected):
     # so it must already follow the sk-or- gate for openrouter.ai.
     cli = _make_cli(env_overrides=env)
     assert (cli.api_key or "") == expected
+
+
+def test_config_pinned_provider_survives_hf_prefixed_default_model():
+    # #125578: on a config-sourced default the ``hf:`` prefix is part of the model id on the
+    # wire, not a huggingface route — the explicit ``custom:synthetic`` pin must stay the
+    # requested provider, or every fresh CLI session fails auth on the missing HF_TOKEN.
+    cli = _make_cli(config_overrides={
+        "model": {
+            "default": "hf:zai-org/GLM-5.3-Flash",
+            "provider": "custom:synthetic",
+        },
+        "providers": {"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}},
+    })
+    assert cli.requested_provider == "custom:synthetic"
+    assert cli.model == "hf:zai-org/GLM-5.3-Flash"
+
+
+def test_stale_inference_provider_env_is_not_a_startup_pin():
+    # HERMES_INFERENCE_PROVIDER is ambient (resolve_requested_provider puts config before it),
+    # so with no config provider it must not become an "explicit pin" that folds the provider
+    # prefix into the model string — the prefix split keeps running (review follow-up on
+    # #125578: base behavior restored for the stale-env case).
+    cli = _make_cli(
+        env_overrides={"HERMES_INFERENCE_PROVIDER": "huggingface"},
+        config_overrides={
+            "model": {
+                "default": "openai-api:gpt-4o",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        },
+    )
+    assert (cli.model, cli.requested_provider) == ("gpt-4o", "openai-api")

@@ -2,33 +2,11 @@
 from __future__ import annotations
 
 import logging
-import math
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from gateway.config import GatewayConfig
-
-_STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S = 1800.0
-
-
-def _state_db_integrity_deadline_s() -> float:
-    """``agent.gateway_state_db_integrity_deadline_s`` (default 1800 s) for the deferred scan.
-
-    The deadline is the only bound on a pathological store, so anything but a finite positive
-    number (unset, unparsable, ``0``, ``.inf``) keeps the default instead of removing it.
-    """
-    from gateway.run import _load_gateway_config
-    # The gateway's own loader: managed overlay and ``${VAR}`` expansion apply, ``{}`` on error.
-    agent_cfg = _load_gateway_config().get("agent")
-    raw = agent_cfg.get("gateway_state_db_integrity_deadline_s") if isinstance(agent_cfg, dict) else None
-    try:
-        value = float(raw) if raw is not None and not isinstance(raw, bool) else None
-    except (TypeError, ValueError):
-        value = None
-    if value is None or not math.isfinite(value) or value <= 0:
-        return _STATE_DB_INTEGRITY_DEADLINE_DEFAULT_S
-    return value
 
 
 def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
@@ -39,11 +17,11 @@ def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
     refused. A daemon thread nothing waits on; it only appends the forensic exit-diag record.
     """
     from agent.memory_provider import spawn_context_thread
-    from gateway.lifecycle_ledger import run_deferred_integrity_check
+    from gateway.lifecycle_ledger import STATE_DB_INTEGRITY_DEADLINE_S, run_deferred_integrity_check
     # Under the caller's profile scope: the scan resolves this gateway's state.db through it.
     spawn_context_thread(
         run_deferred_integrity_check, args=(evidence,),
-        kwargs={"deadline_s": _state_db_integrity_deadline_s()}, name="state-db-integrity-check").start()
+        kwargs={"deadline_s": STATE_DB_INTEGRITY_DEADLINE_S}, name="state-db-integrity-check").start()
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")

@@ -7,44 +7,8 @@ import pytest
 from gateway import run_bootstrap
 
 
-def _config(monkeypatch, agent):
-    from gateway import run as gateway_run
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda config_path=None: {"agent": agent})
-
-
-@pytest.mark.parametrize("raw, expected", [
-    (None, 1800.0), (600, 600.0), ("90", 90.0), (0.5, 0.5),
-    (0, 1800.0), (-5, 1800.0), (float("inf"), 1800.0), ("1e999", 1800.0), ("nan", 1800.0),
-    ("soon", 1800.0), (True, 1800.0), ([], 1800.0),
-])
-def test_deadline_is_finite_and_positive(monkeypatch, raw, expected):
-    _config(monkeypatch, {} if raw is None else {"gateway_state_db_integrity_deadline_s": raw})
-    assert run_bootstrap._state_db_integrity_deadline_s() == expected
-
-
-def _gateway_home(monkeypatch, tmp_path, config_text):
-    from gateway import run as gateway_run
-    (tmp_path / "config.yaml").write_text(config_text, encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-
-def test_deadline_honours_an_env_expanded_value(monkeypatch, tmp_path):
-    """The gateway's config loader expands ``${VAR}``; the deadline must read through it."""
-    monkeypatch.setenv("SCAN_DEADLINE_UNDER_TEST", "42")
-    _gateway_home(monkeypatch, tmp_path,
-                  "agent:\n  gateway_state_db_integrity_deadline_s: ${SCAN_DEADLINE_UNDER_TEST}\n")
-    assert run_bootstrap._state_db_integrity_deadline_s() == 42.0
-
-
-def test_deadline_survives_unreadable_config(monkeypatch, tmp_path):
-    _gateway_home(monkeypatch, tmp_path, "agent: [unclosed\n")
-    assert run_bootstrap._state_db_integrity_deadline_s() == 1800.0
-
-
-def test_scan_runs_on_a_daemon_thread_with_the_configured_deadline(monkeypatch):
+def test_scan_runs_on_a_daemon_thread_with_the_1800s_deadline(monkeypatch):
     from gateway import lifecycle_ledger as ledger
-    _config(monkeypatch, {"gateway_state_db_integrity_deadline_s": 42})
     seen, release, done = {}, threading.Event(), threading.Event()
 
     def scan(evidence, *, deadline_s):
@@ -58,7 +22,7 @@ def test_scan_runs_on_a_daemon_thread_with_the_configured_deadline(monkeypatch):
     assert not done.is_set()
     release.set()
     assert done.wait(5)
-    assert seen["evidence"] is evidence and seen["deadline_s"] == 42.0
+    assert seen["evidence"] is evidence and seen["deadline_s"] == 1800.0
     assert seen["thread"].daemon and seen["thread"].name == "state-db-integrity-check"
 
 

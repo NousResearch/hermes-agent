@@ -188,8 +188,8 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
 # and the restart loop never reaches the cron ticker. The progress handler below renews
 # a phase-owned lease for as long as SQLite is making progress; without a deadline it
 # always returns 0 so it never aborts the check, and the ok/absent/first-complaint
-# verdicts stay fail-closed. When an explicit ``deadline_at`` is supplied (t_8a73f016)
-# the handler returns non-zero once it passes, so SQLite aborts the scan and the caller
+# verdicts stay fail-closed. When an explicit ``deadline_at`` is supplied the
+# handler returns non-zero once it passes, so SQLite aborts the scan and the caller
 # can bound a pathological store instead of pinning the boot path.
 _INTEGRITY_CHECK_LEASE_PHASE = "state_db_unclean_integrity_check"
 _INTEGRITY_CHECK_LEASE_S = 900.0
@@ -197,6 +197,8 @@ _INTEGRITY_CHECK_LEASE_S = 900.0
 # monotonic-clock compare, renewing at most every _INTEGRITY_CHECK_LEASE_RENEW_S.
 _INTEGRITY_CHECK_PROGRESS_OPS = 100_000
 _INTEGRITY_CHECK_LEASE_RENEW_S = 60.0
+# Bound on the deferred post-connect scan: a pathological store cannot pin its thread forever.
+STATE_DB_INTEGRITY_DEADLINE_S = 1800.0
 
 
 def _install_integrity_check_lease(conn: sqlite3.Connection, *, deadline_at: Optional[float] = None) -> None:
@@ -239,7 +241,7 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
     (renewed from a SQLite progress handler, #115542) so a long healthy check
     on a huge store is not mistaken for a parked deadlock.
 
-    ``deadline_s`` (optional, t_8a73f016): abort the scan once that many seconds elapse and
+    ``deadline_s`` (optional): abort the scan once that many seconds elapse and
     return ``"check-incomplete: exceeded <N>s"``.  ``deadline_s=None`` (default) is the
     historic unbounded behaviour -- the progress handler never aborts the PRAGMA.
     """
@@ -346,7 +348,8 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
 
 
 def run_deferred_integrity_check(
-    evidence: Optional[dict[str, Any]], *, home: Optional[Path] = None, deadline_s: float = 1800.0
+    evidence: Optional[dict[str, Any]], *, home: Optional[Path] = None,
+    deadline_s: float = STATE_DB_INTEGRITY_DEADLINE_S,
 ) -> str:
     """Run the deferred post-connect state.db scan and append a second diag record.
 

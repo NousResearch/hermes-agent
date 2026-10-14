@@ -11,7 +11,7 @@ VM death" — it just never looked at the database that death may have torn.
 The check is gated on the unclean exit precisely because it costs ~2s on a
 500MB store; a clean boot must not pay it.
 
-Since t_8a73f016 the scan is DEFERRED by default: the boot entry point writes
+The scan is now DEFERRED by default: the boot entry point writes
 the exit-diag record and claims the sentinel immediately, and the forensic scan
 runs post-connect (``run_deferred_integrity_check``) so a large store can never
 gate platform startup (the ``:8644`` fleet peer-DM transport). The tests below
@@ -150,7 +150,7 @@ def test_clean_exit_does_not_pay_for_the_check(tmp_path: Path, monkeypatch) -> N
     assert not called, "integrity check ran on a clean boot"
 
 
-# ── deferred startup (t_8a73f016): the scan must not gate platform startup ───
+# ── deferred startup: the scan must not gate platform startup ───
 
 
 def test_deferred_startup_never_runs_the_check_inline(tmp_path: Path, monkeypatch) -> None:

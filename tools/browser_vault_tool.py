@@ -55,6 +55,21 @@ def _check_vault_available() -> bool:
 # ---------------------------------------------------------------------------
 
 _owned_vault = ContextVar("owned_vault", default=None)
+_owned_vault_lease = ContextVar("owned_vault_lease", default=None)
+
+
+def _validate_owned_lease():
+    admission = _owned_vault_lease.get()
+    if admission is None or admission[1] is None:
+        return
+    from tools.bot_desktop import lease
+    from tools.browser_tab_ownership import OwnershipBusy
+    try:
+        current = lease.assert_agent_may_act(admission[0])
+        if current.epoch != admission[1]:
+            raise OwnershipBusy('desktop lease changed')
+    except lease.HumanHasControl:
+        raise OwnershipBusy('desktop lease changed') from None
 
 
 def _pin_owned_vault(fn):
@@ -74,11 +89,21 @@ def _pin_owned_vault(fn):
                                    "error": "No completed owned page handoff is available. Run browser work first."})
             return fn(*args, **kwargs)
         token = None
+        lease_token = None
         try:
             from hermes_constants import get_hermes_home
             from pathlib import Path
             if Path(supervisor._vault_owned_call[0]).resolve().parent != get_hermes_home().resolve():
                 raise OwnershipBusy('owned page belongs to another profile')
+            home = str(get_hermes_home())
+            epoch = None
+            if _bot_desktop_browser_session(task_id):
+                from tools.bot_desktop import lease
+                try:
+                    epoch = lease.assert_agent_may_act(home).epoch
+                except lease.HumanHasControl:
+                    raise OwnershipBusy('desktop lease unavailable') from None
+            lease_token = _owned_vault_lease.set((home, epoch))
             binding = supervisor.bind_owned_vault()
             token = _owned_vault.set((supervisor, binding))
             return fn(*args, **kwargs)
@@ -86,6 +111,8 @@ def _pin_owned_vault(fn):
             return json.dumps({"success": False, "error_type": "owned_current_unavailable",
                                "error": "Owned current page changed or is unavailable. Retry after browser work completes."})
         finally:
+            if lease_token is not None:
+                _owned_vault_lease.reset(lease_token)
             if token is not None:
                 _owned_vault.reset(token)
                 supervisor.release_owned_vault(binding)
@@ -93,6 +120,7 @@ def _pin_owned_vault(fn):
 
 
 def _eval_owned(expression):
+    _validate_owned_lease()
     supervisor, binding = _owned_vault.get()
     supervisor.validate_owned_vault(binding)
     result = supervisor.evaluate_runtime(expression, vault_binding=binding)
@@ -346,6 +374,14 @@ def browser_vault_unlock(backend_name: str) -> str:
     return json.dumps({"success": True, "backend": backend.name})
 
 
+def _special_owned_form(task_id: str) -> bool:
+    """Only opt-in, already pinned pages can use nested registration."""
+    if _owned_vault.get() is None:
+        return False
+    probe = _eval_js(task_id, "!!document.querySelector('iframe, frame, input[type=password][autocomplete~=new-password]')")
+    return probe.get('success') is True and probe.get('result') is True
+
+
 @_pin_owned_vault
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
     """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
@@ -357,6 +393,16 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
+    pinned = _owned_vault.get()
+    if pinned is not None and _special_owned_form(effective_task_id):
+        from tools.browser_vault_forms import save_nested_registration
+        try:
+            result = save_nested_registration(pinned[0], label)
+            if result is not None:
+                return json.dumps(result)
+        except Exception:
+            return json.dumps({'success': False, 'error_type': 'document_unavailable',
+                               'error': 'Owned registration document unavailable.'})
     origin = _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
@@ -515,6 +561,15 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
+
+    pinned = _owned_vault.get()
+    if meta.kind == 'login' and pinned is not None and _special_owned_form(effective_task_id):
+        from tools.browser_vault_forms import nested_fill
+        try:
+            return json.dumps(nested_fill(pinned[0], backend, meta))
+        except Exception:
+            return json.dumps({'success': False, 'error_type': 'document_unavailable',
+                               'error': 'Owned credential document unavailable.'})
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────

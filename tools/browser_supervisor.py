@@ -499,17 +499,25 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._install_dialog_bridge(sid)
 
     async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,
-                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> dict[str, Any]:
-        """Send a CDP command and await its response."""
-        if self._ws is None:
+                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0,
+                   expected_ws=None, before_send=None) -> dict[str, Any]:
+        """Send a CDP command; document captures can fence their exact wire."""
+        ws = self._ws
+        if ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
+        if expected_ws is not None and ws is not expected_ws:
+            raise RuntimeError("captured supervisor connection changed")
         call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
         payload: dict[str, Any] = {"id": call_id, "method": method}
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_calls[call_id] = fut
-        await self._ws.send(json.dumps(payload))
         try:
+            if expected_ws is not None and self._ws is not ws:
+                raise RuntimeError("captured supervisor connection changed")
+            if before_send is not None:
+                before_send()
+            await ws.send(json.dumps(payload))
             return await asyncio.wait_for(fut, timeout=timeout)
         finally:
             self._pending_calls.pop(call_id, None)

@@ -61,10 +61,9 @@ refusal exists precisely so nothing gets lost.
 
 ## Maintenance commands refuse while someone is writing
 
-`hermes sessions optimize`, `hermes sessions optimize-storage` and `hermes sessions prune`
-rewrite the store (VACUUM, a full-text index rebuild, bulk deletes). Running one of them under
-a live gateway is how a fleet of agents ends up in the refusal above, so they now check first
-and refuse while another process holds the database:
+`hermes sessions optimize` and `hermes sessions optimize-storage` rewrite the store
+(VACUUM and a full-text index rebuild), so they refuse while another process holds the
+database:
 
 ```text
 Refusing `hermes sessions optimize-storage`: another process is using ~/.hermes/state.db.
@@ -76,9 +75,35 @@ Stop them first (`hermes gateway stop`, quit the Desktop app, pause cron), then 
 Override with --force if you accept the risk.
 ```
 
-`--dry-run` previews are never blocked. `--force` runs anyway — use it only when you know
-the listed processes are idle (a reader you started yourself, for example). The same check
-runs when you type `sessions optimize` in the Desktop console.
+The held-store guard does not block `--dry-run` previews; ordinary SQLite locks can still
+cause a preview to wait or fail. For `optimize` and `optimize-storage`, `--force` bypasses
+the guard — use it only when you know the listed processes are idle (a reader you started
+yourself, for example). The same check runs when you type `sessions optimize` in the Desktop
+console.
+
+### Pruning while the gateway is live
+
+`hermes sessions prune` uses ordinary DELETE transactions, without VACUUM or a full-text
+index rebuild. It does not require a quiet store, so a retention cron such as
+`hermes sessions prune --older-than 14d --yes` can run while a gateway keeps `state.db`
+open. Its `--force` option remains accepted for compatibility, but has no effect and does
+not bypass SQLite locks.
+
+The actual journal mode determines concurrency:
+
+- **WAL (Write-Ahead Logging):** readers can run alongside a writer, but SQLite allows
+  only one writer at a time. Prune and gateway writes can still contend for that slot.
+- **Rollback journal (`database.journal_mode: delete`):** commit requires exclusive access
+  to the database, so active readers can delay a writer and writers can block readers.
+  An idle open connection alone is not an exclusive lock, but this mode does not offer
+  WAL's reader/writer concurrency. Hermes may also use this mode as a runtime or filesystem
+  fallback.
+
+In either mode, a large prune can make concurrent operations wait or fail with
+`database is locked`; removing the held-store guard does not guarantee a contention-free
+run. Keep retention runs frequent and small, and schedule a large backlog cleanup during
+a quiet period. See SQLite's [WAL concurrency](https://www.sqlite.org/wal.html#concurrency)
+and [rollback journal locking](https://www.sqlite.org/lockingv3.html) documentation.
 
 ## Files you may find beside `state.db`
 

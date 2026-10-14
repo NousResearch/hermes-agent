@@ -335,7 +335,7 @@ async def test_pending_created_topics_stays_bounded(monkeypatch):
         # verbatim. Both shapes of the same defect, same device, same chat, same day.
         (9406, 9407, 990665605, 990665606, "494984", None, False),      # regressed: thread-less opener
         (9499, 9500, 990665619, 990665620, "495077", "495077", True),   # healthy: labeled opener
-        (9538, 9539, 990665626, 990665627, "494984", None, False),      # regressed
+        (9538, 9539, 990665626, 990665627, "495116", None, False),      # regressed
         (9604, 9605, 990665630, 990665631, "495182", "495182", True),   # healthy
     ],
 )

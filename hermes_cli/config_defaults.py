@@ -90,6 +90,15 @@ DEFAULT_CONFIG = {
         # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
         # sequentially, so a waiter delays unrelated topics. Non-positive -> 5s.
         "gateway_turn_lease_timeout": 5,
+        # Bound for the pre-agent turn phase (session resolve, turn prepare,
+        # agent:start hooks), which has no activity clock: a PENDING sentinel
+        # older than this is evicted so the next message takes the cold path
+        # instead of queueing silently forever (#138358). Independent of
+        # gateway_timeout (inactivity) — 1800 s covers the 5 s lease wait,
+        # transcript load and the 600 s hygiene ceiling with headroom. 0 =
+        # never evict. Raise together with hygiene_total_ceiling_seconds if
+        # that ceiling is pushed past this bound.
+        "pending_setup_timeout": 1800,
         # Per-session AIAgent cache in the gateway. Each entry keeps a warm prompt prefix AND the
         # full transcript: too small re-pays uncached prompts, too large fills the heap.
         "agent_cache": {

@@ -631,6 +631,15 @@ class GatewayAgentCacheMixin:
             return
         self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
+    def _append_turn_sidecar_notes(self, session_key: str, notes: list[str]) -> None:
+        """Append one-shot notes after already-staged ones (never replace): the wedge
+        evictor stages its resend notice before the next turn is claimed, and turn
+        preparation below must not drop it."""
+        if not session_key or not notes:
+            return
+        prior = self._consume_pending_turn_sidecar_notes(session_key)
+        self._set_pending_turn_sidecar_notes(session_key, [*prior, *notes])
+
     def _consume_pending_turn_sidecar_notes(self, session_key: str) -> list[str]:
         state = self._peek_session_state(session_key) if session_key else None
         if state is None:

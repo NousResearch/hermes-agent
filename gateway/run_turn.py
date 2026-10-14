@@ -2121,9 +2121,11 @@ class GatewayTurnMixin:
         )
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn
-        # cannot leak them into the next turn.
+        # cannot leak them into the next turn. Merge over (never replace) notes already staged:
+        # the wedge evictor stages its resend notice before this turn is claimed, and the
+        # first-contact / auto-reset notes below must not drop it.
         if turn_sidecar_notes and session_key:
-            self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
+            self._append_turn_sidecar_notes(session_key, turn_sidecar_notes)
 
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
         # by the run that registered them.
@@ -2154,11 +2156,16 @@ class GatewayTurnMixin:
         )
 
         self._session_state(_quick_key).turn.stage = "resolve_session"
+        from gateway.session_state import (
+            TURN_STAGE_AGENT_START_HOOKS, TURN_STAGE_PREPARE_TURN, TURN_STAGE_RESOLVE_SESSION,
+        )
+        _claim_turn = self._session_state(_quick_key).turn
+        _claim_turn.stage = TURN_STAGE_RESOLVE_SESSION
         resolved = await self._hmwa_resolve_session(event, source)
         if resolved is None:
             return
         source, session_entry, session_key = resolved
-        self._session_state(_quick_key).turn.stage = "prepare_turn"
+        _claim_turn.stage = TURN_STAGE_PREPARE_TURN
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2177,6 +2184,7 @@ class GatewayTurnMixin:
                 "message": message_text[:500],
             }
             self._session_state(_quick_key).turn.stage = "agent_start_hooks"
+            _claim_turn.stage = TURN_STAGE_AGENT_START_HOOKS
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
@@ -3294,6 +3302,8 @@ class GatewayTurnMixin:
             return
         turn_state = self._session_state(session_key).turn
         turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
+        from gateway.session_state import TURN_STAGE_RUNNING
+        turn_state.stage = TURN_STAGE_RUNNING
         turn_state.stage = "running"
         if self._draining:
             self._update_runtime_status("draining")

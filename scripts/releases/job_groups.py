@@ -33,6 +33,8 @@ GROUP_SMOKES = {
     "win32-arm64": ("smoke-win32-arm64",),
     "win32-x64": ("smoke-win32-x64",),
 }
+# The per-arch groups whose smoke installs the signed MSIX.
+SIGNED_WINDOWS_GROUPS = frozenset({"win32-arm64", "win32-x64"})
 
 
 def parse_jobs(raw: str | None) -> dict[str, bool]:
@@ -63,12 +65,14 @@ def selects_all(raw: str | None) -> bool:
     return all(parse_jobs(raw).values())
 
 
-def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False) -> list[str]:
+def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,
+               skip_signed: bool = False) -> list[str]:
     """Jobs the stable phase result judges: an unselected group never fails it.
 
     B4 moved candidate-manifest into stable-release.yml, so the desktop
     workflow no longer owns it and the phase result never names it. A claim
-    that skipped tests runs no smoke, so the smokes are not judged.
+    that skipped tests runs no smoke, so the smokes are not judged. A claim without the signed
+    Windows packages smokes none of them (the Store bundle is not install-smoked).
     """
     required = ["validate"]
     if phase == "publish":
@@ -79,7 +83,7 @@ def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = Fals
     for group, jobs in GROUP_JOBS.items():
         if selected.get(group):
             required.extend(jobs)
-            if not skip_tests:
+            if not skip_tests and not (skip_signed and group in SIGNED_WINDOWS_GROUPS):
                 required.extend(GROUP_SMOKES.get(group, ()))
     return required
 

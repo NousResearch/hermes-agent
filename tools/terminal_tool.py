@@ -1302,6 +1302,62 @@ def _run_foreground(
 _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 
 
+def _kanban_stop_note_ship_block(command: str) -> Optional[str]:
+    """Refuse merge/deploy/push-to-main when this worker's card must not ship.
+
+    Second line of defence after ``add_comment`` SIGTERMs the worker: if the
+    process is still alive (signal lost, poll window) it must not ship.
+    Ordinary ``git push`` to a feature branch is not a ship command.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return None
+    from hermes_cli.kanban_db_stop import looks_like_ship_command
+
+    if not looks_like_ship_command(command):
+        return None
+    reason = _kanban_ship_abort_reason(tid)
+    if not reason:
+        return None
+    return _error_json(reason, status="blocked")
+
+
+def _kanban_ship_abort_reason(task_id: str) -> Optional[str]:
+    """Re-read the card; return the refuse text, or None when shipping is allowed.
+
+    Fail closed on a board-read error: a ship command with an unreadable
+    board is refused rather than slipped through.
+    """
+    try:
+        from hermes_cli.kanban_db import get_task
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli.kanban_db_stop import stop_note_holds
+
+        with connect_closing() as conn:
+            task = get_task(conn, task_id)
+            if task is None:
+                return "Kanban task missing — merge/deploy/push-to-main refused."
+            if task.status != "running":
+                return (
+                    f"Kanban task is {task.status} — merge/deploy/push-to-main refused."
+                )
+            env_run = os.environ.get("HERMES_KANBAN_RUN_ID")
+            if env_run and str(task.current_run_id or "") != str(env_run):
+                return "Kanban run is stale — merge/deploy/push-to-main refused."
+            if stop_note_holds(conn, task_id):
+                return (
+                    "Stop/close note on this kanban task — merge/deploy/push-to-main "
+                    "refused. Unblock the card if the operator actually wants this shipped."
+                )
+            return None
+    except Exception:
+        logger.exception(
+            "kanban stop-note ship guard could not read the board for %s; refusing ship",
+            task_id,
+        )
+        return "Kanban board unreadable — merge/deploy/push-to-main refused."
+
+
 def _pre_exec_block(
     command: str, *, env: Any, env_type: str, cwd: str,
     workdir: Optional[str], session_key: str,
@@ -1326,6 +1382,9 @@ def _pre_exec_block(
         blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
         if blocked:
             raise _Rejected(blocked)
+    blocked = _kanban_stop_note_ship_block(command)
+    if blocked:
+        raise _Rejected(blocked)
 
 
 _PTY_DISABLED_REASON = (

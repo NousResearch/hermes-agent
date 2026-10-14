@@ -34,6 +34,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
+from agent.compaction_user_quotes import _build_verbatim_user_section
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
@@ -951,36 +952,6 @@ def _synthetic_user_row(content: str) -> bool:
     if not isinstance(content, str) or not content.strip():
         return True
     return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
-
-
-def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
-    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
-    collected: list[str] = []
-    used = 0
-    for msg in reversed(turns):
-        if msg.get("role") != "user":
-            continue
-        content = _content_text_for_contains(msg.get("content"))
-        if _synthetic_user_row(content):
-            continue
-        remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
-        if remaining <= 0:
-            break
-        text = content.strip()
-        if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
-            break  # no room for marker + content: a marker-only quote would overshoot the budget
-        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
-        collected.append("> " + text.replace("\n", "\n> "))
-        used += len(text)
-    if not collected:
-        return ""
-    return (
-        "\n\n" + _LEAN_USER_MESSAGES_HEADING + "\n"
-        + "\n\n".join(collected)
-        + "\n(Every real user message from the compacted region, quoted "
-        "verbatim. These are the user's actual words and override any "
-        "paraphrase of them above.)"
-    )
 
 
 def _build_recovery_footer(session_id: str, region_len: int) -> str:

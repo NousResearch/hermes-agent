@@ -646,3 +646,85 @@ def test_call_llm_stream_unwraps_completed_response(relay_turn, monkeypatch):
     assert result is completed
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}
+
+
+def test_codex_shim_relay_uses_chat_codec_not_responses(relay_turn):
+    """Regression: a Codex shim aux call (MoA reference slot on openai-codex) must
+    hand Relay the chat codec, not the Responses codec. The shim translates
+    chat-completions kwargs into the Responses protocol INSIDE the provider
+    callback, so Relay only ever sees the chat-shaped body; the Rust
+    ``OpenAIResponsesCodec`` then fails decode with ``invalid argument:
+    OpenAI Responses request is missing input`` before the callback runs,
+    killing every openai-codex MoA reference on each fan-out. With the mapping,
+    the real managed pipeline decodes fine and the shim still owns the wire."""
+    _relay, turn = relay_turn
+    lease = turn.lease.host
+    consumer = "test.codex-shim-chat-codec"
+    from agent.auxiliary_client import (
+        AsyncCodexAuxiliaryClient,
+        CodexAuxiliaryClient,
+        _relay_visible_aux_api_mode,
+    )
+
+    # 1) Pure helper mapping table. Bare instances (no __init__: the shim's
+    #    constructor needs a live OpenAI client) are enough for the isinstance gate.
+    _shim = CodexAuxiliaryClient.__new__(CodexAuxiliaryClient)
+    _ashim = AsyncCodexAuxiliaryClient.__new__(AsyncCodexAuxiliaryClient)
+    assert (
+        _relay_visible_aux_api_mode(_shim, "codex_responses")
+        == "chat_completions"
+    )
+    assert (
+        _relay_visible_aux_api_mode(_ashim, "codex_responses")
+        == "chat_completions"
+    )
+    # Non-shim clients keep the responses codec...
+    assert _relay_visible_aux_api_mode(object(), "codex_responses") == "codex_responses"
+    # ...and other modes pass through untouched.
+    assert _relay_visible_aux_api_mode(_shim, "chat_completions") == "chat_completions"
+    assert _relay_visible_aux_api_mode(_shim, None) is None
+
+    # 2) End-to-end: a real CodexAuxiliaryClient-shaped shim (bare instance; the
+    #    constructor wants a live OpenAI client — attributes are enough for the
+    #    relay path: prepare_chat_messages only touches real OpenAI SDK clients,
+    #    and the callback only uses chat.completions.create), run through the
+    #    REAL managed relay pipeline with api_mode=codex_responses, must
+    #    complete instead of dying in the Responses codec with "missing input".
+    lease.retain_managed_execution(consumer)
+    seen_bodies = []
+    completed = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+        model="gpt-6.1-sol",
+    )
+
+    class _ShimCompletions:
+        def create(self, **kwargs):
+            seen_bodies.append(kwargs)
+            return completed
+
+    shim_client = CodexAuxiliaryClient.__new__(CodexAuxiliaryClient)
+    shim_client._real_client = None
+    shim_client.api_key = "test-token"
+    shim_client.base_url = "https://chatgpt.com/backend-api/codex/"
+    shim_client.chat = SimpleNamespace(completions=_ShimCompletions())
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openai-codex", "gpt-6.1-sol", "codex_responses"
+        )
+        return auxiliary_client._relay_sync_completion(
+            shim_client,
+            {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "q"}]},
+            provider="openai-codex",
+            api_mode="codex_responses",
+        )
+
+    try:
+        # Without the fix this raises RuntimeError: invalid argument: OpenAI
+        # Responses request is missing input (Responses codec on a chat body).
+        result = run("moa_reference")
+    finally:
+        lease.release_managed_execution(consumer)
+    assert result.choices[0].message.content == "ok"
+    assert seen_bodies and seen_bodies[0]["messages"] == [{"role": "user", "content": "q"}]

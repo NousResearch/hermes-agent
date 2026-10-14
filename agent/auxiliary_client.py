@@ -2603,6 +2603,25 @@ def _record_route_info(
         route_info["model"] = model or "default"
 
 
+def _relay_visible_aux_api_mode(client: Any, api_mode: str | None) -> str | None:
+    """The api_mode of the wire Relay actually sees for one auxiliary call on ``client``.
+
+    Native adapter shims (``CodexAuxiliaryClient`` and its async twin — Codex OAuth and
+    xAI Grok OAuth aux routes) translate chat-completions kwargs into their protocol
+    INSIDE the provider callback, so Relay only ever sees the chat-shaped body and
+    response. Decoding that body with the ``codex_responses`` codec fails before the
+    callback runs: the Rust ``OpenAIResponsesCodec`` requires the Responses ``input``
+    field and raises ``invalid argument: OpenAI Responses request is missing input``
+    — which killed every ``openai-codex`` MoA reference slot on each fan-out. Map the
+    shim to the chat codec; the shim keeps owning the real Responses wire. Raw OpenAI
+    clients on a Responses endpoint keep the responses codec — their body really is
+    Responses-shaped.
+    """
+    if api_mode == "codex_responses" and isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        return "chat_completions"
+    return api_mode
+
+
 def _relay_auxiliary_metadata(
     *, provider: str | None = None, api_mode: str | None = None
 ) -> tuple[str, str, dict[str, Any]] | None:
@@ -2637,7 +2656,7 @@ def _relay_sync_completion(
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
     callback = create or (lambda request: _create_with_progress(client, request, task))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_visible_aux_api_mode(client, api_mode))
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
@@ -2670,7 +2689,7 @@ async def _relay_async_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_visible_aux_api_mode(client, api_mode))
     if route is None:
         return await callback(kwargs)
     provider_name, fallback_model, metadata = route
@@ -2700,7 +2719,7 @@ def _relay_sync_stream(
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=_relay_visible_aux_api_mode(client, api_mode))
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route
@@ -7527,7 +7546,11 @@ def _prepare_aux_request(
             leak_guard_config=compression_config, max_tokens=max_tokens,
             extra_body=effective_extra_body,
         )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
+    # The Relay route context defaults to chat_completions for callers that don't pass
+    # api_mode explicitly (the ladder's "call"/"retry" steps below). Map the shim's
+    # api_mode HERE too, so the context fallback matches what the three relay choke
+    # points see for the same client (see _relay_visible_aux_api_mode).
+    _set_relay_auxiliary_route(request_provider, final_model, _relay_visible_aux_api_mode(client, resolved_api_mode))
     _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")

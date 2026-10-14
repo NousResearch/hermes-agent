@@ -11,6 +11,7 @@ export interface BusySubmitInputs {
   hasComposerPayload: boolean
   hasSteerHandler: boolean
   isSteerableText: boolean
+  quoteCount: number
 }
 
 export interface BusySubmitState {
@@ -28,18 +29,20 @@ export function deriveBusySubmitState({
   compacting,
   hasComposerPayload,
   hasSteerHandler,
-  isSteerableText
+  isSteerableText,
+  quoteCount
 }: BusySubmitInputs): BusySubmitState {
   const canSubmit =
     (busy || hasComposerPayload) &&
     !(busy && isSteerableText && attachmentCount === 0 && !compacting && !blockingPrompt && busyInputMode === null)
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
+  // or quote cards into a tool result) and never for a slash command (those
+  // execute inline).
   // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
   // is parked on the user, so a steer can't reach the model — text queues.
   // Compaction does not: the gateway holds the correction until it finishes.
-  const canSteer = busy && !blockingPrompt && hasSteerHandler && attachmentCount === 0 && isSteerableText
+  const canSteer = busy && !blockingPrompt && hasSteerHandler && attachmentCount === 0 && quoteCount === 0 && isSteerableText
 
   // Ordinary busy Send follows backend policy; attachments queue and empty stops.
   const busyAction: ComposerBusyAction = canSteer

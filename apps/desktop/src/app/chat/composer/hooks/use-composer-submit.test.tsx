@@ -28,6 +28,7 @@ import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+import type { ChatBarProps } from '../types'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -70,7 +71,7 @@ function renderSubmitHook({
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
   const onSteerHidden = vi.fn(async () => true)
-  const onSubmit = vi.fn(async () => true)
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
@@ -160,6 +161,27 @@ function renderSubmitHook({
 }
 
 describe('useComposerSubmit external request routing', () => {
+  it('retains quote cards in the created session when a fresh-chat submit is rejected', async () => {
+    const fresh = '__new__:quote-retry'
+    const quotes = MAIN_COMPOSER_SCOPE.quotes.forSession(fresh)
+    quotes.add({ id: 'retry-quote', role: 'assistant', text: 'EXACT QUOTE', timestamp: '12:00' })
+    const { hook, onSubmit } = renderSubmitHook({ sessionKey: fresh })
+    onSubmit.mockImplementation(async (_text, options) => {
+      options?.onComposerScopeAssigned?.('created-quote-session')
+
+      return false
+    })
+    await act(async () => hook.result.current.submitDraft())
+
+    expect(
+      MAIN_COMPOSER_SCOPE.quotes
+        .forSession('created-quote-session')
+        .$quotes.get()
+        .map(q => q.text)
+    ).toEqual(['EXACT QUOTE'])
+    quotes.clear()
+    MAIN_COMPOSER_SCOPE.quotes.forSession('created-quote-session').clear()
+  })
   afterEach(() => {
     cleanup()
     clearQueuedPrompts('stored-session')

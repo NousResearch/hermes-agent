@@ -13,6 +13,13 @@ afterEach(cleanup)
  * surface that reads it as markdown splits one reference into two wrong things.
  */
 describe('a sent reference renders as the chip the composer showed', () => {
+  it('renders sent quotation text as a quote while consuming its markdown markers', () => {
+    const { container } = render(<UserMessageText text={'> [assistant 12:45]\n> 风险大小\n> 方向偏差\n\n请解释区别'} />)
+
+    expect(container.querySelector('[data-slot="aui_user-quote"]')?.textContent).toContain('风险大小')
+    expect(container.textContent).not.toContain('> ')
+    expect(container.textContent).toContain('请解释区别')
+  })
   it('chips a backtick-quoted @url: instead of splitting it into code', () => {
     render(
       <UserMessageText text="@url:`https://github.com/NousResearch/hermes-agent/pull/74790` urls lose formatting" />
@@ -20,14 +27,14 @@ describe('a sent reference renders as the chip the composer showed', () => {
 
     expect(screen.queryByTitle('https://github.com/NousResearch/hermes-agent/pull/74790')).not.toBeNull()
     // The whole reference is one node — no bare `@url:` text left behind.
-    expect(document.body.textContent).not.toContain('@url:')
+    expect(window.document.body.textContent).not.toContain('@url:')
   })
 
   it('chips a backtick-quoted @file: path with spaces', () => {
     render(<UserMessageText text="see @file:`apps/desktop/my notes.md` please" />)
 
     expect(screen.queryByTitle('apps/desktop/my notes.md')).not.toBeNull()
-    expect(document.body.textContent).not.toContain('@file:')
+    expect(window.document.body.textContent).not.toContain('@file:')
   })
 
   it('labels a large-paste file as pasted content, keeping its path on hover', () => {
@@ -49,7 +56,7 @@ describe('a sent reference renders as the chip the composer showed', () => {
   it('still renders a genuine code span as code', () => {
     render(<UserMessageText text="run `npm test` first" />)
 
-    const code = document.querySelector('[data-slot="aui_user-inline-code"]')
+    const code = window.document.querySelector('[data-slot="aui_user-inline-code"]')
 
     expect(code?.textContent).toBe('npm test')
   })
@@ -57,14 +64,14 @@ describe('a sent reference renders as the chip the composer showed', () => {
   it('renders code and a reference side by side', () => {
     render(<UserMessageText text="run `npm test` on @file:`apps/desktop/a b.ts` now" />)
 
-    expect(document.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('npm test')
+    expect(window.document.querySelector('[data-slot="aui_user-inline-code"]')?.textContent).toBe('npm test')
     expect(screen.queryByTitle('apps/desktop/a b.ts')).not.toBeNull()
   })
 
   it('leaves a fenced block alone', () => {
     render(<UserMessageText text={'before\n```ts\nconst x = 1\n```\nafter'} />)
 
-    const fence = document.querySelector('[data-slot="aui_user-fence"]')
+    const fence = window.document.querySelector('[data-slot="aui_user-fence"]')
 
     expect(fence?.textContent).toBe('const x = 1\n')
     // #70451: a wide user fence wraps inside the bubble instead of growing a

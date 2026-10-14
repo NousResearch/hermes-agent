@@ -6,6 +6,8 @@ import { referenceRe } from '@/components/assistant-ui/reference-kinds'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
+import { UserQuoteText } from './user-quote-text'
+
 // User messages should render the bare-minimum of markdown: backtick `code`
 // spans and ``` fenced blocks. We deliberately don't pull in the full
 // assistant Markdown pipeline (Streamdown + KaTeX + syntax highlighter)
@@ -139,7 +141,7 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 
         return (
           <Fragment key={`inline-${segmentIndex}`}>
-            <InlineSegmentView text={segment.text} />
+            <UserQuoteText renderText={value => <InlineSegmentView text={value} />} text={segment.text} />
           </Fragment>
         )
       })}

@@ -3445,6 +3445,7 @@ export const zhOverrides = {
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,
     removeAttachment: label => `移除 ${label}`,
+    removeQuote: '移除引用',
     dictating: '听写中',
     preparingAudio: '正在准备音频',
     speakingResponse: '正在朗读回复',
@@ -4393,6 +4394,7 @@ export const zhOverrides = {
 
   assistant: {
     thread: {
+      quoteMessage: '引用',
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',

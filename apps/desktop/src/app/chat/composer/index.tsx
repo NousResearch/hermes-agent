@@ -62,7 +62,12 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import {
+  ackComposerInsert,
+  markActiveComposer,
+  onComposerAttachImagesRequest,
+  onComposerQuoteAddRequest
+} from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
@@ -91,6 +96,7 @@ import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
 import { renderComposerQueueSlot } from './queue-slot'
+import { QuoteList } from './quote-list'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
@@ -118,6 +124,7 @@ import {
   resolveExactLinkPaste,
   selectionLinkLabel
 } from './url-refs'
+import { useComposerVisible } from './visibility'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -161,8 +168,11 @@ export function ChatBar({
 
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
-  const scope = useComposerScope()
+  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
+  const scope = useComposerScope(activeQueueSessionKey)
+  const composerVisible = useComposerVisible()
   const attachments = useStore(scope.attachments.$attachments)
+  const quotes = useStore(scope.quotes.$quotes)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
@@ -179,7 +189,6 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -331,6 +340,28 @@ export function ChatBar({
     })
   }, [onAttachImageBlob, scope.target])
 
+  // Quote cards parked by the quote actions (right-click / selection pill).
+  // The acked add lets the caller fall back to a text insert when no surface
+  // claims the card; this composer claims whenever it is the addressed one,
+  // and the card row renders next to the attachments row.
+  useEffect(
+    () =>
+      onComposerQuoteAddRequest(detail => {
+        const { quote, target, token } = detail
+
+        if (detail.claimed || target !== scope.target || !composerVisible || inputDisabled) {
+          return
+        }
+
+        detail.claimed = true
+        triggerHaptic('selection')
+        scope.quotes.add(quote)
+        ackComposerInsert(token, true)
+        focusInput()
+      }),
+    [composerVisible, focusInput, inputDisabled, scope]
+  )
+
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
   useEffect(() => {
@@ -399,7 +430,7 @@ export function ChatBar({
     poppedOut
   })
 
-  const hasComposerPayload = hasText || attachments.length > 0
+  const hasComposerPayload = hasText || attachments.length > 0 || quotes.length > 0
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
   const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
@@ -410,7 +441,8 @@ export function ChatBar({
     compacting,
     hasComposerPayload,
     hasSteerHandler: !!onSteer,
-    isSteerableText
+    isSteerableText,
+    quoteCount: quotes.length
   })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
@@ -994,7 +1026,7 @@ export function ChatBar({
       // would drain the queue instead of sending. submitDraft() re-syncs and
       // sends the live editor text.
       const editorText = liveComposerDraft(editorRef.current, draftRef.current)
-      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0 || quotes.length > 0
 
       if (disabled) {
         return
@@ -1495,6 +1527,9 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
+                  {quotes.length > 0 && (
+                    <QuoteList onRemove={quoteId => scope.quotes.remove(quoteId)} quotes={quotes} />
+                  )}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                   <div
                     className={cn(

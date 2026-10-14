@@ -1,8 +1,9 @@
 import type { ReadableAtom } from 'nanostores'
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type ComposerAttachmentScope, mainComposerScope } from '@/store/composer'
+import { type ComposerQuoteScope, mainComposerQuoteScope } from '@/store/composer-quotes'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $messages } from '@/store/session'
 
@@ -23,6 +24,9 @@ export interface ComposerScope {
   /** This scope's "turn parked on user input" edge — gates Esc-to-stop. */
   $awaitingInput: ReadableAtom<boolean>
   attachments: ComposerAttachmentScope
+  /** This scope's pending quote cards (ChatGPT-style composer quotes),
+   *  serialized into the outbound text at submit. */
+  quotes: ComposerQuoteScope
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */
@@ -42,6 +46,7 @@ export const MAIN_COMPOSER_SCOPE: ComposerScope = {
   $awaitingInput: $activeSessionAwaitingInput,
   $messages,
   attachments: mainComposerScope,
+  quotes: mainComposerQuoteScope,
   target: 'main'
 }
 
@@ -49,7 +54,14 @@ const ComposerScopeContext = createContext<ComposerScope>(MAIN_COMPOSER_SCOPE)
 
 export const ComposerScopeProvider = ComposerScopeContext.Provider
 
-export const useComposerScope = (): ComposerScope => useContext(ComposerScopeContext)
+export const useComposerScope = (sessionKey?: string | null): ComposerScope => {
+  const scope = useContext(ComposerScopeContext)
+
+  return useMemo(
+    () => (sessionKey === undefined ? scope : { ...scope, quotes: scope.quotes.forSession(sessionKey) }),
+    [scope, sessionKey]
+  )
+}
 
 /**
  * Unique identity for one mounted ChatView/composer pair. Session ids cannot

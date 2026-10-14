@@ -26,7 +26,7 @@ from agent.memory_context import StreamingContextScrubber, build_memory_context_
 from session_rules.turns import sanitize_context
 from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, RecallIndicator, ctx_bound, spawn_context_thread
 from session_rules.turns import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
@@ -435,7 +435,7 @@ class MemoryManager:
             detail = ("recalled 1 memory" if status.count == 1 else f"recalled {status.count} memories"
                       if status.count > 1 else "recalled relevant memory")
             segments.append(f"{status.glyph} {status.provider_label} — {detail}")
-        return "  ".join(segments)
+        return RecallIndicator("  ".join(segments))
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""

@@ -49,6 +49,10 @@ def is_core_memory_provider(name: Optional[str]) -> bool:
     return str(name or "").strip().lower() in CORE_MEMORY_PROVIDER_SENTINELS
 
 
+class RecallIndicator(str):
+    """Provider recall status text, identifiable even when other messages quote the same words."""
+
+
 @dataclass(frozen=True)
 class RecallStatus:
     """What the last prefetch injected, for the deterministic recall indicator

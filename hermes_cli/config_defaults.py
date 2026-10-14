@@ -841,10 +841,10 @@ DEFAULT_CONFIG = {
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
         "reasoning_full": False,
-        # Background self-improvement notices in chat: "off" (review still runs) | "on" (generic "💾
-        # Memory updated") | "verbose" (content preview). Per-platform via
-        # display.platforms.<platform>.memory_notifications.
+        # Background-review writes accept off, on (generic notice), or verbose (content preview).
         "memory_notifications": "on",
+        # Prefetch recall indicators accept on/off globally and under display.platforms.<platform>.
+        "recall_notifications": "on",
         # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".

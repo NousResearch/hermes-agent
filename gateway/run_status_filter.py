@@ -9,9 +9,13 @@ so similar or user-quoted text is never swallowed.
 """
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from agent.memory_provider import RecallIndicator
+from gateway.display_config import resolve_display_setting
+from gateway.warning_notifications import TerminalFailureText
 
 # "" = an unclassified source: keep the warning (the pre-#101003 behaviour) rather than guess it is shared.
 _DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
@@ -50,14 +54,13 @@ def status_chat_type(source: Any) -> Any:
     return "group" if getattr(source, "shared_session", False) else getattr(source, "chat_type", None)
 
 
-def is_terminal_failure_status(message: Any) -> bool:
-    from gateway.warning_notifications import TerminalFailureText
-    return isinstance(message, TerminalFailureText)
-
-
-def hidden_outside_dm(chat_type: Any, message: str) -> bool:
-    """True when ``message`` is a DM-only status and ``chat_type`` is not a DM."""
+def hidden_chat_status(message: str, chat_type: Any, platform_key: str, load_config: Callable[[], dict]) -> bool:
+    """Filter typed status notices and DM-only warnings before chat delivery."""
+    if isinstance(message, TerminalFailureText):
+        return True
+    if isinstance(message, RecallIndicator):
+        return resolve_display_setting(load_config(), platform_key, "recall_notifications") == "off"
     kind = str(getattr(chat_type, "value", chat_type) or "").strip().lower()
     if kind in _DM_CHAT_TYPES:
         return False
-    return any(pattern.fullmatch(message) for pattern in _DM_ONLY_STATUS_RES)
+    return any(pattern.fullmatch(str(message)) for pattern in _DM_ONLY_STATUS_RES)

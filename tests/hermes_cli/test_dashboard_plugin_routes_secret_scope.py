@@ -99,3 +99,82 @@ def test_failure_and_request_shape_errors_are_unchanged(client, multiplexed, mon
     malformed = client.post("/api/dashboard/agent-plugins/install", json={"identifier": ""})
     assert malformed.status_code == 400
     assert "catalog_name" in malformed.json()["detail"]
+
+
+def _home_recording_stub(monkeypatch, name: str, seen: dict):
+    """Stand in for the plugin action and record the home it runs under."""
+    from hermes_cli import plugins_cmd
+    from hermes_constants import get_hermes_home
+
+    def _stub(*_args, **_kwargs):
+        seen["home"] = str(get_hermes_home())
+        return {"ok": True, "name": "probe"}
+
+    monkeypatch.setattr(plugins_cmd, name, _stub)
+
+
+def _make_second_profile():
+    """A live ``work`` profile next to the launch one, as the switcher serves it."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import get_hermes_home
+
+    work = get_hermes_home() / "profiles" / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "config.yaml").write_text("{}\n", encoding="utf-8")
+    assert profiles_mod.profile_exists("work")
+    return work
+
+
+def test_install_route_honours_the_named_profile(client, monkeypatch):
+    """#138094: the Plugins page lists per profile, so its writes must follow ``?profile=``
+    into that profile's home instead of always the dashboard's own."""
+    work = _make_second_profile()
+    seen: dict = {}
+    _home_recording_stub(monkeypatch, "dashboard_install_plugin", seen)
+
+    resp = client.post("/api/dashboard/agent-plugins/install?profile=work",
+                       json={"identifier": "owner/repo"})
+
+    assert resp.status_code == 200, resp.text
+    assert seen["home"] == str(work)
+
+
+def test_named_mutations_honour_the_named_profile(client, monkeypatch):
+    work = _make_second_profile()
+    enable_seen: dict = {}
+    remove_seen: dict = {}
+    _home_recording_stub(monkeypatch, "dashboard_set_agent_plugin_enabled", enable_seen)
+    _home_recording_stub(monkeypatch, "dashboard_remove_user_plugin", remove_seen)
+
+    enabled = client.post("/api/dashboard/agent-plugins/probe/enable?profile=work")
+    removed = client.delete("/api/dashboard/agent-plugins/probe?profile=work")
+
+    assert enabled.status_code == 200, enabled.text
+    assert removed.status_code == 200, removed.text
+    assert enable_seen["home"] == str(work)
+    assert remove_seen["home"] == str(work)
+
+
+def test_mutations_without_a_profile_keep_the_launch_home(client, monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    _make_second_profile()  # present but never named: writes stay in the launch home
+    seen: dict = {}
+    _home_recording_stub(monkeypatch, "dashboard_install_plugin", seen)
+
+    resp = client.post("/api/dashboard/agent-plugins/install", json={"identifier": "owner/repo"})
+
+    assert resp.status_code == 200, resp.text
+    assert seen["home"] == str(get_hermes_home())
+
+
+def test_unknown_profile_is_still_a_404(client, monkeypatch):
+    seen: dict = {}
+    _home_recording_stub(monkeypatch, "dashboard_install_plugin", seen)
+
+    resp = client.post("/api/dashboard/agent-plugins/install?profile=ghost",
+                       json={"identifier": "owner/repo"})
+
+    assert resp.status_code == 404
+    assert "ghost" in resp.json()["detail"]
+    assert "home" not in seen  # the scope resolved before the body ran

@@ -118,6 +118,8 @@ describe("management profile scope", () => {
   it.each([
     "/api/credentials/pool/anthropic/0",
     "/api/dashboard/plugin-providers",
+    "/api/dashboard/agent-plugins/install",
+    "/api/dashboard/agent-plugins/probe/enable",
     "/api/model/recommended-default",
     "/api/local-models",
     "/api/ops/restart",

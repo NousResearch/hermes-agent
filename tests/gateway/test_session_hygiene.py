@@ -10,6 +10,7 @@ so CLI and messaging platforms behave identically.
 
 import asyncio
 import importlib
+import logging
 import sys
 import threading
 import time
@@ -748,6 +749,158 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     )
 
 
+def _make_trigger_runner(monkeypatch, tmp_path):
+    """Shared scaffolding for the trigger-attribution tests: a full-turn
+    runner (mirroring ``test_session_hygiene_honors_configurable_hard_message_limit``)
+    with the hard message limit as the ONLY valve above threshold."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "compression:\n"
+        "  enabled: true\n"
+        "  hygiene_hard_message_limit: 10\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    # 1M context keeps the token threshold unreachable — the message-count
+    # valve must be the only thing firing.
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 1_000_000,
+    )
+
+    return FakeCompressAgent, runner
+
+
+def _trigger_event():
+    return MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+
+def _auto_compress_records(caplog):
+    return [
+        r.getMessage() for r in caplog.records if "auto-compressing" in r.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hygiene_log_attributes_message_limit_trigger(
+    monkeypatch, tmp_path, caplog
+):
+    """The auto-compressing log line names the valve that fired.
+
+    The threshold copy ("threshold: 85% of ...") is printed unconditionally,
+    so a message-count trigger reads as a token-threshold hit unless the
+    line also states the trigger — the tokens were nowhere near the
+    threshold. Drives a turn where the hard message limit is the ONLY valve
+    above threshold and asserts the attribution appears.
+    """
+    _FakeCompressAgent, runner = _make_trigger_runner(monkeypatch, tmp_path)
+
+    caplog.set_level(logging.INFO, logger="gateway.run")
+    result = await runner._handle_message(_trigger_event())
+
+    assert result == "ok"
+    lines = _auto_compress_records(caplog)
+    assert lines, "expected the hygiene auto-compressing log line"
+    assert "trigger: hard message limit" in lines[0], lines[0]
+    assert "trigger: token threshold" not in lines[0], lines[0]
+
+
+@pytest.mark.asyncio
+async def test_hygiene_log_attributes_both_valves(monkeypatch, tmp_path, caplog):
+    """When both valves fire, the trigger lists both."""
+    _FakeCompressAgent, runner = _make_trigger_runner(monkeypatch, tmp_path)
+    # A 1K-token context plus a heavier transcript (~1.2K rough tokens) puts
+    # BOTH valves above threshold at once.
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 1_000,
+    )
+    runner.session_store.load_transcript.return_value = _make_history(12, content_size=400)
+
+    caplog.set_level(logging.INFO, logger="gateway.run")
+    result = await runner._handle_message(_trigger_event())
+
+    assert result == "ok"
+    lines = _auto_compress_records(caplog)
+    assert lines, "expected the hygiene auto-compressing log line"
+    assert "trigger: token threshold + hard message limit" in lines[0], lines[0]
+
+
 # ---------------------------------------------------------------------------
 # Cooldown persistence across gateway restarts (#74136)
 # ---------------------------------------------------------------------------
@@ -1161,7 +1314,7 @@ class _LandedCompressAgent:
 
 def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
     """The bound keeps the setup head + the newest tail, drops the middle, never mutates input."""
-    from gateway.run_turn import bound_model_input_without_hygiene
+    from gateway.hygiene_bound import bound_model_input_without_hygiene
 
     rows = _make_bound_probe_transcript()
     snapshot = [dict(r) for r in rows]

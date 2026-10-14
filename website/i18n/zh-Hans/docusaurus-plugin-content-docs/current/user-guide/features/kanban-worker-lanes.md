@@ -26,7 +26,7 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 
 ### 1. assignee 字符串
 
-调度器将 `task.assignee` 与 Hermes profile 名称（默认通道形态）或已注册的不可生成标识符（插件通道形态——见下文[添加外部 CLI worker 通道](#adding-an-external-cli-worker-lane)）进行匹配。assignee 无法解析的任务将保留在 `ready` 状态，并记录 `skipped_nonspawnable` 事件，以便看板运维人员修复；它们不会被静默丢弃，也不会由任意回退逻辑执行。
+调度器只将 `task.assignee` 与本地 Hermes profile 名称匹配——目前不存在非 profile 标识符的注册路径（见下文[添加外部 CLI worker 通道](#adding-an-external-cli-worker-lane)）。assignee 无法解析的任务将保留在 `ready` 状态，并记录 `skipped_nonspawnable` 事件，以便看板运维人员修复；它们不会被静默丢弃，也不会由任意回退逻辑执行。外部控制面集成仍可以通过 `claim_task` 自行认领任务。
 
 ### 2. 生成机制
 
@@ -44,7 +44,7 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 | `HERMES_PROFILE` | worker 自身的 profile 名称（用于 `kanban_comment` 作者归因） |
 | `HERMES_TENANT` | 租户命名空间（如果任务有的话） |
 
-对于非 Hermes 通道（通过插件注册），插件提供自己的 `spawn_fn` 可调用对象，接收 `task`、`workspace` 和 `board`，并返回可选的 pid 用于崩溃检测。
+非 Hermes 通道目前还不是已发布的特性。`dispatch_once` 接受 `spawn_fn(task, workspace, board) -> Optional[int]` 参数，但网关、CLI 和插件 API 在生产环境中均未设置它——目前只有测试会注入——因此插件没有任何可注册的入口，任何非 profile 的 assignee 最终都会进入 `skipped_nonspawnable`。生产环境的 spawn 路径跟踪于 [#70547](https://github.com/NousResearch/hermes-agent/issues/70547)。
 
 ### 3. 生命周期终止器
 
@@ -93,7 +93,7 @@ profile 通道的特化形态：orchestrator 是一个 Hermes profile，其工�
 
 ## 添加外部 CLI worker 通道
 
-将非 Hermes CLI 工具（Codex CLI、Claude Code CLI、OpenCode CLI、本地编码模型运行器等）接入 kanban worker 通道*尚未形成成熟路径*。调度器的 spawn 函数是可插拔的（`spawn_fn` 是 `dispatch_once` 的参数），插件可以为非 Hermes assignee 注册自己的 `spawn_fn`，但周边集成工作——将 CLI 的退出码封装为 `kanban_complete` / `kanban_block` 调用、将 CLI 的工作区/沙箱约定映射到调度器的 `HERMES_KANBAN_WORKSPACE` 环境变量、处理认证和每个 CLI 的策略——仍是每个集成各自的设计工作。
+将非 Hermes CLI 工具（Codex CLI、Claude Code CLI、OpenCode CLI、本地编码模型运行器等）接入 kanban worker 通道*尚未形成成熟路径*。调度器的 spawn 函数在技术上可参数化（`dispatch_once` 的 `spawn_fn`），但生产环境的调用方都不传入它，插件 API 也没有注入钩子——目前只有测试在使用它——因此插件今天无法为非 Hermes assignee 注册 spawn 函数（见 [#70547](https://github.com/NousResearch/hermes-agent/issues/70547)）。即便有了 spawn 路径，周边集成工作——将 CLI 的退出码封装为 `kanban_complete` / `kanban_block` 调用、将 CLI 的工作区/沙箱约定映射到调度器的 `HERMES_KANBAN_WORKSPACE` 环境变量、处理认证和每个 CLI 的策略——仍是每个集成各自的设计工作。
 
 如果你考虑添加 CLI 通道，请提交一个 issue，描述具体的 CLI 以及你希望实现的工作流。上述契约是任何此类通道必须满足的约束；实现形态（每个 CLI 一个插件，还是通过配置参数化的通用 CLI 运行器插件）尚未确定。
 

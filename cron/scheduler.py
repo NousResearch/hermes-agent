@@ -2147,7 +2147,7 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # disabled finalization it raises instead of returning a candidate, so it cannot be
         # evaluated in the loop's iterable (#138160) — the bare fallback still gets its turn.
         _lineage = None
-        with contextlib.suppress((Exception, KeyboardInterrupt)):
+        with contextlib.suppress(Exception, KeyboardInterrupt):
             _lineage = getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}")
         for _fallback in (
                 candidate for candidate in (_lineage, f"cron {job_id} {_final_cron_session_id[-6:]}")

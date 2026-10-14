@@ -9,6 +9,7 @@ import {
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
+import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
 import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -48,14 +49,12 @@ import {
   gatewayActivationEpoch,
   isActivePrimary,
   liveSecondaryConnectionIds,
-  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   type ScopedServerRequest,
   setPrimaryGateway,
-  setPrimaryGatewayConnection,
-  touchSecondaryGateways
+  setPrimaryGatewayConnection
 } from '@/store/gateway'
 import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
@@ -67,12 +66,10 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
-import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
   normalizeProfileKey,
-  refreshActiveProfile,
-  touchActiveGatewayBackend
+  refreshActiveProfile
 } from '@/store/profile'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
@@ -1039,7 +1036,7 @@ export function useGatewayBoot({
       onActiveConnectionChanged: publish,
       // Keep $activeGatewayProfile in lockstep with the registry's OWN record
       // of which profile the active socket serves. The registry is the only
-      // party that sees eviction fallbacks (idle reap, connection removal,
+      // party that sees eviction fallbacks (connection removal,
       // profile delete → primary); before this mirror those fallbacks moved
       // the SOCKET back to the primary while the profile atom kept naming the
       // evicted bot. ensureGatewayProfile's "already active" fast path then
@@ -1058,7 +1055,7 @@ export function useGatewayBoot({
       onActiveConnectionInvalidated: (fallbackProfile, invalidationEpoch) => {
         $activeGatewayProfile.set(fallbackProfile)
         // Bounded like every other getConnection() call in this file (#93454):
-        // an eviction fallback (idle reap, connection removal, profile delete)
+        // an eviction fallback (connection removal, profile delete)
         // must not latch the profile atom to a connection that never resolves
         // if the main-process IPC round-trip wedges.
         void withTimeout(
@@ -1133,7 +1130,7 @@ export function useGatewayBoot({
 
     const offEvent = gateway.onEvent(event => {
       const connectionId = activeGatewayConnectionId()
-      const sourceProfile = sourceProfileNow()
+      const sourceProfile = canonicalOwnerProfile(event) ?? sourceProfileNow()
 
       const scopedEvent = {
         ...event,
@@ -1311,17 +1308,6 @@ export function useGatewayBoot({
       }
     })
 
-    // Cooperative pool retirement: main is stopping a pooled backend so a
-    // foreground open elsewhere gets its slot. Park the scopes riding it now,
-    // before the socket drops, so neither the 'closed' state nor the next
-    // focus/wake nudge redials into the slot it vacated. The tile keeps its
-    // card; the next click on it re-arms the scope.
-    const offPoolRetiring = desktop.onPoolBackendRetiring?.(payload => {
-      if (payload && typeof payload.poolKey === 'string') {
-        parkSecondariesForRetiredBackend(payload.poolKey)
-      }
-    })
-
     const onOnline = () => void forceReconnectNow()
 
     const onVisible = () => {
@@ -1339,26 +1325,11 @@ export function useGatewayBoot({
     // this a socket dropped during sleep sits closed until the user clicks.
     window.addEventListener('focus', onFocus)
 
-    // Pool limits are main-process state; mirror them once for the Settings
-    // rows and prewarmProfileBackend's saturation guard.
-    void loadPoolLimits()
-
-    // Keep live pool backends alive while this window is open (the main process
-    // can't observe the direct renderer↔backend WS). No-op for the primary.
-    const keepaliveTimer = setInterval(() => {
-      touchActiveGatewayBackend()
-      touchSecondaryGateways()
-      // The pruner is otherwise event-driven: a socket spared by the
-      // min-lifetime grace with no store change afterwards would hold its
-      // pool slot forever.
-      recomputeKeptGateways()
-    }, 60_000)
-
     // Bound concurrency cost to consumers: keep a background socket while its
     // profile has a running (working) or blocked (needs-input) session, OR an
     // open owner-routed tile (Bot chats stay on a secondary while chrome stays
     // on the launch profile). Once the last consumer leaves, the socket drops
-    // and its backend is free to idle-reap. The active profile is always spared.
+    // (the gateway behind it keeps running). The active profile is always spared.
     // Do not key this off `entry.retained` — that flag only skips dispose-after-
     // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
     // Scopes with a running or needs-input session: registry-scoped
@@ -1394,6 +1365,12 @@ export function useGatewayBoot({
       // they change — see the tile / selected session / hold subscriptions.
       pruneSecondaryGateways(keep)
     }
+
+    // The pruner is otherwise event-driven: a socket spared by the
+    // min-lifetime grace with no store change afterwards would stay open
+    // forever. Pool keepalive touches are gone (the canonical gateway outlives
+    // its viewers); only this recompute tick remains.
+    const pruneTimer = setInterval(() => recomputeKeptGateways(), 60_000)
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
@@ -1687,7 +1664,7 @@ export function useGatewayBoot({
       clearReconnectTimer()
       clearBootRetryTimer()
       clearLivenessReprobeTimer()
-      clearInterval(keepaliveTimer)
+      clearInterval(pruneTimer)
       offWorking()
       offAttention()
       offActiveSession()
@@ -1702,7 +1679,6 @@ export function useGatewayBoot({
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()
-      offPoolRetiring?.()
       offGatewayReconnect()
       offActiveGatewayReauth()
       offActiveStateReauth()

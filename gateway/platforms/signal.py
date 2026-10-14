@@ -248,6 +248,9 @@ class SignalAdapter(BasePlatformAdapter):
             if resp.status_code != 200:
                 logger.error("Signal: health check failed (status %d)", resp.status_code)
                 return False
+            # Seed our own number→ACI/PNI so is_own_identity() matches a UUID-form sender (no
+            # sourceNumber) before any envelope from ourselves arrives; best-effort, _rpc never raises.
+            await self._resolve_recipient(self._account_normalized)
             self._running = True
             self._last_sse_activity = time.time()
             self._sse_task = asyncio.create_task(self._sse_listener())
@@ -519,12 +522,14 @@ class SignalAdapter(BasePlatformAdapter):
         """True when a Signal quote points at this adapter's outbound message."""
         if reply_to_id and str(reply_to_id) in self._sent_message_timestamps:
             return True
-        if not reply_to_author:
-            return False
-        author, acct = str(reply_to_author).strip(), self._account_normalized
-        # Cached number↔UUID mappings are only ever stored with truthy keys and values.
-        return bool(acct) and (author == acct or author == self._recipient_uuid_by_number.get(acct)
-                               or self._recipient_number_by_uuid.get(author) == acct)
+        return self.is_own_identity(reply_to_author)
+
+    def is_own_identity(self, user_id: Optional[str]) -> bool:
+        acct, uid = self._account_normalized, str(user_id or "").strip()
+        # Reverse lookup too: the account has both an ACI and a PNI, and only the last-seen one
+        # survives in _recipient_uuid_by_number. Cached mappings always have truthy keys/values.
+        return bool(acct and uid) and (uid == acct or uid == self._recipient_uuid_by_number.get(acct)
+                                       or self._recipient_number_by_uuid.get(uid) == acct)
 
     def _remember_sent_message_timestamp(self, timestamp: Any) -> None:
         """Keep a bounded cache of outbound Signal timestamps for quote matching."""

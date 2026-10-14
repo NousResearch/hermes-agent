@@ -21,6 +21,7 @@ Run `hermes setup --portal` — one OAuth gets you a model provider and all four
 ```text
 ~/.hermes/
 ├── config.yaml     # Settings (model, terminal, TTS, compression, etc.)
+├── config.d/       # Drop-in YAML overrides — applied over config.yaml, in filename order
 ├── .env            # API keys and secrets
 ├── auth.json       # OAuth provider credentials (Nous Portal, etc.)
 ├── SOUL.md         # Primary agent identity (slot #1 in system prompt)
@@ -60,8 +61,9 @@ Settings are resolved in this order (highest priority first):
 
 1. **CLI arguments** — e.g., `hermes chat --model anthropic/claude-sonnet-4` (per-invocation override)
 2. **`~/.hermes/config.yaml`** — the primary config file for all non-secret settings
-3. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
-4. **Built-in defaults** — hardcoded safe defaults when nothing else is set
+3. **`~/.hermes/config.d/*.yaml`** — drop-in overrides, applied over `config.yaml` in filename order (see below)
+4. **`~/.hermes/.env`** — fallback for env vars; **required** for secrets (API keys, tokens, passwords)
+5. **Built-in defaults** — hardcoded safe defaults when nothing else is set
 
 :::info Rule of Thumb
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
@@ -72,6 +74,25 @@ An administrator can pin specific config and secret values that a standard user
 cannot override, via a system-level managed directory. See
 [Managed Scope](./managed-scope.md).
 :::
+
+## Drop-in overrides (`config.d`)
+
+Any `*.yaml`/`*.yml` file in `<profile home>/config.d/` is deep-merged **over** that profile's
+`config.yaml`, in lexicographic filename order. It exists so a shared config file can be symlinked
+into several profiles while each keeps only its own deltas:
+
+```bash
+# One shared file every profile links in
+ln -s ~/agents/shared.yaml ~/.hermes/profiles/coder/config.d/10-shared.yaml
+
+# A per-profile override in the same directory
+~/.hermes/profiles/coder/config.d/90-local.yaml
+```
+
+**Layer order:** `built-in defaults < config.yaml < config.d/*.yaml (lexicographic) < managed
+scope`. Administrator-pinned values still beat drop-ins, and a later filename wins over an
+earlier one. The merge is leaf-deep: a drop-in setting only `display.skin` keeps every other
+`display.*` value you have.
 
 ## Runtime Limits
 

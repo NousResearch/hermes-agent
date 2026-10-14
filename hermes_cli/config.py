@@ -1,6 +1,13 @@
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
+# health: allow FILE_LINES -- config.d drop-in layer: the +27 lines are the loader integration
+# itself (drop-in overlay at each of the four merge points, the drop-in signature folded into the
+# cache key, and the dynamic cache indices that replace the previously hardcoded 8). The
+# config.d-specific helpers were already moved to hermes_cli/config_d.py and the pre-defaults
+# user-layer normalization to hermes_cli/config_user_layer.py; what remains here is the chokepoint
+# wiring that cannot live outside the facade.
+
 # Stale-module bridge — must run before ANY import below can bind a root-level symbol.
 # A pre-handoff updater purges only package prefixes after the pull, so a root module
 # (``utils``) stays cached from the OLD tree; the first fresh consumer of its new symbols
@@ -35,6 +42,8 @@ import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
+from hermes_cli import config_d
+from hermes_cli import config_user_layer as _user_layer
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -176,7 +185,7 @@ _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
 # the config writer seam, which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+_LOAD_CONFIG_CACHE: dict[str, tuple] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
 
@@ -2177,7 +2186,11 @@ def apply_terminal_config_to_env(
     matching env values; merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
-    raw_terminal_cfg = read_raw_config().get("terminal")
+    # Explicit keys come from the MERGED user layer: a drop-in IS a file-sourced terminal
+    # section, so its keys may overwrite .env-set TERMINAL_* vars (same contract as
+    # cli_config_load's _file_has_terminal_config). read_raw_config() stays file-only —
+    # write-back purity is a hard invariant — so the overlay applies here only.
+    raw_terminal_cfg = config_d.apply_config_d_overlay(read_raw_config()).get("terminal")
     file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
     raw_terminal_cfg = raw_terminal_cfg if file_has_terminal_config else {}
     should_override = file_has_terminal_config if override is None else override
@@ -2218,10 +2231,13 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[int, ...]]]:
+def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, int, int]], Optional[tuple[Any, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
     The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    the merged result, and the config.d drop-in signature likewise (a nested per-file tuple, ``()``
+    when the dir is absent) so editing/adding/removing/renaming a drop-in invalidates.
+    ``cache_sig`` is None only when nothing exists to cache on — a config.d-only profile still
+    caches, or every read would rescan the drop-in directory."""
     try:
         st = config_path.stat()
         user_sig: Optional[tuple[int, int, int, int]] = file_signature(st)
@@ -2233,9 +2249,10 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    config_d_sig = config_d.config_d_signature(config_d.get_config_d_dir(config_path))
+    if user_sig is None and managed_sig == (0, 0, 0, 0) and not config_d_sig:
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig, config_d_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:
@@ -2258,8 +2275,11 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         from hermes_cli.moa_config import apply_user_moa_presets
         raw_good = load_newest_good_backup(config_path)
         if raw_good is not None:
-            merged_good = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good)
-            apply_user_moa_presets(merged_good, raw_good)
+            # Drop-ins are independent valid files: a config.yaml broken mid-edit must not
+            # silently discard them, so they overlay the recovered layer here too.
+            user_layer = _user_layer.promote_legacy_max_turns(_deep_merge(raw_good, config_d.load_config_d()))
+            merged_good = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_layer)
+            apply_user_moa_presets(merged_good, user_layer)
             normalized = _canonicalize_config(merged_good)
             expanded_good: dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
             lkg, _ = _merge_managed_overlay(expanded_good)
@@ -2304,9 +2324,12 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    if cached is None or cache_sig is None:
         return None
-    hit = cached[8]
+    n = len(cache_sig)
+    if cached[:n] != cache_sig:
+        return None
+    hit = cached[n]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
@@ -2316,7 +2339,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
             return None
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+    env_snapshot = cached[n + 1] if len(cached) > n + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
@@ -2356,6 +2379,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+        drop_ins = config_d.load_config_d()
 
         if user_sig is not None:
             try:
@@ -2363,16 +2387,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                     user_config = fast_safe_load(f) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
-                if "max_turns" in user_config:
-                    agent_user_config = dict(user_config.get("agent") or {})
-                    if agent_user_config.get("max_turns") is None:
-                        agent_user_config["max_turns"] = user_config["max_turns"]
-                    user_config["agent"] = agent_user_config
-                    user_config.pop("max_turns", None)
-
-                config = _deep_merge(config, user_config)
+                user_layer = _user_layer.promote_legacy_max_turns(_deep_merge(user_config, drop_ins))  # drop-ins win
+                config = _deep_merge(config, user_layer)
                 from hermes_cli.moa_config import apply_user_moa_presets
-                apply_user_moa_presets(config, user_config)
+                apply_user_moa_presets(config, user_layer)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
@@ -2385,10 +2403,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 # Defaults stand in for the unreadable file: never the next last-known-good,
                 # never saveable, and cached like the LKG path.
                 fallback = FailedConfigRead(
-                    _merge_managed_overlay(_expand_env_vars(_canonicalize_config(config)))[0], error=e)
+                    _merge_managed_overlay(_expand_env_vars(_canonicalize_config(
+                        _user_layer.promote_legacy_max_turns(_deep_merge(config, drop_ins)))))[0], error=e)
                 if cache_sig is not None:
                     _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, fallback, {})
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
+        else:
+            user_layer = _user_layer.promote_legacy_max_turns(drop_ins)
+            config = _deep_merge(config, user_layer)
+            from hermes_cli.moa_config import apply_user_moa_presets
+            apply_user_moa_presets(config, user_layer)
 
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
@@ -2489,6 +2513,7 @@ def save_config(
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
         config = _strip_managed_keys_for_save(config)
+        config = config_d.strip_config_d_keys_for_save(config)
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -3531,6 +3556,10 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+    # Non-blocking override notice: the write landed in config.yaml, but a drop-in still wins
+    # at load time. Unlike the managed layer (immutable, hard-rejected) a drop-in is the user's
+    # own file, so warn-and-explain — never block.
+    config_d.print_config_d_override_notice(key)
     if _route_notice:
         print(_route_notice)
 

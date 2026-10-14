@@ -503,6 +503,10 @@ def read_yaml_layers(home: Path) -> dict:
         with open(config_yaml_path, encoding="utf-8-sig") as f:
             yaml_cfg = fast_safe_load(f) or {}
 
+    # admin pins still beat drop-ins
+    from hermes_cli import config_d
+    yaml_cfg = config_d.apply_config_d_overlay(yaml_cfg, config_path=config_yaml_path)
+
     from hermes_cli.config import _expand_env_vars
 
     # ${VAR} / ${env:VAR} expansion — the same primitive the CLI loader applies, so platform

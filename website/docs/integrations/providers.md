@@ -588,7 +588,7 @@ Hermes automatically attaches the NIM billing-origin header on every request to 
 For on-prem deployments (DGX Spark, local GPU), point Hermes at your own NIM endpoint instead. Add both variables to `~/.hermes/.env`:
 
 ```bash
-NVIDIA_API_KEY=nvapi-...
+NVIDIA_API_KEY=local-no-auth
 NVIDIA_BASE_URL=http://localhost:8000/v1
 ```
 

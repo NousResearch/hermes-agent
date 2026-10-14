@@ -425,3 +425,58 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
     assert get_hermes_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]
+
+
+def test_registry_drift_repairs_only_the_adopters_missing_overlay(two_profiles, monkeypatch):
+    """A healthy shared connection must restore a deleted profile overlay even while another
+    profile still has the same MCP tool registered, so a toolset-wide lookup could mask the gap."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_config as mcp_config
+    from tools import mcp_tool_discovery as discovery, mcp_tool_registration as registration
+    from tools.registry import registry
+
+    config = {"url": "https://mcp.example/x"}
+    scope_a = two_profiles("a")
+    server = _server("x", config)
+    key = (scope_a, "x")
+    core._servers[key] = server
+    core._server_scope_keys[key] = scope_a
+    server._registered_tool_names = registration._register_server_tools("x", server, config)
+
+    scope_b = two_profiles("b")
+    registration.register_connected_into_current_scope({"x": config})
+    tool_name = "mcp__x__t"
+    assert registry.snapshot_registration(tool_name, scope=scope_b) is not None
+
+    registry.deregister(tool_name, scope=scope_b)
+    assert registry.snapshot_registration(tool_name, scope=scope_a) is not None
+    two_profiles("a")
+    assert registry.get_tool_names_for_toolset("mcp-x") == [tool_name]
+
+    two_profiles("b")
+    monkeypatch.setattr(mcp_config, "_load_mcp_config", lambda: {"x": config})
+    assert discovery.reconcile_mcp_servers_with_config() == {
+        "removed": [], "added": [], "pending": []}
+    assert registry.snapshot_registration(tool_name, scope=scope_b) is not None
+    assert discovery.reconcile_mcp_servers_with_config() == {
+        "removed": [], "added": [], "pending": []}
+
+
+def test_global_registry_drift_repairs_live_servers(two_profiles, monkeypatch):
+    """Single-profile discovery repairs its global registry slot without respawning the server."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_registration as registration
+    from tools.registry import registry
+
+    config = {"url": "https://mcp.example/x"}
+    two_profiles("a")
+    monkeypatch.setattr(core, "_mcp_registry_scope", lambda: None)
+    server = _server("x", config)
+    core._servers["x"] = server
+    core._server_scope_keys["x"] = None
+    server._registered_tool_names = registration._register_server_tools("x", server, config)
+    tool_name = "mcp__x__t"
+    registry.deregister(tool_name)
+
+    assert registration.register_connected_into_current_scope({"x": config}) == 1
+    assert registry.snapshot_registration(tool_name) is not None

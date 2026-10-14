@@ -465,7 +465,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_CONTAINER_PERSISTENT` | `container_persistent` | `true` / `false` — controls the bind-mount workspace dirs, distinct from `docker_persist_across_processes` |
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
 | `TERMINAL_TEMP_DIR` | `temp_dir` | Session temp root (local backend) |
-| `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
+| `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout. A foreground command (up to the 600 s foreground cap) and a `process_manage` wait run to this window even when it exceeds the generic per-tool deadline (`timeouts.tools.sequential_call`, 420 s), so the tool's own timeout fires and returns the partial output |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
 
 ### SSH Backend

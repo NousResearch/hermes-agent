@@ -195,6 +195,10 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # ``fn(args) -> seconds | None``: how long ONE call may legitimately block, derived from
+    # its own arguments and config. The executor floors its generic tool deadline by this so a
+    # tool's own timeout is the one that fires — see get_deadline_floor.
+    deadline_floor: Optional[Callable] = None
 
 
 class _PluginOverridePolicy:
@@ -668,7 +672,7 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, deadline_floor: Callable | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -733,7 +737,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                deadline_floor=deadline_floor)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
@@ -934,6 +939,23 @@ class ToolRegistry:
             return default
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
+
+    def get_deadline_floor(self, name: str, args: dict) -> Optional[float]:
+        """Seconds this call may legitimately block for, as the tool itself declares it, or
+        ``None`` when it declares nothing. Callers raise their generic deadline to it.
+
+        Plugin tools can declare one too, so a declaration that raises or returns junk degrades
+        to "no floor" instead of taking tool dispatch down.
+        """
+        declare = self._attr(name, "deadline_floor")
+        if declare is None:
+            return None
+        try:
+            value = float(declare(args if isinstance(args, dict) else {}) or 0)
+        except Exception:
+            logger.warning("Tool %s: deadline_floor() failed; ignoring", name, exc_info=True)
+            return None
+        return value if 0 < value < float("inf") else None
 
     def get_all_tool_names(self) -> list[str]:
         return sorted(entry.name for entry in self._snapshot_entries())

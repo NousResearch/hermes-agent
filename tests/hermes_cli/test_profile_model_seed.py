@@ -11,6 +11,7 @@ from hermes_cli.config import (
     read_user_config_raw,
 )
 from hermes_cli.profiles import create_profile
+from hermes_cli.profile_model_seed import launch_model_seed
 from hermes_cli import runtime_provider
 
 
@@ -129,3 +130,63 @@ def test_fresh_profile_keeps_explicit_builtin_provider_settings(tmp_path, monkey
         read_user_config_raw(profile / "config.yaml")["providers"]
         == source["providers"]
     )
+
+
+@pytest.mark.parametrize(
+    "providers,legacy",
+    [
+        (
+            {"lab": {"request_timeout_seconds": 150}},
+            [{"name": "Lab", "base_url": "http://127.0.0.1:11434/v1"}],
+        ),
+        (
+            {
+                "other": {"name": "Lab", "base_url": "http://127.0.0.1:11434/v1"},
+                "lab": {"base_url": "http://127.0.0.1:11435/v1"},
+            },
+            [],
+        ),
+    ],
+)
+def test_model_seed_keeps_runtime_endpoint_selection(monkeypatch, providers, legacy):
+    source = {
+        "model": {"provider": "lab", "default": "synthetic-model"},
+        "providers": providers,
+        "custom_providers": legacy,
+    }
+    monkeypatch.setattr(runtime_provider, "load_config", lambda: source)
+    selected = runtime_provider._get_named_custom_provider("lab")
+    assert selected is not None
+
+    seed = launch_model_seed(source)
+
+    monkeypatch.setattr(runtime_provider, "load_config", lambda: seed)
+    inherited = runtime_provider._get_named_custom_provider("lab")
+    assert inherited is not None
+    assert inherited["base_url"] == selected["base_url"]
+
+
+def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch):
+    import hermes_cli.runtime_provider_custom as custom_runtime
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail(
+            "model seed must use the supplied config without resolving credentials"
+        )
+
+    monkeypatch.setattr(runtime_provider, "load_config", unexpected_read)
+    monkeypatch.setattr(custom_runtime, "get_secret_str", unexpected_read)
+    source = {
+        "model": {"provider": "custom:lab", "default": "synthetic-model"},
+        "providers": {
+            "lab": {
+                "api": "http://127.0.0.1:11434/v1",
+                "key_env": "LAB_TOKEN",
+                "api_key": "${LAB_TOKEN}",
+            }
+        },
+    }
+
+    seed = launch_model_seed(source)
+
+    assert seed == source

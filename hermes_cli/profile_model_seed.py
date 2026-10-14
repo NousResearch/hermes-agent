@@ -1,22 +1,13 @@
 """Copy the model and its selected custom endpoint when creating an independent profile."""
 
 from hermes_cli.config import (
+    find_provider_entry,
     get_compatible_custom_providers,
-    is_provider_enabled,
-    providers_dict_to_custom_providers,
 )
-from hermes_cli.providers import custom_provider_aliases
-from hermes_cli.runtime_provider_custom import _shadowed_by_builtin
-
-
-def _matches_custom_provider(requested: str, entries: list[dict]) -> bool:
-    return bool(
-        entries
-        and requested
-        in custom_provider_aliases(
-            entries[0]["name"], entries[0].get("provider_key", "")
-        )
-    )
+from hermes_cli.runtime_provider_custom import (
+    _get_named_custom_provider,
+    _shadowed_by_builtin,
+)
 
 
 def launch_model_seed(source_cfg: dict) -> dict:
@@ -31,23 +22,29 @@ def launch_model_seed(source_cfg: dict) -> dict:
     requested = provider.strip().lower().replace(" ", "-")
     providers = source_cfg.get("providers")
     providers = providers if isinstance(providers, dict) else {}
-    exact = providers.get(provider)
-    # Exact config keys also carry built-in provider tuning, without an endpoint URL.
-    if isinstance(exact, dict) and is_provider_enabled(exact):
-        seed["providers"] = {provider: exact}
-        return seed
-    if not requested or requested == "auto" or _shadowed_by_builtin(requested):
-        return seed
-    for key, entry in providers.items():
-        if _matches_custom_provider(
-            requested, providers_dict_to_custom_providers({key: entry})
+    selected = _get_named_custom_provider(
+        provider, config=source_cfg, resolve_credentials=False
+    )
+    if selected is None:
+        # Exact built-in keys carry provider tuning even without an endpoint URL.
+        exact = providers.get(provider)
+        if (
+            isinstance(exact, dict)
+            and requested not in {"", "auto"}
+            and _shadowed_by_builtin(requested)
         ):
-            seed["providers"] = {key: entry}
-            return seed
+            seed["providers"] = {provider: exact}
+        return seed
+    key, entry = find_provider_entry(providers, selected.get("provider_key"))
+    if entry is not None:
+        seed["providers"] = {key: entry}
+        return seed
     custom_providers = source_cfg.get("custom_providers")
     for entry in custom_providers if isinstance(custom_providers, list) else ():
-        if _matches_custom_provider(
-            requested, get_compatible_custom_providers({"custom_providers": [entry]})
+        normalized = get_compatible_custom_providers({"custom_providers": [entry]})
+        if normalized and (normalized[0]["name"], normalized[0]["base_url"]) == (
+            selected["name"],
+            selected["base_url"],
         ):
             seed["custom_providers"] = [entry]
             return seed

@@ -25,14 +25,17 @@ def _frame(kind, payload):
 class Life:
     """One gateway process as one client sees it: from a dial until it hangs up."""
 
-    def __init__(self, number, *, drop_on_submit=False):
+    def __init__(self, number, *, drop_on_submit=False, resume_errors=None):
         self.number = number
         self.events = asyncio.Queue()
         self.calls = []
         self.drop_on_submit = drop_on_submit
+        self.resume_errors = resume_errors if resume_errors is not None else []
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
+        if method == "session.resume" and self.resume_errors:
+            raise self.resume_errors.pop(0)
         if method == "session.resume":
             return {"stored_session_id": params["session_id"], "subscription_id": f"sub-{self.number}",
                     "revision": 1, "execution_generation": 7, "messages": []}
@@ -56,13 +59,14 @@ class Gateway:
         self.lives = []
         self.refusals = 0
         self.drop_next_submit = False
+        self.resume_errors = []  # raised by the next session.resume calls, across lives
 
     @asynccontextmanager
     async def dial(self):
         if self.refusals:
             self.refusals -= 1
             raise GatewayClientError("Gateway starting: deadline. Your message was not sent.")
-        life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit)
+        life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit, resume_errors=self.resume_errors)
         self.drop_next_submit = False
         self.lives.append(life)
         yield life
@@ -149,6 +153,76 @@ def test_the_previous_connections_loss_never_fails_a_live_turn(gateway, conn):
     gateway.hang_up(conn)
     result = agent.run_conversation("hi")
     assert not result.get("failed") and result["final_response"] == "reply 2"
+
+
+def _resumes(life):
+    return [params["session_id"] for method, params in life.calls if method == "session.resume"]
+
+
+@pytest.fixture
+def store(conn):
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    db = GatewaySessionStore(conn)
+    db.attach(SID)
+    return db
+
+
+def test_ending_a_session_after_a_reconnect_detaches_its_current_subscription(gateway, conn, store):
+    """The redial resubscribed under a new id; detaching with the first one is refused gateway-side,
+    leaving a closed session attached and its close bookkeeping skipped."""
+    gateway.hang_up(conn)
+    conn.call("status")
+    store.end_session(SID, "new_session")
+    assert gateway.lives[1].calls[-1] == ("session.detach", {
+        "session_id": SID, "subscription_id": "sub-2", "end_reason": "new_session"})
+    # Left by this viewer: a later reconnect does not resume it again.
+    gateway.hang_up(conn)
+    conn.call("status")
+    assert _resumes(gateway.lives[2]) == []
+
+
+def test_a_deleted_session_is_not_resumed_by_later_reconnects(gateway, conn, store):
+    gateway.hang_up(conn)
+    conn.call("status")
+    store.delete_session(SID)
+    gateway.hang_up(conn)
+    conn.call("status")
+    assert _resumes(gateway.lives[2]) == []
+
+
+def test_a_session_gone_during_the_restart_is_skipped_and_not_retried(gateway, conn):
+    gateway.resume_errors.append(GatewayClientError("not_found"))
+    gateway.hang_up(conn)
+    assert conn.call("status") == {"status": "ok", "life": 2}
+    assert conn.state(SID).subscription_id is None
+    gateway.hang_up(conn)
+    assert conn.call("status") == {"status": "ok", "life": 3}
+    assert _resumes(gateway.lives[2]) == []
+
+
+@pytest.mark.parametrize("failure", [GatewayClientError("storage_unavailable"), TimeoutError()],
+                         ids=["storage_unavailable", "timeout"])
+def test_a_transient_resume_failure_fails_the_reconnect_and_the_next_call_retries(gateway, conn, failure):
+    """Ready without the subscription, every later prompt.submit is refused (permission_denied) on a
+    live socket that never redials: the reconnect must fail instead, so the next call dials again."""
+    gateway.resume_errors.append(failure)
+    gateway.hang_up(conn)
+    with pytest.raises(GatewayClientError):
+        conn.call("status")
+    assert conn.call("status") == {"status": "ok", "life": 3}
+    assert _resumes(gateway.lives[2]) == [SID]
+    assert conn.state(SID).subscription_id == "sub-3"
+
+
+def test_close_after_a_failed_resume_is_still_final(gateway, conn):
+    gateway.resume_errors.append(GatewayClientError("storage_unavailable"))
+    gateway.hang_up(conn)
+    with pytest.raises(GatewayClientError):
+        conn.call("status")
+    conn.close()
+    with pytest.raises(GatewayClientError):
+        conn.call("status")
+    assert len(gateway.lives) == 2
 
 
 def test_lost_before():

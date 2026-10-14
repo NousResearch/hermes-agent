@@ -242,16 +242,26 @@ class GatewaySessionStore:
             row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
         return row[0] if row else None
 
+    def _leave(self, session_id):
+        """Drop this viewer's subscription record and return its id. The connection's SessionState holds
+        the live id (a reconnect resubscribes under a new one); cleared, no later reconnect resumes it."""
+        state = self.connection.states.get(session_id)
+        subscription = state.subscription_id if state is not None else None
+        if state is not None:
+            state.subscription_id = None
+        return subscription
+
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
         self._mutate(session_id, "delete", {})
+        self._leave(session_id)
         return True
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
         the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
-        subscription = (snapshot or {}).get("subscription_id")
+        subscription = self._leave(session_id)
         if subscription and not self.connection.closed:
             params = {"end_reason": reason} if reason else {}
             try:

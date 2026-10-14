@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the printed session ID to check "
                 "whether it completed or was interrupted; do not resend the work.")
+# Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
+_GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
 
 
 def lost_before(frame, epoch) -> bool:
@@ -181,14 +183,19 @@ class GatewayConnection:
 
     async def _resubscribe(self, client):
         """A new socket is a new viewer: the gateway streams a session's frames only to connections
-        that resumed it. Resume each session this viewer had open; one deleted meanwhile is skipped."""
+        that resumed it. Resume each session this viewer had open; one gone meanwhile is dropped. Any
+        other failure fails the reconnect: ready without the subscription, every prompt is refused on a
+        live socket that never redials, while a failed redial is retried by the next call."""
         for session_id, state in list(self.states.items()):
             if state.subscription_id is None:
                 continue
             try:
                 state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
-            except (GatewayClientError, TimeoutError) as exc:
-                logger.debug("session.resume %s after reconnect failed: %s", session_id, exc)
+            except GatewayClientError as exc:
+                if str(exc) not in _GONE:
+                    raise
+                logger.debug("session.resume %s after reconnect: %s", session_id, exc)
+                state.subscription_id = None
 
     async def _pump(self, client):
         while True:

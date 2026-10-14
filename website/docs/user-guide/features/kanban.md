@@ -960,7 +960,7 @@ hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
-hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
+hermes kanban schedule <id> [reason]                   # park in Scheduled — no timer; released by `unblock` only
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
@@ -1023,14 +1023,13 @@ kanban:
   default_workdir: ~/work/active-project
 ```
 
-### Scheduled task starts (`scheduled_at`)
+### The `scheduled` status is not time-released
 
-Set `scheduled_at` on a task to delay dispatch until a specific time. The dispatcher skips ready tasks whose `scheduled_at` is in the future and picks them up on the first tick after that timestamp.
-
-```bash
-hermes kanban create "nightly backup audit" \
-  --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
-```
+`hermes kanban schedule <id>` parks a task in the `scheduled` column. Despite the
+name, there is no due-date field and no dispatcher sweep that releases it — it is
+dispatchable again only after a human runs `hermes kanban unblock <id>`, exactly
+like `blocked`. For work that should actually start at (or recur on) a wall-clock
+time, use `hermes cron` to schedule the job instead of parking a kanban task.
 
 ### Respawn guard
 

@@ -47,8 +47,8 @@ export function useDefaultAssignee(): string {
 
 // System-owned drop targets — you can drag a card OUT of these, never INTO
 // them, so lanes/menus must not offer them as targets. `running`/`review` are
-// claimed by the dispatcher; `scheduled` needs a wake-up time only an agent or
-// the CLI can attach (a bare status drag is refused with a 409). The reason
+// claimed by the dispatcher; `scheduled` is parked by an agent or
+// the CLI (no timer; only unblock releases it) (a bare status drag is refused with a 409). The reason
 // copy lives in the plugin i18n bundle (`locked.*`); see `lockedReason`.
 export const LOCKED_COLUMNS = ['review', 'running', 'scheduled'] as const
 

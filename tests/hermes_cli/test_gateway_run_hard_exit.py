@@ -22,7 +22,9 @@ class _HardExitObserved(BaseException):
 def _prepare(monkeypatch):
     import hermes_cli.gateway as gateway_cli
     import gateway.run as gateway_run
+    import gateway.status as gateway_status
 
+    monkeypatch.setattr(gateway_status, "write_task_launch_heartbeat", lambda: None)
     monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)
     monkeypatch.setattr(gateway_cli, "_attach_to_host_gateway_or_guard", lambda **kwargs: None)

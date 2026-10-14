@@ -1,0 +1,55 @@
+# Nous-approved MCP catalog entry.
+
+# Presence in this directory = approval. Merged via PR review.
+
+manifest_version: 1
+
+name: govinbox
+
+connector_slug: govinbox
+
+description: Federal contract intelligence for government contractors. Search open opportunities, grants, award history, and subawards across SAM.gov and other public federal sources.
+
+source: https://getgovinbox.com/for-ai
+
+# GovInbox ships a remote MCP server with native OAuth 2.1 + Dynamic Client
+# Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# handle discovery, PKCE, token exchange, and refresh — nothing to install
+# locally. A plain bearer token also works for scripted setups.
+
+transport:
+  type: http
+  url: https://mcp.getgovinbox.com/plugin
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. The MCP client triggers the browser flow on the
+  # first probe / first connect.
+
+# Tool selection at install time:
+# GovInbox exposes 42 tools (search, watchlists, grants, awards, protest
+# history, FAR lookup, recompete tracking, teaming research). We leave
+# `default_enabled` unset so the install-time checklist starts with
+# everything pre-checked — users prune what they don't want.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - govinbox
+    - sam.gov
+    - federal contracts
+    - set-aside
+  hosts:
+    - getgovinbox.com
+    - mcp.getgovinbox.com
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with GovInbox.
+
+  Anonymous use is limited (3 searches/day, 10/month). Sign in with a free
+  GovInbox account for 20/month, or a paid plan for higher limits.
+
+  After auth, restart your Hermes session so the GovInbox tools are loaded.
+
+  You can re-run the tool checklist any time with: hermes mcp configure govinbox

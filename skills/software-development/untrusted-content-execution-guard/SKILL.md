@@ -1,6 +1,13 @@
 ---
 name: untrusted-content-execution-guard
 description: "Use when install/exec cmds come from web pages or docs."
+version: 1.0.0
+author: Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [security, supply-chain, prompt-injection, dependencies]
 ---
 
 # Untrusted Content Execution Guard

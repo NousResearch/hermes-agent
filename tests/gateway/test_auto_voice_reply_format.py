@@ -14,7 +14,6 @@ from gateway.session import SessionSource
 
 class TestAutoVoiceReplyFormat:
 
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "platform",
@@ -46,7 +45,7 @@ class TestAutoVoiceReplyFormat:
             })
 
         with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
-            await runner._send_voice_reply(event, "hello from auto tts")
+            assert await runner._send_voice_reply(event, "hello from auto tts") is True
 
         assert requested_paths and requested_paths[0].endswith(".ogg")
         adapter.send_voice.assert_awaited_once()
@@ -136,12 +135,14 @@ class TestAutoVoiceReplyFormat:
         telegram_adapter._auto_tts_disabled_chats = set()
         telegram_adapter._auto_tts_enabled_chats = set()
 
-        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True, "reply_text": False}}):
             runner._sync_voice_mode_state_to_adapter(a2a_adapter)
             runner._sync_voice_mode_state_to_adapter(telegram_adapter)
 
         assert a2a_adapter._auto_tts_default is False
         assert telegram_adapter._auto_tts_default is True
+        assert a2a_adapter._auto_tts_reply_text is False
+        assert telegram_adapter._auto_tts_reply_text is False
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

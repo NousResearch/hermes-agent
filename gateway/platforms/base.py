@@ -2018,6 +2018,7 @@ class BasePlatformAdapter(ABC):
         self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
+        self._auto_tts_reply_text: bool = True
         self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
         # Turn keys where streaming TTS already delivered audio; whole-file auto-TTS skips them.
         # When the gateway streaming-TTS consumer successfully delivers audio, it adds the turn key here so
@@ -4228,16 +4229,16 @@ class BasePlatformAdapter(ABC):
 
     async def _play_tts_file(
         self, event: MessageEvent, text_content: str, tts_path: str, first: bool,
-        metadata: dict[str, Any], record_delivery: Callable) -> bool:
-        """Play one synthesized TTS file. Returns True when the ORIGINAL reply text rode
-        along as a Telegram caption (first file, ≤1024 chars) so the text send is skipped."""
+        metadata: dict[str, Any], record_delivery: Callable) -> tuple[bool, bool]:
+        """Play one synthesized TTS file and return ``(caption_delivered, delivered)``."""
         caption = None
         if first and self.platform == Platform.TELEGRAM and text_content and text_content[:1024] == text_content:
             caption = text_content
         tts_result = await self.play_tts(
             chat_id=event.source.chat_id, audio_path=tts_path, caption=caption, metadata=metadata)
         record_delivery(tts_result)
-        return bool(caption and getattr(tts_result, "success", False))
+        delivered = bool(getattr(tts_result, "success", False))
+        return bool(caption and delivered), delivered
 
     async def _record_delivery_obligation(
         self, event: MessageEvent, session_key: str, text_content: str,
@@ -4601,11 +4602,14 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
+                _tts_delivered = bool(_tts_paths)
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
-                        _tts_caption_delivered |= await self._play_tts_file(
+                        _caption_delivered, _file_delivered = await self._play_tts_file(
                             event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
                             _record_delivery)
+                        _tts_caption_delivered |= _caption_delivered
+                        _tts_delivered &= _file_delivered
                     finally:
                         with contextlib.suppress(OSError):
                             os.remove(_tts_path)
@@ -4624,7 +4628,9 @@ class BasePlatformAdapter(ABC):
                 if text_content or extracted.images or extracted.media_files or extracted.local_files \
                         or _tts_paths or _tts_caption_delivered:
                     self.pause_typing_for_chat(event.source.chat_id)
-                if text_content and not _tts_caption_delivered:
+                if text_content and not (_tts_caption_delivered or (
+                    _tts_delivered and self._auto_tts_reply_text is False
+                )):
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)

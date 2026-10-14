@@ -929,6 +929,12 @@ class TurnRunner:
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        if ctx.voice_turn and getattr(
+            self._runner._delivery_adapter_for(ctx.source), "_auto_tts_reply_text", True
+        ) is False:
+            # Delay the response until auto-TTS reports delivery: otherwise a streamed text bubble
+            # is already visible before the voice-only fallback can suppress it.
+            want_stream_deltas = False
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:

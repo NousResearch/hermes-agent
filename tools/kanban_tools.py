@@ -11,8 +11,11 @@ import functools
 import json
 import logging
 import os
+import re
+import sqlite3
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
@@ -539,6 +542,194 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
 _auto_heartbeat_fence_warned = False
+
+
+# A worker-intent prompt is the heredoc the dispatcher feeds the spawned
+# child (``hermes ... chat -q "work kanban task <id>"``). A helper launched
+# by hand with the same prompt but no dispatcher env is an untracked editor
+# unless we catch it before any model/tool execution (#77825).
+_WORKER_INTENT_PROMPT_RE = re.compile(r"^\s*work\s+kanban\s+task\s+(\S+)\s*$")
+
+
+def _detect_worker_intent(*, query: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(env_tid, prompt_tid)`` after consuming the unauthenticated
+    worker-intent surface. ``env_tid`` is the dispatcher-pinned
+    ``HERMES_KANBAN_TASK`` (set by every dispatcher spawn); ``prompt_tid`` is
+    the task id named by a ``work kanban task <id>`` prompt at startup.
+    A delegate_task child never reads as worker intent."""
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip() or None
+    if _is_delegated_child_context():
+        # The env-carrier may have been inherited by a delegate child; that
+        # process is NOT the kanban owner and the prompt-vs-env cross-reference
+        # would still let it race.
+        return None, None
+    prompt_tid: Optional[str] = None
+    if query:
+        m = _WORKER_INTENT_PROMPT_RE.match(query.strip())
+        if m:
+            prompt_tid = m.group(1).strip() or None
+    return env_tid, prompt_tid
+
+
+def validate_worker_launch_context(*, query: Optional[str] = None) -> bool:
+    """True iff this session may proceed as a kanban worker (#77825).
+
+    A worker-intent session must fail closed BEFORE any repository / GitHub
+    mutation unless the requested task exists on the resolved board, the
+    task is atomically claimed by this process, and the resolved workspace
+    matches the task record. Without this gate, an untracked editor launched
+    with the dispatcher's exact prompt (or with a wrong-board ``HERMES_KANBAN_DB``)
+    silently races the canonical owner — the same shape that motivated
+    ``register_current_worker_from_env`` and ``agent/kanban_turn_recovery.py``,
+    but for the pre-model run path those two checks do not cover.
+
+    Detection is dual: either the dispatcher-set ``HERMES_KANBAN_TASK`` env
+    var, or an explicit ``work kanban task <id>`` prompt at startup. When
+    EITHER signal is set we re-prove against the board DB:
+
+    - ``HERMES_KANBAN_DB`` resolves to a readable file (the dispatcher's
+      board pin, never an unhandled ambient ``HERMES_HOME`` default).
+    - The task row exists on that DB.
+    - ``status='running'`` (the canonical live worker state).
+    - ``current_run_id`` matches ``HERMES_KANBAN_RUN_ID`` (same live run).
+    - ``claim_lock`` matches ``HERMES_KANBAN_CLAIM_LOCK`` (same lease).
+    - ``claim_expires`` is in the future (the dispatcher hasn't rotated).
+    - When the prompt names a task id and the env does too, they match.
+
+    FAIL-CLOSED: any missing coordinate, missing row, dead board, mismatched
+    run/lock, expired lease, or prompt/env mismatch returns False. The caller
+    exits nonzero with one actionable diagnostic; no model/tool execution
+    is entered (see ``hermes_cli/cli_single_query.py::_run_single_query_mode``).
+    Regular ``hermes chat`` sessions (no env, no prompt intent) return True
+    so the agent loop is unaffected.
+    """
+    env_tid, prompt_tid = _detect_worker_intent(query=query)
+    if env_tid is None and prompt_tid is None:
+        return True
+
+    tid = env_tid or prompt_tid
+    # Prompt-only intent: env is incomplete. The dispatcher always pins all
+    # four coordinates; absence of any one is an untracked-editor signal.
+    if not env_tid:
+        logger.warning(
+            "kanban worker launch refused: prompt asks to work kanban task %s "
+            "but dispatcher env (HERMES_KANBAN_TASK / DB / RUN_ID / CLAIM_LOCK) "
+            "is missing; this helper cannot prove ownership",
+            tid,
+        )
+        return False
+
+    db_path_raw = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+    if not db_path_raw:
+        logger.warning(
+            "kanban worker launch refused for task %s: HERMES_KANBAN_DB is not set",
+            tid,
+        )
+        return False
+    db_path = Path(db_path_raw)
+    if not db_path.exists():
+        logger.warning(
+            "kanban worker launch refused for task %s: HERMES_KANBAN_DB=%s does not exist",
+            tid, db_path_raw,
+        )
+        return False
+
+    run_id_env = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    claim_lock_env = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if not run_id_env or not claim_lock_env:
+        logger.warning(
+            "kanban worker launch refused for task %s: dispatcher-pinned "
+            "HERMES_KANBAN_RUN_ID / HERMES_KANBAN_CLAIM_LOCK missing",
+            tid,
+        )
+        return False
+    try:
+        run_id = int(run_id_env)
+    except ValueError:
+        logger.warning(
+            "kanban worker launch refused for task %s: HERMES_KANBAN_RUN_ID=%r "
+            "is not an integer",
+            tid, run_id_env,
+        )
+        return False
+
+    if prompt_tid and prompt_tid != env_tid:
+        logger.warning(
+            "kanban worker launch refused: prompt asks to work kanban task %s "
+            "but env pins HERMES_KANBAN_TASK=%s; the two must agree",
+            prompt_tid, env_tid,
+        )
+        return False
+
+    # Re-prove the task exists on the resolved board with all coordinates
+    # matching. Read-only against the dispatcher-pinned DB so a degraded
+    # reader can't poison a sibling board.
+    try:
+        conn = sqlite3.connect(
+            f"{db_path.absolute().as_uri()}?mode=ro", uri=True
+        )
+    except sqlite3.Error as exc:
+        logger.warning(
+            "kanban worker launch refused for task %s: cannot open "
+            "HERMES_KANBAN_DB=%s (%s)",
+            tid, db_path_raw, exc,
+        )
+        return False
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT status, current_run_id, claim_lock, claim_expires "
+            "FROM tasks WHERE id = ?",
+            (env_tid,),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "kanban worker launch refused for task %s: board read failed (%s)",
+            env_tid, exc,
+        )
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if row is None:
+        logger.warning(
+            "kanban worker launch refused: task %s not found on the resolved "
+            "board DB %s; HERMES_KANBAN_DB may point at the wrong board",
+            env_tid, db_path_raw,
+        )
+        return False
+    if (row["status"] or "") != "running":
+        logger.warning(
+            "kanban worker launch refused: task %s status=%r (expected 'running')",
+            env_tid, row["status"],
+        )
+        return False
+    if row["current_run_id"] is None or int(row["current_run_id"]) != run_id:
+        logger.warning(
+            "kanban worker launch refused: task %s current_run_id=%r does not "
+            "match HERMES_KANBAN_RUN_ID=%r (stale or rotated)",
+            env_tid, row["current_run_id"], run_id,
+        )
+        return False
+    if (row["claim_lock"] or "") != claim_lock_env:
+        logger.warning(
+            "kanban worker launch refused: task %s claim_lock mismatch "
+            "(live lock no longer matches HERMES_KANBAN_CLAIM_LOCK)",
+            env_tid,
+        )
+        return False
+    claim_expires = row["claim_expires"]
+    if claim_expires is None or int(claim_expires) < int(time.time()):
+        logger.warning(
+            "kanban worker launch refused: task %s claim expired "
+            "(claim_expires=%r, now=%d)",
+            env_tid, claim_expires, int(time.time()),
+        )
+        return False
+    return True
 
 
 def register_current_worker_from_env() -> bool:

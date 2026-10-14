@@ -57,13 +57,23 @@ def clear_kanban_env(monkeypatch):
 
 
 def _worker_env(monkeypatch, *, task="t_probe", goal_mode=False, recovery=None):
-    """The environment a dispatcher-spawned worker sees (goal mode is its flag)."""
+    """The environment a dispatcher-spawned worker sees (goal mode is its flag).
+
+    Also bypasses the pre-model ``validate_worker_launch_context`` gate added
+    in #77825 — those tests assert the in-place recovery contract (``worker_claim_is_live``
+    above + the exit-code mapping), not the launch-time context validation, so the
+    gate is short-circuited to True here. Carrier-completeness tests
+    (``test_claim_ownership_matrix`` etc.) test the gate through its real path.
+    """
     monkeypatch.setenv("HERMES_KANBAN_TASK", task)
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
     if goal_mode:
         monkeypatch.setenv("HERMES_KANBAN_GOAL_MODE", "1")
     if recovery is not None:
         monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", str(recovery))
+    import tools.kanban_tools as _kanban_tools_mod
+    monkeypatch.setattr(_kanban_tools_mod, "validate_worker_launch_context",
+                        lambda *, query=None: True)
 
 
 def _failed(*, retryable: bool = True, reason: str = "timeout",
@@ -446,6 +456,15 @@ def cli_harness(monkeypatch):
     message of every model entry, so a test can prove how many turns were taken and what
     the recovery nudge carried, and ``ui`` records non-turn route marks (the exit summary).
     """
+    import tools.kanban_tools as _kanban_tools_mod
+
+    # End-to-end tests here exercise the in-place recovery contract, not the
+    # pre-model launch-context validation added in #77825. The carrier-completeness
+    # matrix (``test_claim_ownership_matrix`` etc.) tests the validation through its
+    # real path; this harness bypasses it so a missing DB / claim pin does not
+    # short-circuit the exit-code mapping tests.
+    monkeypatch.setattr(_kanban_tools_mod, "validate_worker_launch_context",
+                        lambda *, query=None: True)
 
     def _install(driver, script):
         import cli as cli_mod

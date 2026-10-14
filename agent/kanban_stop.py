@@ -8,6 +8,7 @@ instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -48,18 +49,80 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
-def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
-    for msg in filter(lambda m: isinstance(m, dict), messages or ()):
-        role = msg.get("role")
-        if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
-        ):
-            return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
-    return False
+def _strict_json_constant(value: str) -> Any:
+    raise ValueError(f"non-standard JSON constant: {value}")
 
+
+def _tool_result_failed(content: Any) -> bool:
+    if not isinstance(content, str) or not content.lstrip().startswith("{"):
+        return True
+    try:
+        data = json.loads(content, parse_constant=_strict_json_constant)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return True
+    return not (isinstance(data, dict) and data.get("ok") is True)
+
+
+def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
+    """True only when a terminal Kanban tool call has exactly one matching successful result.
+
+    Fail closed: tool-call/result ids must each be globally unique across the whole
+    transcript; the matching result must exist exactly once, have the same tool name,
+    and contain a strict JSON object with ``ok is True``.
+    """
+    msgs = [m for m in (messages or ()) if isinstance(m, dict)]
+
+    call_id_counts: dict[str, int] = {}
+    result_id_counts: dict[str, int] = {}
+    terminal_calls: dict[str, list[str]] = {}
+    terminal_results: dict[str, list[dict]] = {}
+
+    for msg in msgs:
+        role = msg.get("role")
+
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    call_id = str(tc.get("id") or "").strip()
+                else:
+                    call_id = str(getattr(tc, "id", "") or "").strip()
+                if not call_id:
+                    continue
+
+                call_id_counts[call_id] = call_id_counts.get(call_id, 0) + 1
+                name = _tool_call_name(tc)
+                if name in _TERMINAL_KANBAN_TOOLS:
+                    terminal_calls.setdefault(call_id, []).append(name)
+
+        elif role == "tool":
+            result_id = str(msg.get("tool_call_id") or "").strip()
+            if not result_id:
+                continue
+
+            result_id_counts[result_id] = result_id_counts.get(result_id, 0) + 1
+            name = str(msg.get("name") or "")
+            if name in _TERMINAL_KANBAN_TOOLS:
+                terminal_results.setdefault(result_id, []).append(msg)
+
+    for call_id, names in terminal_calls.items():
+        if call_id_counts.get(call_id) != 1 or len(names) != 1:
+            continue
+
+        if result_id_counts.get(call_id) != 1:
+            continue
+
+        results = terminal_results.get(call_id, [])
+        if len(results) != 1:
+            continue
+
+        result = results[0]
+        if str(result.get("name") or "") != names[0]:
+            continue
+
+        if not _tool_result_failed(result.get("content")):
+            return True
+
+    return False
 
 def build_kanban_stop_nudge(
     *,
@@ -80,6 +143,20 @@ def build_kanban_stop_nudge(
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
     # The transcript is the status source: this text is only reached when the session made no
     # handoff call, so it never tells a worker to close a card it already sent to review.
+    if attempts + 1 >= max_attempts:
+        return (
+            "[System: FINAL Kanban terminal guard. Your next response MUST contain exactly "
+            "one structured terminal Kanban tool call. Do NOT reply with plain text and do NOT "
+            "call `kanban_show` again.\n\n"
+            f"Task `{tid}` is still running and has no successful terminal handoff. Choose the "
+            "terminal action from the ACTUAL task state now: "
+            "`kanban_complete(...)` when the work is complete and needs no review; "
+            "`kanban_request_review(...)` for a code change that requires same-card review; "
+            "`kanban_request_changes(...)` when you are the reviewer returning the card for "
+            "changes; or `kanban_block(...)` when genuinely blocked.\n\n"
+            "Issue the structured tool call NOW. Do not narrate intent, do not make another "
+            "status-only call, and do not end the turn without a terminal tool call.]"
+        )
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"

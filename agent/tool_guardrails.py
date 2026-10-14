@@ -6,6 +6,7 @@ guidance, a synthetic tool result, or a controlled turn halt.
 """
 
 from __future__ import annotations
+import os
 
 import hashlib
 import json
@@ -87,6 +88,8 @@ _ATTENDED_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "ap
 
 def is_stall_guard_repeatable(tool_name: str) -> bool:
     """Whether a tool is exempt from the identical-call loop notice."""
+    if tool_name == "kanban_show" and os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return False
     return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(_STALL_GUARD_REPEATABLE_SUFFIXES)
 
 
@@ -141,6 +144,13 @@ class ToolCallGuardrailConfig:
         d = cls()
         flags = {name: _as_bool(data.get(name), getattr(d, name)) for name in _BOOL_FIELDS}
         if flags["non_interactive_hard_stop_enabled"] and _is_non_interactive_platform(platform):
+            flags["hard_stop_enabled"] = True
+        # KANBAN workers are unattended even when launched from the interactive CLI.
+        # Keep the explicit opt-out via non_interactive_hard_stop_enabled.
+        if (
+            flags["non_interactive_hard_stop_enabled"]
+            and os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        ):
             flags["hard_stop_enabled"] = True
 
         def threshold(name: str, section_name: str, key: str) -> int:

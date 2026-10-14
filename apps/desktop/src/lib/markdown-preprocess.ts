@@ -819,6 +819,13 @@ const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufa
  * (`$x = 变量$`) renders as literal prose. Losing one equation is far cheaper
  * than corrupting a sentence's copy-out.
  */
+const HDL_SYSTEM_FUNCTION_RE = /(?<!\\)\$([a-z][a-z0-9_$]+)(?=\s*\()/g
+
+/** Escape Verilog/SystemVerilog system-function dollars before remark-math pairs them. */
+function escapeHdlSystemFunctionDollars(text: string): string {
+  return text.replace(HDL_SYSTEM_FUNCTION_RE, (_, identifier: string) => `\\$${identifier}`)
+}
+
 function escapeCjkProseDollars(text: string): string {
   let out = ''
   let copiedThrough = 0
@@ -968,8 +975,9 @@ function normalizeProseMath(text: string): string {
   // hugging math the model emitted and the hugging math the rewrite produced.
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
   const cjkEscaped = escapeCjkProseDollars(normalized)
+  const hdlEscaped = escapeHdlSystemFunctionDollars(cjkEscaped)
 
-  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
+  return escapeCurrencyDollarsPreservingMath(hdlEscaped)
 }
 
 function extend(out: string[], lines: string[]) {

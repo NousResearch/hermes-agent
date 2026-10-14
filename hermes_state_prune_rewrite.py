@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
 from agent.message_metadata import DB_ROW_SNAPSHOT
-from hermes_state_common import _placeholders
+from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _INSERT_MESSAGE_SQL, _parse_tool_calls
 
 # _INSERT_MESSAGE_SQL's columns in bind order, so a row rewrite can diff _message_row_params by name.
@@ -46,30 +46,72 @@ class SessionPruneRewriteMixin:
         the repair batch's in-place rewrite) is as much a lost race as a rewritten tool result (#124102).
         Bookkeeping roles (``session_meta``/``system``) never reach the model-facing list and stay excluded.
         """
+        return self._read_retrying_ioerr(
+            lambda conn: self.held_row_mismatches(conn, session_id, held))
+
+    def held_row_mismatches(self, conn, session_id: str, held: list[dict[str, Any]]) -> list[int]:
+        """``rewritten_held_row_ids`` against *conn*: the same CAS compare, on a connection the
+        caller already holds (inside a ``BEGIN IMMEDIATE``, the full writer's commit window — a
+        precheck outside that lock misses a write that lands between check and commit, and the
+        full writer would then archive that newer row and republish the stale held text, #124102).
+
+        Chunked like ``stamp_inserted_row_snapshots``: one ``id IN (...)`` per ``_id_chunks`` batch,
+        so a long history stays under SQLite's host-parameter limit instead of failing the pass.
+        Rows without an exact ``_row_id`` but with both the persist marker and a CAS snapshot are
+        resolved by their logical ``message_uid`` (``idx_messages_session_uid``): the unaddressed
+        live-replay loaders stamp exactly that pair, and a rewritten-in-place row is as lost a race
+        there as a row-addressed one (#124102).
+        """
+        from agent.message_metadata import message_uid_or_none
         from agent.transcript_repair import transcript_row_snapshot
 
+        def _exact_id(message: dict[str, Any]) -> Optional[int]:
+            rid = message.get("_row_id")
+            if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0:
+                return rid
+            return None
+
         exact = [
-            (message, int(message["_row_id"]))
+            (message, _exact_id(message))
             for message in held
             if isinstance(message, dict) and message.get(_DB_PERSISTED_MARKER_KEY)
-            and isinstance(message.get("_row_id"), int) and not isinstance(message["_row_id"], bool)
-            and message["_row_id"] > 0 and message.get("role") in ("user", "assistant", "tool")]
-        ids = [row_id for _, row_id in exact]
-        if not session_id or not ids:
-            return []
-        stored = {
-            int(row["id"]): row for row in self._read_all(
-                f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(ids)})",
-                (session_id, *ids))}
-        rewritten: list[int] = []
+            and message.get("role") in ("user", "assistant", "tool")]
+        by_id = {row_id: message for message, row_id in exact if row_id is not None}
+        # The unaddressed replay shape: snapshot + marker, no _row_id. Only rows the caller can
+        # name with durable identity join the fence; anything else keeps the loader-lens behavior
+        # of the activity check (absence of evidence is not permission to publish, but a dict the
+        # store cannot name at all has always belonged to the caller's fallback rules).
+        by_uid = {}
         for message, row_id in exact:
-            row = stored.get(row_id)
+            if row_id is None and isinstance(message.get(DB_ROW_SNAPSHOT), str):
+                uid = message_uid_or_none(message)
+                if uid is not None:
+                    by_uid[uid] = message
+        if not session_id or not (by_id or by_uid):
+            return []
+        stored: dict[int, Any] = {}
+        for chunk in _id_chunks(by_id):
+            for row in conn.execute(
+                f"SELECT * FROM messages WHERE session_id = ? AND id IN ({_placeholders(chunk)})",
+                (session_id, *chunk)).fetchall():
+                stored[int(row["id"])] = row
+        by_uid_row: dict[str, Any] = {}
+        for uid, message in by_uid.items():
+            row = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ?",
+                (session_id, message.get("role"), uid)).fetchone()
+            if row is not None:
+                by_uid_row[uid] = row
+                stored[int(row["id"])] = row
+        mismatches: list[int] = []
+        for message, row_id in exact:
+            row = stored.get(row_id) if row_id is not None else by_uid_row.get(message_uid_or_none(message) or "")
             if row is None or not int(row["active"] or 0):
                 continue  # the activity staleness check owns absent/inactive rows
             snapshot = message.get(DB_ROW_SNAPSHOT)
             if isinstance(snapshot, str):
                 if transcript_row_snapshot(row) != snapshot:
-                    rewritten.append(row_id)
+                    mismatches.append(int(row["id"]))
                 continue
             held_identity = self._row_identity(
                 message.get("role", "unknown"), message.get("content"), message.get("tool_call_id"),
@@ -78,8 +120,8 @@ class SessionPruneRewriteMixin:
                 row["role"], self._decode_content(row["content"]), row["tool_call_id"],
                 _parse_tool_calls(row["tool_calls"]))
             if held_identity != stored_identity:
-                rewritten.append(row_id)
-        return rewritten
+                mismatches.append(int(row["id"]))
+        return mismatches
 
     def rewrite_pruned_rows(self, session_id: str, changes: list[tuple[dict[str, Any], dict[str, Any]]], *,
         model_config_patch: Optional[dict[str, Any]] = None) -> int:

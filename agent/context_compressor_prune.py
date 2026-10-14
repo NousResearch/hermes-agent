@@ -83,6 +83,7 @@ class ProactivePruneMixin:
         next_rearm_tokens = after + runway
         if session_db and session_id:
             _cc_ = _cc()
+            from hermes_state_errors import HeldRowRewrittenError
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
             StaleHeldHistory = _cc_.StaleHeldHistory
             _DB_PERSISTED_MARKER = _cc_._DB_PERSISTED_MARKER
@@ -100,11 +101,17 @@ class ProactivePruneMixin:
                         model_config_patch=model_config_patch,
                         watermark=watermark,
                         covered_ids=covered_ids, unresolved_held=unresolved_held,
-                    )
+                        held_for_cas=messages)
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
                 logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
+                self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
+                return messages, 0
+            except HeldRowRewrittenError:
+                # The full writer's in-transaction CAS fence tripped: a held row changed between the
+                # precheck and the commit. Same disposition as StaleHeldHistory — nothing was written.
+                logger.info("Proactive tool-result prune skipped: a held row was rewritten in place before the commit")
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
             except Exception as exc:  # health: allow BLE001 -- the commit boundary keeps the original transcript on any store failure (#124102)

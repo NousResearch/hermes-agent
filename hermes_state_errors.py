@@ -179,6 +179,14 @@ class PruneRowStaleError(PruneRowUnresolvedError):
     the in-place path); the prune caller tells the two apart and skips the pass entirely."""
 
 
+class HeldRowRewrittenError(RuntimeError):
+    """A full-writer commit found one of the held rows it was about to archive already rewritten in
+    place by another writer. Raised INSIDE the commit's write transaction, after the caller's
+    precheck but before any row is archived: a write that lands in that window is exactly the lost
+    race the precheck cannot see (#124102). Callers treat it like ``StaleHeldHistory`` — nothing
+    written, the pass is a no-op and the newer generation keeps the session."""
+
+
 class SessionTurnLeaseLostError(RuntimeError):
     """A transcript write presented a turn-lease holder that no longer owns it.
     Fail-fast fencing (no ``_execute_write`` retry): a later writer may already

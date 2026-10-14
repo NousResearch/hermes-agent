@@ -601,3 +601,43 @@ def test_the_fallback_still_commits_when_no_held_row_was_rewritten(tmp_path: Pat
     live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
     assert live.count("start") == 1  # the held user row is republished exactly once
     assert live.count("live turn not yet flushed") == 1
+
+
+def test_a_user_edit_landing_after_the_precheck_stays_active_in_the_commit(tmp_path: Path) -> None:
+    """The lease-less stale gate runs OUTSIDE the full writer's write transaction.
+
+    A second SessionDB connection that rewrites a covered user row AFTER the precheck but BEFORE the
+    commit's ``BEGIN IMMEDIATE`` was invisible to it: ``archive_and_compact`` archived the newer row
+    and republished the stale held text, leaving the newer edit with zero active copies (#124102).
+    The commit must re-verify the held rows against the live store inside its own transaction and
+    abort as a no-op when one moved — the held row is never published and the edit keeps its row.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "PRUNE_CAS_COMMIT_WINDOW"
+    db.create_session(session_id, source="telegram")
+    db.append_messages_batch(session_id, _history())
+    agent = _build_agent(db, session_id)
+    _configure_pruning(agent)
+    messages = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    user_row = next(m for m in messages if m.get("role") == "user")
+    splice = next(i for i, m in enumerate(messages)
+                  if m.get("_row_id") and m["_row_id"] > user_row["_row_id"])
+    held = messages[:splice] + [{"role": "user", "content": "live turn not yet flushed"}] + messages[splice:]
+
+    other = SessionDB(db_path=tmp_path / "state.db")
+    original = db.archive_and_compact
+
+    def _edit_then_commit(*args, **kwargs):
+        # The call boundary is after the caller's precheck and before BEGIN IMMEDIATE: a second
+        # connection can take the write lock first and rewrite the covered user row in place.
+        assert other.set_user_message_content(session_id, user_row["_row_id"], "edited inside the window") == 1
+        return original(*args, **kwargs)
+
+    with patch.object(db, "archive_and_compact", side_effect=_edit_then_commit):
+        result, count = agent.context_compressor.prune_tool_results_only(held, current_tokens=120_000)
+
+    assert (result, count) == (held, 0)  # the commit aborted inside its transaction: a true no-op
+    live = [message["content"] for message in db.get_messages_as_conversation(session_id)]
+    assert live.count("edited inside the window") == 1  # the newer edit keeps its single active row
+    assert "start" not in live  # the stale pre-edit body was never republished
+    other.close()

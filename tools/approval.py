@@ -406,9 +406,12 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         approve_session(session_key, key)
         if choice == "always":
             approve_permanent(key)
+            # Pass only this process's grants, taken against the baseline of the same snapshot. A
+            # check that syncs a hand removal before the save runs advances the baseline, so a
+            # removed entry left in a full snapshot would pass for a new grant and be written back.
             with _lock:
-                snapshot = set(_permanent_set())
-            save_permanent_allowlist(snapshot)
+                grants = _permanent_set() - _permanent_baseline_by_home.get(_baseline_key(), set())
+            save_permanent_allowlist(grants)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------

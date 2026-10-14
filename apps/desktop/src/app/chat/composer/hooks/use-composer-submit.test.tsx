@@ -24,11 +24,14 @@ import {
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $setupBeatRequests, parkSetupBeat } from '@/store/setup-beat'
+import { notify } from '@/store/notifications'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerSubmit } from './use-composer-submit'
+
+vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
@@ -349,6 +352,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     cleanup()
     vi.restoreAllMocks()
     clearComposerTerminalSelections()
+    clearQueuedPrompts('stored-session')
   })
 
   it('treats a payload mid-turn as send (steer), not stop', async () => {
@@ -379,6 +383,27 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'warning',
+      title: 'Message not redirected',
+      message: 'The active turn could not be redirected. Your message remains in the composer.'
+    })
+  })
+
+  it('explains when a refused steer is queued for the next turn', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'keep me queued' })
+    onSteer.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep me queued']))
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'warning',
+      title: 'Message not redirected',
+      message: 'The active turn could not be redirected. Your message was queued for the next turn.'
+    })
   })
 
   it('queues a steer whose redirect RPC fails instead of losing it', async () => {

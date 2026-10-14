@@ -445,8 +445,18 @@ export function useComposerSubmit({
           attachments: [],
           ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
         })
+        notify({
+          kind: 'warning',
+          title: translateNow('composer.steerRefusedTitle'),
+          message: translateNow('composer.steerRefusedQueuedBody')
+        })
       } else {
         loadIntoComposer(frozen.displayText, [])
+        notify({
+          kind: 'warning',
+          title: translateNow('composer.steerRefusedTitle'),
+          message: translateNow('composer.steerRefusedRestoredBody')
+        })
       }
     }
 

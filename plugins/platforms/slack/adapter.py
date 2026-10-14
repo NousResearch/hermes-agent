@@ -2759,12 +2759,29 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged.
+
+        When the installed slack-sdk ships the Agent Sessions API (``agents.sessions.setStatus``),
+        the adapter routes through it first — but that API rejects free-text statuses with
+        ``invalid_arguments: must be a valid enum value`` and may need a different scope, so a
+        failure falls back to the legacy ``assistant.threads.setStatus`` (#112866)."""
+        client = self._get_client(chat_id, team_id=team_id)
+        legacy = getattr(client, "assistant_threads_setStatus", None)
+        _set_status = None
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            _set_status = _session_status_method(client)
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            if legacy is None or _set_status == legacy:
+                # ``_session_status_method`` already returns the legacy method on any SDK without
+                # the Agent Sessions API, so the call that just failed WAS the legacy one —
+                # retrying it would send the identical request twice with identical arguments.
+                logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+                return
+            try:
+                await legacy(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            except Exception as e2:
+                logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e2)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

@@ -169,6 +169,8 @@ class SessionManager:
         self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        # Set from ``initialize``: the client can render a clarify question as a form elicitation.
+        self.clarify_via_elicitation = False
         self._cwd_backfilled = False
 
     # ---- public API ---------------------------------------------------------
@@ -520,6 +522,9 @@ class SessionManager:
             # comes back as bare server names, which ACP keys as ``mcp-<server>`` like its session servers.
             resolved = _get_platform_tools(config, "acp")
             mcp_servers = resolved & enabled_mcp_server_names(config)
+            if self.clarify_via_elicitation and "hermes-acp" in resolved:
+                # hermes-acp leaves clarify out only because a client without elicitation can't show it.
+                resolved.add("clarify")
             enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),

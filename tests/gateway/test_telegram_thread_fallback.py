@@ -724,3 +724,66 @@ async def test_thread_fallback_only_fires_once():
     # The key point: the message was delivered despite the invalid thread
 
 
+
+
+@pytest.mark.asyncio
+async def test_media_send_retries_without_stale_message_thread_id(tmp_path):
+    """A dead ``thread_id`` must not silently drop the attachment.
+
+    Regression: scheduled/cron deliveries route with a plain ``thread_id`` and carry neither
+    ``telegram_dm_topic_reply_fallback`` nor ``direct_messages_topic_id``. Text sends already
+    retried without the dead thread, but the media path bailed out of its retry guard and
+    re-raised, so a daily digest delivered its message and lost the attached file every run.
+    """
+    adapter = _make_adapter()
+    adapter._session_store = None
+
+    call_log = []
+    media_file = tmp_path / "paper.html"
+    media_file.write_text("<html>daily digest</html>")
+
+    async def mock_send_document(**kwargs):
+        call_log.append(dict(kwargs))
+        if kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+        return SimpleNamespace(message_id=4242)
+
+    adapter._bot = SimpleNamespace(send_document=mock_send_document)
+
+    result = await adapter.send_document(
+        chat_id="8699962776",
+        file_path=str(media_file),
+        metadata={"thread_id": "97398"},
+    )
+
+    assert result.success is True, "attachment must survive a stale thread_id"
+    assert len(call_log) == 2, "expected one failed threaded send then one retry"
+    assert call_log[0]["message_thread_id"] == 97398
+    assert "message_thread_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
+async def test_media_send_does_not_retry_on_unrelated_bad_request(tmp_path):
+    """Only a stale-thread failure earns the retry; other errors must still surface."""
+    adapter = _make_adapter()
+    adapter._session_store = None
+
+    call_log = []
+    media_file = tmp_path / "paper.html"
+    media_file.write_text("<html>daily digest</html>")
+
+    async def mock_send_document(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("File too large")
+
+    adapter._bot = SimpleNamespace(send_document=mock_send_document)
+
+    # send_document swallows the failure into a base-class fallback rather than raising, so
+    # assert on the call count: an unrelated BadRequest must NOT trigger a second attempt.
+    await adapter.send_document(
+        chat_id="8699962776",
+        file_path=str(media_file),
+        metadata={"thread_id": "97398"},
+    )
+
+    assert len(call_log) == 1, "unrelated BadRequest must not be retried"

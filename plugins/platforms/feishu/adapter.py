@@ -2461,10 +2461,19 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
-        synthetic_text = f"/card {action_tag}"
+        form_value = getattr(action, "form_value", None)  # Extract form data
+        
+        # Build complete payload (button value + form_value)
+        payload = {}
         if action_value:
+            payload.update(action_value)
+        if form_value:
+            payload["form_value"] = form_value
+        
+        synthetic_text = f"/card {action_tag}"
+        if payload:
             try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                synthetic_text += f" {json.dumps(payload, ensure_ascii=False)}"
             except Exception:
                 pass
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)

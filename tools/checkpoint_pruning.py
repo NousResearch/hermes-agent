@@ -116,7 +116,10 @@ class Pruner:
         """
         if cap_bytes <= 0:
             return False
-        if self.gc_pending():
+        if self.dir_size(self.store) > cap_bytes and self.gc_pending():
+            # Reclaim only when the decision needs it: a marker may have been
+            # created moments ago by this take's own trim, and an unconditional
+            # gc here would put a full repack on every capped project's take path.
             self.reclaim()
         if self.dir_size(self.store) <= cap_bytes:
             return False

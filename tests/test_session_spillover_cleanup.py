@@ -162,7 +162,7 @@ def test_nonfinite_retention_falls_back_and_still_sweeps(_home):
     """YAML ``.inf`` / ``.nan`` used to raise out of ``_spillover_retention_hours`` after the
     once-per-home flag was set — every later sweep silently skipped. Fallback cleanup must
     actually remove a stale file."""
-    import yaml
+    import hermes_yaml as yaml  # the repo's YAML seam; PyYAML is not a pinned test dep
 
     with (_home / "config.yaml").open("w", encoding="utf-8") as fh:
         yaml.safe_dump({"sessions": {"retention_days": float("inf")}}, fh)

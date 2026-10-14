@@ -242,6 +242,19 @@ def _require(cond, ok, bad, issue: str, issues: list[str]) -> None:
 
 
 def _check_daytona_backend(issues: list[str]) -> None:
+    from hermes_cli.config import load_config, read_raw_config
+
+    terminal_cfg = load_config().get("terminal", {})
+    raw_terminal_cfg = read_raw_config().get("terminal", {})
+
+    def _terminal_cfg_value(key, default=""):
+        return terminal_cfg.get(key, default)
+
+    def _env_or_terminal_cfg(env_key, cfg_key, default=""):
+        if cfg_key in raw_terminal_cfg:
+            return raw_terminal_cfg[cfg_key]
+        return os.getenv(env_key) or _terminal_cfg_value(cfg_key, default)
+
     _require(os.getenv("DAYTONA_API_KEY"), ("Daytona API key", "(configured)"),
              ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
              "run `hermes setup terminal` (Daytona) to enter it.", issues)
@@ -250,6 +263,121 @@ def _check_daytona_backend(issues: list[str]) -> None:
         check_ok("daytona SDK", "(installed)")
     except ImportError:
         _fail_and_issue("daytona SDK not installed", "(run hermes setup terminal)", "Run hermes setup terminal and select Daytona, then restart Hermes", issues)
+
+    # --- Create mode & snapshot validation ---
+    create_mode = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_CREATE_MODE", "daytona_create_mode", "image") or "image")
+    if create_mode not in ("image", "snapshot"):
+        _fail_and_issue(
+            f"Invalid daytona_create_mode: {create_mode!r}",
+            "(must be 'image' or 'snapshot')",
+            f"Set terminal.daytona_create_mode in config.yaml to 'image' or 'snapshot'",
+            issues,
+        )
+    elif create_mode == "snapshot":
+        snapshot = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_SNAPSHOT", "daytona_snapshot", "") or "").strip()
+        if not snapshot:
+            _fail_and_issue(
+                "Snapshot mode requires daytona_snapshot",
+                "(daytona_create_mode='snapshot' but no snapshot name/ID set)",
+                "Set terminal.daytona_snapshot in config.yaml to a snapshot name or ID",
+                issues,
+            )
+        else:
+            check_ok("Daytona snapshot", f"({snapshot})")
+
+    # --- Language validation ---
+    language = str(_env_or_terminal_cfg("TERMINAL_DAYTONA_LANGUAGE", "daytona_language", "") or "").strip()
+    from tools.environments.daytona import get_supported_daytona_languages
+    supported_languages = get_supported_daytona_languages()
+    valid_languages = {"", *supported_languages}
+    if language and language.lower() not in valid_languages:
+        _fail_and_issue(
+            f"Unsupported Daytona language: {language!r}",
+            f"(installed SDK supports: {', '.join(supported_languages)})",
+            f"Set terminal.daytona_language in config.yaml to one of: {', '.join(supported_languages)}",
+            issues,
+        )
+    elif language:
+        check_ok("Daytona language", f"({language.lower()})")
+
+    # --- JSON fields validation ---
+    for json_var, json_label in [
+        ("TERMINAL_DAYTONA_LABELS", "daytona_labels"),
+        ("TERMINAL_DAYTONA_ENV_VARS", "daytona_env_vars"),
+        ("TERMINAL_DAYTONA_VOLUME_MOUNTS", "daytona_volume_mounts"),
+    ]:
+        raw_val = _env_or_terminal_cfg(json_var, json_label, "")
+        if raw_val:
+            try:
+                import json as _json
+                parsed = _json.loads(raw_val.strip()) if isinstance(raw_val, str) else raw_val
+                if json_var == "TERMINAL_DAYTONA_VOLUME_MOUNTS":
+                    if not isinstance(parsed, list):
+                        _fail_and_issue(
+                            f"{json_label} must be a JSON array",
+                            f"(got {type(parsed).__name__})",
+                            f"Set terminal.{json_label} in config.yaml to a JSON array, e.g. '[{{\"volume_id\":\"...\",\"mount_path\":\"/mnt/data\"}}]'",
+                            issues,
+                        )
+                    else:
+                        check_ok(json_label, f"({len(parsed)} mount(s))")
+                elif json_var == "TERMINAL_DAYTONA_LABELS":
+                    if not isinstance(parsed, dict):
+                        _fail_and_issue(
+                            f"{json_label} must be a JSON object",
+                            f"(got {type(parsed).__name__})",
+                            f"Set terminal.{json_label} in config.yaml to a JSON object, e.g. '{{\"key\":\"value\"}}'",
+                            issues,
+                        )
+                    else:
+                        check_ok(json_label, f"({len(parsed)} label(s))")
+                elif json_var == "TERMINAL_DAYTONA_ENV_VARS":
+                    if not isinstance(parsed, dict):
+                        _fail_and_issue(
+                            f"{json_label} must be a JSON object",
+                            f"(got {type(parsed).__name__})",
+                            f"Set terminal.{json_label} in config.yaml to a JSON object, e.g. '{{\"KEY\":\"value\"}}'",
+                            issues,
+                        )
+                    else:
+                        check_ok(json_label, f"({len(parsed)} var(s))")
+            except (ValueError, TypeError) as exc:
+                _fail_and_issue(
+                    f"Invalid JSON in {json_var}",
+                    f"({exc})",
+                    f"Fix terminal.{json_label} in config.yaml",
+                    issues,
+                )
+
+    # --- Disk size guidance ---
+    disk_raw = _env_or_terminal_cfg("TERMINAL_CONTAINER_DISK", "container_disk", "")
+    disk_mb = str(disk_raw or "").strip()
+    disk_explicit = os.getenv("TERMINAL_CONTAINER_DISK") not in (None, "") or "container_disk" in raw_terminal_cfg
+    if create_mode == "image" and disk_explicit and disk_mb:
+        try:
+            disk_gb = int(disk_mb) / 1024
+            if disk_gb > 10:
+                check_warn(
+                    f"Daytona disk request ({disk_gb:.0f}GB) exceeds platform guidance",
+                    "(platform caps at 10GB; value will be capped automatically)",
+                )
+        except ValueError:
+            pass
+
+    # --- CWD sync ---
+    sync_raw = _env_or_terminal_cfg("TERMINAL_DAYTONA_SYNC_CWD", "daytona_sync_cwd", "")
+    sync_cwd = str(sync_raw or "").strip().lower()
+    if sync_cwd in ("true", "1", "yes"):
+        check_ok(
+            "Daytona sync_cwd",
+            "(enabled — host project dir will sync to /workspace)",
+        )
+        # Warn if no explicit sync source is set — sync needs a source directory.
+        if not (os.getenv("TERMINAL_DAYTONA_SYNC_CWD_SOURCE") or _terminal_cfg_value("daytona_sync_cwd_source", "")):
+            check_warn(
+                "Daytona sync_cwd: no explicit sync source set",
+                "(set terminal.daytona_sync_cwd_source in config.yaml)",
+            )
 
 
 def _check_vercel_backend(issues: list[str]) -> None:
@@ -299,7 +427,8 @@ _BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend,
 @doctor_check()
 def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
     """Docker/SSH/Daytona/Vercel/plugin terminal backends, gated on TERMINAL_ENV."""
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    from hermes_cli.config import load_config
+    terminal_env = os.getenv("TERMINAL_ENV") or load_config().get("terminal", {}).get("backend", "local")
     try:
         from hermes_constants import is_container as _is_container
         running_in_container = _is_container()

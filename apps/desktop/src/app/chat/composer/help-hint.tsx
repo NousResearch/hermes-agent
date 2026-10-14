@@ -27,6 +27,8 @@ export function HelpHint({ busy = false }: { busy?: boolean }) {
   const { t } = useI18n()
   const busyInputMode = useStore($busyInputMode)
   const c = t.composer
+  const hotkeyDescriptions: Record<string, string> = c.hotkeyDescs
+  const actionLabels: Record<string, string> = t.keybinds.actions
   const actionRows = busy
     ? [
         { id: busyInputMode === 'queue' ? 'composer.queue' : busyInputMode === 'steer' ? 'composer.steer' : 'composer.send', combos: ['enter'] },
@@ -45,7 +47,7 @@ export function HelpHint({ busy = false }: { busy?: boolean }) {
 
       <Section title={c.hotkeys}>
         {hotkeyRows.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? t.keybinds.actions[row.id] ?? ''} key={row.id} />
+          <HotkeyRow combos={[...row.combos]} description={hotkeyDescriptions[row.id] ?? actionLabels[row.id] ?? ''} key={row.id} />
         ))}
       </Section>
 

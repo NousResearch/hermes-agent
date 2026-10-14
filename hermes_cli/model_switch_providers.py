@@ -659,7 +659,9 @@ def _collect_authed_provider_slugs(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.models import CANONICAL_PROVIDERS
+    from providers import unlisted_provider_names
     excluded_set = {str(p).strip().lower() for p in excluded if p}
+    hidden = unlisted_provider_names()  # a set key is not an opt-in (ProviderProfile.listed)
     slugs: list[str] = []
     seen: set[str] = set()
 
@@ -682,7 +684,7 @@ def _collect_authed_provider_slugs(
             _emit(hermes_slug, pid, hermes_slug)
 
     for cp in CANONICAL_PROVIDERS:
-        if _skip(seen, excluded_set, cp.slug):
+        if _skip(seen, excluded_set, cp.slug) or cp.slug in hidden:
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
@@ -950,8 +952,12 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
+    from providers import unlisted_provider_names
+    hidden = unlisted_provider_names()  # the current provider keeps its row: the user named it
     for cp in CANONICAL_PROVIDERS:
         if _skip(b.seen_slugs, b.excluded, cp.slug):
+            continue
+        if cp.slug in hidden and cp.slug != b.current_provider:
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False

@@ -44,6 +44,7 @@ import {
 } from '../composer-utils'
 import {
   ackComposerInsert,
+  type ComposerInsertCaret,
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
@@ -257,7 +258,7 @@ export function useComposerDraft({
   )
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode): boolean => {
+    (text: string, mode: ComposerInsertMode, caret: ComposerInsertCaret = 'end'): boolean => {
       const value = text.trim()
 
       if (!value) {
@@ -277,7 +278,12 @@ export function useComposerDraft({
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
-      paintDraft(`${base}${sep}${value}`)
+      // 'below' parks the caret on the empty line under the block: paintDraft
+      // sends it to the end of whatever it paints, so that blank line IS the
+      // target. A quoted passage must not be what the next keystroke edits.
+      const tail = mode === 'block' && caret === 'below' ? '\n\n' : ''
+
+      paintDraft(`${base}${sep}${value}${tail}`)
 
       return true
     },
@@ -344,11 +350,11 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
+    const offInsert = onComposerInsertRequest(({ caret, mode, target: requested, text, token }) => {
       if (requested === target) {
         // A tokened insert came from the plugin SDK — echo whether the text
         // actually landed, so its promise never settles on a silent no-op.
-        ackComposerInsert(token, appendExternalText(text, mode))
+        ackComposerInsert(token, appendExternalText(text, mode, caret))
       }
     })
 

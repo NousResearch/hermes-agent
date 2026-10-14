@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantChat = {
   composer: {
+    quoteAddToChat: '新增至聊天',
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',

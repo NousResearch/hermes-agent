@@ -1425,10 +1425,21 @@ def test_setup_sh_expands_the_home_for_its_shell_consumers(
     expandvars themselves), but this script's own string consumers — cygpath,
     mkdir, cp — never expand ``~``: they must read an expanded copy or they
     publish launchers and skills into a literal ``~/...`` junk directory the
-    child never writes to."""
+    child never writes to.
+
+    The expected expansion comes from the HOST ``os.path`` module, the same
+    ladder the child's platform runs (ntpath under msys, posixpath otherwise),
+    rather than from the child's own ``$HOME``: those disagree by construction,
+    because Git Bash POSIX-izes an inherited Windows ``HOME`` and the msys
+    ladder, like ntpath, reads ``USERPROFILE`` instead."""
     bash = shutil.which("bash")
     assert bash, "setup-hermes.sh requires bash"
-    monkeypatch.setenv("HOME", str(tmp_path / "native-home"))
+    native = str(tmp_path / "native-home")
+    # Pin BOTH rungs at one home: the resolver takes USERPROFILE under msys and
+    # HOME elsewhere, and leaving the other at the host's value would let the
+    # script expand ``~`` outside the temporary home.
+    monkeypatch.setenv("HOME", native)
+    monkeypatch.setenv("USERPROFILE", native)
     monkeypatch.setenv("HERMES_HOME", "~/skills-home")
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("HERMES_DATA_DIR_SUFFIX", raising=False)
@@ -1445,7 +1456,7 @@ def test_setup_sh_expands_the_home_for_its_shell_consumers(
     script_path = tmp_path / "extracted.sh"
     script_path.write_text(
         f"{body}\n{fold.group(0)}\n{skills.group(0)}\n"
-        'printf "home=%s\\n" "$HOME"\n'
+        'printf "root=%s\\n" "$(hermes_root_of)"\n'
         'printf "skills=%s\\n" "$HERMES_SKILLS_DIR"\n'
         'printf "exported=%s\\n" "$(env | sed -n \'s/^HERMES_HOME=//p\')"\n',
         encoding="utf-8", newline="\n",
@@ -1456,11 +1467,19 @@ def test_setup_sh_expands_the_home_for_its_shell_consumers(
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    home_line, skills_line, exported_line = result.stdout.strip().splitlines()[-3:]
-    # Want built from the script's own $HOME: Cygwin POSIX-izes an inherited
-    # Windows HOME at startup, so the Python-side spelling would not compare.
-    home = home_line.removeprefix("home=")
-    assert skills_line == f"skills={home}/skills-home/skills", skills_line
+    root_line, skills_line, exported_line = result.stdout.strip().splitlines()[-3:]
+    root, skills = root_line.removeprefix("root="), skills_line.removeprefix("skills=")
+    # The consumer reads the resolver's own answer, so the assertion never
+    # depends on how each host spells that directory (Git Bash POSIX-izes an
+    # inherited Windows HOME, and the msys ladder reads USERPROFILE instead).
+    assert Path(skills) == Path(root) / "skills", (
+        f"HERMES_SKILLS_DIR={skills!r} must hang off the resolved root {root!r}"
+    )
+    assert Path(root) == Path(os.path.expanduser("~/skills-home")), (
+        f"the resolver answered {root!r}, the host ladder expands to "
+        f"{os.path.expanduser('~/skills-home')!r}"
+    )
+    # The export stays lexical: child Python expands it itself.
     assert exported_line == "exported=~/skills-home", exported_line
 
 

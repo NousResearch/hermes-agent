@@ -58,7 +58,13 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(
         "base_url": "http://127.0.0.1:11436/v1",
         "api_key": "${RETAINED_TOKEN}",
     }
-    retained_catalog = {"retained": retained} if schema == "providers" else [retained]
+    # Same identity under another key: runtime takes the first alias match, so it must not survive.
+    stale = {"name": "my-gateway", "base_url": "http://127.0.0.1:11437/v1"}
+    retained_catalog = (
+        {"stale": stale, "retained": retained}
+        if schema == "providers"
+        else [stale, retained]
+    )
     atomic_config_write(
         profile / "config.yaml",
         {
@@ -75,11 +81,12 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(
         provider,
         "my-finetune",
     )
-    assert cfg[schema] == (
+    expected = (
         {"my-gateway": endpoint, "retained": retained}
         if schema == "providers"
         else [endpoint, retained]
     )
+    assert cfg[schema] == expected
     # The gateway travels as the launch file wrote it: the ref, never the launch secret.
     copied = (
         cfg["providers"]["my-gateway"]

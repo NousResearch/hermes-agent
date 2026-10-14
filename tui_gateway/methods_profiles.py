@@ -525,21 +525,9 @@ def _inherit_launch_model(path) -> bool:
     seed = _lazy("hermes_cli.profile_model_seed", "launch_model_seed")(read_user_config_raw())
     if seed.get("providers") or seed.get("custom_providers"):
         from hermes_cli.config import save_config
-        from hermes_cli.providers import custom_provider_aliases
+        merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
-            cfg = read_user_config_raw()
-            if seed.get("providers"):
-                existing_providers = cfg.get("providers")
-                cfg["providers"] = {**(existing_providers if isinstance(existing_providers, dict) else {}),
-                                    **seed["providers"]}
-            if custom := seed.get("custom_providers"):
-                aliases = custom_provider_aliases(custom[0].get("name", ""), custom[0].get("provider_key", ""))
-                existing = cfg.get("custom_providers")
-                cfg["custom_providers"] = custom + [
-                    entry for entry in (existing if isinstance(existing, list) else [])
-                    if not isinstance(entry, dict) or not aliases.intersection(
-                        custom_provider_aliases(entry.get("name", ""), entry.get("provider_key", "")))]
-            save_config(cfg)
+            save_config(merge(read_user_config_raw(), seed))
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 

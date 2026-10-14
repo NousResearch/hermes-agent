@@ -629,6 +629,8 @@ export const unparkQueuedPrompts = (key: string | null | undefined): void => {
   const sid = sidOf(key)
 
   if (sid) {
+    // Resume is a new dispatch intent; it supersedes an outstanding one-shot.
+    queueParkRevisions.set(sid, getQueueParkRevision(sid) + 1)
     setParked(sid, false)
   }
 }

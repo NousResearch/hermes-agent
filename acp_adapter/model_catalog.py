@@ -217,7 +217,7 @@ class _ModelCatalog:
                     self.semantic(encoded_provider) == self.semantic(self.current_choice_provider)
                 )
                 self.add(
-                    encoded_provider, rendered_model, f"{provider_name} · {rendered_model}",
+                    encoded_provider, rendered_model, f"{rendered_model} · {provider_name}",
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
 
@@ -298,7 +298,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
     if current_model_id and current_model_id not in {item.model_id for item in available_models}:
         provider_name = provider_label(normalized_provider)
         available_models.insert(0, ModelInfo(
-            model_id=current_model_id, name=f"{provider_name} · {model}",
+            model_id=current_model_id, name=f"{model} · {provider_name}",
             description=f"Provider: {provider_name} • current",
         ))
 

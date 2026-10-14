@@ -16,6 +16,12 @@ afterEach(() => {
   disposers.splice(0).forEach(d => d())
 })
 
+describe('composer render areas', () => {
+  it('exposes a chrome-free slot above the whole composer', () => {
+    expect(COMPOSER_AREAS.above).toBe('composer.above')
+  })
+})
+
 describe('runComposerMiddleware', () => {
   it('passes the draft through untouched when nothing is registered', async () => {
     const draft = { text: 'hello' }

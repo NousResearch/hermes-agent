@@ -31,7 +31,7 @@ export const $gatewayRestarting = atom(false)
 // a window refused end to end is a failure, not a silent success: resolving it
 // would erase the caller's "restart needed" banner while the gateway stays
 // down.
-async function awaitAction(name: string): Promise<void> {
+async function awaitAction(name: string, profile?: string): Promise<void> {
   let sawAnsweredPoll = false
   let lastPollError: unknown = null
 
@@ -41,7 +41,7 @@ async function awaitAction(name: string): Promise<void> {
     let status: Awaited<ReturnType<typeof getActionStatus>>
 
     try {
-      status = await getActionStatus(name)
+      status = await getActionStatus(name, 200, profile)
     } catch (err) {
       // The backend accepted the restart POST a moment ago and is now
       // refusing — the expected shape of the restart window itself.
@@ -110,8 +110,10 @@ export async function confirmSharedGatewayRestart(): Promise<false | null | stri
 // messaging save/toggle toasts — gets identical feedback from a plain
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
 // Resolves `true` when the restart child completed cleanly (callers that keep
-// a "restart needed" banner clear it on that signal only).
-export async function runGatewayRestart(): Promise<boolean> {
+// a "restart needed" banner clear it on that signal only). Pass `profile` to
+// pin both the restart request and its status polls to one backend owner; the
+// ambient scope serves callers without an owner (#71352).
+export async function runGatewayRestart(profile?: string): Promise<boolean> {
   const shared = await confirmSharedGatewayRestart()
 
   if (shared === false) {
@@ -121,8 +123,8 @@ export async function runGatewayRestart(): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway()
-    await awaitAction(started.name)
+    const started: ActionResponse = await restartGateway(profile)
+    await awaitAction(started.name, profile)
 
     if (shared) {
       notify({ kind: 'success', message: translateNow('commandCenter.sharedGatewayRestarted', shared.length) })

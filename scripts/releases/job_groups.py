@@ -72,7 +72,8 @@ def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = Fals
     """
     required = ["validate"]
     if phase == "publish":
-        return required + ["stable-publish", "stable-store"]
+        # stable-store is not required: a Store failure never blocks publication.
+        return required + ["stable-publish"]
     if phase != "candidate":
         raise ValueError(f"Unknown release phase: {phase}")
     for group, jobs in GROUP_JOBS.items():

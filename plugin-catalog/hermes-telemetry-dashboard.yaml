@@ -1,0 +1,17 @@
+name: hermes-telemetry-dashboard
+repo: https://github.com/cybertecla/hermes-telemetry-dashboard
+sha: 1399a77f8096c536e51dbd5e732da44ff345c354
+description: "Dashboard-only read plugin: visualize the shared-metrics telemetry Hermes collects locally — metric families, drilldowns, milestone timeline, install snapshot, and the exact next package payload. Send stays off."
+maintainer: cybertecla
+tier: community
+category: general
+docs_url: https://github.com/cybertecla/hermes-telemetry-dashboard#readme
+version: "0.1.1"
+screenshots:
+  - https://raw.githubusercontent.com/cybertecla/hermes-telemetry-dashboard/1399a77f8096c536e51dbd5e732da44ff345c354/assets/screenshot-overview.png
+  - https://raw.githubusercontent.com/cybertecla/hermes-telemetry-dashboard/1399a77f8096c536e51dbd5e732da44ff345c354/assets/screenshot-drilldown.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

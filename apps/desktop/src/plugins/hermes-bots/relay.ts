@@ -55,6 +55,8 @@ interface RelayLifecycle {
   pushDebounceTimer: null | ReturnType<typeof setTimeout>
   pushUnsub: (() => void) | null
   rosterBusy: boolean
+  /** Invalidates pending roster reads when the relay stops or restarts. */
+  rosterGeneration: number
   /** Id of the sole connection whose roster clear went out; null once the peer set relays again. */
   rosterClearedFor: null | string
   rosterTimer: null | ReturnType<typeof setInterval>
@@ -68,6 +70,7 @@ const relay: RelayLifecycle = {
   pushDebounceTimer: null,
   pushUnsub: null,
   rosterBusy: false,
+  rosterGeneration: 0,
   rosterClearedFor: null,
   rosterTimer: null
 }
@@ -302,14 +305,18 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id
 
-    return profiles
+    const rows = profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),
@@ -319,9 +326,30 @@ async function relayAgentsOn(
         description: String(profile?.description || '')
       }))
       .filter(row => row.profile)
+
+    host.traceIdentityChange?.('bot-relay', `rows ${connection.id}`, rosterTrace(rows, String(res?.install_id || '')))
+
+    return rows
   } catch {
     return null
   }
+}
+
+/** Which connection last answered from each install: a second connection
+ *  answering from the same machine is a misrouted request (or one machine
+ *  registered twice) and is flagged in the trace. */
+const answeringInstall = new Map<string, string>()
+
+function rosterTrace(rows: RelayAgentRow[], installId: string): string {
+  const connectionId = rows[0]?.connection_id ?? ''
+  const other = installId ? answeringInstall.get(installId) : undefined
+  const flag = other && other !== connectionId ? `MISROUTED (same install as ${other}) ` : ''
+
+  if (installId && connectionId && !flag) {
+    answeringInstall.set(installId, connectionId)
+  }
+
+  return `${flag}install=${installId.slice(0, 8) || '-'} n=${rows.length} [${rows.map(row => `${row.connection_id}/${row.profile}=${JSON.stringify(row.title)}`).join(' ')}]`
 }
 
 /** Last good agent rows per connection id — reused when a fetch blips so a
@@ -340,10 +368,31 @@ async function syncRelayRosters() {
   }
 
   relay.rosterBusy = true
+  const generation = relay.rosterGeneration
+  const isCurrent = () => !relay.disposed && relay.rosterGeneration === generation && relayBotModeOn()
 
   try {
     const connections = await relayConnections()
+
+    if (!isCurrent()) {
+      return
+    }
+
+    // A connection removed and re-added under a new id answers from the same
+    // install; remembering the departed id flagged the replacement MISROUTED.
+    const live = new Set(connections.map(connection => connection.id))
+
+    for (const [install, connectionId] of answeringInstall) {
+      if (!live.has(connectionId)) {
+        answeringInstall.delete(install)
+      }
+    }
+
     const labels = await connectionLabels()
+
+    if (!isCurrent()) {
+      return
+    }
 
     if (connections.length < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
@@ -355,6 +404,10 @@ async function syncRelayRosters() {
       if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
         const cleared = await Promise.all(
           connections.map(async connection => {
+            if (!isCurrent()) {
+              return false
+            }
+
             try {
               await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
 
@@ -369,7 +422,7 @@ async function syncRelayRosters() {
         )
 
         // Spend it only once every gateway has actually forgotten.
-        if (cleared.every(Boolean)) {
+        if (isCurrent() && cleared.every(Boolean)) {
           relay.rosterClearedFor = connections[0].id
         }
       }
@@ -384,6 +437,10 @@ async function syncRelayRosters() {
       connections.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
 
+        if (!isCurrent()) {
+          return
+        }
+
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this
           // connection (or contribute nothing this cycle) so the pushed
@@ -397,6 +454,10 @@ async function syncRelayRosters() {
       })
     )
 
+    if (!isCurrent()) {
+      return
+    }
+
     // Connections gone from profileRoutes are genuinely disconnected — drop
     // their cache so a later reconnect starts from live data.
     const liveIds = new Set(connections.map(connection => connection.id))
@@ -409,6 +470,10 @@ async function syncRelayRosters() {
 
     await Promise.all(
       connections.map(async connection => {
+        if (!isCurrent()) {
+          return
+        }
+
         const others: RelayAgentRow[] = []
 
         for (const [id, agents] of agentsByConnection) {
@@ -427,7 +492,9 @@ async function syncRelayRosters() {
       })
     )
   } finally {
-    relay.rosterBusy = false
+    if (relay.rosterGeneration === generation) {
+      relay.rosterBusy = false
+    }
   }
 }
 
@@ -676,6 +743,8 @@ export function startBotRelay() {
 
 export function stopBotRelay() {
   relay.disposed = true
+  relay.rosterGeneration += 1
+  relay.rosterBusy = false
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relay.drainRerun = false

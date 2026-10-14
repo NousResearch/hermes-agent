@@ -704,7 +704,7 @@ def _patch_api_server_runtime(monkeypatch):
         },
     )
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config",
         staticmethod(lambda model="": {}),
@@ -728,8 +728,19 @@ def _patch_api_server_runtime(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_session_respects_browser_source_and_model_lock(adapter, session_db):
+    # The requested title is held by an ended empty visible ghost, which must yield (#81888);
+    # a live holder must still reject the create without leaving a half-made row.
+    session_db.create_session("ghost", "desktop")
+    session_db.set_session_title("ghost", "Browser lock")
+    session_db.end_session("ghost", "user_exit")
+    session_db.create_session("live", "desktop")
+    session_db.set_session_title("live", "Taken")
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
+        taken = await cli.post("/api/sessions", json={"id": "dup", "title": "Taken"})
+        assert taken.status == 400
+        assert (await taken.json())["error"]["code"] == "invalid_title"
+        assert session_db.get_session("dup") is None
         resp = await cli.post(
             "/api/sessions",
             json={
@@ -757,6 +768,8 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
     assert model_config["browser_model_lock"]["provider"] == "nous"
     assert model_config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
     assert model_config["browser_model_lock"]["confirmed"] is True
+    assert row["title"] == "Browser lock"
+    assert session_db.get_session("ghost")["title"] is None
 
 
 @pytest.mark.asyncio

@@ -173,7 +173,7 @@ class RunawayStreamWatch:
     so the watch never holds more than two tail windows plus the latest delta.
     """
 
-    __slots__ = ("_parts", "_chars", "_next_check")
+    __slots__ = ("_chars", "_next_check", "_parts")
 
     def __init__(self) -> None:
         self._parts: list[str] = []

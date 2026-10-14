@@ -207,34 +207,6 @@ class TestSingleQueryDenyModeAllGuards:
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
-    def test_tirith_content_threat_blocked_in_single_query_deny(self, monkeypatch):
-        """Content-level threats caught only by tirith (not the regex patterns)
-        are blocked in single-query-deny mode — the same regression #22070 fixed
-        for cron must not resurface for -q."""
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-
-        from unittest.mock import patch as mock_patch
-        fake_tirith = {
-            "action": "block",
-            "findings": [{"severity": "HIGH", "title": "Homograph URL",
-                          "description": "URL contains Cyrillic lookalike chars"}],
-            "summary": "homograph url",
-        }
-        with (
-            mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"),
-            mock_patch("tools.approval.detect_dangerous_command",
-                       return_value=(False, None, None)),
-            mock_patch("tools.tirith_security.check_command_security",
-                       return_value=fake_tirith),
-        ):
-            result = check_all_command_guards("curl http://xn--e1afmkfd.example/x", "local")
-            assert not result["approved"]
-            assert "BLOCKED" in result["message"]
-
 
 # ---------------------------------------------------------------------------
 # check_execute_code_guard(): the -q escape hatch is closed

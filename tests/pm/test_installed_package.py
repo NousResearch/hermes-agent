@@ -10,7 +10,7 @@ import pm
 from pm import paths
 from pm.install import ensure
 from pm.lock import Lockfile
-from tests.pm.test_pm_authority import core_env, pm_env, served  # noqa: F401
+from tests.pm.test_pm_authority import core_env, pm_env, served
 
 
 def test_installed_lookup_prefers_current_pin_then_recorded_fallback(pm_env, tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, Optional
 
 from hermes_cli.timefmt import coerce_epoch
@@ -48,7 +48,7 @@ def parse_point_in_time(value: str, flag: str) -> float:
         return time.time() - dur
     try:
         dt = datetime.fromisoformat(s)
-        return dt.timestamp() if dt.tzinfo is None else dt.astimezone(timezone.utc).timestamp()
+        return dt.timestamp() if dt.tzinfo is None else dt.astimezone(UTC).timestamp()
     except (ValueError, OverflowError, OSError):
         raise ValueError(
             f"Invalid value for {flag}: '{value}'. Use a duration like '5h', "
@@ -98,13 +98,13 @@ _ARG_FILTERS = (
 )
 
 
-def build_prune_filters(args: Any) -> Dict[str, Any]:
+def build_prune_filters(args: Any) -> dict[str, Any]:
     """Translate argparse Namespace flags into SessionDB filter kwargs.
 
     ``--older-than`` / ``--newer-than`` bound last activity (freshest of ``last_activity_at`` /
     latest message / ``started_at``); ``--before`` / ``--after`` bound session start time.
     """
-    bounds: Dict[str, Optional[float]] = {
+    bounds: dict[str, Optional[float]] = {
         key: None if (raw := getattr(args, attr, None)) is None else parse_point_in_time(raw, flag)
         for key, attr, flag, _ in _TIME_BOUNDS
     }
@@ -121,7 +121,7 @@ def build_prune_filters(args: Any) -> Dict[str, Any]:
     return {"older_than_days": None, **bounds, **{key: getattr(args, attr, None) for key, attr, _ in _ARG_FILTERS}}
 
 
-def describe_filters(filters: Dict[str, Any]) -> str:
+def describe_filters(filters: dict[str, Any]) -> str:
     """Human-readable summary of active filters for confirmation prompts."""
     parts = [
         template.format(v=format_epoch(filters[key])) for key, _, _, template in _TIME_BOUNDS

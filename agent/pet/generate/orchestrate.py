@@ -77,7 +77,7 @@ def _harden_transparency(path: Path) -> Path:
         if out != path:
             _unlink_quietly(path)  # nothing prunes cache/generated/images, so drop it now
         return out
-    except Exception as exc:  # noqa: BLE001 - cosmetic; fall back to the raw image
+    except Exception as exc:
         logger.debug("base draft transparency hardening failed for %s: %s", path, exc)
         return path
 
@@ -130,7 +130,7 @@ def generate_base_drafts(
         prompt = prompts.build_base_prompt(concept, style=style, variation=variation)
         try:
             out = imagegen.generate(prompt, n=1, reference_images=refs, provider=sprite, prefix="pet_base")
-        except Exception as exc:  # noqa: BLE001 - tolerate a single failed draft
+        except Exception as exc:
             logger.warning("pet generate: draft %d failed after %.1fs: %s", index, time.monotonic() - t0, exc)
             return index, None, str(exc)
         if not out:
@@ -150,7 +150,7 @@ def generate_base_drafts(
         if on_draft is not None:
             try:
                 on_draft(index, path)
-            except Exception as exc:  # noqa: BLE001 - progress is best-effort
+            except Exception as exc:
                 logger.debug("on_draft callback failed: %s", exc)
     drafts = [results[i] for i in sorted(results)]
     if not drafts and not cancelled():
@@ -194,7 +194,7 @@ def _generate_row(spec: tuple[str, int, int], *, base: Path, label: str, style: 
             frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
             logger.info("pet hatch %r: row %r ready in %.1fs (attempt %d)", slug, state, time.monotonic() - t0, attempt + 1)
             return state, frames
-        except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated
+        except Exception as exc:
             last_exc = exc
             logger.warning("pet hatch %r: row %r attempt %d/%d failed: %s", slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc)
         finally:

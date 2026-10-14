@@ -11,7 +11,7 @@ import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
-// tirith warning present → backend downgrades "always" to session scope, so drop it.
+// The backend forbids a permanent allow for this prompt, so drop "always".
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 

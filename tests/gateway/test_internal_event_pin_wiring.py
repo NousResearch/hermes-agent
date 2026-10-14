@@ -493,6 +493,8 @@ async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
     runner = _make_runner(monkeypatch, config)
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: dict(runtime))
     runner.session_store._entries = {}
+    # A live session's entry keeps the source that opened it; the wake takes its chat name from there.
+    runner.session_store.get_or_create_session.return_value.origin = _human_source()
 
     await _drive(runner, ((False, _human_source()), (True, _wake_source()), (False, _human_source())))
 

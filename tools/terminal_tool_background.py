@@ -57,6 +57,7 @@ _ASYNC_UNSUPPORTED_NOTE = (
 # proc_session attribute -> HERMES_SESSION_* env var carrying it.
 _ROUTING_FIELDS = (
     ("watcher_chat_id", "HERMES_SESSION_CHAT_ID"),
+    ("watcher_chat_name", "HERMES_SESSION_CHAT_NAME"),
     ("watcher_user_id", "HERMES_SESSION_USER_ID"),
     ("watcher_user_name", "HERMES_SESSION_USER_NAME"),
     ("watcher_thread_id", "HERMES_SESSION_THREAD_ID"),

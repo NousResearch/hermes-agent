@@ -101,11 +101,14 @@ class GatewayAgentCacheMixin:
     def _agent_config_signature(
         model: str, runtime: dict, enabled_toolsets: list, ephemeral_prompt: str,
         cache_keys: dict | None = None, user_id: str | None = None, user_id_alt: str | None = None,
-        skip_context_files: bool = False,
+        skip_context_files: bool = False, chat_name: str | None = None,
     ) -> str:
         """Stable key from agent config: change → cached AIAgent rebuilt; unchanged → reused (frozen
         prompt + schemas for cache hits). ``user_id`` / ``user_id_alt`` participate because Honcho
         freezes them at init; omitting them in shared-thread keys would cross-attribute messages.
+        ``chat_name`` participates for the same reason: the agent hands it to memory providers at init,
+        and an internal turn reuses the pinned context prompt, so an agent built on a turn that could
+        not name the chat would otherwise keep serving the session's later turns.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities carried by the current message's
         gateway source. They participate in the cache key because memory providers freeze them at
@@ -131,7 +134,7 @@ class GatewayAgentCacheMixin:
                 # reasoning_config excluded — set per-message on the cached agent; no prompt/tool effect.
                 ephemeral_prompt or "",
                 sorted((cache_keys or {}).items()),
-                str(user_id or ""), str(user_id_alt or ""),
+                str(user_id or ""), str(user_id_alt or ""), str(chat_name or ""),
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
@@ -730,6 +733,23 @@ class GatewayAgentCacheMixin:
         if session_key:
             self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text, redact_pii)
         return text
+
+    def _remember_turn_source(self, event, source: SessionSource, session_entry, session_key: str) -> SessionSource:
+        """Cache ``source`` as the session's live source and return the source this turn runs with.
+
+        Internal events (kanban wakes, background-process completions) are rebuilt from a stored route
+        that has no ``chat_name``, yet the agent built for the turn hands ``chat_name`` to memory
+        providers and the session row, and the turn exports it as ``HERMES_SESSION_CHAT_NAME``. Such an
+        event takes the chat name of the session's live source, else of its stored origin, when that
+        source is the same chat."""
+        if event.internal and not source.chat_name:
+            for known in (self._get_cached_session_source(session_key), session_entry.origin):
+                if known is not None and known.chat_id == source.chat_id and known.chat_name:
+                    from gateway.session_identity import replace_source
+                    source = replace_source(source, chat_name=known.chat_name)
+                    break
+        self._cache_session_source(session_key, source)
+        return source
 
     def _pinned_channel_inputs(
         self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,

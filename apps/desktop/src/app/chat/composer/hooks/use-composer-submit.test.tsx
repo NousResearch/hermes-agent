@@ -499,7 +499,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     act(() => hook.result.current.submitDraft())
 
     await waitFor(() =>
-      expect(onSteerHidden).toHaveBeenCalledWith('```terminal\\nselected terminal lines\\n```\\n\\nlook at')
+      expect(onSteerHidden).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at')
     )
   })
 
@@ -518,7 +518,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     const queued = getQueuedPrompts('stored-session')[0]
     expect(queued.text).toBe('inspect @terminal:`zsh:23-58`')
     expect(queued.displayText).toBe('inspect @terminal:`zsh:23-58`')
-    expect(getFrozenQueuedTransport(queued.id)).toBe('```terminal\\noriginal terminal lines\\n```\\n\\ninspect')
+    expect(getFrozenQueuedTransport(queued.id)).toBe('```terminal\noriginal terminal lines\n```\n\ninspect')
   })
 
   it('refuses to steer an unresolved terminal chip without discarding draft', () => {
@@ -630,6 +630,19 @@ describe('useComposerSubmit busy-turn routing', () => {
 
     await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
     clearQueuedPrompts('stored-session')
+  })
+
+  it('queues a synchronous redirect transport throw instead of dropping the correction', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'recover redirect' })
+    onSteer.mockImplementation(() => {
+      throw new Error('transport unavailable')
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['recover redirect'])
+    )
   })
 
   it('runs slash commands immediately while busy', async () => {

@@ -45,6 +45,11 @@ name: uv.lock check
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       review_status:
         description: "JSON review status for the review-status aggregator"
@@ -54,8 +59,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: uv-lockfile-check-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: uv-lockfile-check-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   check:
@@ -67,6 +72,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:

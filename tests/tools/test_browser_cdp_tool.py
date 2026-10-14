@@ -571,6 +571,134 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
     assert calls == []
 
 
+def _mock_navigate_policy_env(monkeypatch, *, blocked):
+    """Deterministic local-backend environment for the Page.navigate policy guard:
+    SSRF gate inactive, local backend (private-address floor relaxed like browser_navigate),
+    and a website policy with a fixed verdict."""
+    from tools import browser_tool
+    from tools import browser_tool_cloud as bt_cloud
+
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
+    if blocked:
+
+        def _deny(url, config_path=None):
+            return {
+                "url": url, "host": "denied.example", "rule": "denied.example",
+                "source": "config",
+                "message": "Blocked by website policy: 'denied.example' matched rule "
+                           "'denied.example' from config",
+            }
+
+        monkeypatch.setattr(browser_tool, "check_website_access", _deny)
+    else:
+        monkeypatch.setattr(browser_tool, "check_website_access", lambda url, config_path=None: None)
+
+
+def test_page_navigate_blocked_by_website_policy_even_when_ssrf_guard_inactive(monkeypatch):
+    """The user's website blocklist must hold for raw CDP Page.navigate even when the
+    SSRF/private-address gate is inactive (local backend) — browser_navigate's blocklist
+    floor is backend-independent, so raw CDP must not become its bypass."""
+    _mock_navigate_policy_env(monkeypatch, blocked=True)
+    calls = []
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    async def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"frameId": "f"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.navigate",
+            params={"url": "https://denied.example/page"},
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "Blocked by website policy" in result["error"]
+    assert "denied.example" in result["error"]
+    assert calls == []
+
+
+def test_page_navigate_blocked_by_secret_in_url(monkeypatch):
+    """An API key embedded in the Page.navigate URL is refused, mirroring
+    browser_navigate's secret-in-URL floor (also backend-independent)."""
+    _mock_navigate_policy_env(monkeypatch, blocked=False)
+    calls = []
+    monkeypatch.setattr(
+        browser_cdp_tool, "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    async def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"frameId": "f"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.navigate",
+            params={"url": "https://example.com/?key=sk-abc123def456ghi789jkl012"},
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "API key or token" in result["error"]
+    assert calls == []
+
+
+def test_page_navigate_policy_guard_allows_clean_url(monkeypatch, cdp_server):
+    """Sanity check: with the policy disabled the guard must stay silent for a clean
+    URL — the blocklist floor must not break ordinary local CDP workflows."""
+    _mock_navigate_policy_env(monkeypatch, blocked=False)
+    cdp_server.on("Page.navigate", lambda params, sid: {"frameId": "f", "loaderId": "l"})
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.navigate",
+            params={"url": "https://example.com/page"},
+            task_id="task-1",
+        )
+    )
+
+    assert result.get("success") is True
+    assert [m["method"] for m in cdp_server.received() if m.get("id")] == ["Page.navigate"]
+
+
+def test_frame_id_route_navigate_blocked_by_website_policy(monkeypatch):
+    """frame_id routing (OOPIF via supervisor) shares the policy guard — the blocklist
+    must not be bypassable by routing the same navigation through the supervisor."""
+    _mock_navigate_policy_env(monkeypatch, blocked=True)
+    supervisor_calls = []
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {}})
+
+    monkeypatch.setattr(browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.navigate",
+            params={"url": "https://denied.example/page"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert "Blocked by website policy" in result["error"]
+    assert supervisor_calls == []
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 

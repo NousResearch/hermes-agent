@@ -17,6 +17,7 @@
 export type ReferenceKind =
   | 'file'
   | 'folder'
+  | 'symbol'
   | 'url'
   | 'image'
   | 'tool'
@@ -64,6 +65,12 @@ export const REFERENCE_STYLES: Record<ReferenceKind, ReferenceStyle> = {
       'M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2'
     ],
     label: 'Folders'
+  },
+  // Browse-only: a picked symbol travels as the `@file:` ref of its defining file.
+  symbol: {
+    codicon: 'symbol-method',
+    paths: ['M12 3l8 4.5v9l-8 4.5l-8 -4.5v-9l8 -4.5', 'M12 12l8 -4.5', 'M12 12l0 9', 'M12 12l-8 -4.5'],
+    label: 'Symbols'
   },
   url: {
     codicon: 'globe',

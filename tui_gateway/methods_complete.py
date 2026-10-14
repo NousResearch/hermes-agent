@@ -10,10 +10,11 @@ _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
-_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
+_BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "symbol", "url", "git", "diff", "staged"})
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
-    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+    ("@folder:", "attach folder"), ("@symbol:", "jump to a symbol"), ("@url:", "fetch url"),
+    ("@git:", "git log")]
 _SLASH_EXTRAS = [
     ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
     ("/logs", "Show recent gateway log lines"),
@@ -139,6 +140,16 @@ def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[di
         for _, rel, basename, is_dir in ranked[:30]]
 
 
+def _symbol_items(root: str, query: str) -> list[dict]:
+    """`@symbol:<query>` rows: fuzzy-ranked definitions whose pick inserts an ``@file:`` ref to the
+    defining file (no new reference kind to expand). ``display`` is the symbol, ``meta`` where it lives."""
+    ranked = [(rank, name, kind, rel) for name, kind, rel in _scan_symbols(root)
+              if (rank := _fuzzy_basename_rank(name, query)) is not None]
+    ranked.sort(key=lambda r: (r[0], r[1], r[3]))
+    return [{**_item(f"@file:{rel}", f"{kind} · {rel}", name), "kind": "symbol"}
+            for _, name, kind, rel in ranked[:50]]
+
+
 def _at_root_items() -> list[dict]:
     """Completions for a bare ``@``: directive hints, agent profiles, plugin ``@<prefix>:`` providers."""
     items = [_item(t, m) for t, m in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
@@ -251,6 +262,9 @@ def _(rid, params: dict) -> dict:
         pfx, _, qval = query.partition(":")
         if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
             return _ok(rid, {"items": plugin_items})
+    # `@symbol` / `@symbol:<q>` reads the gateway host's files, so only a local backend answers it.
+    if is_context and (query == "symbol" or query.startswith("symbol:")):
+        return _ok(rid, {"items": _symbol_items(root, query.partition(":")[2].strip()) if local else []})
     # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
     if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
         prefix_tag, _, path_part = query.partition(":")

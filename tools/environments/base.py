@@ -757,6 +757,7 @@ class BaseEnvironment(ABC):
         return _transform_sudo_command(
             _transform_macos_open_command(command),
             sudo_nopasswd_check=self._sudo_nopasswd_works,
+            sudo_available_check=self._sudo_binary_available,
         )
 
     _SUDO_PROBE_TIMEOUT_S = 3
@@ -771,3 +772,17 @@ class BaseEnvironment(ABC):
             return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False
+
+    def _sudo_binary_available(self) -> bool:
+        """``command -v sudo`` inside THIS backend (a missing binary is a backend property, not
+        a host one — a sandboxed or remote backend may lack the host's sudo and vice versa).
+        Fails open: any error, a timed-out probe or an unsupported probe keeps the password
+        prompt path — the prompt is skipped only on a positive "no sudo here" answer, so a
+        flaky probe can never silently drop a working sudo (#138514)."""
+        if not self._sudo_nopasswd_probe_supported:
+            return True
+        try:
+            proc = self._run_bash("command -v sudo", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:  # health: allow BLE001 -- best-effort probe: any backend failure fails open and keeps the prompt path
+            return True

@@ -57,7 +57,8 @@ def _zero(*_a, **_k):
 
 
 class GatewaySessionStore:
-    """Truthy while the gateway connection is usable (main's ``if self._session_db:`` guards)."""
+    """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
+    a gateway hang-up stays truthy, and the next call redials."""
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
@@ -66,7 +67,7 @@ class GatewaySessionStore:
         self._reader = None
 
     def __bool__(self):
-        return not self.connection.closed
+        return not self.connection.final
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -261,8 +262,17 @@ class GatewaySessionStore:
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
         the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
+        state = self.connection.states.get(session_id)
+        reachable = state is not None and state.subscription_id is not None and not self.connection.final
+        if reachable:
+            try:
+                # Hung up: redial first, so the detach names the subscription the reconnect resumed.
+                self.connection.start()
+            except GatewayClientError as exc:
+                logger.debug("redial for session.detach failed: %s", exc)
+                reachable = False
         subscription = self._leave(session_id)
-        if subscription and not self.connection.closed:
+        if subscription and reachable:
             params = {"end_reason": reason} if reason else {}
             try:
                 self.call("session.detach", session_id=session_id, subscription_id=subscription, **params)

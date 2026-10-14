@@ -5,6 +5,8 @@ GatewayConnection kept its finished loop thread, so after a gateway restart ever
 gateway. Each prompt then failed with copy that read as a model failure ("Run /model to switch").
 """
 import asyncio
+import threading
+import types
 from contextlib import asynccontextmanager
 
 import pytest
@@ -49,6 +51,8 @@ class Life:
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
         if method == "prompt.receipt":
             return {"result": {"final_response": f"reply {self.number}", "completed": True}, "usage": {}}
+        if method in ("prompt.background", "prompt.btw"):
+            return {"task_id": f"task-{self.number}"}
         return {"status": "ok", "life": self.number}
 
 
@@ -60,9 +64,14 @@ class Gateway:
         self.refusals = 0
         self.drop_next_submit = False
         self.resume_errors = []  # raised by the next session.resume calls, across lives
+        self.dialing = threading.Event()
+        self.hold = None  # an Event the next dials wait on before the socket opens
 
     @asynccontextmanager
     async def dial(self):
+        self.dialing.set()
+        if self.hold is not None:
+            await asyncio.to_thread(self.hold.wait, 5)
         if self.refusals:
             self.refusals -= 1
             raise GatewayClientError("Gateway starting: deadline. Your message was not sent.")
@@ -222,6 +231,144 @@ def test_close_after_a_failed_resume_is_still_final(gateway, conn):
     conn.close()
     with pytest.raises(GatewayClientError):
         conn.call("status")
+    assert len(gateway.lives) == 2
+
+
+def _cli(store):
+    return types.SimpleNamespace(_session_db=store, _gateway_session_open=True)
+
+
+@pytest.fixture
+def tools(conn, monkeypatch):
+    from hermes_cli import gateway_tools
+    monkeypatch.setattr(gateway_tools, "_view", None)
+    gateway_tools.bind(types.SimpleNamespace(connection=conn, session_id=SID))
+    return gateway_tools
+
+
+def test_a_hung_up_store_stays_open_and_its_next_call_redials(gateway, conn, store):
+    """/sessions, /resume, /branch and /handoff gate on the store: a hang-up is not "Hermes can't
+    open its session history right now"; the next call dials the restarted gateway."""
+    gateway.hang_up(conn)
+    assert store
+    assert store.call("status") == {"status": "ok", "life": 2}
+    assert store
+
+
+def test_bg_and_btw_after_a_hang_up_run_on_the_gateway_not_in_this_process(gateway, conn, store):
+    """None here sends /bg down the in-process AIAgent path (a local ``bg_HHMMSS_xxxxxx`` task)."""
+    from hermes_cli import gateway_side
+    gateway.hang_up(conn)
+    assert gateway_side.connection_for(_cli(store)) is conn
+    task_id, _wait = gateway_side.start(conn, SID, "background", "later")
+    assert task_id == "task-2" and gateway.lives[1].calls[-1][0] == "prompt.background"
+
+
+def test_a_side_answer_lost_to_a_restart_fails_instead_of_waiting_forever(gateway, conn):
+    """The task died with the old gateway; another thread's redial must not make the wait endless."""
+    from hermes_cli import gateway_side
+    _task, wait = gateway_side.start(conn, SID, "btw", "q")
+    gateway.hang_up(conn)
+    conn.call("status")
+    outcome = []
+    waiter = threading.Thread(target=lambda: outcome.append(pytest.raises(RuntimeError, wait)), daemon=True)
+    waiter.start()
+    waiter.join(10)
+    assert not waiter.is_alive() and "outcome is unknown" in str(outcome[0].value)
+
+
+def test_a_redial_between_admission_and_the_waiter_still_ends_the_wait(gateway, conn, monkeypatch):
+    """Another caller redials after the old gateway admitted the task but before its waiter exists:
+    the wait belongs to the admitting life, not to whatever epoch is current by then."""
+    from hermes_cli import gateway_side
+    register = conn.side_waiter
+
+    def redial_first(task_id):
+        gateway.hang_up(conn)
+        conn.call("status")
+        return register(task_id)
+
+    monkeypatch.setattr(conn, "side_waiter", redial_first)
+    task, wait = gateway_side.start(conn, SID, "btw", "q")
+    assert task == "task-1" and conn.epoch == 2
+    outcome = []
+    waiter = threading.Thread(target=lambda: outcome.append(pytest.raises(RuntimeError, wait)), daemon=True)
+    waiter.start()
+    waiter.join(10)
+    assert not waiter.is_alive() and "outcome is unknown" in str(outcome[0].value)
+
+
+def test_the_dock_and_stop_after_a_hang_up_redial(gateway, conn, tools):
+    gateway.hang_up(conn)
+    view = tools.process_view()
+    assert view is not None and tools.process_registry() is view
+    view.kill_all()
+    assert [method for method, _ in gateway.lives[1].calls][:2] == ["session.resume", "process.stop"]
+
+
+def test_shared_keeps_a_hung_up_connection_instead_of_opening_a_second(gateway, conn, monkeypatch):
+    monkeypatch.setattr(GatewayConnection, "_shared", conn)
+    gateway.hang_up(conn)
+    assert GatewayConnection.shared() is conn
+
+
+def test_new_after_a_hang_up_redials_and_detaches_with_the_end_reason(gateway, conn, store):
+    """Dropping the subscription without ``session.detach`` leaves the owner never ending the row."""
+    gateway.hang_up(conn)
+    store.end_session(SID, "new_session")
+    assert gateway.lives[1].calls == [("session.resume", {"session_id": SID}), ("session.detach", {
+        "session_id": SID, "subscription_id": "sub-2", "end_reason": "new_session"})]
+    gateway.hang_up(conn)
+    conn.call("status")
+    assert _resumes(gateway.lives[2]) == []
+
+
+def test_after_close_every_reader_reports_the_connection_gone(gateway, conn, store, tools, monkeypatch):
+    from hermes_cli import gateway_side
+    monkeypatch.setattr(GatewayConnection, "_shared", conn)
+    gateway.hang_up(conn)
+    conn.close()
+    assert not store
+    assert gateway_side.connection_for(_cli(store)) is None
+    assert tools.process_view() is None
+    assert GatewayConnection.shared() is not conn
+    store.end_session(SID, "new_session")
+    with pytest.raises(GatewayClientError, match="disconnected") as refused:
+        conn.call("status")
+    assert "outcome is unknown" not in str(refused.value)  # nothing was sent
+    assert len(gateway.lives) == 1
+
+
+class _Waiters(threading.Event):
+    """``_ready`` that opens ``release`` once ``count`` callers are waiting on it."""
+
+    def __init__(self, release, count):
+        super().__init__()
+        self.release, self.count = release, count
+
+    def wait(self, timeout=None):
+        self.count -= 1
+        if self.count <= 0:
+            self.release.set()
+        return super().wait(timeout)
+
+
+def test_a_call_racing_a_redial_waits_for_it_and_is_sent(gateway, conn):
+    """The second caller saw the dialing thread alive and no client yet: "turn outcome is unknown, do
+    not resend" for a request that was never sent."""
+    gateway.hang_up(conn)
+    gateway.hold, gateway.dialing = threading.Event(), threading.Event()
+    conn._ready = _Waiters(gateway.hold, 2)
+    results = []
+    first = threading.Thread(target=lambda: results.append(conn.call("status")), daemon=True)
+    first.start()
+    assert gateway.dialing.wait(5)
+    try:
+        second = conn.call("status")
+    finally:
+        gateway.hold.set()
+    first.join(10)
+    assert second == {"status": "ok", "life": 2} and results == [second]
     assert len(gateway.lives) == 2
 
 

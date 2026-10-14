@@ -143,9 +143,9 @@ def mark_dirty():
 
 def process_view():
     """The gateway-backed registry, or None when this process runs its own tools (not rewired) or
-    its gateway connection is gone."""
+    its gateway connection is final (a hang-up keeps the view; its next call redials)."""
     view = _view
-    return view if view is not None and not view.connection.closed else None
+    return view if view is not None and not view.connection.final else None
 
 
 def process_registry():

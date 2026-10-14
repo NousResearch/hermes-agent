@@ -587,3 +587,127 @@ def test_cloud_explicit_detach_requires_current_authenticated_owner(monkeypatch)
     finally:
         broker.reset()
         server._sessions.pop("detach-session", None)
+
+
+# --- shared-session case: chat panel + browser controller under one FanoutTransport ---------------
+
+
+class _AuthedPeer:
+    def __init__(self, identity):
+        self.auth_identity = identity
+
+    def write(self, _frame):
+        return True
+
+    def close(self):
+        return None
+
+
+def _bind_cloud_turn(monkeypatch, *, transport, live_sid="live-ui-sid", agent_sid="20260929_agent_durable"):
+    """Session record as the dashboard holds it + the turn context the agent's tools see."""
+    from gateway.browser_control_broker import BrowserControlBroker
+
+    server._sessions[live_sid] = {
+        "transport": transport,
+        "session_key": "stored-shared-session",
+        "profile": "default",
+        "agent": SimpleNamespace(session_id=agent_sid),
+    }
+    broker = BrowserControlBroker(command_timeout=0.1)
+    monkeypatch.setattr("gateway.browser_control_broker.browser_control_enabled", lambda: True)
+    monkeypatch.setattr("gateway.browser_control_broker.get_browser_control_broker", lambda: broker)
+    return broker, server._set_session_context("stored-shared-session", ui_session_id=live_sid)
+
+
+def _attach_controller(broker, identity, *, live_sid="live-ui-sid"):
+    from gateway.browser_control_broker import ControllerScope
+
+    broker.attach(
+        ControllerScope(
+            principal_id=_principal_digest(identity), profile_id="default", session_id=live_sid,
+            controller_id="controller-fixture", browser_profile_id="browser-profile-fixture",
+            transport_family="cloud-ticket-ws", capabilities=frozenset({"browser_snapshot", "browser_scroll"}),
+        ),
+        lambda _frame: None, owner="controller-socket",
+    )
+
+
+def _cleanup_cloud_turn(tokens, live_sid="live-ui-sid"):
+    from gateway.session_context import clear_session_vars
+
+    clear_session_vars(tokens)
+    server._sessions.pop(live_sid, None)
+
+
+def test_browser_tools_are_exposed_for_shared_panel_and_controller_with_distinct_live_and_agent_ids(monkeypatch):
+    from tools import browser_extension_router
+    from tui_gateway.transport import FanoutTransport
+
+    identity = {"user_id": "user-fixture", "provider": "provider-fixture"}
+    panel, controller = _AuthedPeer(dict(identity)), _AuthedPeer(dict(identity))
+    broker, tokens = _bind_cloud_turn(monkeypatch, transport=FanoutTransport(panel, controller))
+    try:
+        _attach_controller(broker, identity)
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+        assert browser_extension_router.extension_controller_available("browser_scroll") is True
+        assert browser_extension_router.extension_controller_available("browser_click") is False
+    finally:
+        _cleanup_cloud_turn(tokens)
+
+
+def test_browser_tools_stay_hidden_when_shared_peers_disagree_on_identity(monkeypatch):
+    from tools import browser_extension_router
+    from tui_gateway.transport import FanoutTransport
+
+    identity = {"user_id": "user-fixture", "provider": "provider-fixture"}
+    other = {"user_id": "someone-else", "provider": "provider-fixture"}
+    broker, tokens = _bind_cloud_turn(
+        monkeypatch, transport=FanoutTransport(_AuthedPeer(dict(identity)), _AuthedPeer(dict(other))))
+    try:
+        _attach_controller(broker, identity)
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is False
+    finally:
+        _cleanup_cloud_turn(tokens)
+
+
+def test_browser_tools_stay_hidden_when_a_shared_peer_has_no_identity(monkeypatch):
+    from tools import browser_extension_router
+    from tui_gateway.transport import FanoutTransport
+
+    identity = {"user_id": "user-fixture", "provider": "provider-fixture"}
+    broker, tokens = _bind_cloud_turn(
+        monkeypatch, transport=FanoutTransport(_AuthedPeer(dict(identity)), _AuthedPeer(None)))
+    try:
+        _attach_controller(broker, identity)
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is False
+    finally:
+        _cleanup_cloud_turn(tokens)
+
+
+def test_shared_peers_with_server_internal_identity_never_bind_a_browser_principal(monkeypatch):
+    from gateway.session_context import get_session_env
+    from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+    from tui_gateway.transport import FanoutTransport
+
+    internal = {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}
+    _broker, tokens = _bind_cloud_turn(
+        monkeypatch, transport=FanoutTransport(_AuthedPeer(dict(internal)), _AuthedPeer(dict(internal))))
+    try:
+        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == ""
+    finally:
+        _cleanup_cloud_turn(tokens)
+
+
+def test_controller_registered_by_another_principal_is_not_selected_for_shared_session(monkeypatch):
+    from tools import browser_extension_router
+    from tui_gateway.transport import FanoutTransport
+
+    identity = {"user_id": "user-fixture", "provider": "provider-fixture"}
+    stranger = {"user_id": "stranger", "provider": "provider-fixture"}
+    broker, tokens = _bind_cloud_turn(
+        monkeypatch, transport=FanoutTransport(_AuthedPeer(dict(identity)), _AuthedPeer(dict(identity))))
+    try:
+        _attach_controller(broker, stranger)
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is False
+    finally:
+        _cleanup_cloud_turn(tokens)

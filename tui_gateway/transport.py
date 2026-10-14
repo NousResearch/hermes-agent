@@ -204,6 +204,30 @@ class FanoutTransport:
     def has_transports(self, *, excluding: Transport | None = None) -> bool:
         return any(peer is not excluding for peer in self.transports())
 
+    @property
+    def auth_identity(self) -> dict | None:
+        """The ``{user_id, provider}`` login EVERY currently attached peer authenticated with, else ``None``.
+
+        A session slot becomes a FanoutTransport once a second client (e.g. the browser controller next to
+        the chat panel) attaches; auth-bound lookups such as the browser-control principal read this
+        attribute. Fails closed: no peers, any peer without a well-formed identity, or peers that disagree
+        on user or provider all yield ``None``. Recomputed from the live peer set on every read (never
+        cached), so a departed or reconnected peer can never leave a stale identity behind.
+        """
+        identities = set()
+        for transport in self.transports():
+            identity = getattr(transport, "auth_identity", None)
+            if not isinstance(identity, dict):
+                return None
+            user_id, provider = identity.get("user_id"), identity.get("provider")
+            if not (isinstance(user_id, str) and user_id.strip() and isinstance(provider, str) and provider.strip()):
+                return None
+            identities.add((user_id, provider))
+        if len(identities) != 1:
+            return None
+        user_id, provider = next(iter(identities))
+        return {"user_id": user_id, "provider": provider}
+
     def _drain(self, peer: _FanoutPeer) -> None:
         while True:
             with self._lock:

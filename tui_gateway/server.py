@@ -3110,6 +3110,9 @@ def _fallback_session_info(session: dict) -> dict:
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
         **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        # session.create / cold resume acknowledge the owning profile; a live reattach (the browser controller
+        # resuming the session the chat WS created) must too, or a profile-checking client reads "none".
+        "profile_name": profile_name_for_home(session.get("profile_home")) or _current_profile_name(),
     }
 
 

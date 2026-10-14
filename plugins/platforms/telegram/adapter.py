@@ -890,9 +890,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if thread_id_raw is not None and (
             (chat_type == "forum" and (is_topic_message or is_forum_group)) or (chat_type == "dm" and is_topic_message)):
             thread_id = str(thread_id_raw)
+        biz_conn_raw = getattr(message, "business_connection_id", None)
+        biz_conn = str(biz_conn_raw).strip() or None if biz_conn_raw is not None else None
         return SessionSource(
             platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
-            user_name=user_name, thread_id=thread_id, is_bot=is_bot)
+            user_name=user_name, thread_id=thread_id, is_bot=is_bot,
+            telegram_business_connection_id=biz_conn)
 
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
@@ -953,7 +956,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Adapter-level allow_from (DMs) / group_allow_from (groups) are the sole authority if set.
         adapter_allow_from = self.config.extra.get(
             "group_allow_from" if (source.chat_type or "") in ("group", "forum", "channel") else "allow_from")
-        if adapter_allow_from is not None:
+        if adapter_allow_from is not None and not source.telegram_business_connection_id:
             allowed = _coerce_allow_set(adapter_allow_from)
             authorized = user_id in allowed or "*" in allowed
         # Instance-level override only (tests): the class method _is_callback_user_authorized is for
@@ -972,11 +975,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             has_callback = getattr(self, "_authorization_check", None) is not None
             if has_callback or auth_fn is not None:
                 # No allowlist → unknown DMs must reach pairing, not be default-denied here.
-                if not self._telegram_auth_env_configured():
+                if not self._telegram_auth_env_configured() and not source.telegram_business_connection_id:
                     return True
                 decision = self._is_sender_authorized(
                     user_id, chat_type=source.chat_type, chat_id=source.chat_id, is_bot=source.is_bot,
-                    thread_id=source.thread_id) if has_callback else None
+                    thread_id=source.thread_id,
+                    telegram_business_connection_id=source.telegram_business_connection_id) if has_callback else None
                 if decision is not None:
                     authorized = decision
                 elif auth_fn is not None:
@@ -985,9 +989,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     except Exception:
                         logger.debug("[Telegram] Falling back to env-only auth for user %s", user_id, exc_info=True)
         if authorized is None:
-            authorized = self._env_allowlist_decision(user_id)
-            if authorized is None:
-                return True
+            if source.telegram_business_connection_id:
+                authorized = True
+            else:
+                authorized = self._env_allowlist_decision(user_id)
+                if authorized is None:
+                    return True
         if authorized:
             return True
         # Unauthorized DM the gateway would pair: forward so pairing can run.
@@ -6439,7 +6446,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
-        return getattr(update, "effective_message", None) or getattr(update, "message", None)
+        return getattr(update, "effective_message", None) or getattr(update, "business_message", None) or getattr(update, "message", None)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
         logger.log(
@@ -6778,7 +6785,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        msg = self._effective_update_message(update)
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):
@@ -7087,11 +7094,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             user_name = chat.full_name
         else:
             user_name = chat.title if chat_type == "channel" else None
+        biz_conn_raw = getattr(message, "business_connection_id", None)
+        biz_conn = str(biz_conn_raw).strip() or None if biz_conn_raw is not None else None
         source = self.build_source(
             chat_id=str(chat.id), chat_name=chat.title or (chat.full_name if has_full_name else None), chat_type=chat_type,
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
-            is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+            is_bot=bool(getattr(user, "is_bot", False)) if user else False,
+            telegram_business_connection_id=biz_conn)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt

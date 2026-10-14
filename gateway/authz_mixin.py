@@ -628,6 +628,13 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
+        if (
+            source.platform == Platform.TELEGRAM
+            and isinstance(getattr(source, "telegram_business_connection_id", None), str)
+            and bool(source.telegram_business_connection_id.strip())
+        ):
+            return True
+
         # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
         # service its adapter authenticated to (no human sender to allowlist).
         if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:

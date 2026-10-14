@@ -54,6 +54,37 @@ _ASYNC_UNSUPPORTED_NOTE = (
     "background; retrieve its result with process(action='poll') or process(action='wait')."
 )
 
+# A one-shot `hermes chat -q/-Q` run keeps notify_on_complete, but only lingers for it within ONE
+# bounded budget after the turn ends (quiet_single_query / cli_shutdown). An agent that ends its
+# turn expecting the notification of a longer process is never woken: the run exits first.
+_ONESHOT_LINGER_NOTE = (
+    'This is a one-shot run: once your turn ends it waits at most {seconds}s in total '
+    '(terminal.oneshot_completion_wait_seconds, one budget shared by every background process of '
+    'this run) for notify_on_complete processes, then exits. A process still running after that '
+    'never reaches you. If it may take longer, do not end your turn expecting a notification: '
+    "wait for it yourself with process(action='wait'), repeated as needed."
+)
+_ONESHOT_NO_LINGER_NOTE = (
+    'This is a one-shot run with terminal.oneshot_completion_wait_seconds disabled: once your turn '
+    'ends it exits without waiting for background processes, so their completion never reaches '
+    "you. Wait for it yourself with process(action='wait') before ending your turn."
+)
+
+
+def _oneshot_linger_note() -> Optional[str]:
+    """Real completion-linger bound of a one-shot ``hermes chat -q/-Q`` run, else None."""
+    from gateway.session_context import get_session_env
+
+    if str(get_session_env("HERMES_SINGLE_QUERY_SESSION", "") or "") != "1":
+        return None
+    from tools.process_registry import ProcessRegistry
+
+    seconds = float(ProcessRegistry._oneshot_completion_wait_seconds())
+    if seconds <= 0:
+        return _ONESHOT_NO_LINGER_NOTE
+    return _ONESHOT_LINGER_NOTE.format(seconds=f"{seconds:g}")
+
+
 # proc_session attribute -> HERMES_SESSION_* env var carrying it.
 _ROUTING_FIELDS = (
     ("watcher_chat_id", "HERMES_SESSION_CHAT_ID"),
@@ -204,10 +235,14 @@ def spawn_background_process(
             if is_delegated_child_context():
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
-            elif heartbeat_seconds:
-                # Heartbeats ride the same delivery path as the completion notice, so they are
-                # only armed where that notice can actually reach the agent.
-                result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
+            else:
+                oneshot_note = _oneshot_linger_note()
+                if oneshot_note:
+                    result_data["oneshot_note"] = oneshot_note
+                if heartbeat_seconds:
+                    # Heartbeats ride the same delivery path as the completion notice, so they are
+                    # only armed where that notice can actually reach the agent.
+                    result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
         elif heartbeat_seconds:
             result_data["heartbeat_ignored"] = "heartbeat needs notify=true delivery, which this session cannot receive"
         if watch_patterns:

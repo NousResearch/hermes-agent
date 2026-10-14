@@ -1,0 +1,33 @@
+# Keep sandbox execution separate from the Render skills maintained in render-oss/skills.
+name: render
+title: Render Sandboxes
+repo: https://github.com/ojusave/hermes-plugin-render
+sha: c90ec48545e7d94a522c78f6a1414f5a02161e8a
+description: >-
+  Run Hermes command, file and Python tools in temporary Render Sandboxes.
+  Disclosure: the host calls Render to create paid sandboxes, execute shell commands,
+  transfer selected files and terminate resources. The Render API key stays on the
+  host through Hermes's active-profile secret interface. Hermes skill/cache files
+  and explicitly configured credential-file mounts can be synchronized. No added
+  telemetry or background service. Render management skills remain separate at
+  https://github.com/render-oss/skills.
+maintainer: ojusave
+tier: community
+category: tools
+docs_url: https://github.com/ojusave/hermes-plugin-render#readme
+version: "0.1.0a1"
+readme: true
+# macOS is the tested host; sandbox execution itself runs on Render Linux.
+platforms: [macos]
+known_issues:
+  - Requires host Python 3.14 and a Render workspace with Sandboxes access.
+  - Development preview. Keep container_persistent false; each turn deletes its workspace.
+  - No user-facing project import/export, cross-turn persistence or snapshot restore.
+  - Live tasks tested on Hermes dce1e9b; current catalog validation is not a live compatibility test.
+  - Current validator warns about undocumented Hermes helper imports; maintainer review requested.
+capabilities:
+  # This registers a terminal provider and reuses Hermes tools; it adds no new tools or hooks.
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [RENDER_API_KEY]

@@ -80,7 +80,7 @@ def test_call_llm_auto_provider_evicts_stale_client_end_to_end(monkeypatch):
         ac, "_create_openai_client",
         lambda *, api_key, base_url, **kwargs: fresh,
     )
-    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, _task: resp)
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, _task, **_kw: resp)
 
     result = ac.call_llm(task=task, messages=[{"role": "user", "content": "hi"}])
 
@@ -131,7 +131,7 @@ async def test_async_call_llm_auto_provider_evicts_stale_client_end_to_end(monke
         lambda *, api_key, base_url, **kwargs: MagicMock(),
     )
     monkeypatch.setattr(ac, "_to_async_client", lambda *a, **k: (fresh, "nous-model"))
-    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, _task: resp)
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, _task, **_kw: resp)
 
     result = await ac.async_call_llm(
         task=task,

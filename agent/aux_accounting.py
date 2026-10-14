@@ -44,14 +44,14 @@ def reset_accounting_context(token) -> None:
 
 def record_aux_usage(
     response: Any, task: Optional[str], *, provider: Optional[str] = None,
-    base_url: Optional[str] = None,
+    base_url: Optional[str] = None, api_mode: Optional[str] = None,
 ) -> None:
     """Record an auxiliary response's token usage against the ambient session.
 
     Strictly best-effort (accounting must never break an aux call). No-ops outside an
     agent turn, for main-loop-accounted tasks (``_EXCLUDED_TASKS``), or without usage.
     The model is read from ``response.model`` (accurate after aux provider fallback);
-    *provider*/*base_url* reflect the originally-resolved route.
+    *provider*/*base_url*/*api_mode* reflect the terminal route that produced the response.
     """
     try:
         if not task or task in _EXCLUDED_TASKS:
@@ -66,7 +66,8 @@ def record_aux_usage(
 
         from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-        usage = with_served_service_tier(normalize_usage(raw_usage, provider=provider), response)
+        usage = with_served_service_tier(
+            normalize_usage(raw_usage, provider=provider, api_mode=api_mode), response)
         if not (
             usage.input_tokens or usage.output_tokens
             or usage.cache_read_tokens or usage.cache_write_tokens
@@ -83,6 +84,7 @@ def record_aux_usage(
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         session_db.record_auxiliary_usage(
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
+            billing_mode=api_mode,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,

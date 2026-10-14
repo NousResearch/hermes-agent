@@ -230,6 +230,133 @@ class TestAmbientAccountingContext:
         assert rows[0]["task"] == "web_extract"
         assert rows[0]["billing_provider"] == "openrouter"
 
+    def test_codex_responses_usage_and_route_are_persisted(self, db):
+        from agent.aux_accounting import reset_accounting_context, set_accounting_context
+        from agent.auxiliary_client import _validate_llm_response
+
+        response = SimpleNamespace(
+            model="gpt-5.6-luna",
+            usage=SimpleNamespace(
+                input_tokens=1000,
+                output_tokens=120,
+                input_tokens_details=SimpleNamespace(cached_tokens=600, cache_write_tokens=80),
+                output_tokens_details=SimpleNamespace(reasoning_tokens=30),
+            ),
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            _validate_llm_response(
+                response, "compression", provider="custom:chatgpt-codex-proxy",
+                base_url="http://proxy.test/v1", api_mode="codex_responses",
+            )
+        finally:
+            reset_accounting_context(token)
+
+        row = _usage_rows(db, "s1")[0]
+        assert row["task"] == "compression"
+        assert row["model"] == "gpt-5.6-luna"
+        assert row["billing_provider"] == "custom:chatgpt-codex-proxy"
+        assert row["billing_base_url"] == "http://proxy.test/v1"
+        assert row["billing_mode"] == "codex_responses"
+        assert row["input_tokens"] == 320
+        assert row["output_tokens"] == 120
+        assert row["cache_read_tokens"] == 600
+        assert row["cache_write_tokens"] == 80
+        assert row["reasoning_tokens"] == 30
+
+    def test_non_codex_usage_keeps_chat_completions_shape(self, db):
+        from agent.aux_accounting import reset_accounting_context, set_accounting_context
+        from agent.auxiliary_client import _validate_llm_response
+
+        response = SimpleNamespace(
+            model="chat-model",
+            usage=SimpleNamespace(
+                prompt_tokens=500,
+                completion_tokens=40,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=200),
+            ),
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            _validate_llm_response(
+                response, "web_extract", provider="openrouter",
+                base_url="https://openrouter.ai/api/v1", api_mode="chat_completions",
+            )
+        finally:
+            reset_accounting_context(token)
+
+        row = _usage_rows(db, "s1")[0]
+        assert row["billing_mode"] == "chat_completions"
+        assert row["input_tokens"] == 300
+        assert row["cache_read_tokens"] == 200
+        assert row["output_tokens"] == 40
+
+    def test_successful_fallback_records_terminal_route(self, db, monkeypatch):
+        """A failed route A followed by successful route B records route B."""
+        from agent.aux_accounting import reset_accounting_context, set_accounting_context
+        import agent.auxiliary_client as aux
+
+        response = SimpleNamespace(
+            model="fallback-model",
+            usage=SimpleNamespace(
+                input_tokens=100, output_tokens=10,
+                input_tokens_details=SimpleNamespace(cached_tokens=25),
+            ),
+            choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok"))],
+        )
+        client_b = SimpleNamespace(base_url="https://fallback-b.test/v1")
+        destination_b = aux._FallbackDestination(
+            "fallback-b", "https://fallback-b.test/v1", "codex_responses", "fallback-model")
+        monkeypatch.setattr(
+            aux, "_plan_fallback_candidate",
+            lambda *args, **kwargs: (destination_b, {"model": "fallback-model"}, lambda *a: None),
+        )
+        monkeypatch.setattr(aux, "_relay_sync_completion", lambda *args, **kwargs: response)
+        monkeypatch.setattr(
+            "agent.auxiliary_fallback_recovery.send_with_parameter_rungs",
+            lambda callback, client, request_kwargs, **kwargs: callback(client, request_kwargs),
+        )
+
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            # The primary route A has already failed; this is the terminal route B
+            # selected by the existing fallback driver.
+            result = aux._call_fallback_candidate_sync(
+                client_b, "fallback-model", "fallback_chain[0](fallback-b)",
+                task="vision", messages=[], temperature=None, max_tokens=None, tools=None,
+                effective_timeout=30.0, effective_extra_body={}, reasoning_config=None,
+            )
+        finally:
+            reset_accounting_context(token)
+
+        assert result is response
+        row = _usage_rows(db, "s1")[0]
+        assert row["billing_provider"] == "fallback-b"
+        assert row["billing_base_url"] == "https://fallback-b.test/v1"
+        assert row["billing_mode"] == "codex_responses"
+        assert row["model"] == "fallback-model"
+
+    def test_accounting_failure_does_not_reject_response(self, db, monkeypatch):
+        from agent.aux_accounting import reset_accounting_context, set_accounting_context
+        from agent.auxiliary_client import _validate_llm_response
+
+        db.create_session("s1", source="cli")
+        monkeypatch.setattr(db, "record_auxiliary_usage", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("db down")))
+        token = set_accounting_context(db, "s1")
+        try:
+            response = _validate_llm_response(
+                _mk_response(), "title_generation", provider="openrouter",
+                base_url="https://openrouter.ai/api/v1", api_mode="chat_completions",
+            )
+        finally:
+            reset_accounting_context(token)
+        assert response.choices[0].message.content == "ok"
+
 
 
 class TestAnalyticsAuxRows:

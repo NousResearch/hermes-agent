@@ -1,21 +1,21 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-  sha: 9afcecf5676422adcbe2da93938f5d26994d6d55
+sha: 186a54dbd0db5e8df29ba1340165a810f37beb37
 description: >-
   Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
   from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
   any document — anydoc (Rust, office formats and text PDFs to Markdown, in-process) with
   LiteParse + Tesseract OCR fallback for scanned PDFs and images, plus PDF text editing with
   strict output containment and output-directory guards. Ships as an Agent Plugins v1 package
-  (auto-discovered plugin.json + mcp.json launching a stdio MCP server with a self-bootstrapping
-  dependency venv), a pip package, and a Hermes plugin. Disclosure — Python deps
+  (auto-discovered plugin.json + mcp.json declaring a keyless streamable-HTTP MCP server on
+  loopback (stdio deliberately not shipped) with a self-bootstrapping dependency venv), a pip package, and a Hermes plugin. Disclosure — Python deps
   (python-docx, openpyxl, python-pptx, weasyprint, odfpy, nano-pdf, firecrawl-anydoc, liteparse)
-  are pinned and installed by scripts/setup.sh into a venv under PLUGIN_DATA or ~/.venss/docs;
+  are pinned and installed by scripts/setup.sh into a venv under PLUGIN_DATA or ~/.venvs/docs;
   system packages pandoc and texlive-xetex are required for PDF conversion (weasyprint for
   HTML->PDF); OCR needs the tesseract binary; all conversion, reading, OCR and PDF editing run
   locally with no network or telemetry; nothing is uploaded; documents are read/written only at
   paths you pass (absolute output paths are containment-checked against the configured output
-  directory. Linux is the tested platform.
+  directory). Linux is the tested platform.
 maintainer: dyiapanis
 tier: community
 category: tools
@@ -30,7 +30,8 @@ capabilities:
     - doc_read
     - doc_read_meta
     - doc_convert
-    - doc_create
+    - doc_create_document
+    - doc_edit_pdf
   provides_hooks: []
   provides_middleware: []
   requires_env: []

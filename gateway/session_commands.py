@@ -150,12 +150,10 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
             # Never fall back to the gateway's own folder: a relative command would act there.
             raise RuntimeStoreError('cwd_unavailable')
         return await runner._hm_run_exec_quick_command(name, shell, cwd=cwd)
-    if runner._hm_quick_commands().get(name) is not None:
-        # The runner's quick commands come first in its dispatch; under multiplex they are the launch
-        # profile's, which must never answer for this session's profile.
-        raise RuntimeStoreError('unsupported_command')
+    # Plugin-only: the runner's quick commands are the launch profile's under multiplex, and this
+    # session's own were already resolved above in its profile (``_resolve_alias``/``_runner_command``).
     event = MessageEvent(text='/' + name + (' ' + arg if arg else ''), source=live.source)
-    _handled, output, _command = await runner._hm_dispatch_quick_and_plugin_commands(event, live.source, name)
+    _handled, output, _command = await runner._hm_dispatch_plugin_command(event, live.source, name)
     return output
 
 

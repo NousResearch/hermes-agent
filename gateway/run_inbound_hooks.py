@@ -198,8 +198,17 @@ class GatewayInboundHooksMixin:
                 return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
+        if not command:
+            return False, None, command
+        return await self._hm_dispatch_plugin_command(event, source, command)
+
+    async def _hm_dispatch_plugin_command(
+        self, event: MessageEvent, source: SessionSource, command: str
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
+        commands: a local session resolves those in its own profile before calling this."""
+        # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
+        # plugin commands registered with hyphens.
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler

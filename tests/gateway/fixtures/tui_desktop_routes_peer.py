@@ -170,6 +170,12 @@ async def _commands(authority, ws, reader, sid, marker, receipt):
     typed = await rpc(ws, 'slash.exec', session_id=sid, command='probe_plugin THREE')
     assert typed.get('result', {}).get('output', '').startswith('PLUGIN_OK THREE'), typed
     assert calls == ['ARG_ONE two', 'THREE']
+    # Under multiplex the runner's own quick commands are the LAUNCH profile's; one sharing the plugin's
+    # name must neither shadow nor refuse this session's plugin command.
+    authority.runner.config.quick_commands['probe-plugin'] = {'type': 'exec', 'command': 'echo LAUNCH_QUICK'}
+    shadowed = await rpc(ws, 'command.dispatch', session_id=sid, name='probe-plugin', arg='FOUR')
+    assert shadowed.get('result', {}).get('output', '').startswith('PLUGIN_OK FOUR'), shadowed
+    assert calls[-1] == 'FOUR'
     unknown = await rpc(ws, 'slash.exec', session_id=sid, command='no-such-command')
     assert _error(unknown) == 'unsupported_command', unknown
     assert not authority.db.get_messages(sid), 'a command started a turn'

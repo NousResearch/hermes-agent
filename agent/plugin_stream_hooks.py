@@ -35,7 +35,7 @@ class _ConsumerDispatcher:
     scope_key: object
     hook_name: str
     callback: Callable[..., Any]
-    events: "queue.Queue[_QueuedObserverEvent | object]"
+    events: queue.Queue[_QueuedObserverEvent | object]
     thread: threading.Thread | None = None
     retired: bool = False
 
@@ -293,7 +293,7 @@ def _dispatchers_for_scope(
             key = (scope_key, hook_name, id(callback))
             dispatcher = _dispatchers.get(key)
             if dispatcher is None or dispatcher.thread is None or not dispatcher.thread.is_alive():
-                events: "queue.Queue[_QueuedObserverEvent | object]" = queue.Queue(
+                events: queue.Queue[_QueuedObserverEvent | object] = queue.Queue(
                     maxsize=_QUEUE_SIZE
                 )
                 dispatcher = _ConsumerDispatcher(

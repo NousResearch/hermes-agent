@@ -227,7 +227,8 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
     never is.
     """
     rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
-    if not rows:
+    # A Store-only release has no package rows: the Store bundle is a file, never an update target.
+    if not rows and not manifest.get("files"):
         raise ValueError("Candidate manifest has no packages")
     # Which targets a release must carry is its claim's business (require_targets_match_claim),
     # not the manifest's: a release may build any subset of the lanes.
@@ -427,7 +428,7 @@ def validate_claim(metadata: object, *, version: str, attempt: int, commit: str)
         raise ValueError("Stable claim metadata is invalid")
     base = {*expected, "autopublish", "claimEpoch"}
     legacy = {"skipBundles", "skipTests"}
-    shapes = ({*base, "lanes"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
+    shapes = ({*base, "lanes"}, {*base, "lanes", "lanesRevision"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
               {*base, *legacy, "includeTermux"}, {*base, *legacy, "includeMacosIntel", "includeTermux"})
     if set(metadata) not in shapes:
         raise ValueError("Stable claim metadata is invalid")
@@ -795,7 +796,9 @@ def candidate_manifest(env: dict) -> None:
     handoffs = lane_set.handoffs(lanes, CANDIDATE_HANDOFFS)
     # A call the claim did not build never ran, so it has no smoke to record.
     runs = lane_set.jobs_to_run(lanes)
-    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call]}
+    # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
+    built = lane_set.targets(lanes)
+    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call] and SMOKE_TARGETS[job] in built}
     smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
     if lane_set.runs_smokes(lanes):
         ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
@@ -813,7 +816,7 @@ def candidate_manifest(env: dict) -> None:
               includes=list(CANDIDATE_INCLUDES))
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
-                 release_epoch=claim["claim_epoch"], archive=archive, handoffs=handoffs)
+                 release_epoch=claim["claim_epoch"], archive=archive, lanes=lanes)
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
     emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
           "manifest-sha256": digest}, env)

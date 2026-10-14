@@ -160,6 +160,13 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
+def has_queued_session_admission(db, *, session_id: str) -> bool:
+    """Body-free probe: whether an admission nobody has claimed yet waits on ``session_id``."""
+    with db._read_ctx() as conn:
+        return conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='queued' LIMIT 1",
+                            (session_id,)).fetchone() is not None
+
+
 _ANY_HEAD = object()
 
 

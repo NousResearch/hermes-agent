@@ -397,3 +397,8 @@ async def dispatch_shared_busy(adapter, event, session_key):
         raise
     if task.done():
         task.result()  # refused, consumed or answered inline before any durable acceptance
+        return
+    # Committed behind the running turn: publish it to review admission the way a slot write is
+    # (``_record_and_fence_followup_locked`` bumps the follow-up epoch and cancels that turn's
+    # review), so the review never spawns beside, or runs beside, the follower.
+    adapter.apply_followup_queue_mutation(session_key, lambda: True)

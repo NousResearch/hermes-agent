@@ -183,6 +183,14 @@ class SessionAuthority:
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(self.sessions[ref.session_id].route)
 
+    def queued_followup_on_route(self, route):
+        """Body-free: whether a logical owner living on ``route`` holds a queued (unclaimed)
+        admission, i.e. a follow-up the drain runs after the current turn. Read from any thread
+        (the background-review probe runs on the agent thread): statuses only, never a payload."""
+        from hermes_state_runtime import has_queued_session_admission
+        return any(has_queued_session_admission(self.db, session_id=sid)
+                   for sid, live in list(self.sessions.items()) if live.route == route)
+
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
         published (``LiveSession.settling``) still reads as its started claim. Callers that pair the

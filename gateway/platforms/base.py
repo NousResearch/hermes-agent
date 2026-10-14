@@ -5012,7 +5012,19 @@ class BasePlatformAdapter(ABC):
         """
         pending = getattr(self, "_pending_messages", None) or {}
         debounce = getattr(self, "_text_debounce", None) or {}
-        return session_key in pending or session_key in debounce
+        return session_key in pending or session_key in debounce or self._shared_followup_pending(session_key)
+
+    def _shared_followup_pending(self, session_key: str) -> bool:
+        """A busy follow-up the shared runtime holds for ``session_key`` instead of the slot: a
+        same-sender burst still merging, or an admission already committed to the durable FIFO
+        behind the running turn. Body-free (burst keys and admission statuses only)."""
+        from gateway.session_ingress_burst import holds_busy_burst
+        if holds_busy_burst(self, session_key):
+            return True
+        from gateway.session_authorities import all_authorities
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        return runner is not None and any(
+            authority.queued_followup_on_route(session_key) for authority in all_authorities(runner))
 
     def build_source(
         self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",

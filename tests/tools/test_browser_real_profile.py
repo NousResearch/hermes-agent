@@ -1102,11 +1102,41 @@ class TestWindowsLockedProfileCopy:
         get the lock wording (whose all-locked message tells the user to quit the browser)."""
         import sqlite3
         import hermes_cli.browser_connect as bc
+        from unittest.mock import MagicMock
+        
         src = str(tmp_path / "Web Data")
         con = sqlite3.connect(src)
         con.execute("create table t(x)")
         con.executemany("insert into t values(?)", ((b"x" * 4000,) for _ in range(600)))  # > 256 pages
         con.commit(); con.close()
+        
+        # Mock sqlite3 to simulate slow backup progress with multiple callbacks
+        mock_sqlite3 = MagicMock()
+        mock_sqlite3.SQLITE_DONE = 101
+        mock_sqlite3.Error = sqlite3.Error
+        
+        mock_source = MagicMock()
+        mock_source.backup = MagicMock()
+        mock_source.close = MagicMock()
+        
+        mock_dest = MagicMock()
+        mock_dest.close = MagicMock()
+        
+        def mock_backup(target, pages=-1, progress=None, name="main", sleep=0.25):
+            total_pages = 604
+            for i in range(0, total_pages, 256):
+                remaining = total_pages - min(i + 256, total_pages)
+                progress(0, remaining, total_pages)
+            progress(101, 0, total_pages)
+            return True
+        
+        mock_source.backup.side_effect = mock_backup
+        mock_sqlite3.connect.side_effect = [mock_source, mock_dest]
+        
+        # Patch both module and function globals
+        bc.sqlite3 = mock_sqlite3
+        bc._copy_auth_file.__globals__["sqlite3"] = mock_sqlite3
+        
         monkeypatch.setattr(bc, "_AUTH_BACKUP_DEADLINE_S", -1.0)  # first callback is already past due
         reason = bc._copy_auth_file(src, str(tmp_path / "out" / "Web Data"))
         assert reason and reason != bc._AUTH_DB_LOCKED

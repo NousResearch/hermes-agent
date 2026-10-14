@@ -256,9 +256,22 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         apply_row_annotations(messages, result['annotations'])
         return result['count']
 
-    def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
+    def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None,
+                                       preempt_background_review=False):
         self._session(session_id)
-        return self._apply('turn.acquire', {'holder': holder, 'ttl_seconds': ttl_seconds})['value']
+        payload = {'holder': holder, 'ttl_seconds': ttl_seconds}
+        if preempt_background_review:
+            # The waiting path (``acquire_session_turn_lease``) asks a background-review holder to
+            # yield inside the owner's claim transaction, exactly as the SQLite mixin does.
+            payload['preempt_background_review'] = True
+        return self._apply('turn.acquire', payload)['value']
+
+    def session_turn_lease_yield_reason(self, session_id, holder):
+        self._session(session_id)
+        return self._apply('turn.yield_reason', {'holder': holder})['value']
+
+    def session_turn_lease_yield_requested(self, session_id, holder):
+        return self.session_turn_lease_yield_reason(session_id, holder) is not None
 
     def acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0,
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,

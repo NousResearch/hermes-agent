@@ -598,21 +598,35 @@ def _worker_append(db, conn, session_id, payload):
 
 def _worker_turn(db, conn, session_id, payload, operation):
     import time
-    from hermes_state_compression import _claim_lease_row
+    from hermes_state_compression import (BACKGROUND_REVIEW_LEASE_HOLDER_MARK, _claim_lease_row,
+                                          _log_review_lease_reclaimed, _review_yield_reason_on_conn,
+                                          _stamp_review_yield_for_waiter)
     from hermes_state import _compression_lock_holder_process_is_dead
-    allowed = {'holder'} if operation == 'turn.release' else {'holder', 'ttl_seconds'}
-    if set(payload) != allowed:
+    allowed = {'holder'} if operation in ('turn.release', 'turn.yield_reason') else {'holder', 'ttl_seconds'}
+    # A waiting (foreground) acquire may ask a background-review holder to yield, as the owner's
+    # in-process waiter does; the flag is meaningless on any other turn receipt.
+    optional = {'preempt_background_review'} if operation == 'turn.acquire' else set()
+    if not allowed <= set(payload) <= allowed | optional:
         raise RuntimeStoreError('invalid_params')
     holder = _text(payload['holder'])
     ttl = payload.get('ttl_seconds', 300)
     if type(ttl) not in (float, int) or not 0.1 <= ttl <= 3600:
         raise RuntimeStoreError('invalid_params')
+    preempt = payload.get('preempt_background_review', False)
+    if type(preempt) is not bool:
+        raise RuntimeStoreError('invalid_params')
     key = db._session_turn_lease_key_on_conn(conn, session_id)
     now = time.time()
     if operation == 'turn.acquire':
-        value = _claim_lease_row(conn, 'session_turn_leases', 'conversation_id', key,
+        value, reclaimed_holder = _claim_lease_row(conn, 'session_turn_leases', 'conversation_id', key,
             holder, now, now + ttl,
-            lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h))[0]
+            lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h))
+        if not value and preempt:
+            _stamp_review_yield_for_waiter(conn, key, now)
+        if reclaimed_holder and BACKGROUND_REVIEW_LEASE_HOLDER_MARK in reclaimed_holder:
+            _log_review_lease_reclaimed(session_id)
+    elif operation == 'turn.yield_reason':
+        value = _review_yield_reason_on_conn(conn, key, holder)
     elif operation == 'turn.renew':
         value = conn.execute('UPDATE session_turn_leases SET expires_at=? WHERE conversation_id=? AND holder=?',
                              (now + ttl, key, holder)).rowcount > 0
@@ -678,7 +692,7 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         'usage.main': _worker_usage,
         'usage.auxiliary': lambda db, conn, sid, p: _worker_usage(db, conn, sid, p, auxiliary=True),
         **{name: (lambda db, conn, sid, p, op=name: _worker_turn(db, conn, sid, p, op))
-           for name in ('turn.acquire', 'turn.renew', 'turn.release')},
+           for name in ('turn.acquire', 'turn.renew', 'turn.release', 'turn.yield_reason')},
     }
     return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
                                 generation=generation, sequence=sequence, operation=operation,

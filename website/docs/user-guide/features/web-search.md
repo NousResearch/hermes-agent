@@ -22,7 +22,7 @@ Both are configured through a single backend selection. Providers are chosen via
 
 | Provider | Env Var | Search | Extract | Free tier |
 |----------|---------|--------|---------|-----------|
-| **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 1 000 credits/mo · keyless cloud when selected |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
@@ -127,7 +127,7 @@ Full-featured search and extract. Recommended for most users.
 FIRECRAWL_API_KEY=fc-your-key-here
 ```
 
-Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes 500 credits/month.
+Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes [1,000 credits/month](https://www.firecrawl.dev/pricing).
 
 **Self-hosted Firecrawl:** Point at your own instance instead of the cloud API:
 

@@ -54,7 +54,7 @@ def _fake_parent(client, *, runtime=None) -> SimpleNamespace:
     )
 
 
-def _run(agent, task_cfg=None):
+def _run(agent, task_cfg=None, review_run=None):
     """Run the worker with AIAgent patched; return the AIAgent mock."""
     with (
         patch("hermes_cli.config.load_config", return_value={}),
@@ -62,7 +62,7 @@ def _run(agent, task_cfg=None):
         patch("tools.terminal_tool.set_approval_callback"),
     ):
         bg._run_review_in_thread(
-            agent, [{"role": "user", "content": "hi"}], "review please", task_cfg
+            agent, [{"role": "user", "content": "hi"}], "review please", task_cfg, review_run=review_run
         )
     return mock_aiagent
 
@@ -75,6 +75,16 @@ def test_fork_is_skipped_when_the_provider_cannot_emit_tool_calls(caplog):
     mock_aiagent.assert_not_called()
     # The user needs to know which knob makes the review work again.
     assert "auxiliary.background_review" in caplog.text
+
+
+def test_a_skipped_fork_releases_its_review_run():
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    parent = _fake_parent(client)
+    run = bg.prepare_background_review_run(parent)
+    _run(parent, review_run=run).assert_not_called()
+    assert run.request_done.is_set()
+    assert bg.prepare_background_review_run(parent) is not None
 
 
 def test_fork_is_spawned_when_the_provider_can_emit_tool_calls():

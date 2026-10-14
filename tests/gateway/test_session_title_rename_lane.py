@@ -28,6 +28,7 @@ def _attach(lane):
 
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_discord_thread_lane=lambda src: lane == "discord",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
         _recover_discord_auto_thread_source=lambda src, key: src,
@@ -60,6 +61,16 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
+def test_user_created_discord_thread_registers_title_rename():
+    callback, renames = _attach("discord")
+
+    # The callback helper represents an existing user-created thread; unlike a
+    # bot-created thread it has no auto-thread markers to consult.
+    callback("Rename this thread", "llm")
+
+    assert renames == ["Rename this thread"]
+
+
 def _thread_source(thread_id="thread-1", **fields):
     return SessionSource(
         platform=Platform.DISCORD, chat_id=thread_id, chat_type="thread", thread_id=thread_id, **fields,
@@ -87,7 +98,7 @@ def _attach_in_thread(current, entry_origin, row_origin=None, get_session=None):
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_discord_semantic_thread_rename=lambda src, sid, title: scheduled.append((src, sid, title)),
     )
-    for name in ("_is_discord_auto_thread_lane", "_recover_discord_auto_thread_source"):
+    for name in ("_is_discord_thread_lane", "_is_discord_auto_thread_lane", "_recover_discord_auto_thread_source"):
         setattr(runner, name, types.MethodType(getattr(GatewayRunner, name), runner))
     holder = types.SimpleNamespace(
         _runner=runner,
@@ -128,24 +139,35 @@ def _unreadable(session_id):
     raise RuntimeError("state.db unavailable")
 
 
-@pytest.mark.parametrize("entry_origin,row_origin,get_session", [
+@pytest.mark.parametrize("entry_origin,row_origin,get_session,expect_callback", [
     pytest.param(
         _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
         _thread_source("thread-2", auto_thread_created=True, auto_thread_initial_name="Other"),
-        None, id="other-thread",
+        None, True, id="other-thread",
     ),
-    pytest.param(_thread_source(message_id="opening-message"), None, None, id="user-created-thread"),
-    pytest.param(_thread_source(), None, _unreadable, id="unreadable-row"),
+    pytest.param(_thread_source(message_id="opening-message"), None, None, True, id="user-created-thread"),
+    pytest.param(_thread_source(), None, _unreadable, False, id="unreadable-row"),
 ])
-def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_origin, row_origin, get_session):
+def test_discord_title_retry_never_borrows_markers_from_another_origin(entry_origin, row_origin, get_session, expect_callback):
     _UNREADABLE_CALLS.clear()
     agent, scheduled = _attach_in_thread(
         _thread_source(message_id="follow-up"), entry_origin, row_origin, get_session,
     )
-    assert not hasattr(agent, "_on_session_title")
-    assert scheduled == []
-    if get_session is _unreadable:  # the row read ran; attach's try/except drops the callback, as on main
+    if not expect_callback:  # the row read ran; attach's try/except drops the callback, as on main
+        assert not hasattr(agent, "_on_session_title")
+        assert scheduled == []
         assert _UNREADABLE_CALLS == ["sess-1"]
+        return
+    # With the broadened thread lane (#127841) an existing native thread earns the semantic
+    # rename even when recovery cannot attach auto-thread markers — but never borrowed ones:
+    # the scheduled rename targets THIS thread and carries no foreign initial name.
+    assert hasattr(agent, "_on_session_title")
+    agent._on_session_title("Recovered semantic title", "llm")
+    [(src, session_id, title)] = scheduled
+    assert str(src.thread_id) == "thread-1"
+    assert getattr(src, "auto_thread_created", None) is not True
+    assert getattr(src, "auto_thread_initial_name", None) != "Other"
+    assert (session_id, title) == ("sess-1", "Recovered semantic title")
 
 
 @pytest.mark.anyio
@@ -165,6 +187,7 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
             return True
 
     class NativeRenameRunner:
+        _is_discord_thread_lane = GatewayRunner._is_discord_thread_lane
         _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
         _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
         _rename_discord_auto_thread_for_session_title = (

@@ -1,0 +1,51 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pay
+description: Pay per-request for HTTP 402/x402/MPP APIs from a local wallet.
+source: https://github.com/solana-foundation/pay
+
+# `pay` is a local Rust CLI; there is no remote endpoint or git-clone
+# bootstrap to pin here. Install it first via one of pay's own published
+# channels (`brew install pay`, `npm install -g @solana/pay`, or build from
+# source), then run `pay setup` once to create a wallet. `pay mcp` launches
+# that same binary as a stdio MCP server exposing catalog search, balance,
+# and a `curl`-style paid-request tool.
+transport:
+  type: stdio
+  command: pay
+  args: [mcp]
+  # PAY_FORCE_ELICITATION routes every payment/signing confirmation through
+  # this MCP session's elicitation/create round-trip instead of a platform
+  # biometric prompt (Touch ID / Windows Hello / polkit). pay already
+  # prefers a native biometric gate when it looks available, but that check
+  # only confirms hardware + enrollment — not whether the current session
+  # can actually render the prompt (e.g. a headless box reached over SSH).
+  # Hermes's MCP client implements elicitation/create by default and routes
+  # it through the same approval surface as everything else (CLI/TUI
+  # prompt, or the gateway notify callback for Telegram/Slack/etc.), so
+  # forcing it here is safe and strictly more reliable for unattended
+  # installs.
+  env:
+    PAY_FORCE_ELICITATION: "1"
+
+auth:
+  type: none
+  # pay manages its own wallet identity through its own keystore (Keychain,
+  # Windows Credential Manager, GNOME Keyring, 1Password, or an owner-only
+  # keypair file), set up once with `pay setup` outside of Hermes. There is
+  # no API key for Hermes to collect.
+
+post_install: |
+  Requires the `pay` CLI on PATH first:
+    brew install pay          # macOS
+    npm install -g @solana/pay
+
+  Then create a wallet once, outside of Hermes:
+    pay setup
+
+  Restart your Hermes session afterward so the pay tools load. `pay setup`
+  picks Touch ID / Windows Hello / GNOME Keyring automatically depending on
+  platform; on a box with none of those available (a headless server),
+  use `pay setup --backend file` to skip the interactive picker.

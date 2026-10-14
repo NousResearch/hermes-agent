@@ -56,6 +56,14 @@ def _recv_shutdown_proof(reader, writer):
     assert writer.recv(1) == b"", "the killed attempt's socket was not shut down"
 
 
+def test_configured_request_budget_does_not_disable_idle_stream_timeout(monkeypatch):
+    """A long provider request budget must not make a silent SSE read wait for minutes."""
+    monkeypatch.setattr(helpers, "get_provider_request_timeout", lambda *_args: 600.0)
+    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "15")
+    call = _call(_agent())
+    assert call._stream_timeouts() == (600.0, 15.0, 60.0)
+
+
 def test_shutdown_reaches_socket_through_real_httpx_wrapper_shape():
     """httpx 0.28 nests BoundSyncStream._stream(ResponseStream)._httpcore_stream
     (PoolByteStream)._stream(HTTP11ConnectionByteStream)._connection

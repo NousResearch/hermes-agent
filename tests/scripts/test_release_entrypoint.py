@@ -118,6 +118,7 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "commit": commit,
         "schema": 1,
         "lanes": ["ci", "docker", "windows"],
+        "lanesRevision": lane_set.LANES_REVISION,
         "version": "0.21.5",
     }
     assert result["lanes"] == frozenset({"ci", "docker", "windows"})
@@ -166,7 +167,7 @@ def test_release_output_names_the_ci_run_and_the_publish_step():
 
     # --only windows,docker: no tests, no macOS, and a partial desktop set never moves the channel.
     windows = next_steps({**result, "lanes": lane_set.select(only=["windows", "docker"])})
-    assert "Not built: macos-arm64, macos-intel, termux." in windows
+    assert "Not built: windows-store, macos-arm64, macos-intel, termux." in windows
     assert "Not tested: ci, nix, docker-tests, pm-bundle, windows-live, install-e2e, bootstrap-version, smoke, upgrade" in windows
     assert "partial desktop release" in windows
     assert "\033[" not in windows

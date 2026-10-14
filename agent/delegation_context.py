@@ -16,6 +16,9 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
+# The parent's ``delegate_task`` tool_call_id for the child running in this context; tool hooks fired by
+# the child carry it so audit scripts can attribute child tool calls to the delegation that spawned them.
+_PARENT_TOOL_CALL_ID: ContextVar[str | None] = ContextVar("hermes_delegate_parent_tool_call_id", default=None)
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
@@ -26,18 +29,27 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
 
 
 @contextmanager
-def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
+def delegated_child_context(session_id: str | None = None, parent_tool_call_id: str | None = None) -> Iterator[None]:
     """Mark child execution and isolate its task-local session identity. Even a context
     entered without an id must restore the parent's session ContextVar (child
     construction calls ``set_current_session_id``)."""
     token = _DELEGATED_CHILD_CONTEXT.set(True)
+    call_token = _PARENT_TOOL_CALL_ID.set(parent_tool_call_id or None)
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
 
         with scoped_current_session_id(session_id):
             yield
     finally:
+        _PARENT_TOOL_CALL_ID.reset(call_token)
         _DELEGATED_CHILD_CONTEXT.reset(token)
+
+
+def delegation_hook_fields() -> dict[str, str]:
+    """Extra tool-hook kwargs for a call made by a delegate child: ``parent_tool_call_id`` (the parent's
+    ``delegate_task`` call). Empty outside a child, so top-level payloads keep their exact shape."""
+    call_id = _PARENT_TOOL_CALL_ID.get()
+    return {"parent_tool_call_id": call_id} if call_id else {}
 
 
 def is_delegated_child_context() -> bool:

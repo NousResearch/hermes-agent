@@ -127,7 +127,7 @@ print(json.dumps({'missing_usage_next_turn':{'session_prompt':b.session_prompt_t
 # Replace only the model/delegation body; no subagents or model requests.
 a._interrupt_requested=False
 full_entered=threading.Event()
-def full_body(args):
+def full_body(args, **_kw):
     full_entered.set(); time.sleep(0.65)
     return json.dumps({'marker':'FULL_BOUNDARY_DONE'})
 a._dispatch_delegate_task=full_body

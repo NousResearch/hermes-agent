@@ -2290,7 +2290,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         monkeypatch.setattr(
             agent,
             "_dispatch_delegate_task",
-            lambda args: '{"ok":true}',
+            lambda args, **_kw: '{"ok":true}',
         )
         agent._memory_manager = None
 

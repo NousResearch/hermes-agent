@@ -1,0 +1,205 @@
+{
+  "name": "Mumtaz",
+  "slug": "taj-mahal-interior-1632",
+  "year": 1632,
+  "collection": "1939-flagship",
+  "source": "Taj Mahal Interior",
+  "source_type": "architecture",
+  "roles": {
+    "Background": {
+      "hex": "#181B22",
+      "tints": [
+        "#61636C",
+        "#4B4D56",
+        "#363840",
+        "#272931",
+        "#181B22",
+        "#101219",
+        "#06070D",
+        "#010104",
+        "#000002",
+        "#000002"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#BDBBB0",
+      "tints": [
+        "#F8F5EA",
+        "#E7E5DA",
+        "#D7D5CA",
+        "#CAC8BD",
+        "#BDBBB0",
+        "#D7D5CA",
+        "#A4A297",
+        "#918F85",
+        "#7F7D73",
+        "#6E6C62"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#584A77",
+      "tints": [
+        "#C0B1E5",
+        "#A192C4",
+        "#8274A4",
+        "#655786",
+        "#584A77",
+        "#584A77",
+        "#352751",
+        "#22133B",
+        "#100126",
+        "#030011"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#557AE6",
+      "tints": [
+        "#BEECFF",
+        "#9FCBFF",
+        "#80AAFF",
+        "#638AF8",
+        "#557AE6",
+        "#2E4CB4",
+        "#3252BA",
+        "#1F39A0",
+        "#0F1E86",
+        "#07006C"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#A69B64",
+      "tints": [
+        "#FFF9BF",
+        "#F7EBB1",
+        "#D6CA92",
+        "#B6AA73",
+        "#A69B64",
+        "#887D47",
+        "#7F743E",
+        "#675D26",
+        "#51460C",
+        "#3C3100"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#DDC56E",
+      "tints": [
+        "#FFF79F",
+        "#FFF79F",
+        "#FFF69E",
+        "#EED57E",
+        "#DDC56E",
+        "#B49C44",
+        "#B39C44",
+        "#9B8327",
+        "#826B00",
+        "#6B5400"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#9A4D75",
+      "tints": [
+        "#FFB8E2",
+        "#ED98C2",
+        "#CB7AA3",
+        "#AA5C84",
+        "#9A4D75",
+        "#944870",
+        "#712850",
+        "#58103B",
+        "#400027",
+        "#290014"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#5B698C",
+      "tints": [
+        "#909FC5",
+        "#818FB5",
+        "#7280A5",
+        "#667499",
+        "#5B698C",
+        "#647296",
+        "#475476",
+        "#475476",
+        "#475476",
+        "#475476"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.18,
+    "highlight_on_background": 4.36,
+    "highlight_on_canvas": 2.05,
+    "support_on_background": 6.15,
+    "chart1_on_background": 10.08,
+    "chart2_on_background": 3.03,
+    "canvas_on_background": 8.94
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00686
+}

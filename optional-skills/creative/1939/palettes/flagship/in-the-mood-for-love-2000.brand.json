@@ -1,0 +1,205 @@
+{
+  "name": "WKW",
+  "slug": "in-the-mood-for-love-2000",
+  "year": 2000,
+  "collection": "1939-flagship",
+  "source": "In the Mood for Love",
+  "source_type": "film_still",
+  "roles": {
+    "Background": {
+      "hex": "#130A0C",
+      "tints": [
+        "#5B4F50",
+        "#45393B",
+        "#302527",
+        "#211719",
+        "#130A0C",
+        "#0B0405",
+        "#030000",
+        "#020000",
+        "#020000",
+        "#020000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#728492",
+      "tints": [
+        "#A8BCCA",
+        "#99ACBA",
+        "#8A9DAB",
+        "#7E909E",
+        "#728492",
+        "#8A9DAB",
+        "#5B6D7A",
+        "#4A5C68",
+        "#465764",
+        "#465764"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#343967",
+      "tints": [
+        "#959ED4",
+        "#7780B3",
+        "#5B6294",
+        "#404675",
+        "#343967",
+        "#343967",
+        "#151741",
+        "#07032C",
+        "#010017",
+        "#01000E"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#C46443",
+      "tints": [
+        "#FFD3AF",
+        "#FFB28F",
+        "#F89270",
+        "#D57352",
+        "#C46443",
+        "#933715",
+        "#993D1B",
+        "#7F2400",
+        "#650500",
+        "#4C0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#A4909D",
+      "tints": [
+        "#FFF1FE",
+        "#F5DFED",
+        "#D4BFCC",
+        "#B4A0AC",
+        "#A4909D",
+        "#86737F",
+        "#7D6A76",
+        "#65535F",
+        "#4F3E49",
+        "#392934"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#E5935A",
+      "tints": [
+        "#FFE2A7",
+        "#FFE2A7",
+        "#FFC389",
+        "#F6A36A",
+        "#E5935A",
+        "#BA6C31",
+        "#B96C31",
+        "#9F5412",
+        "#863C00",
+        "#6D2500"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#516979",
+      "tints": [
+        "#BAD5E7",
+        "#9BB5C7",
+        "#7C96A7",
+        "#5F7888",
+        "#516979",
+        "#4C6474",
+        "#2E4554",
+        "#1A303E",
+        "#061C2A",
+        "#000A16"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#694D4C",
+      "tints": [
+        "#937574",
+        "#846665",
+        "#755857",
+        "#694D4C",
+        "#694D4C",
+        "#674B4A",
+        "#694D4C",
+        "#694D4C",
+        "#694D4C",
+        "#694D4C"
+      ],
+      "curve": "surface",
+      "legend_text": "#f0ede8",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.79,
+    "highlight_on_background": 4.88,
+    "highlight_on_canvas": 1.03,
+    "support_on_background": 6.55,
+    "chart1_on_background": 8.04,
+    "chart2_on_background": 3.39,
+    "canvas_on_background": 5.05
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00202
+}

@@ -1,0 +1,205 @@
+{
+  "name": "Soup",
+  "slug": "soup-1962",
+  "year": 1962,
+  "collection": "1939-flagship",
+  "source": "Campbell's Soup Cans",
+  "source_type": "artwork",
+  "roles": {
+    "Background": {
+      "hex": "#0A0C0D",
+      "tints": [
+        "#4E5152",
+        "#393B3D",
+        "#252729",
+        "#17191B",
+        "#0A0C0D",
+        "#040506",
+        "#000001",
+        "#000001",
+        "#000001",
+        "#000001"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#D6E1CD",
+      "tints": [
+        "#F1FCE8",
+        "#F1FCE8",
+        "#F1FCE8",
+        "#E3EEDA",
+        "#D6E1CD",
+        "#F1FCE8",
+        "#BCC7B4",
+        "#AAB4A1",
+        "#97A18F",
+        "#858F7D"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#932633",
+      "tints": [
+        "#FF9497",
+        "#E97479",
+        "#C6555C",
+        "#A43640",
+        "#932633",
+        "#942633",
+        "#680011",
+        "#4E0000",
+        "#350000",
+        "#1A0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#FF565D",
+      "tints": [
+        "#FFB5B3",
+        "#FFACAB",
+        "#FF8A8B",
+        "#FF676C",
+        "#FF565D",
+        "#D41231",
+        "#DB1F36",
+        "#BE001E",
+        "#A10000",
+        "#840000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#A48A38",
+      "tints": [
+        "#FFF6A4",
+        "#F5DA88",
+        "#D4B968",
+        "#B49A48",
+        "#A48A38",
+        "#866D11",
+        "#7D6400",
+        "#654D00",
+        "#4F3700",
+        "#392200"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#E5DE6A",
+      "tints": [
+        "#FFFE8B",
+        "#FFFE8B",
+        "#FFFE8B",
+        "#F6EE7B",
+        "#E5DE6A",
+        "#BCB43D",
+        "#BBB43D",
+        "#A39A18",
+        "#8A8200",
+        "#736A00"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#A2AAB2",
+      "tints": [
+        "#F0F9FF",
+        "#F0F9FF",
+        "#D1DAE2",
+        "#B1B9C2",
+        "#A2AAB2",
+        "#9CA4AC",
+        "#7A828A",
+        "#636B72",
+        "#4D545B",
+        "#383F45"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#777473",
+      "tints": [
+        "#ADAAA9",
+        "#9E9B9A",
+        "#8E8B8A",
+        "#827F7E",
+        "#777473",
+        "#807D7C",
+        "#605D5C",
+        "#575453",
+        "#575453",
+        "#575453"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.39,
+    "highlight_on_background": 6.29,
+    "highlight_on_canvas": 2.3,
+    "support_on_background": 5.85,
+    "chart1_on_background": 13.99,
+    "chart2_on_background": 8.33,
+    "canvas_on_background": 14.48
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00682
+}

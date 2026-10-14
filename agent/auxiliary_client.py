@@ -2282,6 +2282,27 @@ def _aux_openrouter_settings() -> tuple[bool, str]:
         return False, _OPENROUTER_MODEL
 
 
+def _aux_openrouter_base_url(explicit_base_url: str | None) -> str:
+    """The OpenRouter host for auxiliary calls. A caller-supplied endpoint wins; otherwise the
+    ``openrouter.endpoint`` region applies so regional-only workspaces don't 403 on title
+    generation and other side tasks. Global is the fallback."""
+    override = (explicit_base_url or "").strip().rstrip("/")
+    if override:
+        return override
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        cfg = load_config_readonly()
+        chosen = cfg_get(cfg, "openrouter", "endpoint")
+    except Exception:
+        chosen = None
+    if isinstance(chosen, str) and chosen.strip():
+        from hermes_constants import openrouter_endpoint_url
+        url = openrouter_endpoint_url(chosen.strip())
+        if url != OPENROUTER_BASE_URL:
+            return url
+    return OPENROUTER_BASE_URL
+
+
 def _warn_paid_lane_once(model: str) -> None:
     """Log a WARNING the first time a non-free OpenRouter model is engaged."""
     if model in _paid_lane_warned:
@@ -2310,12 +2331,12 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
         _warn_paid_lane_once(or_model)
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
     # authoritative over both the pool row and the canonical host (#121359).
-    override_url = (explicit_base_url or "").strip().rstrip("/")
+    override_url = _aux_openrouter_base_url(explicit_base_url)
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
-            base_url = override_url or _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            base_url = override_url or _pool_runtime_base_url(entry, override_url) or override_url
             logger.debug("Auxiliary client: OpenRouter via pool")
             return _create_openai_client(
                 api_key=or_key, base_url=base_url, default_headers=build_or_headers()
@@ -2329,7 +2350,7 @@ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, 
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
-        api_key=or_key, base_url=override_url or OPENROUTER_BASE_URL, default_headers=build_or_headers()
+        api_key=or_key, base_url=override_url, default_headers=build_or_headers()
     ), or_model
 
 

@@ -706,7 +706,11 @@ DEFAULT_CONFIG = {
     # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
     # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
     # openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
+    # endpoint: "global" | "eu" | "us". EU/US are OpenRouter Business+ in-region hosts
+    # (https://eu.openrouter.ai, https://us.openrouter.ai). "global" is the current default.
+    "openrouter": {
+        "response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65, "endpoint": "global",
+    },
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {

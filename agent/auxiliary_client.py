@@ -178,11 +178,15 @@ def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = Fa
     return {"http_client": client} if client is not None else {}
 
 
-def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+def _create_openai_client(*, api_key: str, base_url: str, provider: str = "", model: str = "", **kwargs: Any) -> Any:
     if _aux_probe_active():
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    from agent.gemini_routing import is_native_gemini_route
+    if is_native_gemini_route(provider, model, base_url):
+        from agent.gemini_native_adapter import GeminiNativeClient
+        return GeminiNativeClient(api_key=api_key, base_url=base_url, **kwargs)
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -2144,7 +2148,7 @@ def _read_codex_singleton_token() -> Optional[str]:
         return None
 
 
-def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_api_key_provider(model_override: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order; (client, model) or (None, None)."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
@@ -2163,6 +2167,10 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
+            if model_override:
+                from agent.auxiliary_auto_routing import compatible_auto_model
+                return resolve_provider_client("anthropic", compatible_auto_model(
+                    model_override, _get_aux_model_for_provider("anthropic")))
             return _try_anthropic()
         if provider_id == "copilot":
             # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
@@ -2196,12 +2204,13 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 api_key = runtime["api_key"]
             via = " (session endpoint)"
         logger.debug("Auxiliary text client: %s (%s)%s", pconfig.name, model, via)
+        if model_override:
+            from agent.auxiliary_auto_routing import compatible_auto_model
+            return resolve_provider_client(
+                provider_id, compatible_auto_model(model_override, model, raw_base_url),
+                explicit_base_url=raw_base_url, explicit_api_key=api_key)
         # Native Gemini, else OpenAI-wire + Anthropic rewrap.
         base_url = _to_openai_base_url(raw_base_url)
-        if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-            if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
@@ -2215,7 +2224,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         merged = _apply_user_default_headers(extra.get("default_headers"))
         if merged:
             extra["default_headers"] = merged
-        client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
+        client = _create_openai_client(api_key=api_key, base_url=base_url, provider=provider_id, model=model, **extra)
         return _maybe_wrap_anthropic(client, model, api_key, raw_base_url), model
     return None, None
 
@@ -2891,7 +2900,7 @@ def _validate_base_url(base_url: str) -> None:
         ) from exc
 
 
-def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
+def _try_custom_endpoint(model_override: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     runtime = _resolve_custom_runtime()
     custom_base, custom_key, custom_mode = (*runtime, None) if len(runtime) == 2 else runtime
     if not custom_base or not custom_key:
@@ -2899,6 +2908,11 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
     if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
         return None, None
     model = _read_main_model_for_aux() or "gpt-4o-mini"
+    if model_override:
+        from agent.auxiliary_auto_routing import compatible_auto_model
+        return resolve_provider_client(
+            "custom", compatible_auto_model(model_override, model, custom_base),
+            explicit_base_url=custom_base, explicit_api_key=custom_key, api_mode=custom_mode)
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
@@ -2925,7 +2939,8 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base,
                                         is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), model
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
-    _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
+    _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base,
+                                              provider=_read_main_provider(), model=model, **_extra)
     return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
 
 
@@ -4543,32 +4558,6 @@ def _warn_stale_openai_base_url(runtime_provider: str) -> None:
         _stale_base_url_warned = True
 
 
-def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[str, str, str, Any, str]:
-    """Step-1 target: (provider, model, base_url, api_key, api_mode) of the main runtime, after the
-    fast-model opt-in and the MoA aggregator substitution."""
-    main_provider = str(runtime.get("provider", "") or _read_main_provider() or "")
-    main_model = str(runtime.get("model") or _read_main_model() or "")
-    runtime_base_url = str(runtime.get("base_url") or "")
-    runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = str(runtime.get("api_mode") or "")
-    # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
-    # every settings surface defines "auto" as the main model.
-    if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
-        if fast_model and fast_model != main_model:
-            logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
-                         task, fast_model, main_model)
-            main_model = fast_model
-    # MoA virtual provider: the preset name is not a wire model; run aux on the aggregator and drop
-    # the facade's "moa://local" base_url / placeholder key so it uses its own credentials.
-    if main_provider == "moa":
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
-            runtime_base_url = runtime_api_key = runtime_api_mode = ""
-    return main_provider, main_model, runtime_base_url, runtime_api_key, runtime_api_mode
-
-
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
 ) -> Optional[tuple[Any, str, str]]:
@@ -4589,9 +4578,8 @@ def _try_main_provider_route(
             from hermes_cli.runtime_provider import _get_named_custom_provider
             _has_named_entry = _get_named_custom_provider(main_provider) is not None
         if _has_named_entry:
-            # KEEP the full ``custom:<name>`` so the named arm honours the entry's api_mode
-            # (collapsing to "custom" strips /anthropic → 404s). base_url/api_key come from the entry.
-            explicit_base_url = None
+            # Keep the named transport pin, but the live endpoint/key beat persisted credentials.
+            explicit_api_key = runtime_api_key or None
         elif runtime_base_url:
             # Config-less named custom provider (live runtime only): anonymous custom arm + runtime key.
             # See #34777.
@@ -4632,10 +4620,12 @@ def _discovery_chain_allowed(main_provider: str, task: Optional[str] = None) -> 
     return False
 
 
-def _try_discovery_chain() -> tuple[Optional[OpenAI], Optional[str], str]:
+def _try_discovery_chain(model_override: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str], str]:
     """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
+    from agent.auxiliary_auto_routing import discovery_chain
     tried = []
-    for label, try_fn in _get_provider_chain():
+    chain = discovery_chain(model_override) if model_override else _get_provider_chain()
+    for label, try_fn in chain:
         candidate_base_url = _custom_health_base_url(label)
         if _is_provider_unhealthy(label, candidate_base_url):
             _log_skip_unhealthy(label, base_url=candidate_base_url)
@@ -4657,7 +4647,8 @@ def _try_discovery_chain() -> tuple[Optional[OpenAI], Optional[str], str]:
 
 
 def _resolve_auto_route(
-    main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None
+    main_runtime: Optional[dict[str, Any]] = None, task: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> tuple[Optional[OpenAI], Optional[str], str]:
     """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
@@ -4668,7 +4659,11 @@ def _resolve_auto_route(
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
-    main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
+    from agent.auxiliary_auto_routing import main_route_target
+    main_provider, main_model, base_url, api_key, api_mode = main_route_target(runtime, task)
+    # Pick the effective model before creating any wire-specific client or wrapper.
+    if model_override and ("/" not in model_override or not main_model or "/" in main_model):
+        main_model = model_override
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
@@ -4683,7 +4678,7 @@ def _resolve_auto_route(
         return fb_client, fb_model, fb_label
     if not _discovery_chain_allowed(main_provider, task):
         return None, None, ""
-    return _try_discovery_chain()
+    return _try_discovery_chain(model_override=model_override)
 
 
 def _effective_provider_for_client(client: Any, fallback: str) -> str:
@@ -4722,7 +4717,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # header. Configured default_headers (a named entry's extra_headers) are likewise carried over,
     # merged last exactly as the SDK merges them on the sync client. See #109595.
     from agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
-    async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
+    async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url,
+                    "default_query": sync_client.default_query}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
@@ -4919,6 +4915,8 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     Codex (Responses API): explicit ``api_mode=codex_responses``, else — with no
     explicit api_mode — api.openai.com + codex model. Anthropic (Messages): ``api_mode=anthropic_messages``,
     any ``/anthropic`` suffix, ``api.kimi.com/coding``, or ``api.anthropic.com``."""
+    if _client_declares(client_obj, "HERMES_SKIP_TRANSPORT_WRAP"):
+        return client_obj
     if _is_actual_auxiliary_route(req, base_url_str):
         client = (
             client_obj._real_client
@@ -4978,17 +4976,11 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     """Auto: try all providers in priority order; tag the client with the effective provider (survives cache reuse)."""
-    client, resolved, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
+    client, resolved, effective_provider = _resolve_auto_route(
+        main_runtime=req.main_runtime, task=req.task, **({"model_override": req.model} if req.model else {}))
     if client is None:
         return None, None
-    model = req.model
-    # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
-    # server); drop it for the provider's default.
-    if model and "/" in model and resolved and "/" not in resolved:
-        logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
-                     "auxiliary provider (using %r instead)", model, resolved)
-        model = None
-    routed_client, routed_model = _route_client(req, client, model or resolved)
+    routed_client, routed_model = _route_client(req, client, resolved)
     if routed_client is not None and effective_provider:
         try:
             routed_client._hermes_aux_effective_provider = effective_provider
@@ -5113,7 +5105,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision)
         if _custom_headers:
             extra["default_headers"] = _custom_headers
-        client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
+        client = _create_openai_client(api_key=custom_key, base_url=_clean_base, provider=provider, model=final_model, **extra)
         client = _wrap_transport(req, client, final_model, wrap_base or custom_base, custom_key)
         return _route_client(req, client, final_model)
     # Try custom first, then API-key providers (Codex excluded here:
@@ -5132,7 +5124,8 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_headers: Optional[dict[str, str]] = None):
+def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_headers: Optional[dict[str, str]] = None,
+                                     *, provider: str = "", model: str = ""):
     """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL.
 
     ``extra_headers`` is the entry's own header block (gateway routing tags, proxy auth): the main
@@ -5144,7 +5137,7 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_he
         _headers = {**(_headers or {}), **extra_headers}
     if _headers:
         _extra["default_headers"] = _headers
-    return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
+    return _create_openai_client(api_key=custom_key, base_url=_clean_base, provider=provider, model=model, **_extra)
 
 
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
@@ -5216,7 +5209,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
                                           is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
+    client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers, provider=provider, model=final_model)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
@@ -5298,14 +5291,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
         return _route_client(req, profile_client, final_model)
-    if provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-        if is_native_gemini_base_url(base_url):
-            client = GeminiNativeClient(api_key=api_key, base_url=base_url)
-            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
-    client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
+    client = _create_openai_client(api_key=api_key, base_url=base_url, provider=provider, model=final_model,
+                                   **({"default_headers": headers} if headers else {}))
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
     # wrap so call_llm() transparently routes through responses.stream().
     if provider == "copilot" and final_model and not req.raw_codex:
@@ -5577,12 +5565,12 @@ def get_available_vision_backends() -> list[str]:
 
 def _finalize_vision_client(
     resolved_provider: str, sync_client: Any, default_model: Optional[str],
-    resolved_model: Optional[str], async_mode: bool,
+    async_mode: bool,
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
-    """Apply the explicit model override (and async wrapping) to a resolved vision client."""
+    """Convert the already model-resolved vision client to async when requested."""
     if sync_client is None:
         return resolved_provider, None, None
-    final_model = resolved_model or default_model
+    final_model = default_model
     if async_mode:
         async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
         return resolved_provider, async_client, async_model
@@ -5597,7 +5585,7 @@ def _vision_main_provider_client(
     # A provider vision default (static override or catalog discovery) is a *known* multimodal
     # model; the pinned chat model usually isn't, so only fall back to it when no default exists.
     provider_vision_default = _resolve_provider_vision_default(main_provider)
-    vision_model = provider_vision_default or main_model
+    vision_model = resolved_model or provider_vision_default or main_model
     if main_provider == "nous":
         # Nous picks its vision model from Portal tier-aware slots inside _try_nous(vision=True);
         # passing the chat model would override that and 404. Only auxiliary.vision.model may.
@@ -5618,7 +5606,7 @@ def _vision_main_provider_client(
         return None, None
     # Custom endpoints carry no built-in base_url/api_key: recover the live main endpoint from
     # set_runtime_main() or, with no live runtime recorded, the configured custom endpoint.
-    rpc_base_url = rpc_api_key = None
+    rpc_base_url, rpc_api_key = runtime.get("base_url") or None, runtime.get("api_key") or None
     rpc_api_mode = resolved_api_mode
     if main_provider == "custom" or main_provider.startswith("custom:"):
         if runtime.get("base_url"):
@@ -5642,7 +5630,8 @@ def _vision_auto_route(
     async_mode: bool,
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
-    main_provider = str(runtime.get("provider") or _read_main_provider())
+    from agent.gemini_routing import effective_gemini_provider
+    main_provider = effective_gemini_provider(SimpleNamespace(**runtime)) or _read_main_provider()
     main_model = str(runtime.get("model") or _read_main_model())
     if main_provider.strip().lower() == "moa":
         # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
@@ -5654,14 +5643,14 @@ def _vision_auto_route(
     if main_provider and main_provider not in {"auto", "", "moa"}:
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:
-            return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
+            return _finalize_vision_client(main_provider, client, default_model, async_mode)
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
         if candidate == main_provider:
             continue  # already tried above
-        sync_client, default_model = _resolve_strict_vision_backend(candidate)
+        sync_client, default_model = _resolve_strict_vision_backend(candidate, resolved_model)
         if sync_client is not None:
-            return _finalize_vision_client(candidate, sync_client, default_model, resolved_model, async_mode)
+            return _finalize_vision_client(candidate, sync_client, default_model, async_mode)
     logger.debug("Auxiliary vision client: none available")
     return None, None, None
 
@@ -5699,7 +5688,7 @@ def resolve_vision_provider_client(
         return _vision_auto_route(runtime, resolved_model, resolved_api_mode, async_mode)
     if requested in _VISION_AUTO_PROVIDER_ORDER:
         sync_client, default_model = _resolve_strict_vision_backend(requested, resolved_model)
-        return _finalize_vision_client(requested, sync_client, default_model, resolved_model, async_mode)
+        return _finalize_vision_client(requested, sync_client, default_model, async_mode)
     if requested == "zai":
         for _zai_url in _ZAI_OPENAI_VISION_URLS:
             client, final_model = _get_cached_client(
@@ -5708,7 +5697,7 @@ def resolve_vision_provider_client(
                 is_vision=True,
             )
             if client is not None:
-                return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
+                return _finalize_vision_client(requested, client, final_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
         raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
@@ -5782,7 +5771,8 @@ def _client_cache_key(
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     # `auto` resolves through the main runtime and task-specific policy, so both join the key.
-    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in
+                        _MAIN_RUNTIME_FIELDS + ("requested_provider",)) if provider == "auto" else ()
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
@@ -6554,20 +6544,8 @@ def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
 
 
 _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
-_GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
+from agent.gemini_routing import _is_gemini_native_route
 
-
-def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
-    """Gemini native by provider name, else (best-effort) by base URL shape."""
-    if provider_norm in _GEMINI_NATIVE_PROVIDER_NAMES:
-        return True
-    if not effective_base:
-        return False
-    try:
-        from agent.gemini_native_adapter import is_native_gemini_base_url
-        return is_native_gemini_base_url(effective_base)
-    except Exception:
-        return False
 
 
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
@@ -6585,7 +6563,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
         or str(task) == "moa_reference"
-        or _is_gemini_native_route(provider_norm, effective_base)
+        or _is_gemini_native_route(provider_norm, effective_base, model)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)
@@ -6633,6 +6611,11 @@ def _project_provider_profile(
     provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict],
 ) -> _ProfileProjection:
     """Provider profile's extra_body / kwargs projection; partial on failure."""
+    from agent.gemini_routing import is_opencode_zen_gemini_route
+    if is_opencode_zen_gemini_route(provider, model, effective_base):
+        from agent.transports.chat_completions import _build_gemini_thinking_config
+        config = _build_gemini_thinking_config(_bare_model(model), reasoning_config)
+        return _ProfileProjection({}, {"thinking_config": config} if config else {}, {}, True)
     body: dict[str, Any] = {}
     reasoning_extra: dict[str, Any] = {}
     top_level: dict[str, Any] = {}

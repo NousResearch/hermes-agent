@@ -35,7 +35,7 @@ from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.gemini_routing import effective_gemini_provider, is_native_gemini_request, compressor_output_budget_kwargs
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
 # misidentify and, without an api_key, return 401 on every leg (issue #89863).
@@ -1498,7 +1498,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
-    _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
+    _common = dict(model=agent.model, provider_name=effective_gemini_provider(agent), messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
@@ -1529,7 +1529,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        provider_name=agent.provider,
     )
 
 
@@ -2024,7 +2023,7 @@ def _update_fallback_context_compressor(agent) -> None:
     )
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
-        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode, **compressor_output_budget_kwargs(agent),
     )
     # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than
@@ -2954,7 +2953,7 @@ class _StreamingCall(StreamingWaitMonitor):
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
         # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
         # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
-        if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
+        if not is_native_gemini_request(effective_gemini_provider(self.agent), self.agent.model, self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))

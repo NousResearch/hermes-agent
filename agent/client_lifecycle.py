@@ -90,10 +90,14 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     agent.client = fb_client
     # Keep provider headers resolve_provider_client() baked into fb_client (SDK: _custom_headers), else
     # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
-    fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
+    fb_headers = (getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
+                  or getattr(fb_client, "_default_headers", None))
     agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
     if fb_headers:
         agent._client_kwargs["default_headers"] = dict(fb_headers)
+    fb_query = getattr(fb_client, "_custom_query", None)
+    if fb_query:
+        agent._client_kwargs["default_query"] = dict(fb_query)
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
         # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
@@ -453,14 +457,16 @@ class ClientLifecycleMixin:
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
             from hermes_cli.copilot_auth import copilot_request_headers
             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
-        cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
+        from agent.gemini_routing import effective_gemini_provider, is_native_gemini_route
+        request_key = {**request_kwargs, "_native_gemini": is_native_gemini_route(effective_gemini_provider(self), self.model, request_kwargs.get("base_url"))}
+        cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_key)
         if cached is not None:
             return cached
         if stale is not None:
             self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
         client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
         # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
-        snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
+        snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_key.items()}
         self._store_request_slot(_OPENAI_SLOT, client, snapshot)
         return client
 
@@ -557,7 +563,10 @@ class ClientLifecycleMixin:
 
     # ------------------------------------------------------------------ credential refresh
     def _sync_client_kwargs_credentials(self) -> None:
-        """Mirror ``self.api_key`` / ``self.base_url`` into the OpenAI-style client kwargs."""
+        """Mirror credentials, dropping query credentials when the endpoint changes."""
+        from urllib.parse import urlsplit
+        if urlsplit(str(self._client_kwargs.get("base_url") or "")).netloc != urlsplit(str(self.base_url or "")).netloc:
+            self._client_kwargs.pop("default_query", None)
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
@@ -1015,6 +1024,8 @@ class ClientLifecycleMixin:
 
         Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config.
         """
+        if route_changed:
+            self._client_kwargs.pop("default_query", None)
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:

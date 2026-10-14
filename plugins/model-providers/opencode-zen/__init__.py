@@ -113,6 +113,11 @@ class OpenCodeZenProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        from agent.gemini_routing import is_opencode_zen_gemini_route
+        if is_opencode_zen_gemini_route(self.name, model, context.get("base_url") or self.base_url):
+            from agent.transports.chat_completions import _build_gemini_thinking_config
+            config = _build_gemini_thinking_config(_flat_model_name(model), reasoning_config)
+            return ({"thinking_config": config} if config else {}), {}
         return re_.ox_alpha_reasoning_extras(reasoning_config, model)
 
 

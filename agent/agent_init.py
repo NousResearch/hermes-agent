@@ -1079,7 +1079,8 @@ def _host_default_headers_factory(base_url: str):
 def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
     """OpenAI-client kwargs mirroring a router-resolved client, keeping its provider headers
     (SDK stores them in ``_custom_headers``; older/mocked clients expose ``default_headers``)."""
-    kwargs = {"api_key": client.api_key, "base_url": str(client.base_url)}
+    key_provider = vars(client).get("_api_key_provider")
+    kwargs = {"api_key": key_provider if callable(key_provider) else client.api_key, "base_url": str(client.base_url)}
     if timeout is not None:
         kwargs["timeout"] = timeout
     headers = (
@@ -1089,6 +1090,8 @@ def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
     )
     if headers:
         kwargs["default_headers"] = dict(headers)
+    if query := getattr(client, "_custom_query", None):
+        kwargs["default_query"] = dict(query)
     return kwargs
 
 
@@ -1952,22 +1955,7 @@ def _select_context_engine(_agent_cfg):
     return _selected_engine
 
 
-def _compressor_max_tokens(agent):
-    """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
-    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
-    reserving 0 let the provider 400 before compaction fired."""
-    if agent.max_tokens is not None:
-        return agent.max_tokens
-    with suppress(Exception):
-        from agent.gemini_native_adapter import (
-            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
-        )
-        _gemini_provider = str(agent.provider or "").strip().lower() in {
-            "gemini", "google", "google-gemini", "google-ai-studio",
-        }
-        if _gemini_provider or is_native_gemini_base_url(agent.base_url):
-            return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-    return None
+from agent.gemini_routing import _compressor_max_tokens
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):

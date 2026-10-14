@@ -4,9 +4,9 @@ Rewired, the session's tools, checkpoints, environment and handoff watcher run i
 main's handlers (which read this process's own agent and environment) answer nothing or the wrong
 thing:
 
-- ``/diff session``: the checkpoint baseline is the gateway tools'; its ``/diff`` handler (a reviewed
-  ``slash.exec`` read, run in this session's cwd) renders it. Working-tree modes stay main's local
-  git read of the same checkout.
+- ``/diff session``: the checkpoint baseline is the gateway tools'. ``rollback.session_diff`` reads it
+  under the session's frozen checkpoint policy (``--checkpoints`` included) and returns it as data
+  for main's terminal renderer. Working-tree modes stay main's local git read of the same checkout.
 - ``/reload``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
 - ``/handoff``: no gateway verb carries a handoff yet; refused as Ink and Desktop refuse it, instead
   of the store's ``request_handoff`` refusal dying silently in the process loop.
@@ -18,15 +18,15 @@ from hermes_cli.gateway_client import GatewayClientError
 
 
 def _diff(cli, connection, cmd):
-    args = cmd.partition(" ")[2].strip()
-    if "session" not in args.lower().split():
+    args = cmd.partition(" ")[2].strip().lower().split()
+    if "session" not in args:
         return False
-    from cli import _cprint
-    reply = connection.call("slash.exec", session_id=cli.session_id, command=f"diff {args}")
-    # The messaging handler fences its blocks for chat; a terminal shows the text itself.
-    for line in str((reply or {}).get("output") or "").splitlines():
-        if not line.startswith("```"):
-            _cprint(f"  {line}" if line else "")
+    from hermes_cli.cli_commands_session_tools import _lines, _pr, _t, print_session_diff
+    result = connection.call("rollback.session_diff", session_id=cli.session_id) or {}
+    if not result.get("enabled"):
+        _pr(*_lines(_t("diff.not_enabled")))
+    else:
+        print_session_diff(cli, result, stat_only=bool({"--stat", "stat"} & set(args)))
     return True
 
 

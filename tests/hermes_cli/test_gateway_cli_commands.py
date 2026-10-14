@@ -35,11 +35,25 @@ def gateway_cli(monkeypatch):
 
 
 def test_diff_session_renders_the_gateway_sessions_checkpoint_diff(gateway_cli, capsys):
-    cli, conn = gateway_cli(**{"slash.exec": {"type": "exec", "output": "```\n a.py | 2 +-\n```"}})
-    assert cli.process_command("/diff session --stat") is True
-    assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "diff session --stat"})]
+    """The gateway session's checkpoint diff comes back as data and gets main's terminal renderer:
+    400 body lines, not the chat handler's 60 lines / 3000 chars (Greptile 4277259989)."""
+    body = "\n".join(f"+edited {i}" for i in range(450))
+    cli, conn = gateway_cli(**{"rollback.session_diff": {
+        "enabled": True, "success": True, "stat": " a.py | 450 +", "diff": body, "diff_lines": 450}})
+    assert cli.process_command("/diff session") is True
+    assert conn.calls == [("rollback.session_diff", {"session_id": "local-s"})]
     out = capsys.readouterr().out
-    assert "a.py | 2 +-" in out and "```" not in out
+    assert "a.py | 450 +" in out and "+edited 399" in out and "+edited 400" not in out
+    assert "50 more lines" in out and "```" not in out
+    cli.process_command("/diff session --stat")
+    out = capsys.readouterr().out
+    assert "a.py | 450 +" in out and "+edited 0" not in out
+
+
+def test_diff_session_reports_a_session_without_checkpoints(gateway_cli, capsys):
+    cli, _conn = gateway_cli(**{"rollback.session_diff": {"enabled": False}})
+    assert cli.process_command("/diff session") is True
+    assert "Checkpoints are not enabled" in capsys.readouterr().out
 
 
 def test_diff_of_the_working_tree_stays_a_local_git_read(gateway_cli, monkeypatch):

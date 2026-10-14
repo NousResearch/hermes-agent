@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
 from utils import atomic_json_write
@@ -86,7 +86,7 @@ _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
 BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
 
-# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
+# Set by ``run_turn_with_retry`` on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
 # ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
 # Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
 # the re-run is told to adopt that row instead of appending a second copy
@@ -97,6 +97,21 @@ RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
 def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
     """The re-run's child env: the first attempt's env plus the resume marker."""
     return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
+
+
+def run_turn_with_retry(turn: Callable[[Optional[Mapping[str, str]]], Any],
+                        env: Optional[Mapping[str, str]]) -> Any:
+    """Run one delivery turn via ``turn(env)`` and re-run it ONCE when the failure policy allows (#93091):
+    transient classes and context_overflow (whose re-run compacts first) resume the SAME session and the
+    user row the failed attempt persisted; auth/quota/config never retry. ``turn`` returns a
+    ``CompletedProcess``-shaped result; the re-run's result is returned as is."""
+    proc = turn(env)
+    if proc.returncode != 0:
+        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
+
+        if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
+            proc = turn(retry_turn_env(env))
+    return proc
 
 
 def relay_root(root: Path | str) -> Path:

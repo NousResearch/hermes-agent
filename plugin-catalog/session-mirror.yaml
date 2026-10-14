@@ -1,6 +1,6 @@
 name: session-mirror
 repo: https://github.com/rrrrnmtsu/hermes-session-mirror
-sha: 0632482c5bc24ea0be7fc4262ee9afc65586ca8b
+sha: b30b79fb7a67dde5140d3f80f7e838e284789532
 description: >-
   Mirrors Hermes Desktop, CLI, TUI and ACP conversations into Discord: one public thread per session in a
   channel you choose, one post per turn (your message and the reply), so work started on a desktop
@@ -17,7 +17,7 @@ tier: community
 category: platform
 requires_hermes: ">=0.21"
 docs_url: https://github.com/rrrrnmtsu/hermes-session-mirror
-version: "0.4.0"
+version: "0.4.1"
 platforms: []
 capabilities:
   provides_tools: []

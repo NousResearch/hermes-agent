@@ -131,13 +131,15 @@ def _previous_authority(claims, body):
     return room_authority({**claims, **previous})
 
 
-def _same_member_publication(conn, claims) -> bool:
-    """True when this member's live reservation is already the authority being published.
+def _same_member_publication(conn, claims, idempotency_conn) -> bool:
+    """True when this member's live reservation is already the home being published.
 
     A failed idempotency commit can leave that reservation durable and the watermark
-    empty. The identical retry must finish the invitation. A different gateway or epoch
-    is still a new origin and still requires ``previous_authority``.
+    empty. The identical retry must finish the invitation. The home is the one
+    checkpointed before the rooms commit; a different home, gateway, or epoch is
+    still a new origin and still requires ``previous_authority``.
     """
+    from gateway.platforms.api_server_run_authority import publication_home
     row = conn.execute(
         """SELECT authority_gateway_id, authority_epoch FROM hosted_room_peer_reservations
            WHERE room_id=? AND member_id=? AND target_profile=? AND revoked_at IS NULL""",
@@ -148,7 +150,9 @@ def _same_member_publication(conn, claims) -> bool:
         epoch = int(claims["authority_epoch"])
     except (TypeError, ValueError):
         return False
-    return str(row[0]) == str(claims["authority_gateway_id"]) and int(row[1]) == epoch
+    if str(row[0]) != str(claims["authority_gateway_id"]) or int(row[1]) != epoch:
+        return False
+    return publication_home(idempotency_conn, claims) == str(claims["home_install_id"])
 
 
 def _record_invitation(self, claims, body, *, db_path=None):
@@ -174,12 +178,16 @@ def _record_invitation(self, claims, body, *, db_path=None):
                 (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchall()
             self._run_idempotency_store.remember_room_gateways(
                 claims, [row[0] for row in prior_gateways])
-            if previous is None and not known and not _same_member_publication(conn, claims):
+            if previous is None and not known and not _same_member_publication(
+                    conn, claims, self._run_idempotency_store._conn):
                 if conn.execute(
                         "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
                         (claims["room_id"], claims["target_profile"])).fetchone() is not None:
                     raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
             # Durable before the rooms commit. observe() can still fail after that commit.
+            # The home is part of that checkpoint: the reservation row does not store it.
+            from gateway.platforms.api_server_run_authority import remember_publication_home
+            remember_publication_home(self._run_idempotency_store._conn, claims)
             self._run_idempotency_store.checkpoint_open_transaction()
             hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
             conn.commit()

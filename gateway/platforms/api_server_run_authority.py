@@ -146,7 +146,56 @@ def initialize(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS run_room_seen_gateways (
         authority_key TEXT NOT NULL, gateway_id TEXT NOT NULL,
         PRIMARY KEY(authority_key, gateway_id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS run_room_publication_homes (
+        room_id TEXT NOT NULL, member_id TEXT NOT NULL, target_profile TEXT NOT NULL,
+        authority_gateway_id TEXT NOT NULL, authority_epoch INTEGER NOT NULL,
+        home_install_id TEXT NOT NULL,
+        PRIMARY KEY(room_id, member_id, target_profile, authority_gateway_id, authority_epoch))""")
     strip_stored_fence_bodies(conn)
+
+
+def remember_publication_home(conn, claims) -> None:
+    """Record the home this invitation is publishing, before the rooms commit.
+
+    The peer reservation does not store a home. A later idempotency commit can fail
+    after that reservation is durable, and the identical retry must be the only body
+    allowed to finish it. The first home written for a gateway and epoch sticks.
+    """
+    if not isinstance(claims, dict):
+        return
+    try:
+        room_id, member_id, profile = claims["room_id"], claims["member_id"], claims["target_profile"]
+        gateway_id, home = str(claims["authority_gateway_id"]), str(claims["home_install_id"])
+        epoch = int(claims["authority_epoch"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if not gateway_id or not home or epoch < 1:
+        return
+    conn.execute(
+        """INSERT INTO run_room_publication_homes(
+               room_id, member_id, target_profile, authority_gateway_id, authority_epoch, home_install_id)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(room_id, member_id, target_profile, authority_gateway_id, authority_epoch) DO NOTHING""",
+        (str(room_id), str(member_id), str(profile), gateway_id, epoch, home))
+
+
+def publication_home(conn, claims) -> str | None:
+    """Home checkpointed for this member, gateway, and epoch, or None."""
+    if not isinstance(claims, dict):
+        return None
+    try:
+        epoch = int(claims["authority_epoch"])
+        params = (
+            str(claims["room_id"]), str(claims["member_id"]), str(claims["target_profile"]),
+            str(claims["authority_gateway_id"]), epoch)
+    except (KeyError, TypeError, ValueError):
+        return None
+    row = conn.execute(
+        """SELECT home_install_id FROM run_room_publication_homes
+           WHERE room_id=? AND member_id=? AND target_profile=?
+             AND authority_gateway_id=? AND authority_epoch=?""",
+        params).fetchone()
+    return None if row is None or not row[0] else str(row[0])
 
 
 def remember_seen_gateways(conn, authority_key, gateway_ids):
@@ -288,11 +337,16 @@ def compression_lineage(session_id: str) -> list[str] | None:
     ``None`` means the session database could not be read. A missing row is a
     one-element list so an exact hidden id still matches without a session row.
     Only a child of a session ended ``compression`` is followed, and a fork is not.
+
+    The bound is the session store's compression-chain cap, the same one
+    ``get_compression_chain`` raised so a real lineage about 180 deep still
+    reaches its root. A shorter prefix drops the hidden member id.
     """
     if not isinstance(session_id, str) or not session_id:
         return []
     try:
         from hermes_state import _default_db_path
+        from hermes_state_compression import _CHAIN_CAP
         path = _default_db_path()
     except (ImportError, OSError, RuntimeError):
         return None
@@ -306,7 +360,7 @@ def compression_lineage(session_id: str) -> list[str] | None:
         chain = []
         current = session_id
         seen = set()
-        for _ in range(64):
+        for _ in range(_CHAIN_CAP):
             if not current or current in seen:
                 break
             seen.add(current)

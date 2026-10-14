@@ -363,15 +363,59 @@ def _room_permission_for(request: web.Request) -> str:
     return "status" if request.method == "GET" else "dispatch"
 
 
+def _profile_api_server_key(name: str) -> str:
+    """API key a non-room ``POST /v1/runs`` on ``name`` would hash into its scope.
+
+    Named profiles keep that key in their own home. A room grant running as another
+    profile still has to recognize the scope, or a migrated public row is adopted.
+    """
+    try:
+        from gateway.run import _load_profile_secret_scope
+        from hermes_cli.profiles import get_profile_dir
+        secrets = _load_profile_secret_scope(get_profile_dir(name))
+    except (OSError, ValueError, RuntimeError, ImportError):
+        logger.exception("Could not read the API key for profile %s", name)
+        return ""
+    if not isinstance(secrets, dict):
+        return ""
+    return str(secrets.get("API_SERVER_KEY") or "")
+
+
 def _public_run_scopes(self, *, _api_server) -> tuple[str, ...]:
-    """Scopes a non-room ``POST /v1/runs`` uses. A migrated public row lives here."""
-    key = self._expected_api_key() or "unauthenticated-test-listener"
-    profile = _api_server._api_request_profile.get() or "default"
-    names = [str(profile or "default")]
+    """Scopes a non-room ``POST /v1/runs`` uses. A migrated public row lives here.
+
+    The request profile and ``default`` use this adapter's key. Every other local
+    profile uses the key in its own home, which is what that profile's public
+    ``POST`` hashes.
+    """
+    own = self._expected_api_key() or "unauthenticated-test-listener"
+    current = str(_api_server._api_request_profile.get() or "default") or "default"
+    names = [current]
     if "default" not in names:
         names.append("default")
-    return tuple(
-        hashlib.sha256("\0".join((name, str(key))).encode()).hexdigest() for name in names)
+    try:
+        from hermes_cli.profiles import list_profile_names
+        for name in list_profile_names():
+            if name not in names:
+                names.append(name)
+    except (OSError, ValueError, RuntimeError, ImportError):
+        logger.exception("Could not list profile homes for public run scopes")
+    digests = []
+    seen = set()
+
+    def add(name: str, key: str) -> None:
+        if not name or not key:
+            return
+        digest = hashlib.sha256("\0".join((str(name), str(key))).encode()).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            digests.append(digest)
+
+    for name in names:
+        if name in {current, "default"}:
+            add(name, own)
+        add(name, _profile_api_server_key(name))
+    return tuple(digests)
 
 
 def _known_reservation_gateways(claims) -> list[str]:

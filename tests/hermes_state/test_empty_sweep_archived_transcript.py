@@ -140,3 +140,21 @@ def test_count_and_delete_agree_on_a_mixed_database(db):
     counted = db.count_empty_sessions()
     assert counted == 1
     assert db.delete_empty_sessions() == counted
+
+
+def test_compression_parent_with_a_live_child_is_kept(db):
+    """An empty compression parent is the hidden root of its continuation."""
+    db.create_session(session_id="room-root", source="bot_room")
+    db.end_session("room-root", end_reason="compression")
+    db.create_session(session_id="tip", source="cli", parent_session_id="room-root")
+    db.append_message("tip", role="assistant", content="continued")
+    db.create_session(session_id="ghost", source="cli")
+    db.end_session("ghost", end_reason="done")
+
+    assert db.count_empty_sessions() == 1
+    assert db.delete_empty_sessions() == 1
+    assert db.get_session("ghost") is None
+    parent = db.get_session("room-root")
+    child = db.get_session("tip")
+    assert parent is not None and parent["end_reason"] == "compression"
+    assert child["parent_session_id"] == "room-root"

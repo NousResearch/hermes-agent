@@ -202,3 +202,40 @@ async def test_identical_first_invitation_retry_after_floor_commit_failure(tmp_p
     finally:
         store._conn = original
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_different_home_cannot_finish_a_failed_first_invitation(tmp_path):
+    """The checkpointed home is the only retry that may finish a failed first publication."""
+    adapter = _adapter(tmp_path / 'runs.db')
+    store = adapter._run_idempotency_store
+    original = store._conn
+    body = {
+        'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+        'authority_epoch': 1, 'member_id': 'member-1'}
+    other = {**body, 'home_install_id': 'other-home'}
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            def fail_floor():
+                raise sqlite3.OperationalError('disk I/O error')
+
+            store._conn = CommitProbe(original, fail_floor, skip=1)
+            crashed = await cli.post(
+                '/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'}, json=body)
+            assert crashed.status == 400, await crashed.text()
+            store._conn = original
+            stolen = await cli.post(
+                '/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'}, json=other)
+            stolen_body = await stolen.json()
+            assert stolen.status == 400, stolen_body
+            assert 'explicit predecessor' in stolen_body['error']['message']
+            assert store._conn.execute('SELECT COUNT(*) FROM run_room_authorities').fetchone()[0] == 0
+            retried = await cli.post(
+                '/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'}, json=body)
+            assert retried.status == 201, await retried.text()
+            origin = store._conn.execute(
+                'SELECT home_install_id FROM run_room_origins').fetchone()
+            assert origin is not None and origin[0] == 'home'
+    finally:
+        store._conn = original
+        store.close()

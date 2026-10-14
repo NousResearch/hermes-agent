@@ -1866,9 +1866,18 @@ class SessionSessionsMixin:
     # counts live rows only (rewind/compaction keep dropped turns as active = 0): NOT EXISTS is authority.
     # The ``NOT EXISTS`` probe is the authority; : ``message_count = 0`` stays as a cheap prefilter. Same
     # shape as every : other emptiness guard in this module. (#95868)
+    # A compression parent is often message_count 0: the continuation holds the transcript. Deleting
+    # that parent and clearing the child's parent_session_id makes the hidden member id unreachable.
+    # A session still referenced by a child this sweep will not delete stays.
+    _EMPTY_CHILD_WHERE = (
+        "child.message_count = 0 AND child.ended_at IS NOT NULL AND child.archived = 0 AND NOT EXISTS ("
+        "SELECT 1 FROM messages WHERE messages.session_id = child.id)"
+    )
     _EMPTY_SESSION_WHERE = (
         "message_count = 0 AND ended_at IS NOT NULL AND archived = 0 AND NOT EXISTS ("
         "SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
+        " AND NOT EXISTS (SELECT 1 FROM sessions AS child"
+        " WHERE child.parent_session_id = sessions.id AND NOT (" + _EMPTY_CHILD_WHERE + "))"
     )
 
     def count_empty_sessions(self) -> int:
@@ -1877,7 +1886,11 @@ class SessionSessionsMixin:
 
     def delete_empty_sessions(self, sessions_dir: Optional[Path] = None) -> int:
         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
-        children; transcript files are swept too."""
+        children; transcript files are swept too.
+
+        A parent that a surviving child still names is kept. Compression ends the parent with no
+        flushed messages and the child is the lineage; clearing that link drops the hidden root.
+        """
         removed_ids: list[str] = []
         def _do(conn):
             session_ids = {row["id"] for row in conn.execute(

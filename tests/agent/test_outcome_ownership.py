@@ -126,8 +126,6 @@ def test_text_stop_gate_continues_the_existing_turn_after_a_blocker(monkeypatch)
     monkeypatch.setattr(gates, "_verify_on_stop_nudge", lambda _agent: None)
     monkeypatch.setattr(gates, "_pre_verify_nudge", lambda *_args: None)
     monkeypatch.setattr(gates, "_kanban_stop_nudge", lambda *_args: None)
-    from agent import decision_provider
-    monkeypatch.setattr(decision_provider, "record_completion", lambda *_args, **_kwargs: None)
 
     messages = _failed_messages()
     agent = GateAgent()

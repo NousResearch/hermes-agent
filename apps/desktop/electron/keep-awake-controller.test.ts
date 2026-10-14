@@ -2,10 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createKeepAwakeController, IDLE_SLEEP_MIN_SECONDS } from './keep-awake-controller'
-import type { PowerSaveBlockerLike } from './power-save'
+import { KEEP_AWAKE_RELEASE_GRACE_MS, type KeepAwakeMode, type PowerSaveBlockerLike } from './power-save'
 
 function fakeBlocker() {
   let next = 1
@@ -108,5 +108,81 @@ describe('createKeepAwakeController: the offer after a sleep mid-turn', () => {
 
     ctl.setMode('while-working')
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ mode: 'while-working', offered: true })
+  })
+})
+
+describe('createKeepAwakeController: release grace (#134434)', () => {
+  afterEach(() => vi.useRealTimers())
+
+  function graceController(mode: KeepAwakeMode = 'while-working') {
+    vi.useFakeTimers()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keep-awake-'))
+    const configPath = path.join(dir, 'keep-awake.json')
+    fs.writeFileSync(configPath, JSON.stringify({ mode }), 'utf8')
+    const { blocker, started } = fakeBlocker()
+    let working = false
+
+    const ctl = createKeepAwakeController({
+      blocker,
+      configPath,
+      isWorking: () => working,
+      log: () => {},
+      offer: () => true
+    })
+
+    ctl.restore()
+
+    return {
+      blocker,
+      ctl,
+      held: () => started.size > 0,
+      setWorking: (next: boolean) => {
+        working = next
+        ctl.apply()
+      }
+    }
+  }
+
+  it('holds through the grace after idle, releases at its end, and a chained turn never churns the blocker', () => {
+    const { blocker, held, setWorking } = graceController()
+
+    setWorking(true)
+    setWorking(false)
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_GRACE_MS - 1)
+    expect(held()).toBe(true)
+
+    // a follow-up turn lands inside the window, then goes idle again
+    setWorking(true)
+    setWorking(false)
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_GRACE_MS - 1)
+    expect(held()).toBe(true)
+
+    vi.advanceTimersByTime(1)
+    expect(held()).toBe(false)
+    expect(blocker.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps holding when work outlasts the window with no report in between', () => {
+    const { held, setWorking } = graceController()
+
+    setWorking(true)
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_GRACE_MS * 3)
+    expect(held()).toBe(true)
+  })
+
+  it('a mode switch drops the pending hold; off and always have no grace', () => {
+    const { ctl, held, setWorking } = graceController()
+
+    setWorking(true)
+    setWorking(false)
+    ctl.setMode('off')
+    expect(held()).toBe(false)
+
+    ctl.setMode('always')
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_GRACE_MS * 2)
+    expect(held()).toBe(true)
+
+    ctl.setMode('while-working')
+    expect(held()).toBe(false)
   })
 })

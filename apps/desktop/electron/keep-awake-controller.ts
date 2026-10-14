@@ -10,8 +10,8 @@ import path from 'node:path'
 import {
   createKeepAwake,
   KEEP_AWAKE_RELEASE_GRACE_MS,
-  keepAwakeHeld,
   type KeepAwakeMode,
+  keepAwakeWanted,
   parseKeepAwakeMode,
   type PowerSaveBlockerLike,
   readKeepAwakeMode
@@ -71,19 +71,25 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
   // sleep before a follow-up turn re-arms busy. Live work re-arms the window.
   let graceTimer: null | ReturnType<typeof setTimeout> = null
 
+  const cancelGrace = () => {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer)
+      graceTimer = null
+    }
+  }
+
   const apply = (working = deps.isWorking()) => {
-    keepAwake.set(keepAwakeHeld(mode, working, graceTimer !== null))
-
-    if (working) {
-      if (graceTimer !== null) {
-        clearTimeout(graceTimer)
-      }
-
+    if (mode !== 'while-working') {
+      cancelGrace()
+    } else if (working) {
+      cancelGrace()
       graceTimer = setTimeout(() => {
         graceTimer = null
         apply()
       }, KEEP_AWAKE_RELEASE_GRACE_MS)
     }
+
+    keepAwake.set(keepAwakeWanted(mode, working) || graceTimer !== null)
   }
 
   return {
@@ -106,11 +112,6 @@ export function createKeepAwakeController(deps: KeepAwakeControllerDeps): KeepAw
 
       if (next === null) {
         return
-      }
-
-      if (graceTimer !== null) {
-        clearTimeout(graceTimer)
-        graceTimer = null
       }
 
       mode = next

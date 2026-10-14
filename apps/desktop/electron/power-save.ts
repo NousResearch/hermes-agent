@@ -118,26 +118,3 @@ export function keepAwakeWanted(mode: KeepAwakeMode, working: boolean): boolean 
  * A grace hold after the last turn bridges every such gap.
  */
 export const KEEP_AWAKE_RELEASE_GRACE_MS = 5 * 60_000
-
-/**
- * Decide whether the blocker should be held, factoring the release grace.
- *
- * `withinGrace` is true while the hold-after-idle window from the last turn is
- * still open. Any live work resets the window, so a follow-up turn that
- * re-arms busy simply continues the hold (no stop/start churn on the native
- * blocker).
- *
- * The grace only applies to 'while-working': 'always' never releases and
- * 'off' never holds, so neither has a window to bridge.
- */
-export function keepAwakeHeld(mode: KeepAwakeMode, working: boolean, withinGrace: boolean): boolean {
-  if (mode === 'off') {
-    return false
-  }
-
-  if (mode === 'always') {
-    return true
-  }
-
-  return working || withinGrace
-}

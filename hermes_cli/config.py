@@ -2072,10 +2072,14 @@ def load_config() -> dict[str, Any]:
 
 
 def load_config_readonly() -> dict[str, Any]:
-    """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
+    """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost)
+    AND without the side-effecting ``ensure_hermes_home()`` call on a cache miss. Read-only
+    code paths (plugin enable/disable lists, dashboard auth probes, image generation / TTS /
+    vision capability checks) must not materialise a home tree or seed ``SOUL.md`` for a
+    user who never asked for one.
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
     every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    return _load_config_impl(want_deepcopy=False, ensure_home=False)
 
 
 def _ensure_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
@@ -2301,7 +2305,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     return None
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
+def _load_config_impl(*, want_deepcopy: bool, ensure_home: bool = True) -> dict[str, Any]:
     # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
     # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
     # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
@@ -2320,7 +2324,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         pass
 
     with _CONFIG_LOCK:
-        ensure_hermes_home()
+        if ensure_home:
+            ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
 

@@ -141,6 +141,27 @@ the package's entry, including its trust. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
 
+A long-running server can also declare a Hermes-specific tool-call `timeout`
+(in seconds) in `plugin.json`, without changing other servers' defaults:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": { "analysis": { "timeout": 1000 } }
+    }
+  }
+}
+```
+
+The value must be a positive finite number within the platform's thread-wait
+limit. It maps to the native per-server `timeout`; omission preserves the
+existing `timeouts.mcp.tool_call` fallback. A same-name native `mcp_servers`
+entry still replaces the entire package entry, including its timeout. This
+extends the wait budget, not the cancellation or permission policy. Configure
+any server-internal analysis deadline separately and leave time for its result
+to reach the client. Other harnesses ignore this extension.
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)

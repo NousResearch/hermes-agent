@@ -1565,7 +1565,9 @@ class GatewayTurnMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
-            response = _sanitize_gateway_final_response(source.platform, response)
+            response = _sanitize_gateway_final_response(
+                source.platform, response,
+                model=agent_result.get("model"), provider=agent_result.get("provider"))
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.

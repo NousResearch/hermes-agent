@@ -106,7 +106,12 @@ class TestGatewayConnectionErrorReply:
 
     def test_every_reply_names_a_slash_command_and_no_jargon(self):
         """Each shaped reply must give the chat user something they can run; 'provider' and
-        'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
+        'gateway logs' are operator words (the log pointer is the `hermes logs` command).
+
+        Exception: the opt-in route footer (``_append_route_context``) deliberately names the
+        model/provider — identifying the failing endpoint is its whole point — so callers that
+        know the route pass it explicitly and accept the operator word there.
+        """
         from agent.i18n import t
         from gateway.run import _PROVIDER_ERROR_REPLIES
         replies = [t(reply_key) for _, reply_key in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
@@ -217,3 +222,49 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         result = TurnRunner(runner, ctx).run_sync()
         reply = result["final_response"]
         assert "/login" not in reply and "resets in ~33h" in reply and result["api_calls"] == 0
+
+
+class TestRouteContextFooter:
+    """Provider-error replies name the failing turn's route when the caller knows it.
+
+    The SDK frequently raises with no usable detail (``openai.APIConnectionError: Connection
+    error.`` keeps no cause), so the route line is often the ONLY identification the chat user
+    gets for which model/endpoint failed — enough to ``/model`` away from it or report it.
+    """
+
+    AMBIGUOUS = "API call failed after 3 retries: openai.APIConnectionError: Connection error."
+
+    def test_footer_appended_when_route_known(self):
+        reply = _gateway_provider_error_reply(self.AMBIGUOUS, model="deep-low", provider="custom:iris")
+        assert reply.endswith("Route: model deep-low · provider custom:iris.")
+        # The classified template body is untouched ahead of the footer.
+        assert reply.startswith(_gateway_provider_error_reply(self.AMBIGUOUS))
+
+    def test_no_footer_when_route_unknown(self):
+        """Callers without route scope get byte-identical replies (backward compatibility)."""
+        text = UNREACHABLE_ENVELOPES[0]
+        assert _gateway_provider_error_reply(text) == _gateway_provider_error_reply(text, model=None, provider=None)
+        assert "Route:" not in _gateway_provider_error_reply(text)
+
+    def test_footer_on_fallback_and_rate_limit_paths(self):
+        fallback = _gateway_provider_error_reply("zzz", model="m1", provider="p1")
+        assert "Route: model m1 · provider p1." in fallback
+        rate = _gateway_provider_error_reply("429 weekly limit reached. Resets in 4hr 5min", model="m1")
+        assert "Route: model m1." in rate
+
+    def test_partial_route_names_only_known_value(self):
+        reply = _gateway_provider_error_reply("provider authentication failed", provider="iris")
+        assert reply.endswith("Route: provider iris.")
+
+    @pytest.mark.parametrize("platform", [Platform.TELEGRAM, "slack", "feishu"])
+    def test_sanitizer_forwards_route_to_reply(self, platform):
+        sanitized = _sanitize_gateway_final_response(
+            platform, self.AMBIGUOUS, model="deep-low", provider="custom:iris")
+        assert "Route: model deep-low · provider custom:iris." in sanitized
+        # Route-less sanitizer calls keep the pinned template, byte for byte.
+        assert _sanitize_gateway_final_response(platform, self.AMBIGUOUS) == (
+            _gateway_provider_error_reply(self.AMBIGUOUS))
+
+    def test_programmatic_surface_never_gets_footer(self):
+        assert _sanitize_gateway_final_response(
+            "local", self.AMBIGUOUS, model="deep-low", provider="custom:iris") == self.AMBIGUOUS

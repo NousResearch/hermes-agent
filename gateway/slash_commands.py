@@ -359,7 +359,16 @@ class GatewaySlashCommandsMixin(
                 action = tok
                 break
         try:
-            output = await asyncio.to_thread(run_slash, text)
+            # Slash dispatch runs before the agent-turn session binding. Resolve
+            # this source's durable session and bind it explicitly so a previous
+            # turn's process-global HERMES_SESSION_ID cannot become provenance.
+            from gateway.session import build_session_context
+            from gateway.session_context import scoped_current_session_id
+            entry = await self.async_session_store.get_or_create_session(event.source)
+            context = build_session_context(event.source, self.config, entry)
+            with self._session_env_scope(context):
+                with scoped_current_session_id(entry.session_id):
+                    output = await asyncio.to_thread(run_slash, text)
         except Exception as exc:  # pragma: no cover - defensive
             return t("gateway.kanban.error_prefix", error=exc)
 

@@ -22,10 +22,18 @@ def test_creator_origin_survives_without_dependency_parent(tmp_path, monkeypatch
         else:
             import json
             import argparse
+            from hermes_state import SessionDB
             from hermes_cli.kanban import kanban_command
             from hermes_cli.kanban_parser import build_parser
             parser = argparse.ArgumentParser()
             build_parser(parser.add_subparsers())
+            # A worker's short-lived chat must not replace the owner's source.
+            state = SessionDB(db_path=tmp_path / "state.db")
+            try:
+                state.create_session(session_id="worker-chat", source="kanban")
+            finally:
+                state.close()
+            monkeypatch.setenv("HERMES_SESSION_ID", "worker-chat")
             monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
             assert kanban_command(parser.parse_args(["kanban", "create", "child", "--json"])) == 0
             tid = json.loads(capsys.readouterr().out)["id"]

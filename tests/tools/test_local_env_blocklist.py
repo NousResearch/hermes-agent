@@ -16,6 +16,25 @@ from tools.environments import local_pythonpath as pp
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
 
+def test_routed_terminal_child_drops_launcher_profile_pin(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch = tmp_path / ".hermes"
+    served = launch / "profiles" / "nyra"
+    served.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "user")
+    token = set_hermes_home_override(str(served))
+    try:
+        child = local._make_run_env({})
+    finally:
+        reset_hermes_home_override(token)
+    assert child["HERMES_HOME"] == str(served)
+    assert "HERMES_PROFILE" not in child
+    assert "HERMES_PROFILE_NAME" not in child
+
+
 def _running_venv_site_packages() -> Path:
     """Independently construct the host-native venv site-packages path."""
     if sys.platform == "win32":

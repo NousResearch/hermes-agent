@@ -3015,12 +3015,20 @@ def _show_display_section(config: dict[str, Any]) -> None:
     _section("Display")
     display = config.get('display', {})
     try:
-        from hermes_cli.personality import active_personality_name
+        from hermes_cli.personality import active_personality_name, prompt_text
         active_personality = active_personality_name(config) or 'none'
+        manual_prompt = prompt_text((config.get('agent') or {}).get('system_prompt'))
     except Exception:
         active_personality = display.get('personality') or 'none'
+        manual_prompt = ''
     on_off = lambda flag: 'on' if flag else 'off'
     print(f"  Personality:  {active_personality}")
+    if active_personality != 'none' and manual_prompt:
+        print(color(
+            f"  ⚠ agent.system_prompt is ignored while personality '{active_personality}' is active; "
+            "run /personality none to use it.",
+            Colors.YELLOW,
+        ))
     print(f"  Reasoning:    {on_off(display.get('show_reasoning', True))}")
     print(
         f"  Bell:         complete={on_off(display.get('bell_on_complete', False))}, "

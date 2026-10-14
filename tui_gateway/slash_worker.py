@@ -1,6 +1,8 @@
 """Persistent slash-command worker — one HermesCLI per TUI session.
 
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
+A falsy ``process_command`` verdict rides back as ``exit: true`` (the caller should exit,
+e.g. /handoff completed); a parked next-turn prompt rides back as ``seed``.
 """
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Hermes's own
@@ -119,11 +121,18 @@ def _run(cli: "HermesCLI", command: str) -> str:
     ``_pending_agent_seed`` for the interactive REPL loop (cli.py) — but this
     worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
     and routed back to the gateway, which sends it as the next turn (#107800).
+    The return verdict is harvested the same way onto ``cli._slash_exit_verdict``:
+    ``process_command`` returns False to say the caller should exit (``/handoff``
+    completed — #133725), and the classic REPL honours it; dropping it here left
+    the pane holding a lease the gateway had already taken. Falsy-but-not-False
+    returns (None from commands with no verdict) stay "keep the session", matching
+    process_command's own ``result is not False`` normalization.
     """
     import cli as cli_mod
     from rich.console import Console
 
     cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
+    cli._slash_exit_verdict = False  # ditto: a stale verdict must not leak into a later reply
     cmd = (command or "").strip()
     if not cmd:
         return ""
@@ -137,10 +146,11 @@ def _run(cli: "HermesCLI", command: str) -> str:
         cli_mod._cprint = lambda text: print(text)
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            cli.process_command(cmd if cmd.startswith("/") else f"/{cmd}")
+            verdict = cli.process_command(cmd if cmd.startswith("/") else f"/{cmd}")
     finally:
         if old is not None:
             cli_mod._cprint = old
+    cli._slash_exit_verdict = verdict is False
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
@@ -201,7 +211,11 @@ def main():
             req = json.loads(line)
             rid = req.get("id")
             output = _run(cli, req.get("command", ""))
-            _reply(id=rid, ok=True, output=output, seed=getattr(cli, "_harvested_seed", "") or "")
+            reply = {"id": rid, "ok": True, "output": output,
+                     "seed": getattr(cli, "_harvested_seed", "") or ""}
+            if getattr(cli, "_slash_exit_verdict", False):
+                reply["exit"] = True  # the command's caller should exit (e.g. /handoff completed)
+            _reply(**reply)
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

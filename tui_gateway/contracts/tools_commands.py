@@ -288,10 +288,13 @@ class SlashExecParams(Params):
 
 class SlashExecResult(Result):
     """Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to
-    ``command.dispatch`` — that method's directive fields with ``type`` set."""
+    ``command.dispatch`` — that method's directive fields with ``type`` set. ``exit`` is true when
+    the worker's ``process_command`` returned False: the command said its caller should exit
+    (``/handoff`` completed — #133725), so the client should terminate the pane like /quit would."""
 
     output: str | None = None
     warning: str | None = None
+    exit: bool | None = None
     type: DispatchType | None = None
     target: str | None = None
     message: str | None = None

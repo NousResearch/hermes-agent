@@ -186,3 +186,50 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
+
+
+def test_injected_context_supports_ca_introspection():
+    """Regression for #127599: truststore's context must answer CA introspection."""
+    import subprocess
+    import sys
+
+    child = subprocess.run([sys.executable, "-c", """
+import ssl, sys
+from agent.ssl_verify import install_truststore
+try:
+    import truststore
+except ImportError:
+    sys.exit(3)
+assert install_truststore()
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+assert isinstance(ctx.cert_store_stats(), dict)
+assert isinstance(ctx.get_ca_certs(), list)
+"""], capture_output=True, text=True, timeout=30)
+    if child.returncode == 3:
+        pytest.skip("truststore unavailable")
+    assert child.returncode == 0, child.stderr
+
+
+def test_failed_introspection_shim_restores_truststore_methods():
+    """A shim that cannot be validated must not leave the class patched."""
+    truststore = pytest.importorskip("truststore")
+    from agent.ssl_verify import _restore_ca_introspection
+
+    class Broken(truststore.SSLContext):
+        def __init__(self, protocol=None):
+            super().__init__(protocol)
+            self._ctx = None  # shim delegation now fails with AttributeError
+
+        def cert_store_stats(self):
+            raise NotImplementedError
+
+        def get_ca_certs(self, binary_form=False):
+            raise NotImplementedError
+
+    class Fake:
+        SSLContext = Broken
+
+    before = Broken.__dict__["cert_store_stats"]
+    with pytest.raises(AttributeError):
+        _restore_ca_introspection(Fake)
+    assert Broken.__dict__["cert_store_stats"] is before

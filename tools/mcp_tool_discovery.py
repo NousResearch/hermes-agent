@@ -391,7 +391,10 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
             else:
                 _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
-        _loop._signal_reconnect(srv)
+        auth_park = getattr(srv, "_auth_park", None)
+        # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
+        if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
+            _loop._signal_reconnect(srv)
     return new_servers
 
 
@@ -535,6 +538,11 @@ def _log_summary(prefix: str, names, **lazy) -> None:
 def register_mcp_servers(servers: dict[str, dict]) -> list[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        # A troubleshooting worker never spawns MCP processes; nor may it borrow tools
+        # another caller already connected in this process.
+        return []
     if not _core._ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
@@ -600,6 +608,9 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return []
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
     if not servers:

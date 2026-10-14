@@ -904,8 +904,10 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
     _run_npm_install_deterministic,
 )
 from hermes_cli.main_tui_launch import (
+    _bypass_chat_launch,
     _launch_tui,
     _pin_kanban_board_env,
+    _refuse_unforwarded_tui_flags,
     _resolve_use_tui,
     _sync_bundled_skills_quietly,
 )
@@ -1092,7 +1094,7 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     """Check if at least one inference provider is usable. Never creates one: the Nous free tier
     counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
+    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1155,7 +1157,8 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     if not strict_profile_scope:
         try:
             if any(
-                get_auth_status(pid).get("logged_in")
+                (status := get_auth_status(pid)).get("logged_in")
+                and status.get("key_source") != "keyless"
                 for pid, pconfig in PROVIDER_REGISTRY.items()
                 if pconfig.auth_type == "api_key"
             ):
@@ -1177,12 +1180,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
-    try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
-    except Exception as exc:
-        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1306,11 +1303,13 @@ def _session_db():
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB(read_only=True)
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:
         pass
     try:
-        yield db  # body errors (incl. AttributeError on a None db) are swallowed
+        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
+        from hermes_cli.gateway_session_store import SurfaceLabelReader
+        yield SurfaceLabelReader(db) if db is not None else None  # body errors (incl. AttributeError on a None db) are swallowed
     except Exception:
         pass
     finally:
@@ -1363,6 +1362,9 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
         # Exact session ID first, then title (with auto-latest for lineage).
         session = db.get_session(name_or_id)
         resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        if not resolved_id and name_or_id.startswith("local-"):
+            # The TUI epilogue prints a canonical session's unique 22-char prefix.
+            resolved_id = db.resolve_session_id(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
@@ -1377,25 +1379,16 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 def _create_titled_session(title: str) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
-    Same timestamp+uuid id shape the CLI uses; the title is recorded with
-    user provenance so auto-titling never overwrites it.
+    The gateway is the single writer: it creates the session and records the title with user
+    provenance, so auto-titling never overwrites it (gateway_session_store.create_titled_session).
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
     no-op.
     """
-    db = None
     try:
-        from hermes_state_ids import new_session_id as mint_session_id
-        from hermes_state_registry import acquire
-
-        new_session_id = mint_session_id()
-        # The CLI acquires the registry handle for this same path moments later; share it
-        # instead of minting a second writer for one INSERT (close() releases the refcount).
-        db = acquire()
-        db.create_session(new_session_id, source="cli")
-        db.set_session_title(new_session_id, title)
-        return new_session_id
+        from hermes_cli.gateway_session_store import create_titled_session
+        return create_titled_session(title)
     except Exception:
         # Programmatic callers rely on --create-if-missing being deterministic;
         # swallow the failure but log the cause so it lands in errors.log
@@ -1403,12 +1396,6 @@ def _create_titled_session(title: str) -> Optional[str]:
         # See #86794.
         logger.exception("Failed to create titled session %r", title)
         return None
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
 
 
 def _resolve_continue_arg(args, *, use_tui: bool) -> None:
@@ -1431,8 +1418,13 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # "send to this named thread, making it if needed" — without it
                 # a quiet send to a not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
-                # and proceed. See #86794.
-                new_sid = _create_titled_session(continue_val)
+                # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
+                # the TUI keeps main's local row.
+                if use_tui:
+                    new_sid = _create_titled_session(continue_val)
+                else:
+                    from hermes_cli.gateway_session_store import create_titled_session
+                    new_sid = create_titled_session(continue_val)
                 if new_sid:
                     args.resume = new_sid
                 else:
@@ -1693,36 +1685,6 @@ def _first_run_setup_guard(args) -> None:
     sys.exit(1)
 
 
-def _read_query_file(args) -> None:
-    """--query-file: read the single query from a file (or stdin via '-').
-
-    Callers never have to shell-quote message bodies — this is the transport
-    the Bot Mode DM protocol uses; interpolating arbitrary text into a
-    double-quoted shell argument truncates on quotes and executes $(...)
-    (see tools/bot_mode_probe.py).
-    """
-    _qfile = getattr(args, "query_file", None)
-    if not _qfile:
-        return
-    if args.query:
-        # argparse's mutually-exclusive group catches the normal CLI path;
-        # this guards programmatic callers that fill the namespace directly.
-        print("Error: -q/--query and --query-file are mutually exclusive", file=sys.stderr)
-        sys.exit(2)
-    try:
-        if _qfile == "-":
-            args.query = sys.stdin.read()
-        else:
-            with open(_qfile, "r", encoding="utf-8-sig", errors="replace") as _fh:
-                args.query = _fh.read()
-    except OSError as _e:
-        print(f"Error: cannot read --query-file {_qfile}: {_e}", file=sys.stderr)
-        sys.exit(2)
-    if not (args.query or "").strip():
-        print(f"Error: --query-file {_qfile} is empty", file=sys.stderr)
-        sys.exit(2)
-
-
 # args attr -> (kwarg, default) passed through to _launch_tui / cli.main.
 _CHAT_PASSTHROUGH = (
     ("provider", None), ("toolsets", None), ("skills", None), ("verbose", None),
@@ -1734,22 +1696,23 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    from hermes_cli.stream_json import stream_json_requested
+    # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
+    # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
+    if stream_json_requested(args) or _bypass_chat_launch(args):
+        from hermes_cli.gateway_chat_startup import launch_gateway_chat
+        sys.exit(launch_gateway_chat(args))
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
-    from hermes_cli.stream_json import stream_json_requested
-    # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too.
-    use_tui = False if stream_json_requested(args) else _resolve_use_tui(args)
+    use_tui = _resolve_use_tui(args)
+    if use_tui:
+        _refuse_unforwarded_tui_flags(args)
 
     _resolve_chat_session_args(args, use_tui)
 
     _warn_retired_xai_models()
 
-    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
-    # that may create the identity), then the inventory decides whether setup is needed.
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    run_bootstrap(announce=False)
     # The TUI owns its first-run state: it renders "Setup Required" with in-place /setup.
     # The classic prompt only fronts the classic CLI.
     provider_configured = _has_any_provider_configured()
@@ -1796,6 +1759,7 @@ def cmd_chat(args):
             **passthrough,
         )
 
+    from hermes_cli.main_query_file import _read_query_file
     _read_query_file(args)
 
     safe_mode = getattr(args, "safe_mode", False)
@@ -1838,8 +1802,9 @@ def cmd_chat(args):
 
 def cmd_gateway(args):
     """Gateway management commands."""
-    _sync_bundled_skills_quietly()
-
+    # `gateway run` seeds skills itself (run_bootstrap._start_gateway_configure_logging) inside its
+    # own home; a second pass here doubled a cold boot on a fresh home while every attaching client
+    # waited on the ensure deadline. Management verbs never need the library.
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)
@@ -2893,6 +2858,8 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
+    if _bypass_chat_launch(args):
+        return False
     if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
         return True
     # The chat path decides TUI-vs-classic via _resolve_use_tui (--cli/--tui
@@ -2925,6 +2892,14 @@ def _should_background_mcp_startup(args) -> bool:
     return not _is_tui_chat_launch(args) and args.command in {None, "chat", "rl"}
 
 
+def _chat_runs_at_gateway(args) -> bool:
+    """Every ``hermes`` / ``hermes chat`` turn (classic view, ``-q``, ``-z``, TUI) executes in the
+    gateway, which discovers and owns MCP servers itself. Discovery in this client only spawns a
+    second copy of every server and holds the cross-process discovery lock the cold-starting gateway
+    then waits on (measured 2.0 s with one stdio server) for tools nothing here ever calls."""
+    return args.command in {None, "chat"}
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo chokepoint: HERMES_YOLO_MODE must be set before any discovery
@@ -2934,6 +2909,11 @@ def _prepare_agent_startup(args) -> None:
     # See #7994.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    if args.command in {None, "chat"} and _bypass_chat_launch(args):
+        # Bypass launches are frozen by the gateway owner and executed out of process. This
+        # client is a transport: no env mutation (it would ride into an authority spawn),
+        # no plugin/MCP/hook discovery, and no profile read of the config under suspicion.
+        return
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
@@ -2969,9 +2949,9 @@ def _prepare_agent_startup(args) -> None:
 
     # TUI launches hand off to a startup path that backgrounds MCP discovery
     # with a bounded join; acp/gateway/cron do their own on the runtime path.
-    _run_inline_mcp_discovery = not (
-        _is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args)
-    )
+    if _chat_runs_at_gateway(args):  # chat turns run in the gateway: it owns MCP, hooks, webhooks
+        return
+    _run_inline_mcp_discovery = not (_is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args))
     if _run_inline_mcp_discovery and _should_background_mcp_startup(args):
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery
@@ -3084,23 +3064,10 @@ def _set_chat_arg_defaults(args) -> None:
 def _run_oneshot_from_args(args) -> None:
     """Top-level --oneshot / -z: single-shot mode, stdout = final response only.
 
-    Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
+    Bypasses cli.py entirely; the transport launcher never returns.
     """
-    _confirm_startup_expensive_model_override(args)
-    # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
-    # oneshot exit path takes over, else the flags parse fine but silently do nothing
-    # and the turn starts a fresh session (every wire request loses all history).
-    _resolve_chat_session_args(args, use_tui=False)
-    _run_and_exit_oneshot(
-        args.oneshot,
-        model=getattr(args, "model", None),
-        provider=getattr(args, "provider", None),
-        toolsets=getattr(args, "toolsets", None),
-        skills=getattr(args, "skills", None),
-        usage_file=getattr(args, "usage_file", None),
-        resume=getattr(args, "resume", None),
-        reasoning=getattr(args, "reasoning", None),
-    )
+    from hermes_cli.gateway_chat_startup import launch_gateway_chat
+    sys.exit(launch_gateway_chat(args))
 
 
 def _light_chat_parser():
@@ -3493,19 +3460,21 @@ def _parse_cli_args(parser, subparsers, argv):
         subparsers.required = False
         return parser.parse_args(_processed_argv)
 
+    from contextlib import redirect_stderr, redirect_stdout
+
     subparsers.required = True
-    _saved_stderr = sys.stderr
+    speculative_stdout = _io.StringIO()
     try:
-        sys.stderr = _io.StringIO()
-        args = parser.parse_args(_processed_argv)
-        sys.stderr = _saved_stderr
+        with redirect_stderr(_io.StringIO()), redirect_stdout(speculative_stdout):
+            args = parser.parse_args(_processed_argv)
     except SystemExit as exc:
-        sys.stderr = _saved_stderr
-        if exc.code == 0:  # help/version already printed; don't print twice
+        if exc.code == 0:
+            print(speculative_stdout.getvalue(), end="")
             raise
-        # Subcommand consumed as a flag value (e.g. -c model): normal parse.
+        # Discard speculative diagnostics, including structured errors on stdout.
         subparsers.required = False
-        args = parser.parse_args(_processed_argv)
+        return parser.parse_args(_processed_argv)
+    print(speculative_stdout.getvalue(), end="")
     return args
 
 

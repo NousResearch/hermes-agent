@@ -1,3 +1,4 @@
+import { deSessionCommands } from './de_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
 // Shell notices (remote-display toast, butterbar), spread into de.ts.
@@ -15,5 +16,10 @@ export const deNotices = {
       privacy: 'Datenschutzerklärung',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'Dieser Server konnte das frühere Senden dieser Nachricht nicht bestätigen; sie wurde möglicherweise bereits ausgeführt. Prüfe die Unterhaltung, bevor du sie erneut sendest.',
+    sessionCommands: deSessionCommands
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

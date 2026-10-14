@@ -330,6 +330,7 @@ class TurnRunner:
         adapter: Any
         tasks: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
         task_order: list[str] = dataclasses.field(default_factory=list)
+        changed_task_ids: set[str] = dataclasses.field(default_factory=set)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
         # TERMINAL for the turn, distinct from native_failed: no later publication
@@ -348,6 +349,18 @@ class TurnRunner:
 
         def visible_tasks(self) -> list[dict[str, str]]:
             return [self.tasks[task_id] for task_id in self.task_order[-8:]]
+
+        def published_tasks(self) -> list[dict[str, str]]:
+            """Keep the normal eight-task rail while sending older changed tasks once."""
+            visible_ids = set(self.task_order[-8:])
+            return [
+                self.tasks[task_id]
+                for task_id in self.task_order
+                if task_id in visible_ids or task_id in self.changed_task_ids
+            ]
+
+        def mark_published(self) -> None:
+            self.changed_task_ids.clear()
 
         def fallback_text(self) -> str:
             labels = {"in_progress": t("gateway.progress.task_status_running"),
@@ -375,11 +388,13 @@ class TurnRunner:
             if event_type == "tool.started":
                 preview = self._compact(raw.get("preview"), 64)
                 self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
+                self.changed_task_ids.add(call_id)
                 return True
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
             task = self.tasks.get(call_id) or self._upsert(call_id, tool_name)
             task["status"] = "error" if raw.get("is_error") else "complete"
+            self.changed_task_ids.add(call_id)
             return True
 
     async def _task_card_send_or_edit_fallback(self, st) -> None:
@@ -432,10 +447,11 @@ class TurnRunner:
                 return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
-                chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
+                chat_id=ctx.source.chat_id, tasks=st.published_tasks(), title=t("gateway.progress.task_card_title"),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
             if getattr(result, "success", False):
+                st.mark_published()
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which

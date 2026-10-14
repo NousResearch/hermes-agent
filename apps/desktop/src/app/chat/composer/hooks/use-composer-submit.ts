@@ -6,7 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
-import { answerSetupCard, hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
+import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
   type ComposerAttachment,
@@ -17,6 +17,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
+import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -270,53 +271,67 @@ export function useComposerSubmit({
     return true
   }
 
-  // True when the draft was consumed as a parked setup card's answer.
-  const answerParkedCard = (text: string, payloadPresent: boolean) => {
-    // A clarify card parked on this session owns the turn: the agent is blocked
-    // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
-    // through steer/queue sits undelivered until the clarify's own timeout
-    // (default 5 min) — the message looks sent and nothing happens. Typing a
-    // real message instead of picking an option IS the answer "none of these":
-    // skip the question so the tool returns, then route the words normally.
-    // A setup card is the exception: the setup turn reads typed words as its
-    // answer, so they go back as the card's answer and the turn carries on.
+  // 'answered': the draft was a parked card's answer. 'yielded': a card closed for it, so it runs as
+  // the next turn.
+  const answerParkedCardWithDraft = (text: string, payloadPresent: boolean): 'answered' | 'yielded' | null => {
+    // A card parked on this session owns the turn: the agent is blocked inside
+    // its tool batch, so a steer or queued follow-up would sit undelivered until
+    // the card's own timeout. Plain text answers the card instead (a clarify
+    // takes it as its next question's answer) and is not sent again.
     //
-    // A slash command or attachments cannot be a setup answer either. The skip
-    // is fire-and-forget, not awaited: it clears the card synchronously and
-    // both RPCs ride the same socket in call order, so the gateway resolves the
-    // clarify before it sees the follow-up. Awaiting first would leave the draft
-    // live for a tick — long enough for a second Enter to send it twice.
+    // A slash command or attachments cannot be an answer: the card is skipped
+    // and the draft routes normally. An onboarding setup card the message
+    // moves past instead closes as unanswered and its turn ends there, so the
+    // message runs as the next turn. The skip is fire-and-forget, not awaited:
+    // it clears the card synchronously and both RPCs ride the same socket in
+    // call order, so the gateway resolves the clarify before it sees the
+    // follow-up. Awaiting first would leave the draft live for a tick, long
+    // enough for a second Enter to send it twice.
     //
-    // /btw and /bg run beside the turn (snapshot / separate session) and answer
-    // neither parked card. With attachments the draft isn't routed as a slash
+    // /btw and /bg run beside the turn (snapshot / separate session) and touch
+    // no parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
-    const cardParked = payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)
+    const routable = payloadPresent && !queueEdit && !isSideQuestion
+    const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
 
-    if (
-      cardParked &&
-      !attachments.length &&
-      !SLASH_COMMAND_RE.test(text.trim()) &&
-      answerSetupCard(sessionId, text.trim())
-    ) {
+    // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
+    const answeredScope = draftScopeRef.current
+
+    const restore = () => {
+      stashAt(answeredScope, text, [])
+
+      if (draftScopeRef.current === answeredScope) {
+        loadIntoComposer(text, [])
+      }
+    }
+
+    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       focusInput()
 
-      return true
+      return 'answered'
     }
 
-    if (cardParked) {
+    const yielded = routable && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
+
+    if (routable && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 
     // Same for a pending connection card: ordinary typing continues the operation.
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
+    if (routable && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }
 
-    return false
+    // And for the onboarding chat's setup and theme cards.
+    if (routable) {
+      skipParkedCards(sessionId ?? '')
+    }
+
+    return yielded ? 'yielded' : null
   }
 
   const submitDraft = () => {
@@ -349,7 +364,9 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (answerParkedCard(text, payloadPresent)) {
+    const parked = answerParkedCardWithDraft(text, payloadPresent)
+
+    if (parked === 'answered') {
       return
     }
 
@@ -359,8 +376,9 @@ export function useComposerSubmit({
     // sit undelivered behind the blocked prompt, and stopping the turn to force
     // it through resolves the prompt to empty and ends the turn as "Operation
     // interrupted." — the message looks eaten. Queue the words as the next turn
-    // instead; the prompt stays answerable and the queue drains on settle.
-    const blockingPrompt = !queueEdit && hasBlockingPromptRequest(sessionId)
+    // instead; the prompt stays answerable and the queue drains on settle. A
+    // setup card that just closed for this message ends its turn the same way.
+    const blockingPrompt = !queueEdit && (parked === 'yielded' || hasBlockingPromptRequest(sessionId))
 
     if (queueEdit) {
       exitQueuedEdit('save')

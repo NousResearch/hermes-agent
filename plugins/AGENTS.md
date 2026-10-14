@@ -41,7 +41,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:
   every absorbed product is our maintenance burden against a fast-moving core for a backend we don't
-  own. `observability/`, `kanban/`, `disk-cleanup/` are precedent, not an invitation. Closing such a
+  own. `kanban/`, `disk-cleanup/` are precedent, not an invitation (Langfuse already moved out to the
+  official catalog plugin). Closing such a
   PR is a coupling decision, not a quality judgment.
 - Reference/docs-companion plugins (`example-dashboard`, `strike-freedom-cockpit`,
   `plugin-llm-example`, `plugin-llm-async-example`) live in

@@ -19,6 +19,10 @@ name: Review labels
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       ci_review:
         description: Whether CI-sensitive files (eslint config, workflows, actions) changed.
         type: boolean
@@ -62,6 +66,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           # The gate only executes this script. Do not download the full
           # upstream-alignment tree just to read a PR label.
           filter: blob:none

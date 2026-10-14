@@ -6612,11 +6612,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
-        existing = pending.get(key)
-        if existing is None:
-            pending[key] = event
+        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
+        existing = pending.setdefault(key, event)
+        if existing is event:
             return
+        existing.absorb_reply_expected(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:
@@ -7094,7 +7094,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
-        from plugins.platforms.telegram.telegram_context import group_identity_prompt
+        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
@@ -7102,7 +7102,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            reply_expected=group_reply_expected(self, message, chat_type), timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --
 

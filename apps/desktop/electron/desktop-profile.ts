@@ -12,6 +12,57 @@ export interface DesktopProfileRoute {
 
 export const DESKTOP_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
+/**
+ * Normalize a caller-supplied profile name before it can select or spawn a
+ * backend. An absent / blank value returns null so the caller resolves the
+ * primary profile; anything else must match DESKTOP_PROFILE_NAME_RE.
+ *
+ * This is the one validation used by every renderer-reachable profile path
+ * (hermes:connection, hermes:gateway:ws-url, hermes:api, registry dials), not
+ * only the persisted profile setter. The name ends up as the argument after
+ * `--profile` on a `hermes serve` spawn, and on Windows that spawn may run with
+ * `shell: true` for a .cmd/.bat shim, so this boundary is what keeps shell
+ * metacharacters, whitespace and flag-like values out of the child argv
+ * (GHSA-84j8-xmx8-jghv).
+ */
+export function requireDesktopProfileName(value: unknown): null | string {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Invalid profile name.')
+  }
+
+  const profile = value.trim()
+
+  if (!profile) {
+    return null
+  }
+
+  if (!DESKTOP_PROFILE_NAME_RE.test(profile)) {
+    throw new Error(`Invalid profile name: ${JSON.stringify(profile.slice(0, 80))}`)
+  }
+
+  return profile
+}
+
+/**
+ * Spawn-boundary assertion: the exact string about to be placed in a backend
+ * child's argv must already be a canonical profile name. Unlike
+ * requireDesktopProfileName this never normalizes; a value that needed
+ * trimming is a bug upstream, not something to repair here.
+ */
+export function assertSpawnableProfileName(profile: unknown): string {
+  if (typeof profile !== 'string' || !DESKTOP_PROFILE_NAME_RE.test(profile)) {
+    throw new Error(
+      `Refusing to start a backend for an invalid profile name: ${JSON.stringify(String(profile).slice(0, 80))}`
+    )
+  }
+
+  return profile
+}
+
 export function requireDesktopProfileRoute(value: unknown): DesktopProfileRoute {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('A connection and profile route is required.')
@@ -74,7 +125,10 @@ export function resolveDesktopConnectionRequest(
   source: WindowConnectionRoute | null,
   primaryProfile: string
 ): DesktopProfileRoute {
-  const requested = typeof profile === 'string' ? profile.trim() : ''
+  // Reject rather than pass through: this is the renderer's direct route into
+  // ensureBackend(), and the persisted setter's validation must not be the
+  // only place an invalid name is stopped.
+  const requested = requireDesktopProfileName(profile) ?? ''
 
   if (source?.profile && !requested) {
     return resolveDesktopWindowRoute(undefined, source, { connectionId: null, profile: primaryProfile })

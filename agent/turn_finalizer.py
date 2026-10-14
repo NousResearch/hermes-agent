@@ -61,6 +61,16 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_dispatch as _kbd
+        # Fence on the run this worker owns (set by the dispatcher at spawn).
+        # A task id alone is not ownership: never guess the card's current run.
+        _run_id_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+        _expected_run_id = int(_run_id_raw) if _run_id_raw.isdigit() else None
+        if _expected_run_id is None or _expected_run_id < 1:
+            logger.warning(
+                "Skipping budget-exhausted mutation for task %s: no valid owned run id",
+                kanban_task,
+            )
+            return
         _conn = _kbc.connect()
         try:
             _kbd._record_task_failure(
@@ -74,6 +84,7 @@ def _record_kanban_budget_exhausted(
                 release_claim=True,
                 end_run=True,
                 event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                expected_run_id=_expected_run_id,
             )
         finally:
             with suppress(Exception):

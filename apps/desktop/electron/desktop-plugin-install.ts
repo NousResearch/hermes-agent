@@ -194,13 +194,34 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
   return null
 }
 
-export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
-  const hasYaml =
-    pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
+// A top-level `provides_locales:` with a non-empty value — either inline (`[ko]`) or a block list on
+// the following lines. Empty forms (`[]`, `{}`, `null`, `~`, `''`) declare nothing, as in the backend.
+const PROVIDES_LOCALES_RE = /^provides_locales:(?![ \t]*(?:\[\s*\]|\{\s*\}|null|~|''|"")[ \t]*(?:#.*)?$)/m
 
+async function declaresLanguagePack(yamlPath: string, pluginRoot: string): Promise<boolean> {
+  if (!pathExistsSync(path.join(pluginRoot, 'locales'))) {
+    return false
+  }
+
+  try {
+    return PROVIDES_LOCALES_RE.test(await fsp.readFile(yamlPath, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
+  const yamlPath = ['plugin.yaml', 'plugin.yml']
+    .map(name => path.join(pluginRoot, name))
+    .find(candidate => pathExistsSync(candidate))
+
+  const hasYaml = yamlPath !== undefined
   const hasInit = pathExistsSync(path.join(pluginRoot, '__init__.py'))
   const hasPortable = pathExistsSync(path.join(pluginRoot, 'plugin.json'))
-  const agent = (hasYaml && hasInit) || hasPortable
+  // Mirrors the backend's loadable check: a declared language pack (`provides_locales` + `locales/`)
+  // loads from its files alone, with no `__init__.py`.
+  const hasLanguagePack = yamlPath !== undefined && !hasInit && (await declaresLanguagePack(yamlPath, pluginRoot))
+  const agent = (hasYaml && (hasInit || hasLanguagePack)) || hasPortable
 
   const desktopEntry = findDesktopEntry(pluginRoot)
   const desktop = desktopEntry !== null
@@ -210,12 +231,8 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   if (agent) {
     agentName = path.basename(pluginRoot)
 
-    if (hasYaml) {
+    if (yamlPath) {
       try {
-        const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
-          ? path.join(pluginRoot, 'plugin.yaml')
-          : path.join(pluginRoot, 'plugin.yml')
-
         const text = await fsp.readFile(yamlPath, 'utf8')
         const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
 

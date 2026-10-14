@@ -122,6 +122,51 @@ describe('detectPluginComponents', () => {
       desktopName: 'desktop'
     })
   })
+
+  // Same rule as the backend's `_check_loadable` / `_is_manifest_only_language_pack`: a declared
+  // `provides_locales` with a `locales/` folder is a complete agent plugin without `__init__.py`.
+  it('detects a manifest-only language pack', async () => {
+    const root = mkdtemp('hermes-plugin-langpack-')
+    roots.push(root)
+    fs.mkdirSync(path.join(root, 'locales'), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, 'plugin.yaml'),
+      'name: hermes-lang-xx\nprovides_locales:\n  - id: xx\n    endonym: Xx\n'
+    )
+    fs.writeFileSync(path.join(root, 'locales', 'xx.desktop.yaml'), 'common.save: "Xx"\n')
+
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({
+      agent: true,
+      desktop: false,
+      agentName: 'hermes-lang-xx'
+    })
+  })
+
+  it('accepts the inline provides_locales list form', async () => {
+    const root = mkdtemp('hermes-plugin-langpack-')
+    roots.push(root)
+    fs.mkdirSync(path.join(root, 'locales'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: inline-pack\nprovides_locales: [xx]\n')
+
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: true, agentName: 'inline-pack' })
+  })
+
+  it('does not treat provides_locales without locales/ as loadable', async () => {
+    const root = mkdtemp('hermes-plugin-langpack-')
+    roots.push(root)
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: no-locales\nprovides_locales:\n  - xx\n')
+
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: false, desktop: false })
+  })
+
+  it('does not treat an empty provides_locales as a language pack', async () => {
+    const root = mkdtemp('hermes-plugin-langpack-')
+    roots.push(root)
+    fs.mkdirSync(path.join(root, 'locales'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: empty-pack\nprovides_locales: []\n')
+
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: false, desktop: false })
+  })
 })
 
 describe('probePluginRepo', () => {

@@ -905,3 +905,86 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+class TestSessionListLimit:
+    """``gateway.session_list_limit`` (#138575): the /sessions and /resume listing
+    page size is configurable instead of hardcoded to 10, so chat-only users can
+    browse more history. Default stays 10; values are clamped to 1..50."""
+
+    def _seed_lane(self, db, lane_key, count):
+        for i in range(count):
+            sid = f"lane_{i}"
+            db.create_session(
+                sid, "telegram", session_key=lane_key,
+                user_id="12345", chat_id="67890",
+            )
+            db.set_session_title(sid, f"Lane Work {i}")
+
+    def test_limit_clamped_to_range(self, monkeypatch):
+        runner = _make_runner()
+        for raw, expected in ((500, 50), (0, 1), (-3, 1), ("not-a-number", 10),
+                              (None, 10), ("15", 15)):
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config_readonly",
+                lambda raw=raw: {"gateway": {"session_list_limit": raw}})
+            assert runner._session_listing_limit() == expected, raw
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly", dict)
+        assert runner._session_listing_limit() == 10
+
+    @pytest.mark.asyncio
+    async def test_configured_limit_enlarges_resume_listing(self, tmp_path, monkeypatch):
+        """limit=15 surfaces the 12th titled session that the old hardcoded 10 hid."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        self._seed_lane(db, _session_key_for_event(event), 12)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"gateway": {"session_list_limit": 15}})
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result.count("Lane Work") == 12  # all twelve, not the old hardcoded ten
+        assert "**Lane Work 11**" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_default_listing_stays_at_ten(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        self._seed_lane(db, _session_key_for_event(event), 12)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly", dict)
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result.count("Lane Work") == 10
+        assert "**Lane Work 11**" in result  # newest first
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_command_honors_configured_limit(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions")
+        self._seed_lane(db, _session_key_for_event(event), 14)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"gateway": {"session_list_limit": 12}})
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert result.count("Lane Work") == 12
+        assert "`lane_13`" in result  # newest first
+        assert "`lane_1`" not in result
+        assert "`lane_0`" not in result
+        db.close()

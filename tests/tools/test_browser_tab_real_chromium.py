@@ -60,8 +60,13 @@ def tab_tmp():
     import tempfile
     root = Path(os.environ.get('TMPDIR', tempfile.gettempdir()))
     root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='bt-', dir=root) as directory:
+    directory = Path(tempfile.mkdtemp(prefix='bt-', dir=root))
+    try:
         yield Path(directory)
+    finally:
+        # A failed browser drain keeps its disposable profile for diagnosis.
+        if not list(directory.rglob('.chromium-live')):
+            shutil.rmtree(directory)
 
 
 @contextmanager
@@ -74,6 +79,8 @@ def isolated_chrome(tmp_path, port=0):
         pytest.skip('Chromium is not installed')
     profile = tmp_path / 'chrome'
     log = (tmp_path / 'chrome.log').open('w')
+    preservation = tmp_path / '.chromium-live'
+    preservation.touch()  # Keep the profile unless teardown proves drainage.
     proc = subprocess.Popen([binary, '--headless=new', '--no-sandbox', '--disable-gpu',
         '--no-first-run', '--no-default-browser-check', '--remote-debugging-address=127.0.0.1',
         '--remote-debugging-port=' + str(port), '--disable-background-networking',
@@ -110,6 +117,12 @@ def isolated_chrome(tmp_path, port=0):
         finally:
             browser.socket.close()
     finally:
+        # Snapshot only this fixture's descendants before stopping its parent.
+        import psutil
+        try:
+            children = psutil.Process(proc.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            children = []
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -117,7 +130,29 @@ def isolated_chrome(tmp_path, port=0):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+        _, alive = psutil.wait_procs(children, timeout=10)
+        for child in alive:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(alive, timeout=5)
+        for child in alive:
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        _, survivors = psutil.wait_procs(alive, timeout=5)
+        live = []
+        for child in survivors:
+            try:
+                if child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+                    live.append(child)
+            except psutil.NoSuchProcess:
+                pass
+        assert not live, 'Disposable Chromium descendants did not drain'
         assert proc.poll() is not None
+        preservation.unlink()
         log.close()
 
 

@@ -185,7 +185,7 @@ class PinnedBrowser:
         if parsed.scheme not in ('ws', 'wss') or not parsed.path.startswith('/devtools/browser/'):
             raise ValueError('immutable browser websocket required')
         from websockets.sync.client import connect
-        self.socket = connect(ws, open_timeout=1, close_timeout=1, proxy=None)
+        self.socket = connect(ws, open_timeout=response_timeout, close_timeout=1, proxy=None)
         self.sequence = 0
 
     def command(self, method, **params):

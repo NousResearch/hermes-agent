@@ -28,7 +28,21 @@ def connect_socket(monkeypatch, socket):
     monkeypatch.setattr(websockets.sync.client, 'connect', lambda *a, **kw: socket)
 
 
+def test_setup_handshake_uses_selected_budget(monkeypatch):
+    import websockets.sync.client
+    budgets = []
+    def connect(*args, **kwargs):
+        budgets.append(kwargs['open_timeout'])
+        return Socket([])
+    monkeypatch.setattr(websockets.sync.client, 'connect', connect)
+    PinnedBrowser('ws://fixture/devtools/browser/exact')
+    PinnedBrowser('ws://fixture/devtools/browser/exact', response_timeout=10)
+    assert budgets == [1, 10]
+
+
 def test_fixture_budget_does_not_change_default_cleanup_budget(monkeypatch):
+    from tools import browser_tab_lifecycle as lifecycle
+    monkeypatch.setattr(lifecycle.time, 'monotonic', lambda: 0)
     socket = Socket([{'id': 1, 'result': {}}, {'id': 1, 'result': {}}])
     connect_socket(monkeypatch, socket)
     ws = 'ws://fixture/devtools/browser/exact'

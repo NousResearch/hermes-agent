@@ -203,10 +203,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "z-ai/glm-5.3", "z-ai/glm-5.2", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3",
     ],
-    "kimi-coding": [
-        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "kimi-for-coding", "kimi-for-coding-highspeed",
-        "kimi-k2-thinking", "kimi-k2-thinking-turbo", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",
-    ],
+    # Live roster of GET api.kimi.com/coding/v1/models (2026-10-14, #138375); the endpoint does not
+    # validate ids (HTTP 200 for unknown models), so this curated list is the only source of truth.
+    "kimi-coding": ["k3", "kimi-for-coding", "kimi-for-coding-highspeed", "k3-256k"],
     "kimi-coding-cn": [
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5",
         "kimi-k2-thinking", "kimi-k2-turbo-preview", "kimi-k2-0905-preview",

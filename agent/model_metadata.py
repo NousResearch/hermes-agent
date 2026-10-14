@@ -591,14 +591,14 @@ def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Opt
 # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
 _ENDPOINT_SCOPED_CONTEXT = (
     ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3-256k"}, 262_144),
     ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
 )
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Context confirmed for one provider endpoint only (see _ENDPOINT_SCOPED_CONTEXT): Kimi Coding
-    serves K3 at 1 Mi only on the canonical ``api.kimi.com/coding`` host (legacy Moonshot keys do
-    not); NVIDIA NIM serves deepseek-v4-pro at 262,144 while DeepSeek's native endpoint is 1M."""
+    """Context confirmed for one endpoint only (see _ENDPOINT_SCOPED_CONTEXT): Kimi Coding serves
+    k3 at 1 Mi / k3-256k at 256 Ki solely on ``api.kimi.com/coding``; NIM deepseek at 262,144."""
     try:
         parsed = urlparse(_normalize_base_url(base_url))
         port = parsed.port

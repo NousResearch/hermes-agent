@@ -468,13 +468,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
 
 def _collect_startup_context_audit(agent: Any, parts: Dict[str, str]):
-    """Collect and optionally persist the startup context audit once per session."""
+    """Measure the prompt parts actually sent and replace the agent's audit report.
+
+    Called on every fresh build (startup and compression rebuilds) and on every
+    restore with the persisted prompt, so the report always describes the
+    current payload. A failed collection clears the previous report rather
+    than leaving another session's numbers in place.
+    """
     mode = str(getattr(agent, "_startup_context_audit_mode", "off") or "off").strip().lower()
     if mode not in {"summary", "status", "debug_file"}:
         return None
-    existing = getattr(agent, "_context_audit_report", None)
-    if existing is not None:
-        return existing
+    agent._context_audit_report = None
+    agent._context_audit_report_path = ""
     try:
         from agent.context_audit import collect_context_audit
         from utils import atomic_json_write
@@ -542,10 +547,13 @@ def build_system_prompt(
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
-    Called after context compression events. Also reloads memory from disk
-    so the rebuilt prompt captures any writes from this session.
+    Called after context compression events and session switches. Also
+    reloads memory from disk so the rebuilt prompt captures any writes from
+    this session, and drops the context audit of the discarded prompt.
     """
     agent._cached_system_prompt = None
+    agent._context_audit_report = None
+    agent._context_audit_report_path = ""
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

@@ -590,6 +590,8 @@ class GatewaySlashCommandsMixin:
 
         report = getattr(agent, "_context_audit_report", None) if agent is not None else None
         if report is None:
+            if getattr(agent, "_startup_context_audit_mode", "off") != "off":
+                return "Context audit will be available after the next message rebuilds the system prompt."
             return (
                 "Context audit is not available for this session. "
                 "Set `agent.startup_context_audit` to `status`, `summary`, or `debug_file` before startup."

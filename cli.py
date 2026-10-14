@@ -5763,11 +5763,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         agent = getattr(self, "agent", None)
         report = getattr(agent, "_context_audit_report", None) if agent is not None else None
         if report is None:
-            self._console_print(
-                "Context audit is not available for this session. Set agent.startup_context_audit to status, summary, or debug_file before startup.",
-                highlight=False,
-                markup=False,
-            )
+            if getattr(agent, "_startup_context_audit_mode", "off") != "off":
+                message = "Context audit will be available after the next message rebuilds the system prompt."
+            else:
+                message = "Context audit is not available for this session. Set agent.startup_context_audit to status, summary, or debug_file before startup."
+            self._console_print(message, highlight=False, markup=False)
             return
         from agent.context_audit import render_context_audit_report
 

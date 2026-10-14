@@ -166,6 +166,7 @@ class ContextAuditReport:
 
 
 _CLASSIFICATION_RULES: tuple[tuple[tuple[str, ...], NecessityRank, str], ...] = (
+    (("persisted",), NecessityRank.HIGH, "Restored session reuses the persisted prompt verbatim; per-tier attribution is unavailable without rebuilding it."),
     (("stable", "soul", "identity", "tool-use", "safety", "profile safety"), NecessityRank.CRITICAL, "Stable identity and safety posture are required for correct operation."),
     (("context", "project", "agents", "claude"), NecessityRank.HIGH, "Project context is high-value operating guidance for this workspace."),
     (("volatile", "memory", "user", "profile"), NecessityRank.HIGH, "Memory and user profile preserve preferences and session posture."),
@@ -288,8 +289,8 @@ def collect_context_audit(
 ) -> ContextAuditReport:
     """Build a deterministic redacted report for prompt parts and tool schemas."""
     entries: list[ContextAuditEntry] = []
-    for tier in ("stable", "context", "volatile"):
-        entries.append(_entry_from_text(f"system_prompt.{tier}", "prompt", prompt_parts.get(tier, "") or "", tier=tier))
+    for tier, text in prompt_parts.items():
+        entries.append(_entry_from_text(f"system_prompt.{tier}", "prompt", text or "", tier=tier))
 
     tools = list(getattr(agent, "tools", None) or [])
     for index, tool in enumerate(tools):
@@ -372,7 +373,9 @@ def render_context_audit_summary(report: ContextAuditReport, *, max_lines: int =
 
 def render_context_audit_report(report: ContextAuditReport, *, max_options: int = 5) -> str:
     """Render a detailed but still redacted report for slash commands."""
-    lines = [render_context_audit_summary(report, max_lines=8), "", "Optimization options:"]
+    lines = [render_context_audit_summary(report, max_lines=8)]
+    lines += [f"Note: {entry.label}: {entry.reason}" for entry in report.entries if entry.tier == "persisted"]
+    lines += ["", "Optimization options:"]
     for option in report.optimization_options[:max_options]:
         hint = option.command_hint or option.config_hint
         suffix = f" ({hint})" if hint else ""

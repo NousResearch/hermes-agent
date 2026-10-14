@@ -11,6 +11,7 @@ Hermes can collect a redacted startup context-budget audit for a session. The au
 It reports metadata only:
 
 - source labels such as `system_prompt.stable`, `system_prompt.context`, `system_prompt.volatile`, and `tool_schema.<name>`
+- `system_prompt.persisted` for a resumed session, which reuses its stored prompt verbatim, so per-tier attribution is unavailable there
 - exact character counts for prompt text
 - exact serialized byte counts for API tool schemas
 - rough token estimates using `chars / 4` when provider tokenization is unavailable
@@ -31,8 +32,8 @@ agent:
 | Mode | Behavior |
 |---|---|
 | `off` | Default. No startup audit is collected for normal sessions. |
-| `status` | Collect once at startup and expose the redacted report through `/context-audit`. No prompt injection. |
-| `summary` | Collect once and append a compact redacted summary to the startup prompt. Use sparingly; this intentionally spends a small amount of context to make the budget visible. |
+| `status` | Collect whenever the system prompt is built (startup and compression) and expose the redacted report through `/context-audit`. No prompt injection. |
+| `summary` | Collect like `status` and append a compact redacted summary to the startup prompt. Use sparingly; this intentionally spends a small amount of context to make the budget visible. |
 | `debug_file` | Same as `status`, plus writes a redacted JSON report under `~/.hermes/sessions/context_audits/`. |
 
 Enable with review:

@@ -247,6 +247,46 @@ def test_summary_mode_injects_redacted_summary_and_accounts_for_it():
     assert agent._context_audit_report.prompt_chars == len(prompt.replace("\n\n", "")) or agent._context_audit_report.prompt_chars > 0
 
 
+def test_summary_mode_rebuild_after_compression_does_not_inflate_totals():
+    from unittest.mock import patch
+
+    agent = _agent(
+        tools=[_tool("read_file")],
+        load_soul_identity=False,
+        skip_context_files=True,
+        valid_tool_names=[],
+        _task_completion_guidance=False,
+        _parallel_tool_call_guidance=False,
+        _tool_use_enforcement=False,
+        _environment_probe=False,
+        _kanban_worker_guidance="",
+        _memory_store=None,
+        _memory_manager=None,
+        platform="",
+        pass_session_id=False,
+        session_id="s1",
+        _startup_context_audit_mode="summary",
+        _context_audit_report=None,
+        _context_audit_report_path="",
+        _emit_status=lambda message: None,
+    )
+    with (
+        patch("run_agent.load_soul_md", return_value="soul"),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        first_prompt = build_system_prompt(agent)
+        first = agent._context_audit_report.to_redacted_dict()
+        rebuilt_prompt = build_system_prompt(agent)
+
+    labels = [entry.label for entry in agent._context_audit_report.entries]
+    assert labels.count("system_prompt.context_audit_summary") == 1
+    assert rebuilt_prompt.count("Context audit") == 1
+    assert rebuilt_prompt == first_prompt
+    assert agent._context_audit_report.to_redacted_dict() == first
+
+
 def test_debug_file_mode_writes_redacted_report(tmp_path):
     from unittest.mock import patch
 

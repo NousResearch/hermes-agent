@@ -19,9 +19,9 @@ agent:
 | Value | Effect |
 |---|---|
 | `off` | Default. No startup audit for normal sessions. |
-| `status` | Collect once at startup and expose `/context-audit`; no prompt injection. |
-| `summary` | Collect once and append a compact redacted summary to the first prompt. |
-| `debug_file` | Collect once, expose `/context-audit`, and write redacted JSON under `~/.hermes/sessions/context_audits/`. |
+| `status` | Collect whenever the system prompt is built and expose `/context-audit`; no prompt injection. |
+| `summary` | Collect like `status` and append a compact redacted summary to the system prompt. |
+| `debug_file` | Collect like `status`, expose `/context-audit`, and write redacted JSON under `~/.hermes/sessions/context_audits/`. |
 
 The report contains labels, size counts, hashes, necessity ranks, and optimization hints. It does not dump raw prompt text, memory/profile content, secrets, or full tool schemas.
 

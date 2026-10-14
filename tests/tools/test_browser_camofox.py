@@ -3,6 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+import requests
+
 
 from tools.browser_camofox import (
     camofox_click,
@@ -108,6 +111,37 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
+
+
+class TestCamofoxStaleTabRecovery:
+    """A cached tab that died server-side — 404 (garbage-collected) or 410 Gone (server
+    restart) — must be dropped and recreated instead of wedging every browser_* call
+    until the Hermes process restarts (#80276)."""
+
+    @pytest.mark.parametrize("stale_status", [404, 410])
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox.requests.get")
+    def test_recovers_from_stale_tab(self, mock_get, mock_post, monkeypatch, stale_status):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from tools.browser_camofox import _sessions
+        task = f"stale_{stale_status}"
+        _sessions[task] = {"user_id": "u1", "tab_id": "tab-dead", "session_key": "k"}
+
+        gone = _mock_response(status=stale_status)
+        gone.raise_for_status.side_effect = requests.HTTPError(
+            f"{stale_status} Client Error", response=gone)
+        fresh = _mock_response(json_data={"tabId": "tab-fresh", "url": "https://example.com"})
+        mock_post.side_effect = [gone, fresh]
+        mock_get.return_value = _mock_response(json_data={"snapshot": "- page [ref=e1]", "refsCount": 1})
+
+        try:
+            result = json.loads(camofox_navigate("https://example.com", task_id=task))
+            assert result["success"] is True
+            assert _sessions[task]["tab_id"] == "tab-fresh"
+            assert mock_post.call_args_list[0].args[0].endswith("/tabs/tab-dead/navigate")
+            assert mock_post.call_args_list[1].args[0].endswith("/tabs")
+        finally:
+            _sessions.pop(task, None)
 
 
 # ---------------------------------------------------------------------------

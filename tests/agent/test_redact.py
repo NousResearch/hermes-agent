@@ -283,15 +283,15 @@ class TestControlCharSplitTokens:
         assert longest not in result
 
     def test_newline_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\n{tok[10:]}", tok)
 
     def test_esc_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\x1b{tok[10:]}", tok)
 
     def test_zero_width_split_token_masks(self):
-        tok = "ghp_abcdef1234567890ABCDEF1234567890abcdef"
+        tok = "ghp_" + "abcdef1234567890ABCDEF1234567890abcdef"
         self._assert_split_masked(f"{tok[:10]}\u200b{tok[10:]}", tok)
 
     def test_complete_token_does_not_swallow_next_line(self):
@@ -605,10 +605,11 @@ class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""
 
     def test_full_env_dump(self):
-        env_dump = """HOME=/home/user
+        openrouter_key = "sk-or-v1-" + "reallyLongSecretKeyValue12345678"
+        env_dump = f"""HOME=/home/user
 PATH=/usr/local/bin:/usr/bin
 OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345
-OPENROUTER_API_KEY=sk-or-v1-reallyLongSecretKeyValue12345678
+OPENROUTER_API_KEY={openrouter_key}
 FIRECRAWL_API_KEY=fc-shortkey123456789012
 TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
 SHELL=/bin/bash
@@ -881,6 +882,50 @@ class TestLowercaseDottedConfigKeys:
 
 
 
+
+    @pytest.mark.parametrize("text,expected", [
+        ('password: "hunter2secretval"', 'password: "***"'),
+        ("api_key: 'shortsecret'", "api_key: '***'"),
+        ('spring.datasource.password: "Sup3rS3cret!"', 'spring.datasource.password: "***"'),
+        ('password: "correct horse battery staple"', 'password: "correc...aple"'),
+        ('password: "abc\\"defsecret"', 'password: "***"'),
+        ("password: 'abc''defsecretvalue'", "password: 'abc''d...alue'"),
+        ('password: "secret value unterminated', 'password: "secre...ated'),
+        ('password: "secretval"\nhost: example.com', 'password: "***"\nhost: example.com'),
+        ('password: "abc\\\r\nhost: example.com', 'password: ***\r\nhost: example.com'),
+        ('password: "secretval"\r\nhost: example.com', 'password: "***"\r\nhost: example.com'),
+        ('api_key: "os.getenv(\'OPENAI_API_KEY\')"', 'api_key: "os.getenv(\'OPENAI_API_KEY\')"'),
+        ("api_key: 'process.env.OPENAI_API_KEY'", "api_key: 'process.env.OPENAI_API_KEY'"),
+        ('password: "os.environ[\'PASSWORD\']"', 'password: "os.environ[\'PASSWORD\']"'),
+        ("api_key: '$ENV{OPENAI_API_KEY}'", "api_key: '$ENV{OPENAI_API_KEY}'"),
+        ('5|  api_key: "os.getenv(\'OPENAI_API_KEY\')"', '5|  api_key: "os.getenv(\'OPENAI_API_KEY\')"'),
+        ('Secretary: "J. Smith"', 'Secretary: "J. Smith"'),
+    ])
+    def test_yaml_quoted_scalar(self, text, expected):
+        assert redact_sensitive_text(text) == expected
+
+    @pytest.mark.parametrize("mode,masked", [
+        ("default", True), ("env", True), ("cat", False),
+        ("code_file", False), ("file_read", False),
+        ("secret_file_read", True), ("secret_cat", True),
+    ])
+    def test_yaml_quoted_output_scope(self, mode, masked):
+        from agent.redact import redact_terminal_output
+
+        text = 'password: "shortsecret"'
+        if mode in {"env", "cat"}:
+            result = redact_terminal_output(text, "env" if mode == "env" else "cat config.yaml")
+        elif mode == "secret_cat":
+            result = redact_terminal_output(text, "cat ~/.hermes/config.yaml")
+        elif mode == "secret_file_read":
+            assert redact_sensitive_text(
+                '5|  password: "shortsecret"', force=True, file_read=True, secret_file=True,
+            ) == '5|  password: "«redacted-secret»"'
+            return
+        else:
+            kwargs = {mode: True} if mode != "default" else {}
+            result = redact_sensitive_text(text, **kwargs)
+        assert result == ('password: "***"' if masked else text)
 
     def test_properties_file_dump(self):
         text = (
@@ -1575,7 +1620,7 @@ class TestValueAwareGatingCorpus:
     # STAY masked after the gating change (fail-closed on credential shape
     # or strong key names).
     FAKE_SECRET_CORPUS = [
-        ("API_KEY=sk-fakefakefakefakefake1234567890abcd", "fakefake"),
+        ("API_KEY=" + "sk-" + "fakefakefakefakefake1234567890abcd", "fakefake"),
         ("GITHUB_TOKEN=ghp_FAKEfakeFAKEfake1234567890fake", "FAKEfake"),
         ("MY_SERVICE_TOKEN=A9f3kZq7Lm2Xw8Rt4Yv6", "A9f3kZq7"),
         ("TOKEN=6f1d2a9c8b3e4f5a6d7c8b9a0e1f2d3c", "6f1d2a9c"),

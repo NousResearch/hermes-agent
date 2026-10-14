@@ -104,9 +104,23 @@ export function togglePane(id: string) {
   $paneStates.set({ ...current, [id]: { ...existing, open: !(existing?.open ?? false) } })
 }
 
+/**
+ * The state an override write starts from. A sash drag (and a double-click on
+ * a sash) reaches EVERY shown pane of the zone, including one no other surface
+ * ever registered — and inventing `open: false` there CLOSED the pane the user
+ * was looking at, which then re-divided the heights of everything stacked
+ * beside it (a hidden zone stops rendering, so its column re-splits). Openness
+ * belongs to `setPaneOpen`/`togglePane` alone: an override starts from the
+ * pane's own registered default, and a pane with no default at all is one that
+ * is on screen — a zone is only draggable while visible — so it is open.
+ */
+function overrideBase(states: Record<string, PaneStateSnapshot>, id: string): PaneStateSnapshot {
+  return states[id] ?? paneDefaults[id] ?? { open: true }
+}
+
 export function setPaneWidthOverride(id: string, width: number | undefined) {
   const current = $paneStates.get()
-  const existing = current[id] ?? { open: false }
+  const existing = overrideBase(current, id)
 
   if (existing.widthOverride === width) {
     return
@@ -117,7 +131,7 @@ export function setPaneWidthOverride(id: string, width: number | undefined) {
 
 export function setPaneHeightOverride(id: string, height: number | undefined) {
   const current = $paneStates.get()
-  const existing = current[id] ?? { open: false }
+  const existing = overrideBase(current, id)
 
   if (existing.heightOverride === height) {
     return

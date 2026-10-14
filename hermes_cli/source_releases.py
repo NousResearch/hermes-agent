@@ -20,6 +20,8 @@ _GITHUB_ORIGIN = re.compile(
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
 )
 _SHA = re.compile(r"[0-9a-f]{40}")
+# Git >= 2.44 honors GIT_NO_LAZY_FETCH (see NO_LAZY_FETCH_ENV); older git ignores it.
+_NO_LAZY_FETCH_MIN_GIT = (2, 44)
 
 
 def source_repository(git_cmd=None, cwd=None) -> str:
@@ -96,6 +98,23 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     return target
 
 
+def _ancestry_probe_may_lazy_fetch(run) -> bool:
+    """Whether a local object lookup here may download missing history from a promisor.
+
+    Read-only probes carry ``GIT_NO_LAZY_FETCH`` (``source_git_env``) so a missing
+    object fails fast instead of being fetched. Git < 2.44 ignores that variable, and
+    on a partial clone *every* local object lookup reaches for the promisor:
+    ``merge-base --is-ancestor``, ``cat-file -e``, ``rev-parse --verify`` and
+    ``rev-list --missing`` all fetch the missing commit (measured), so there is no
+    fetch-free way to check existence first. Callers must then decide without a local
+    probe rather than hang a 10s timeout on one and orphan the fetch.
+    """
+    match = re.search(r"(\d+)\.(\d+)", run("--version").stdout)
+    if match and (int(match[1]), int(match[2])) >= _NO_LAZY_FETCH_MIN_GIT:
+        return False
+    return run("config", "--get", "remote.origin.promisor").stdout.strip().lower() == "true"
+
+
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """HEAD's sha unless HEAD is PROVEN not to contain ``commit``, then None.
 
@@ -112,12 +131,15 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     head = run("rev-parse", "HEAD").stdout.strip()
     if not _SHA.fullmatch(head):
         return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
-        return head
-    # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+    if not _ancestry_probe_may_lazy_fetch(run):
+        ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
+        if ancestry == 0:
+            return head
+        # A shallow boundary makes exit 1 a guess; full history makes it proof.
+        if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
+            return None
+    # A partial clone on git < 2.44 would download missing history for the probe
+    # above, so its answer comes from the compare API the fallback already uses.
     status = (_github_compare(commit, head, repository) or {}).get("status")
     return None if status in ("behind", "diverged") else head
 

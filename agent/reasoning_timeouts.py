@@ -33,6 +33,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
         # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
         "claude-fable",
+        # Gemini 4 (gemini-4-argon): thinks longer than 3.x, and a long-decode turn re-prefills the
+        # whole output so far at every hop before the next token arrives.
+        "gemini-4",
     ),
     300: (
         "nemotron-3-nano", "nemotron-3.5-lightning", "qwq-32b", "o3-mini", "o4-mini",

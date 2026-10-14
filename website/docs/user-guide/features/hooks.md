@@ -966,7 +966,7 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
 
-**Return value:** Ignored.
+**Return value:** Ignored. Despite its name this hook fires after **every turn**, so it can't show the user anything. To show something when a session ends, return a message from [`on_session_finalize`](#on_session_finalize).
 
 **Use cases:** Flushing buffers, closing connections, persisting session state, logging session duration, cleanup of resources initialized in `on_session_start`.
 
@@ -1028,7 +1028,28 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 
 **Fires:** In CLI/TUI teardown (including the end of a `hermes -z` one-shot run, success or failure) and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
 
-**Return value:** Ignored.
+**Return value — show the user a message:** return a non-empty `str`, or a dict with a `"message"` string, and Hermes shows it to the user as a notice. It never becomes a model turn and never edits the assistant's reply. Return `None` to show nothing. Where it appears:
+
+| Surface | Shown as |
+|---------|---------|
+| CLI `/new` | Printed in the terminal before the new session starts. |
+| CLI quit | Printed above the exit summary (`hermes --resume …`). |
+| `hermes chat -q` / `-z` one-shot | Printed to **stderr**, so stdout still holds only the answer. |
+| TUI `/new` | A system line in the fresh session's transcript. |
+| Messaging gateway `/new` or `/reset` | Sent to the chat that owned the session, as its own message. |
+| Gateway shutdown / restart | Sent to each active chat before the adapters disconnect. |
+
+It is not delivered when nobody is there to see it: idle-expiry and cache eviction in the gateway, quitting the TUI, TUI/Desktop sessions closed by the reaper or a disconnect, and Desktop new-chat or chat delete. It is also not delivered from cron jobs, which don't finalize sessions. In those cases the message is dropped and the hook still runs.
+
+```python
+def digest(session_id, **kwargs):
+    count = _edits.pop(session_id, 0)
+    if count:
+        return {"message": f"📝 This session edited {count} file(s)."}
+
+def register(ctx):
+    ctx.register_hook("on_session_finalize", digest)
+```
 
 **Use cases:** Persist final session metrics before the session ID is discarded, close per-session resources, emit a final telemetry event, drain queued writes.
 

@@ -116,7 +116,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
             )
         logger.debug("relay target authorization unavailable", exc_info=True)
         return None
-    except Exception:  # noqa: BLE001 - the module is THERE and broke; FAIL CLOSED
+    except Exception:
         logger.exception(
             "relay egress module failed to import for %s — refusing the send",
             platform_name,
@@ -140,7 +140,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         return authorize_relay_target(
             platform_name, chat_id, thread_id, native_token=native_token
         )
-    except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
+    except Exception:
         logger.exception(
             "relay target authorization FAILED for %s — refusing the send",
             platform_name,
@@ -549,11 +549,11 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
                         **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
             if media_files:  # always a dict result, returned as-is below
-                make_coro = lambda: _send_live_adapter_media(  # noqa: E731
+                make_coro = lambda: _send_live_adapter_media(
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
                     force_document=force_document)
             else:
-                make_coro = lambda: adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)  # noqa: E731
+                make_coro = lambda: adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             result = await _dispatch_on_gateway_loop(
                 runner, make_coro, f"send_message: failed to schedule{' media send' if media_files else ''} on gateway loop")
         except asyncio.CancelledError:
@@ -743,7 +743,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
-        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
+        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
@@ -756,7 +756,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             except Exception as e:
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
-        send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
+        send_one = lambda chunk, is_last: _via_adapter_route(
             platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
     last_result = await _send_chunks(chunks, send_one)
     if (warning and isinstance(last_result, dict) and last_result.get("success")

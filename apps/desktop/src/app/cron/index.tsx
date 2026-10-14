@@ -1045,7 +1045,11 @@ function CronJobRuns({
           void load()
         }
       },
-      pending ? PENDING_RUNS_POLL_INTERVAL_MS : changeEventsAvailable ? RUNS_BACKSTOP_INTERVAL_MS : RUNS_POLL_INTERVAL_MS
+      pending
+        ? PENDING_RUNS_POLL_INTERVAL_MS
+        : changeEventsAvailable
+          ? RUNS_BACKSTOP_INTERVAL_MS
+          : RUNS_POLL_INTERVAL_MS
     )
 
     const onVisible = () => {

@@ -23,6 +23,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+import itertools
 
 LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")
 
@@ -75,7 +76,7 @@ class LoginControl:
     max_length: Optional[int] = None
 
     @classmethod
-    def from_dict(cls, raw: Dict[str, Any]) -> "LoginControl":
+    def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
         form_index = raw.get("formIndex", raw.get("form_index"))
         max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(
@@ -134,12 +135,12 @@ _RE_OTP = re.compile(
 )
 
 
-def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
+def classify_otp_controls(controls: list[LoginControl]) -> list[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
     otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
     the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
     fill spreads the code across them."""
-    out: List[ClassifiedLoginControl] = []
+    out: list[ClassifiedLoginControl] = []
     for c in controls:
         tokens = c.autocomplete.lower().split()
         if "one-time-code" in tokens:
@@ -153,9 +154,9 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
 
 
 def select_password_fill(
-    classified: List[ClassifiedLoginControl],
+    classified: list[ClassifiedLoginControl],
     password: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Select the single best current-password control to fill.
 
     The vault fill path is password-only: the identifier is agent-visible
@@ -167,9 +168,7 @@ def select_password_fill(
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
-    )[0]
+    best_password = min(passwords, key=lambda c: (-c.score, c.control.index))
     return [
         {
             "index": best_password.control.index,
@@ -195,8 +194,8 @@ def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLogin
     return None
 
 
-def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict[str, str],
-                          field_tokens: Dict[str, str]) -> List[Dict[str, Any]]:
+def select_checkout_fills(classified: list[ClassifiedLoginControl], secret: dict[str, str],
+                          field_tokens: dict[str, str]) -> list[dict[str, Any]]:
     """Map a payment/address secret payload onto the best control per autocomplete token.
 
     ``field_tokens`` is ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` (agent/vault_store.py). A combined
@@ -204,10 +203,10 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
     month/year fills. Returns ``[{"index", "token", "value"}]``: one control per token, highest
     score then DOM order.
     """
-    values: Dict[str, str] = {tok: secret[f] for f, tok in field_tokens.items() if secret.get(f)}
+    values: dict[str, str] = {tok: secret[f] for f, tok in field_tokens.items() if secret.get(f)}
     if "cc-exp-month" in values and "cc-exp-year" in values:
         values["cc-exp"] = f"{values['cc-exp-month'].zfill(2)}/{values['cc-exp-year'][-2:]}"
-    fills: List[Dict[str, Any]] = []
+    fills: list[dict[str, Any]] = []
     for token, value in values.items():
         candidates = sorted((c for c in classified if c.token == token), key=lambda c: (-c.score, c.control.index))
         if candidates:
@@ -225,7 +224,7 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
 
-def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
+def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> list[dict[str, Any]]:
     """One fill per box. Default: the single best-scoring code field takes the whole code.
 
     Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
@@ -236,7 +235,7 @@ def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> Li
     boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
     if (len(boxes) == len(code)
             and len({b.control.form_index for b in boxes}) == 1
-            and all(b.control.index - a.control.index == 1 for a, b in zip(boxes, boxes[1:]))):
+            and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):
         return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
@@ -281,7 +280,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
 })()"""
 
 
-def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
+def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str = "") -> str:
     """Build a JS expression that fills the selected controls and reports only a count. The
     returned expression never echoes the values back.
 

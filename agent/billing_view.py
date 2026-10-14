@@ -316,15 +316,15 @@ def _dev_fixture_billing_state() -> Optional[BillingState]:
     # Prod portal host (matches subscription_view._DEV_FIXTURE_PORTAL) + the /topup deep-link suffix.
     common: dict[str, Any] = dict(
         logged_in=True, org_id="org_acme", org_slug="acme", org_name="Acme Inc", role="OWNER",
-        balance_usd=Decimal("3.40"), cli_billing_enabled=True, min_usd=Decimal("5"), max_usd=Decimal("500"),
-        charge_presets=(Decimal("10"), Decimal("25"), Decimal("50")), portal_url="https://portal.nousresearch.com/billing?topup=open",
+        balance_usd=Decimal("3.40"), cli_billing_enabled=True, min_usd=Decimal(5), max_usd=Decimal(500),
+        charge_presets=(Decimal(10), Decimal(25), Decimal(50)), portal_url="https://portal.nousresearch.com/billing?topup=open",
     )
     card = CardInfo(brand="Visa", last4="4242")
     overrides: dict[str, dict[str, Any]] = {
         "nocard": dict(card=None),
         "card": dict(card=card),
         "card-sub": dict(card=CardInfo(brand="Visa", last4="4242", resolved_via="subPin")),
-        "card-autoreload": dict(card=card, auto_reload=AutoReload(enabled=True, threshold_usd=Decimal("5"), reload_to_usd=Decimal("25"))),
+        "card-autoreload": dict(card=card, auto_reload=AutoReload(enabled=True, threshold_usd=Decimal(5), reload_to_usd=Decimal(25))),
         "notadmin": dict(card=card, role="MEMBER"),
         "billing-off": dict(card=None, cli_billing_enabled=False),
     }

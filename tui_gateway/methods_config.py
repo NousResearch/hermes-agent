@@ -208,7 +208,8 @@ def _cfg_get_reasoning(params):
     session = _sessions.get(params.get("session_id", "")) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
-        reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
+        from agent.voice_turn_route import session_runtime_view
+        reasoning_config = getattr(session_runtime_view(session.get("agent")), "reasoning_config", None)
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
@@ -403,7 +404,7 @@ def _(rid, params: dict) -> dict:
                 # ``ready`` = this process's boot bootstrap has settled (a named profile has no
                 # record of its own; the launch record says whether the free tier is minted).
                 # Since one host backend serves every profile (#118246), the desktop's
-                # setup-profile probe lands here, and its kickoff requires ``ready``.
+                # named-profile probe lands here too.
                 launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **({"ready": True, "free_tier_account": launch.free_tier_account,

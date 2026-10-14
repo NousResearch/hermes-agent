@@ -1655,7 +1655,12 @@ export async function pickProjectFolders(): Promise<string[]> {
 // project already has — or repeats within the pick itself — are skipped, so
 // a multi-select never writes duplicate rows (#68741).
 export async function addProjectFolders(id: string, paths: string[]): Promise<void> {
-  const existing = new Set($projects.get().find(proj => proj.id === id)?.folders?.map(folder => folder.path) ?? [])
+  const existing = new Set(
+    $projects
+      .get()
+      .find(proj => proj.id === id)
+      ?.folders?.map(folder => folder.path) ?? []
+  )
 
   for (const path of new Set(paths.map(path => path.trim()).filter(Boolean))) {
     if (existing.has(path)) {

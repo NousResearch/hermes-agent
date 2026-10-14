@@ -111,7 +111,12 @@ describe('CronView queued trigger feedback (#70826)', () => {
     // The backend materializes the run the trigger produced.
     const observedAt = Date.now() / 1000
     getCronJobRuns.mockResolvedValue([
-      { id: 'cron_job-1_20261006_120001', last_active: observedAt, started_at: observedAt, title: 'Status report run' } as SessionInfo
+      {
+        id: 'cron_job-1_20261006_120001',
+        last_active: observedAt,
+        started_at: observedAt,
+        title: 'Status report run'
+      } as SessionInfo
     ])
     await act(async () => {
       releaseTrigger(job)
@@ -139,7 +144,12 @@ describe('CronView queued trigger feedback (#70826)', () => {
     const callsBeforeChange = getCronJobRuns.mock.calls.length
     const observedAt = Date.now() / 1000
     getCronJobRuns.mockResolvedValue([
-      { id: 'cron_job-1_20261006_120002', last_active: observedAt, started_at: observedAt, title: 'Status report run' } as SessionInfo
+      {
+        id: 'cron_job-1_20261006_120002',
+        last_active: observedAt,
+        started_at: observedAt,
+        title: 'Status report run'
+      } as SessionInfo
     ])
     await act(async () => {
       notifyCronChanged()

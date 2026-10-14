@@ -48,9 +48,9 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
     """Byte-level diff of the serialized tool arrays (dynamic schemas change CONTENT under
     stable names); False if either side fails to serialize."""
     try:
-        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)  # noqa: E731
+        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)
         return dump(_agent_tool_defs(agent)) != dump(new_defs)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -81,8 +81,8 @@ def _publish_tool_snapshot(
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
-        # Same NAME set: no change for MCP-reload callers. Content-aware callers
-        # (compaction boundary) also diff serialized bytes.
+        # Same name set: nothing to publish, unless the caller is content_aware
+        # (explicit reload, compaction) and the serialized schema bytes moved.
         if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
             return None
         agent.tools = new_defs
@@ -103,7 +103,7 @@ def refresh_agent_mcp_tools(
     time, so servers that connect later (slow OAuth, ``/reload-mcp``) are invisible until
     rebuilt. Shared by the TUI RPC, gateway reload, late-binding thread and between-turns
     refresh: respects the toolset filter, diffs by tool NAME (a count compare misses an
-    equal-size swap), re-injects the memory-provider / context-engine tools ``agent_init``
+    equal-size swap) and, for ``content_aware`` callers, by serialized schema bytes, re-injects the memory-provider / context-engine tools ``agent_init``
     appends after ``get_tool_definitions`` plus guarded session capabilities, and publishes
     ``(tools, valid_tool_names)`` together.
 
@@ -111,7 +111,11 @@ def refresh_agent_mcp_tools(
     request prefix and any moved byte re-prefills the whole history — existing tools keep their
     slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
     carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
-    dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
+    dropped, new tools append at the tail. The caller owns the prompt-cache contract.
+
+    With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
+    first turn) a same-name schema change is published. The caller has already
+    accepted the cache break, or nothing has been cached yet."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
@@ -129,8 +133,12 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass  # fail open to the plain rebuild
+    else:
+        # Explicit reload and pre-first-turn rebuild. A same-name description
+        # change has to publish; between-turns refresh keeps preserve_prefix.
+        content_aware = True
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
@@ -168,7 +176,7 @@ def persist_agent_tool_names(agent) -> None:
         return
     try:
         db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
 
 

@@ -256,6 +256,8 @@ export const arChrome = {
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
       createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
+      hiddenFromSidebar: 'أُخفي من الشريط الجانبي',
+      undoHide: 'تراجع',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',
@@ -361,6 +363,11 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'تشغيل محلي · مجاني وخاص',
+        text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,
+        action: 'إعداد'
+      },
       limited: 'محدود',
       limitedUntil: (time: string) => `محدود حتى ${time}`,
       limitedTip: (provider: string, time: null | string) =>

@@ -47,12 +47,13 @@ DEFAULT = {
     "bootstrap": True,
     "desktop_updater": True,
     "rust": True,
+    "remote_backends": True,
 }
 
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False, remote_backends=False) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -80,6 +81,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "bootstrap": bootstrap,
         "desktop_updater": desktop_updater,
         "rust": rust,
+        "remote_backends": remote_backends,
     }
 
 
@@ -323,6 +325,24 @@ CASES = {
     ),
     # Slow lanes on a pull request: an ordinary product change starts none of
     # them; the suite, its harness, or the code it guards starts its own.
+    # Real SSH/Docker backend lane: the backends, the terminal tool, the real tests
+    # and their sshd harness start it; neighbouring tools code does not.
+    "ssh backend → remote_backends": (
+        ["tools/environments/ssh.py"], _lanes(python=True, scan=True, remote_backends=True)),
+    "docker backend → remote_backends": (
+        ["tools/environments/docker.py"], _lanes(python=True, scan=True, remote_backends=True)),
+    "terminal tool sibling → remote_backends": (
+        ["tools/terminal_tool_backends.py"], _lanes(python=True, scan=True, remote_backends=True)),
+    "real docker backend test → remote_backends": (
+        ["tests/tools/test_docker_backend_real.py"],
+        _lanes(python=True, python_prod=False, scan=True, remote_backends=True)),
+    "mocked docker unit test → no remote_backends": (
+        ["tests/tools/test_docker_environment.py"], _lanes(python=True, python_prod=False, scan=True)),
+    "sshd harness → remote_backends": (
+        ["scripts/ci/start_test_sshd.sh"], _lanes(python=True, remote_backends=True)),
+    "sshd container setup → remote_backends": (
+        ["scripts/ci/test_sshd_container_setup.sh"], _lanes(python=True, remote_backends=True)),
+    "other tool → no remote_backends": (["tools/file_tools.py"], _lanes(python=True, scan=True)),
     "gateway python → no slow lane": (["gateway/run.py", "agent/x.py"], _lanes(python=True, scan=True)),
     "desktop renderer → no slow lane": (["apps/desktop/src/app/chat/composer.tsx"], _lanes(frontend=True)),
     "python e2e suite → e2e only": (
@@ -421,7 +441,8 @@ def test_every_slow_lane_path_matches_a_tracked_file():
     if tracked.returncode != 0:
         pytest.skip("not a git checkout")
     files = tracked.stdout.splitlines()
-    tables = {**_mod._E2E_LANES, "docker": _mod._DOCKER_PATHS, "nix": _mod._NIX_LANE_PATHS}
+    tables = {**_mod._E2E_LANES, "docker": _mod._DOCKER_PATHS, "nix": _mod._NIX_LANE_PATHS,
+              "remote_backends": _mod._REMOTE_BACKEND_PATHS}
     dead = {
         (lane, prefix)
         for lane, prefixes in tables.items()
@@ -557,6 +578,8 @@ _REAL_UPDATE_LANES = (
     ("ci.yaml", "tests-os", "tests-os.yml", "e2e_upgrade"),
     ("ci.yaml", "e2e-desktop-update", "e2e-desktop-update.yml", "e2e_desktop_update"),
     ("tests-os.yml", "install-update-e2e", "windows-install-update-e2e.yml", "e2e_upgrade"),
+    # Not an update suite, but the same contract: the real SSH/Docker backend lane.
+    ("ci.yaml", "remote-backends", "remote-backends.yml", "remote_backends"),
 )
 
 
@@ -577,6 +600,20 @@ def test_real_update_suites_gate_the_merge_when_their_lane_fires(caller, job, ca
     assert root in ci["jobs"]["all-checks-pass"]["needs"]
     for name, body in _yaml(f".github/workflows/{called}")["jobs"].items():
         assert not body.get("continue-on-error"), f"{called}::{name} cannot fail the merge"
+
+
+def test_remote_backends_lane_runs_test_files_that_exist_and_start_it():
+    """The lane's test list and its path gate must agree: a renamed test file would
+    otherwise drop silently out of the run (run_tests.sh skips a missing path) or stop
+    starting the lane on the PR that edits it."""
+    text = (_REPO / ".github/workflows/remote-backends.yml").read_text(encoding="utf-8-sig")
+    paths = sorted(set(re.findall(r"(tests/[\w/.-]+\.py)", text)))
+    assert paths
+    assert [p for p in paths if not (_REPO / p).is_file()] == []
+    assert [p for p in paths if not classify([p])["remote_backends"]] == []
+    # A skip there is a missing host, not a pass; the runner, not a grep over its
+    # progress line, decides that.
+    assert "scripts/run_tests.sh --fail-on-skip" in text
 
 
 def test_windows_venv_e2e_runs_only_test_files_that_exist():
@@ -658,7 +695,7 @@ def test_main_recovers_pr_files_instead_of_fail_open(monkeypatch, capsys):
 
 
 def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
-    monkeypatch.setattr(_mod, "pull_request_changed_files", lambda: [])
+    monkeypatch.setattr(_mod, "pull_request_changed_files", list)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 

@@ -203,7 +203,6 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     def _guard_asyncio_run(coro):
         called_bare["hit"] = True
         coro.close()
-        return None
 
     monkeypatch.setattr(asyncio, "run", _guard_asyncio_run)
 

@@ -1,48 +1,84 @@
 # --- BEGIN canonical store-root resolver (scripts/gen-bootstrap-resolver.py) ---
 function Expand-HermesHomeValue {
-    # os.path.expandvars+expanduser for both styles: %VAR% on Windows, $VAR on
-    # POSIX; an UNSET name stays literal, and ~/~user follow ntpath's rule.
-    param([string]$Value)
-    $pattern = '%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)'
+    # The HOST os.path ladder, which is what pm runs: ntpath on Windows,
+    # posixpath elsewhere. $Sep selects which ladder, so the Windows branch is
+    # testable on any host. Quoted spans and the $/% escape rules follow the
+    # platform's own _varpattern; an unset name stays literal.
+    param(
+        [string]$Value,
+        [string]$Sep = [string][System.IO.Path]::DirectorySeparatorChar
+    )
+    $isWin = $Sep -eq '\'
+    $envDict = [System.Environment]::GetEnvironmentVariables()
+    $pattern = if ($isWin) { '''[^'']*''?|%(%|[^%]*%?)|\$(\$|[-\w]+|\{[^}]*\}?)' }
+               else { '\$(\w+|\{[^}]*\}?)' }
+    # Windows: group 1 holds the %VAR% form, group 2 the $VAR form. POSIX has
+    # no %VAR%, so its single group is the $VAR form.
+    $envGroup = if ($isWin) { 2 } else { 1 }
     $Value = [regex]::Replace($Value, $pattern, {
         param($m)
-        $name = if ($m.Groups[1].Success) { $m.Groups[1].Value }
-                elseif ($m.Groups[2].Success) { $m.Groups[2].Value }
-                else { $m.Groups[3].Value }
+        if ($isWin -and $m.Groups[1].Success) {
+            $name = $m.Groups[1].Value
+            if ($name -eq '%') { return '%' }
+            if (-not $name.EndsWith('%')) { return $m.Value }
+            $name = $name.Substring(0, $name.Length - 1)
+        } elseif ($m.Groups[$envGroup].Success) {
+            $name = $m.Groups[$envGroup].Value
+            if ($name -eq '$') { return '$' }
+            if ($name.StartsWith('{')) {
+                if (-not $name.EndsWith('}')) { return $m.Value }
+                $name = $name.Substring(1, $name.Length - 2)
+            }
+        } else {
+            return $m.Value
+        }
         $v = [Environment]::GetEnvironmentVariable($name)
-        if ($null -eq $v) { $m.Value } else { $v }
+        if ($null -ne $v) { return $v }
+        if ($envDict.Contains($name)) { return '' }
+        return $m.Value
     })
     if ($Value.StartsWith('~')) {
-        # ntpath.expanduser: USERPROFILE, else HOMEDRIVE+HOMEPATH, else unchanged;
-        # PRESENCE, not truthiness: an empty USERPROFILE still substitutes ('~/x'
-        # -> '/x', exactly like Python), and '~user' resolves only for the current
-        # account (or a same-named profile dir).
-        # $env: cannot express presence — its provider reports a variable set to
-        # the empty string as $null — so presence is read from the dictionary,
-        # mirroring ntpath's 'USERPROFILE'/'HOMEPATH' in os.environ tests. The
-        # pair binds the dictionary values too: ntpath joins with
-        # os.environ.get('HOMEDRIVE', ''), so a present-but-empty drive joins
-        # the same answer a MISSING drive would ('' + HOMEPATH).
-        # A HOMEPATH present WITHOUT HOMEDRIVE still takes the pair rung: ntpath
-        # joins the pair with an empty drive ('' + HOMEPATH) rather than skip
-        # to the $HOME rung, so a lone-HOMEPATH machine must get the same
-        # answer instead of a literal '~...' that stages a phantom home.
-        $idx = $Value.IndexOfAny([char[]]@('/', '\'), 1)
+        $seps = if ($isWin) { [char[]]@('/', '\') } else { [char[]]@('/') }
+        $idx = $Value.IndexOfAny($seps, 1)
         if ($idx -lt 0) { $idx = $Value.Length }
-        $envDict = [System.Environment]::GetEnvironmentVariables()
-        $userHome = if ($envDict.Contains('USERPROFILE')) { [string]$envDict['USERPROFILE'] }
-                    elseif ($envDict.Contains('HOMEPATH')) { [string]$envDict['HOMEDRIVE'] + [string]$envDict['HOMEPATH'] }
-                    elseif ($envDict.Contains('HOME')) { [string]$envDict['HOME'] }
-                    else { $null }
+        # Presence, not truthiness: ntpath tests membership in os.environ, so a
+        # present-but-empty USERPROFILE still substitutes. On Windows the ladder
+        # stops at the HOMEDRIVE+HOMEPATH pair — ntpath never consults HOME.
+        if ($isWin) {
+            if ($envDict.Contains('USERPROFILE')) { $userHome = [string]$envDict['USERPROFILE'] }
+            elseif ($envDict.Contains('HOMEPATH')) {
+                # ntpath joins the pair; a rooted HOMEPATH replaces the drive's
+                # own separators rather than stacking a second one.
+                $drive = [string]$envDict['HOMEDRIVE']
+                $homePart = [string]$envDict['HOMEPATH']
+                if ($homePart -match '^[\\/]') { $userHome = $drive.TrimEnd('\', '/') + $homePart }
+                elseif ($homePart -match '^[A-Za-z]:') { $userHome = $homePart }
+                else { $userHome = $drive + $homePart }
+            } else { $userHome = $null }
+        } else {
+            # posixpath: HOME when SET (even empty), else the account database;
+            # the answer is rstripped and empty folds to the separator.
+            if ($envDict.Contains('HOME')) { $userHome = ([string]$envDict['HOME']).TrimEnd('/') }
+            else { $userHome = ([string][System.Environment]::GetFolderPath('UserProfile')).TrimEnd('/') }
+        }
         if ($null -ne $userHome) {
             if ($idx -ne 1) {
+                # ntpath guesses another account's profile dir only when the
+                # current account names it; posixpath needs pwd (unreachable
+                # here), so a named user stays literal on POSIX.
+                if (-not $isWin) { return $Value }
+                $slash = $userHome.LastIndexOfAny([char[]]@('\', '/'))
+                $leaf = if ($slash -ge 0) { $userHome.Substring($slash + 1) } else { $userHome }
+                $currentUser = if ($envDict.Contains('USERNAME')) { [string]$envDict['USERNAME'] } else { $null }
                 $targetUser = $Value.Substring(1, $idx - 1)
-                if ($targetUser -ne $env:USERNAME) {
-                    if (-not $userHome -or $env:USERNAME -ne (Split-Path -Leaf $userHome)) { return $Value }
-                    $userHome = Join-Path (Split-Path -Parent $userHome) $targetUser
+                if ($targetUser -cne $currentUser) {
+                    if ($currentUser -cne $leaf) { return $Value }
+                    $parent = if ($slash -ge 0) { $userHome.Substring(0, $slash) } else { '' }
+                    $userHome = if ($parent) { $parent + $Sep + $targetUser } else { $targetUser }
                 }
             }
             $Value = $userHome + $Value.Substring($idx)
+            if (-not $Value -and -not $isWin) { return $Sep }
         }
     }
     return $Value

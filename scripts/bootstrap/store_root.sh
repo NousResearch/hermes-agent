@@ -54,84 +54,133 @@ _hermes_env_ci() {
     '
 }
 
-# _hermes_vars VALUE -> os.path.expandvars(VALUE) on POSIX and
-# ntpath.expandvars(VALUE) on win32. A `$` name is [A-Za-z0-9_]+; an UNSET name
-# keeps its source text (braces included); an unclosed "${" leaves the
-# remainder literal. On win32, %VAR% is read case-insensitively, an unknown or
-# unclosed form stays source text, and '%%' folds to one '%'.
+# _hermes_env_name NAME -> an exported name's value; present-and-empty counts
+# as set (os.environ maps it to ''), absent fails.
+_hermes_env_name() { printenv "$1" 2>/dev/null; }
+
+# _hermes_vars VALUE -> os.path.expandvars(VALUE), ported from the platform's
+# own _varpattern. posixpath has one form ($VAR / ${VAR}) with no escapes or
+# quoting; ntpath (Windows) also folds '%%' and '$$' and copies '...' spans
+# verbatim, and reads names case-insensitively because os.environ folds case
+# there. An UNSET name keeps its source text, braces included.
 _hermes_vars() {
-    local _s="$1" _out="" _pre _name _val _rest _win
+    local _s="$1" _out="" _win _pat _i _n _m _name _val _lookup
     _win="$(_hermes_os)"
+    if [ "$_win" = win32 ]; then
+        # Same alternation as ntpath._varpattern: quoted span, %VAR%/escape,
+        # $VAR/$$/braces.
+        _pat="'[^']*'?|%(%|[^%]*%?)|[$]([$]|[-a-zA-Z0-9_]+|[{][^}]*[}]?)"
+        _lookup=_hermes_env_ci
+    else
+        _pat="[$]([a-zA-Z0-9_]+|[{][^}]*[}]?)"
+        _lookup=_hermes_env_name
+    fi
+    _ere="(${_pat})"
     while [ -n "$_s" ]; do
-        _pre="${_s%%[$%]*}"
-        if [ "$_pre" = "$_s" ]; then printf '%s' "$_out$_s"; return 0; fi
-        _out="$_out$_pre"
-        _s="${_s#"$_pre"}"
-        case "$_s" in
-            '$'*)
-                _s="${_s#\$}"
-                case "$_s" in
-                    '{'*)
-                        case "$_s" in
-                            *'}'*) _name="${_s#\{}"; _name="${_name%%\}*}"; _s="${_s#*\}}" ;;
-                            # An unclosed "${" stops the scan with the remainder
-                            # left literal, exactly as Python's break does.
-                            *) printf '%s' "$_out\$$_s"; return 0 ;;
-                        esac
-                        if _val="$(printenv "$_name")"; then _out="$_out$_val"
-                        else _out="$_out\${$_name}"
-                        fi ;;
-                    *)
-                        _name="${_s%%[!A-Za-z0-9_]*}"
-                        if [ -z "$_name" ]; then _out="$_out\$"; continue; fi
-                        _s="${_s#"$_name"}"
-                        if _val="$(printenv "$_name")"; then _out="$_out$_val"
-                        else _out="$_out\$$_name"
-                        fi ;;
-                esac ;;
+        _i=0; _n=${#_s}; _m=""
+        while [ "$_i" -lt "$_n" ]; do
+            if [[ "${_s:$_i}" =~ ^$_ere ]] && [ -n "${BASH_REMATCH[1]}" ]; then
+                _m="${BASH_REMATCH[1]}"
+                break
+            fi
+            _i=$((_i + 1))
+        done
+        if [ -z "$_m" ]; then _out="$_out$_s"; break; fi
+        _out="$_out${_s:0:$_i}"
+        _s="${_s:$((_i + ${#_m}))}"
+        case "$_m" in
+            "'"*) _out="$_out$_m" ;;                       # quoted span, verbatim
             '%'*)
-                if [ "$_win" != win32 ]; then
-                    _out="$_out%"      # posixpath.expandvars has no '%' syntax
-                    _s="${_s#%}"
+                # ntpath: '%' + ('%' | [^%]* '%'?). Only a body that ENDS with
+                # '%' expands; a bare '%' folds, an unclosed one stays source.
+                _body="${_m:1}"
+                if [ "$_body" = "%" ]; then _out="$_out%"
+                elif [ "${_body%\%}" = "$_body" ]; then _out="$_out$_m"
                 else
-                    _rest="${_s#%}"
-                    case "$_rest" in
-                        '%'*) _out="$_out%"; _s="${_rest#%}" ;;
-                        *'%'*)
-                            _name="${_rest%%\%*}"
-                            _s="${_rest#"$_name%"}"
-                            if _val="$(_hermes_env_ci "$_name")"; then _out="$_out$_val"
-                            else _out="$_out%$_name%"
-                            fi ;;
-                        *) _out="$_out%"; _s="$_rest" ;;
-                    esac
+                    _name="${_body%\%}"
+                    if [ -z "$_name" ]; then _out="$_out$_m"
+                    elif _val="$(_hermes_env_ci "$_name")"; then _out="$_out$_val"
+                    else _out="$_out%$_name%"
+                    fi
+                fi ;;
+            '$$') _out="$_out\$" ;;                        # ntpath's '$' escape
+            '${'*'}')
+                _name="${_m:2:${#_m}-3}"
+                if [ -z "$_name" ]; then _out="$_out$_m"
+                elif _val="$("$_lookup" "$_name")"; then _out="$_out$_val"
+                else _out="$_out$_m"
+                fi ;;
+            '$'*)
+                _name="${_m:1}"
+                if _val="$("$_lookup" "$_name")"; then _out="$_out$_val"
+                else _out="$_out$_m"
                 fi ;;
         esac
     done
     printf '%s' "$_out"
 }
 
-# _hermes_tilde VALUE -> os.path.expanduser(VALUE). A HOME that is SET wins even
-# when empty (answering "/"); unset falls back to the account database; '~user'
-# looks the account up and stays literal when unknown.
+# _hermes_tilde VALUE -> the host os.path.expanduser(VALUE). win32 follows
+# ntpath's ladder (USERPROFILE, else the HOMEDRIVE+HOMEPATH pair, else literal)
+# and its ~user guess; POSIX follows posixpath's (HOME when SET — even empty —
+# else the account database), with trailing separators stripped.
 _hermes_tilde() {
-    local _v="$1" _user _tail _home
-    case "$_v" in
-        "~"|"~/"*) _tail="${_v#\~}"
-            if [ "${HOME+x}" = x ]; then
-                [ -n "$HOME" ] && printf '%s' "$HOME$_tail" || printf '%s' "/${_tail#/}"
-            elif _home="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then printf '%s' "$_home$_tail"
-            else printf '%s' "$_v"
-            fi ;;
-        "~"*) _user="${_v#\~}"; _tail=""
-            case "$_user" in */*) _tail="/${_user#*/}"; _user="${_user%%/*}" ;; esac
-            if _home="$(_hermes_user_home "$_user")"; then printf '%s' "$_home$_tail"
-            else printf '%s' "$_v"
-            fi ;;
-        *) printf '%s' "$_v" ;;
-    esac
+    local _v="$1" _win _i _n _c _user _tail _home _drive _h _leaf _parent _cur _seps
+    case "$_v" in '~'*) ;; *) printf '%s' "$_v"; return ;; esac
+    _win="$(_hermes_os)"
+    _n="${#_v}"; _i=1
+    while [ "$_i" -lt "$_n" ]; do
+        _c="${_v:$_i:1}"
+        if [ "$_win" = win32 ]; then
+            case "$_c" in /|\\) break ;; esac
+        else
+            [ "$_c" = / ] && break
+        fi
+        _i=$((_i + 1))
+    done
+    _user="${_v:1:$((_i - 1))}"
+    _tail="${_v:$_i}"
+    if [ "$_win" = win32 ]; then
+        if [ "${USERPROFILE+x}" = x ]; then _home="$USERPROFILE"
+        elif [ "${HOMEPATH+x}" = x ]; then
+            _drive="${HOMEDRIVE-}"; _h="$HOMEPATH"
+            case "$_h" in
+                /|\\*) _drive="${_drive%"${_drive##*[!/\\]}"}"; _home="$_drive$_h" ;;
+                *) _home="$_drive$_h" ;;
+            esac
+        else
+            printf '%s' "$_v"; return
+        fi
+        if [ -n "$_user" ]; then
+            _leaf="${_home##*[\\/]}"
+            _parent="${_home%"${_home##*[\\/]}"}"
+            _cur="${USERNAME-}"
+            if [ "$_user" != "$_cur" ]; then
+                [ "$_cur" = "$_leaf" ] || { printf '%s' "$_v"; return; }
+                case "$_parent" in
+                    '') _home="$_user" ;;
+                    *:|*[\\/]) _home="${_parent}${_user}" ;;
+                    *) _home="${_parent}\\${_user}" ;;
+                esac
+            fi
+        fi
+        printf '%s' "$_home$_tail"
+        return
+    fi
+    if [ -n "$_user" ]; then
+        if _home="$(_hermes_user_home "$_user")"; then printf '%s' "${_home%/}$_tail"
+        else printf '%s' "$_v"
+        fi
+        return
+    fi
+    if [ "${HOME+x}" = x ]; then _home="${HOME%/}"
+    elif ! _home="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then printf '%s' "$_v"; return
+    fi
+    _home="${_home%/}"
+    if [ -n "$_home" ]; then printf '%s' "$_home$_tail"
+    else printf '%s' "${_tail:-/}"
+    fi
 }
-
 # _hermes_expand VALUE -> os.path.expanduser(os.path.expandvars(VALUE)).
 _hermes_expand() { _hermes_tilde "$(_hermes_vars "$1")"; }
 

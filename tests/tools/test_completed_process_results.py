@@ -40,7 +40,25 @@ def test_background_notification_history_replay_is_not_new_delivery():
     assert _new_background_notifications([*shifted, first[1]], seen_counts) == [notice]
 
 
-def test_headless_terminal_result_survives_cli_exit(tmp_path):
+def test_retained_result_lookup_does_not_initialize_session_store(tmp_path, monkeypatch):
+    import hermes_state
+    from gateway.session_context import scoped_current_session_id
+    from tools import process_registry_results as receipts
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(receipts, "get_hermes_home", lambda: tmp_path)
+    directory = tmp_path / "logs" / "process-results"
+    directory.mkdir(parents=True)
+    (directory / "proc_owned.json").write_text(json.dumps({
+        "id": "proc_owned", "parent_session_id": "departed-owner",
+    }), encoding="utf-8")
+    with scoped_current_session_id("unrelated-reader"):
+        assert receipts.load_completed_results() == {}
+    assert not db_path.exists(), "Reading retained results initialized canonical storage"
+
+
+def test_headless_terminal_result_survives_cli_exit(tmp_path, request):
     """Real CLI, tool dispatch, shell child and fresh reader; only the LLM is local."""
     home = tmp_path / "profile"
     home.mkdir()
@@ -144,6 +162,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
            "USERPROFILE": str(tmp_path), "TERMINAL_CWD": str(tmp_path),
            "OPENAI_BASE_URL": url, "OPENAI_API_KEY": "local-test-only",
            "PYTHONPATH": str(REPO_ROOT)}
+    # The canonical CLI detaches from a long-lived daemon. Own that daemon in
+    # the fixture so it cannot outlive the temporary profile/SQLite files.
+    from tests.gateway.fixtures.local_recovery_probe import daemon
+    owner = daemon(REPO_ROOT, home, env, barrier=False)
+    owner.__enter__()
+    request.addfinalizer(lambda: owner.__exit__(None, None, None))
     try:
         producer = subprocess.run([
             sys.executable, "-c",
@@ -152,6 +176,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
         ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+        # The canonical CLI is a finite client: it exits on its turn's terminal event while
+        # the daemon that owns the child keeps its watcher. The owned completion is admitted
+        # there as a follow-up turn, so the model must stay reachable until it arrives.
+        deadline = time.monotonic() + 30
+        while not follow_ups and time.monotonic() < deadline:
+            time.sleep(0.1)
     finally:
         release.touch()
         server.shutdown()
@@ -163,9 +193,10 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     assert len(observed) == 1, (observed, producer.stdout, producer.stderr)
     process_id = observed[0]["session_id"]
     assert observed[0].get("notify_on_complete") is True, observed
-    # A terminal completion is an [IMPORTANT: Background process ...] event,
-    # not an [ASYNC DELEGATION ...] event. The same history entry can appear in
-    # several provider requests without being delivered a second time.
+    # The owned notify_on_complete completion resumes as ONE follow-up turn on the owning
+    # daemon session, carrying the child's real output and exit code to the model. It is an
+    # [IMPORTANT: Background process ...] event, not an [ASYNC DELEGATION ...] event, and the
+    # same history entry can appear in several provider requests without being delivered twice.
     assert len(follow_ups) == 1, follow_ups
     assert follow_ups[0].startswith(f"[IMPORTANT: Background process {process_id} exited (exit code 7).")
     assert "SYNTHETIC_REVIEW_COMPLETE" in follow_ups[0]

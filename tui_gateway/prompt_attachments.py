@@ -6,6 +6,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 from __future__ import annotations
 
+import os
 import re as _re
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -63,6 +64,7 @@ def _decode_attach_payload(
 
 def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
     """Extension from the filename hint, else magic bytes (WebP: RIFF container), else ``.png``."""
+    from pathlib import Path
     if filename and (suffix := Path(filename).suffix.lower()):
         return suffix
     head = img_bytes[:16]
@@ -134,29 +136,39 @@ def _session_images_dir(session: dict) -> Path:
     return _session_home_dir(session, "images")
 
 
+def stage_image_bytes(directory, img_bytes: bytes, ext: str, *, prefix: str):
+    """Private, collision-free staging shared by local and canonical byte uploads."""
+    import os
+    from pathlib import Path
+    import tempfile
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=directory, prefix=prefix + "_", suffix=ext)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(img_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the session images dir and queue them for the next submit."""
+    session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    counter = session.get("image_counter", 0) + 1
-    while True:
-        candidate = img_dir / f"{prefix}_{ts}_{counter}{ext}"
-        try:
-            upload = candidate.open("xb")
-        except FileExistsError:
-            counter += 1
-        else:
-            break
-    session["image_counter"] = counter
     try:
-        with upload:
-            upload.write(img_bytes)
+        # mkstemp allocation is atomic across sessions sharing the profile images dir (main #b4faf6587e9's
+        # cross-session collision fix holds without the counter-named xb probe loop).
+        img_path = stage_image_bytes(img_dir, img_bytes, ext, prefix=prefix)
     except Exception:
-        candidate.unlink(missing_ok=True)
+        session["image_counter"] = max(0, session["image_counter"] - 1)
         raise
-    session.setdefault("attached_images", []).append(str(candidate))
-    return candidate
+    session.setdefault("attached_images", []).append(str(img_path))
+    return img_path
 
 
 def _format_ref_value(value: str) -> str:
@@ -231,8 +243,13 @@ def _stage_session_file_attachment(
     stem = Path(filename).stem or "attachment"
     suffix = Path(filename).suffix
     counter = 2
+    # O_CREAT|O_EXCL: never follows a planted (dangling) symlink, never races a same-name upload.
     while True:
         try:
+            # Windows CREATE_NEW follows a dangling symlink and creates its target outside root;
+            # an existing link of any kind is an occupied name on every platform.
+            if os.path.lexists(target):
+                raise FileExistsError(target)
             upload = target.open("xb")
         except FileExistsError:
             target = root / f"{stem}-{counter}{suffix}"

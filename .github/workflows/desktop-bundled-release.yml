@@ -2136,6 +2136,7 @@ jobs:
           from pathlib import Path
           from scripts.releases.handoff import fetch
           from scripts.releases.semver import is_valid_version
+          from scripts.releases.stable import release_line_contains
           tag = os.environ['PREVIOUS_TAG']
           if not tag.startswith('v') or not is_valid_version(tag[1:]):
               raise ValueError('Invalid previous release tag')
@@ -2145,7 +2146,8 @@ jobs:
           if release['tagName'] != tag or release['isDraft']:
               raise ValueError('Previous package must come from a published release')
           commit = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
-          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          if not subprocess.check_output(release_line_contains(commit, 'origin'), text=True).strip():
+              raise ValueError('Previous package must come from main or a release/* branch')
           fetch(tag, commit, ['termux'], Path('termux-build/previous'), ['deb/*.deb'])
           PY
 

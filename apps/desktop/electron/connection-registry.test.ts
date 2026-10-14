@@ -18,6 +18,8 @@ import {
   connectionDialFieldsChanged,
   connectionIdForLabel,
   connectionIdForPendingLogin,
+  denormalizeScopeProfileArg,
+  isBackendScopeKey,
   labelKey,
   labelSlug,
   LOCAL_CONNECTION_ID,
@@ -810,7 +812,7 @@ test('registry local route: a concrete remote-only profile is refused on the for
   // on the remote must not spawn a local child.
   const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
 
-  assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
+  assert.match(String(named.refuse ?? ''), /Profile "inbox" exists only on the remote connection/)
   assert.equal(named.delegate, false)
 
   // default is $HERMES_HOME, not profiles/default: a profiles/default probe
@@ -2308,4 +2310,56 @@ test('normalizeRegistry quarantines non-object junk items that could still be us
   // null/false carry no data and are dropped; the string is preserved.
   assert.equal((registry.quarantined || []).length, 1)
   assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
+})
+
+
+// --- denormalizeScopeProfileArg (scope-key-in-profile-slot boundary, #107828) ---
+
+test('denormalizeScopeProfileArg: parses a scope key into its explicit pair', () => {
+  assert.deepEqual(denormalizeScopeProfileArg('conn:local::default'), {
+    connectionId: 'local',
+    profile: 'default'
+  })
+  assert.deepEqual(denormalizeScopeProfileArg('  conn:homelab::research  '), {
+    connectionId: 'homelab',
+    profile: 'research'
+  })
+})
+
+test('denormalizeScopeProfileArg: ordinary profile names and edge shapes pass through as null', () => {
+  assert.equal(denormalizeScopeProfileArg(null), null)
+  assert.equal(denormalizeScopeProfileArg(''), null)
+  assert.equal(denormalizeScopeProfileArg('default'), null)
+  assert.equal(denormalizeScopeProfileArg('research'), null)
+  // A profile can never contain colons, but partial scope shapes are not keys.
+  assert.equal(denormalizeScopeProfileArg('conn:'), null)
+  assert.equal(denormalizeScopeProfileArg('conn:local::'), null)
+  assert.equal(denormalizeScopeProfileArg('::research'), null)
+})
+
+test('isBackendScopeKey: only the full composite counts', () => {
+  assert.equal(isBackendScopeKey('conn:local::default'), true)
+  assert.equal(isBackendScopeKey('conn:ssh-host::inbox'), true)
+  assert.equal(isBackendScopeKey('default'), false)
+  assert.equal(isBackendScopeKey('conn:local::'), false)
+  assert.equal(isBackendScopeKey(null), false)
+})
+
+test('registry local route: a scope-shaped profile never reaches profile-name resolution (#107828 regression)', () => {
+  // The reported log line: a forced-local spawn for profile
+  // "conn:local::default". If a caller ever passes the scope key as `profile`,
+  // route resolution mints the garbage double composite
+  // `conn:local::conn:local::default` — the boundary guard in main.ts
+  // (denormalizeScopeProfileArg) must parse the key BEFORE any route
+  // resolution, so resolveRegistryLocalRoute only ever sees a real name.
+  const route = resolveRegistryLocalRoute('conn:local::default', { globalRemote: true })
+
+  assert.equal(route.poolKey, 'conn:local::conn:local::default')
+  assert.equal(route.delegate, false)
+
+  // And the denormalized pair is what the dial must use instead.
+  assert.deepEqual(denormalizeScopeProfileArg('conn:local::default'), {
+    connectionId: 'local',
+    profile: 'default'
+  })
 })

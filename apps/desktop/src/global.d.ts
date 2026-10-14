@@ -384,8 +384,8 @@ declare global {
       translucencySupported?: boolean
       /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
-      /** Launch flag shared with every backend the app starts. */
-      guestOnboardingEnabled?: boolean
+      /** Dev-only launch flag (`--fresh-install`, unpackaged builds): onboarding treats this launch as a fresh install. */
+      assumeFreshInstall?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
       setTranslucency?: (payload: TranslucencyState) => void
@@ -885,6 +885,12 @@ export interface DesktopUpdateStatus {
   channelSelectable?: boolean
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
+  /** Source stable: the release version the channel resolves to, e.g. `0.21.6`. */
+  sourceVersion?: string
+  /** Source stable: true when forward-only (newer than the release); absent from older checkers. */
+  aheadOfRelease?: boolean
+  /** Source stable: the checkout already contains the release, so installing it moves back. */
+  rollback?: boolean
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

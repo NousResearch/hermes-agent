@@ -22,7 +22,7 @@ from agent import model_metadata_http
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
 
@@ -1870,10 +1870,8 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
-    """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
-    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
-    fresh provider confirmation, must not drive persistent writes."""
+    """Account-scoped catalogue context lengths and HTTP freshness; also retain max-context and
+    speed metadata. In-process hits report False and must not drive persistent writes."""
     if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
     now = time.time()
@@ -1898,6 +1896,8 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         logger.debug("Codex /models probe failed: %s", exc)
         _remember_no_codex_catalog(cache_key)
         return {}, False
+    from agent.codex_service_tiers import remember_catalog
+    remember_catalog(cache_key, entries)
     result: dict[str, int] = {}
     max_result: dict[str, int] = {}
     for item in entries:
@@ -2572,7 +2572,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if k in UNPRICED_REPLAY_FIELDS or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
             continue
         if k == "api_content":
             if sidecar_wins:

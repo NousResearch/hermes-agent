@@ -741,6 +741,7 @@ export interface SettingsTranslations {
       debugUploadedRedacted: string
       debugShareFailed: string
       updateAvailable: string
+      rollbackAvailable: string
       updateBehind: string
       latestVersion: string
       updateCheckFailed: string
@@ -800,6 +801,7 @@ export interface SettingsTranslations {
       hostname: string
       python: string
       hermes: string
+      newerThanStable: string
       behind: string
       updateAvailable: string
       latest: string

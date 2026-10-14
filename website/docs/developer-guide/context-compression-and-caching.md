@@ -260,6 +260,9 @@ text, the focus topic or error messages.
 - `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
   `tokens_reclaimed` describe the transcript that crossed the commit boundary,
   including retained `/compress here N` tail rows and boundary anchors.
+  A refused or rolled-back candidate never reached the transcript, so its
+  record has no `messages_after`, `tokens_after`, `tokens_reclaimed` or
+  `items_dropped`.
   `token_count_method: estimate_rough` marks them as rough message-only
   estimates (system prompt and tool schemas excluded), so they compare like
   for like. `tool_results_pruned` and `reasoning_items_pruned` count the

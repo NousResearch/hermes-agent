@@ -74,7 +74,7 @@ def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
             [ffmpeg, "-v", "error", "-y", "-i", str(path),
              "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
              "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
         if result.returncode == 0 and os.path.getsize(work_path) > 0:
             if in_place:
                 os.replace(work_path, ogg_path)
@@ -433,7 +433,7 @@ from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
-from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
@@ -855,16 +855,13 @@ _ROOT_CREDENTIAL_PATHS = (
 
 
 def _profile_cache_roots() -> list[Path]:
-    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` (the static safe
-    roots cover only the active HERMES_HOME). Enumerated at check time so profiles created after
-    startup count and are allowlisted BEFORE the ``/root`` denylist (HERMES_HOME symlinked).
-
-    ``HERMES_HOME=/opt/data``) while the model emits a profile-scoped path silently fails delivery.
-    Enumerated dynamically at check time so profiles created after startup are covered, and so the resolved
-    profile path is allowlisted *before* the ``/root`` system denylist is consulted (which otherwise wins
-    when HERMES_HOME is symlinked under a denied prefix and $HOME is not that prefix). See issue #31733.
+    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` and every home's connector
+    downloads dir (the static safe roots cover only the launch HERMES_HOME). Enumerated at check
+    time so profiles created after startup count, and allowlisted BEFORE the ``/root`` denylist,
+    which otherwise wins when HERMES_HOME is symlinked under a denied prefix (#31733).
     """
-    return [p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS]
+    return [*(p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS),
+            *(p / CONNECTOR_DOWNLOADS_SUBDIR for p in (get_hermes_home(), *_profile_dirs()))]
 
 
 def _profile_dirs() -> list[Path]:

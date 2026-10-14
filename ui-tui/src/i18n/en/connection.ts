@@ -18,7 +18,11 @@ export const connectionEn = {
       install: 'Install',
       reconnect: 'Reconnect'
     },
+    // {0} app, {1} account name the agent chose
+    namedAccount: (app: string, alias: string) => `Hermes named this ${app} account ${alias}. Rename it anytime.`,
     header: {
+      // {0} title, {1} account name
+      account: (title: string, alias: string) => `${title} · ${alias}`,
       moreToAnswer: (count: number) => `${count} more to answer after this one.`
     },
     field: {

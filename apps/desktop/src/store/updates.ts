@@ -514,6 +514,8 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    rollback: Boolean(res.rollback_to),
+    sourceVersion: res.rollback_to ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
@@ -631,6 +633,25 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
 }
 
 export type SourceUpdateChannel = 'main' | 'stable'
+
+/** What a source checkout follows, for display; null where a package owns the channel. */
+export type SourceUpdateTrack = { kind: 'stable' } | { kind: 'main' } | { kind: 'branch'; name: string }
+
+export function sourceUpdateTrack(status: DesktopUpdateStatus | null): SourceUpdateTrack | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return { kind: 'stable' }
+  }
+
+  if (status.channel !== undefined || !status.branch) {
+    return null
+  }
+
+  return status.branch === 'main' ? { kind: 'main' } : { kind: 'branch', name: status.branch }
+}
 
 /**
  * The selectable channel of a source checkout, or null where the selector must not

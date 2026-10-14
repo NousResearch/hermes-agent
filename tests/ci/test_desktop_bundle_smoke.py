@@ -166,7 +166,11 @@ def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path,
     # A partial selection still judges the groups it selected.
     assert run_phase('candidate', {'darwin-arm64'}).returncode == 0
     assert run_phase('candidate', {'darwin-arm64'}, failed=smokes['darwin-arm64']).returncode != 0
-    assert run_phase('publish', set(), failed=store).returncode != 0
+    # The Store is not a release gate: a failed submission leaves the publish phase green
+    # (the job names the package for a manual upload), while stable-publish still gates it.
+    assert run_phase('publish', set(), failed=store).returncode == 0
+    assert run_phase('publish', set(), failed=publish).returncode != 0
+    assert jobs[store].get('continue-on-error') is True
 
 
 

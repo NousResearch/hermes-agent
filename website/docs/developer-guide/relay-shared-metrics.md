@@ -378,11 +378,24 @@ tool or plugin names. The same terminal event also feeds
 `hermes.tool.usage.count` with `tool_name`, `outcome` and `error_class`.
 `tool_name` is exported only for tools declared in the repository's static
 `toolsets.TOOLSETS` (`toolsets.BUILTIN_TOOL_NAMES`, captured before any runtime
-custom toolset is created); MCP tools report `mcp` and every plugin or custom
-tool reports `plugin`. `error_class` maps Hermes's own `error_type` values
+custom toolset is created) and for the Tool Search bridge tools (`tool_search`,
+`tool_describe`, `tool_call`); MCP tools report `mcp`, hosted connector tools
+(`connectors__*`) report `connector` with tool category `connector`, and every
+plugin or custom tool reports `plugin`. The connector slug and tool name are
+never exported. Each entry of a `tool_call` batch of connector calls is its own
+call: one row per entry, and the `tool_call` wrapper is not counted on top
+(a batch refused before any entry ran still counts once as `tool_call`).
+`error_class` maps Hermes's own `error_type` values
 (`tool_error`, `timeout`, `interrupted`, `invalid_arguments`, `blocked`,
 `contract_violation`); any other value, such as an exception class name,
-collapses to `exception`. Hermes does not infer retries from repeated tool names or
+collapses to `exception`. A failed connector entry is classed by the tool
+gateway's error code in its result: `connection_required` (connection required
+or expired), `not_allowed`, `alias` (alias required or unknown),
+`invalid_arguments`, and `connector_backend` for every backend-family code
+(vendor error, rate limit, timeout, policy or gateway failure); other codes keep
+`tool_error`. Hermes's own file-input refusals count the same way: a refused
+path is `not_allowed`, a missing or oversized file is `invalid_arguments`, and a
+failed upload is `connector_backend`. Hermes does not infer retries from repeated tool names or
 adjacent calls; when the
 hook does not provide an explicit retry relationship, the retry bucket is
 `unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
@@ -456,7 +469,7 @@ itself ships.
 | `hermes.setup.completed` | surface (`cli`/`desktop`), provider | Which providers people choose at setup, and on which surface. |
 | `hermes.model_tokens.sum` | call role, model, provider, auxiliary task, token type | Token volume per model/provider, prompt-cache share, and what auxiliary work (compression, titles, vision, ...) costs. The value is a token sum, not an event count. |
 | `hermes.model_route.count` `ttft_bucket` | time to first token | Perceived latency per provider/model. |
-| `hermes.compression.count` | trigger, outcome, context-fill bucket, failure class | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. Since package schema v4 the row also carries `failure_class`, the attempt log's own class name from a closed list: the skip reasons (`lock_contended`, `insufficient_messages`, `no_compressible_window`, `empty_post_handoff_window`, `explicit_interrupt`, `attempt_superseded`, `snapshot_stale`) on skipped rows; the failure reasons (`summary_auth_failure`, `summary_network_failure`, `summary_truncated_failure`, `summary_empty_content_failure`, `summary_overload_failure`, `summary_generation_aborted`, `summary_generation_failed`, `summary_overload_degraded`, `aux_model_fallback`, `feasibility_skip`, `stall_deterministic_fallback`, `stall_interrupted`, `would_grow`, `no_progress`, `commit_fence_cancelled`, `pool_saturated`, `session_split_failed`, `exception`, `rollback`) on failed rows; `none` on success. An exception's or rollback's Python type name is dropped (`exception:TimeoutError` reads `exception`), any other value reads `other`, a failure with no class `unknown`. |
+| `hermes.compression.count` | trigger, outcome, context-fill bucket, failure class | How often compaction runs, how full contexts get, and whether it fails. `skipped` = nothing could fail: lock held elsewhere, nothing summarizable (no model call), user stop, or a newer attempt replaced it. Since package schema v4 the row also carries `failure_class`, the attempt log's own class name from a closed list: the skip reasons (`lock_contended`, `insufficient_messages`, `no_compressible_window`, `empty_post_handoff_window`, `explicit_interrupt`, `attempt_superseded`, `snapshot_stale`) on skipped rows; the failure reasons (`summary_auth_failure`, `summary_network_failure`, `summary_truncated_failure`, `summary_empty_content_failure`, `summary_overload_failure`, `summary_generation_aborted`, `summary_generation_failed`, `summary_overload_degraded`, `aux_model_fallback`, `feasibility_skip`, `stall_deterministic_fallback`, `stall_interrupted`, `would_grow`, `no_progress`, `commit_fence_cancelled`, `pool_saturated`, `session_split_failed`, `empty_transcript`, `exception`, `rollback`) on failed rows; `none` on a clean success. A success that committed through a fallback keeps that row's class, so `failure_class` other than `none` on a `success` row means "committed with a fallback": a deterministic summary (`summary_generation_failed`, `summary_overload_degraded`, `stall_deterministic_fallback`, or `feasibility_skip`, which also covers a summary model benched after repeated fallbacks) or the main model replacing a failed summary model (`aux_model_fallback`). An exception's or rollback's Python type name is dropped (`exception:TimeoutError` reads `exception`), any other value reads `other`, a failure with no class `unknown`. |
 | `hermes.model_switch.count` | from/to provider, surface | Which providers people leave and move to. |
 | `hermes.fallback.count` | from/to provider, error class | How often fallback providers rescue a turn, and from what. |
 | `hermes.slash_command.count` | command, surface | Which built-in commands are used (`/retry`, `/undo`, `/new` are friction signals). Skill and plugin commands report `skill`/`plugin`. |
@@ -532,6 +545,16 @@ row they would rewrite.
 | `hermes.model_tool_quality.count` | provider, model, call role, issue (`none`, `invalid_json`, `unknown_tool`, `schema_mismatch`, `empty_arguments`, `repaired`) | Which models emit broken tool calls, and how often Hermes had to repair them. Every emitted call counts once (clean ones as `none`), so the value is a rate denominator. `empty_arguments` only counts for tools with required parameters; `repaired` means Hermes fixed the tool name or the argument JSON and ran the call. |
 | `hermes.model_friction.count` | provider, model, signal (`retry`, `undo`, `interrupt`, `quick_abandon`, `switch_away`) | Which models users fight with. Attributed to the model that produced the turn: `/retry` and `/undo` where they execute, a user interrupt of an interactive turn, a session that ends within 60 seconds of a failed turn, and `/model` switching away from the model. |
 | `hermes.context_peak.count` | provider, model, peak fill bucket, window bucket (`lt_32k` … `gte_1m`), limit hit (`yes`/`no`) | How close sessions get to each model's context window, and how often they overflow it. One row per closed conversation: the session ids a compression rotation hands it to report once, with the fullest segment; `limit_hit` means a primary call was rejected as too large (context overflow or HTTP 413), the rejections Hermes answers with a forced compression. |
+
+#### Tool Search and connectors
+
+Added inside package schema v4. No connector slug, tool name or query text appears in any dimension.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.tool_search.count` | scope (`local`, `connector`, `both`: which catalogs the search read), hits bucket (`0` … `gte_11`, distinct tools returned), outcome (`hits`, `no_hits`, `connector_unavailable`, `error`) | Does `tool_search` find tools, and how often does the hosted connector leg fail. One row per `tool_search` call. |
+| `hermes.tool_batch.count` | provider, model, size bucket (logical calls; each `tool_call` entry counts once), connector share (`none`, `some`, `all`) | How many calls a model packs into one reply, and how much of it is connector work. One row per model reply that calls tools. |
+| `hermes.connector_chain.count` | searches-before bucket (`tool_search` calls since the previous connector execute), described first (`yes`/`no`: the tool was named in an earlier `tool_describe` of the conversation), outcome (the tool outcome) | Do models search and describe before they execute a connector tool, and does skipping it fail more. One row per executed connector entry. |
 
 <!-- ---- v5 harness ---- -->
 #### Agent-harness accuracy
@@ -756,8 +779,7 @@ Both keys are asked once per profile, with the same three answers everywhere
 "No thanks" is the default in the terminal, so pressing Enter never opts
 anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
 open, so it is asked again next time. The Desktop strip appears only after
-first-run onboarding is finished or skipped, and never in the internal setup
-profile that hosts the welcome chat. Answering on any surface writes both keys
+first-run onboarding is finished or skipped. Answering on any surface writes both keys
 to the profile's `config.yaml`, plus `offer_version`, and a profile that already
 carries either key is never asked again. A managed install is never offered.
 

@@ -53,6 +53,7 @@ def netns_usable() -> bool:
             [shutil.which("bwrap") or "bwrap", "--dev-bind", "/", "/", "--unshare-net", "--unshare-pid",
              "--proc", "/proc", "--die-with-parent", sys.executable, "-I", "-c", probe],
             capture_output=True, text=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -256,7 +257,7 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
         }
         if req.headers.get("content-encoding", "").lower() == "gzip":
             body = gzip.decompress(body)
-        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
+        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300, check=False)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:
             head, _, payload = cp.stdout.partition(b"\n\n")

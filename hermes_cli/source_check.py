@@ -65,7 +65,7 @@ def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, t
     try:
         return subprocess.run(
             [git, *args], capture_output=True, timeout=timeout, cwd=str(cwd) if cwd is not None else None,
-            **(_GIT_TEXT_KW if text else {}), **kwargs)
+            **(_GIT_TEXT_KW if text else {}), **kwargs, check=False)
     except Exception:
         return None
 
@@ -123,9 +123,14 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
         if token is None or exc.code != 401:
+            exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
+    try:
         return _request_with(url, accept, None)
+    except urllib.error.HTTPError as exc:
+        exc.hermes_authenticated = False
+        raise
 
 
 def _request_with(url: str, accept: str, token: str | None) -> str:
@@ -285,6 +290,13 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         result.update(channel=channel, targetSha=target, updateAvailable=co.head != target,
                       behind=0 if co.head == target else UPDATE_AVAILABLE_NO_COUNT,
                       sourceVersion=source_target.version, buildId=source_target.build_id)
+        # Forward-only pins the target to this checkout's own HEAD, newer than the release.
+        # Always present: Desktop names the release only on an explicit False.
+        result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
+        # A release HEAD already contains moves the checkout back: Desktop names it a rollback,
+        # not a new update. Local ancestry only; an unknown relation stays an update.
+        result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
+            ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target

@@ -106,6 +106,29 @@ function backupFileName(path: string | null, fallback: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+/** Badge for an available update; a rollback names the release it returns to. */
+function updateBadge(
+  info: UpdateCheckResponse,
+  labels: Translations["systemPage"]["host"],
+  format: (template: string, values: Record<string, string | number>) => string,
+): string {
+  if (info.rollback_to) return format(labels.newerThanStable, { version: info.rollback_to });
+  return info.behind && info.behind > 0
+    ? format(labels.behind, { count: info.behind })
+    : labels.updateAvailable;
+}
+
+function updateToast(
+  info: UpdateCheckResponse,
+  labels: Translations["systemPage"]["toast"],
+  format: (template: string, values: Record<string, string | number>) => string,
+): string {
+  if (info.rollback_to && info.message) return format(labels.rollbackAvailable, { version: info.rollback_to });
+  return info.behind && info.behind > 0
+    ? format(labels.updateBehind, { count: info.behind })
+    : labels.updateAvailable;
+}
+
 /**
  * Live action-log viewer for the spawn-based admin actions (doctor, audit,
  * backup, import, skills update, checkpoints prune, gateway start/stop).
@@ -690,14 +713,7 @@ export default function SystemPage() {
         setUpdateInfo(info);
         if (force) {
           if (info.update_available) {
-            showToast(
-              info.behind && info.behind > 0
-                ? format(t.systemPage.toast.updateBehind, {
-                    count: info.behind,
-                  })
-                : t.systemPage.toast.updateAvailable,
-              "success",
-            );
+            showToast(updateToast(info, t.systemPage.toast, format), "success");
           } else if (info.behind === 0) {
             showToast(t.systemPage.toast.latestVersion, "success");
           } else if (info.message) {
@@ -1051,11 +1067,7 @@ export default function SystemPage() {
                     updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
-                        {updateInfo.behind && updateInfo.behind > 0
-                          ? format(t.systemPage.host.behind, {
-                              count: updateInfo.behind,
-                            })
-                          : t.systemPage.host.updateAvailable}
+                        {updateBadge(updateInfo, t.systemPage.host, format)}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">{t.systemPage.host.latest}</Badge>

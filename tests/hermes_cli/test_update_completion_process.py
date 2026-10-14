@@ -227,6 +227,7 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
         [sys.executable, "-c", driver, update_completion.__file__, new, json.dumps(request)],
         cwd=root, env={**os.environ, "PYTHONPATH": str(root), "HERMES_HOME": request["home"]},
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     response = json.loads(result.stdout.split("RESULT=")[1])

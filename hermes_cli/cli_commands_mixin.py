@@ -100,7 +100,7 @@ _BUSY_MODES = ("queue", "steer", "interrupt")
 _FAST_TIERS = {
     "fast": ("priority", "fast"), "on": ("priority", "fast"), "normal": (None, "normal"),
     "off": (None, "normal"), "auto": ("auto", "auto"), "cold": ("cold", "cold"),
-    "ultrafast": ("ultrafast", "ultrafast")}
+    "ultrafast": ("ultrafast", "ultrafast"), "ultra": ("ultrafast", "ultrafast")}
 
 # /reasoning display toggles: arg -> (attr, value, headline key, follow-up note key or None);
 # the keys resolve under ``cli.commands.reasoning.*`` at call time.
@@ -126,7 +126,7 @@ _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
-_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
+_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_content", "reasoning_details",
                      "codex_reasoning_items", "codex_message_items", "timestamp")
 
 # /hatch progress event -> catalog key (``cli.commands.hatch.*``).
@@ -1203,7 +1203,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         try:
             result = subprocess.run(
                 ["git", "worktree", "list"], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=10, cwd=repo_root)
+                errors="replace", timeout=10, cwd=repo_root, check=False)
             out = result.stdout.strip() if result.returncode == 0 else ""
         except Exception:
             out = ""
@@ -2361,8 +2361,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)), usage)
-        if arg == "ultrafast":
-            if not _probe("hermes_cli.models", "model_supports_ultrafast", False, model):
+        if _FAST_TIERS[arg][0] == "ultrafast":
+            if not _probe("agent.codex_service_tiers", "ultrafast_offered_for", False, self, model):
                 return _cp(_dim_line(_t("fast.ultrafast_not_supported", model=model or "?")), usage)
             feature_name = _t("fast.feature_ultrafast")
         self.service_tier, saved_value = _FAST_TIERS[arg]

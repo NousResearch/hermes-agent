@@ -15,6 +15,7 @@ import { chromeEn } from './en/chrome.js'
 // `locales/_keys.tui.json` is generated from this object by `npm run i18n:keys`.
 import { commandsEn } from './en/commands.js'
 import { connectionEn } from './en/connection.js'
+import { connectorsEn } from './en/connectors.js'
 import { contentEn } from './en/content.js'
 import { feedbackEn } from './en/feedback.js'
 import { gatewayMsgEn } from './en/gatewayMsg.js'
@@ -55,7 +56,8 @@ export const en = {
   ...chatBitsEn,
   ...billingEn,
   ...subscriptionEn,
-  ...connectionEn
+  ...connectionEn,
+  ...connectorsEn
 }
 
 /** The sibling catalogs `en` is composed from, for the disjointness test. */
@@ -82,5 +84,6 @@ export const EN_SIBLINGS: readonly Record<string, unknown>[] = [
   chatBitsEn,
   billingEn,
   subscriptionEn,
-  connectionEn
+  connectionEn,
+  connectorsEn
 ]

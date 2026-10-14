@@ -88,7 +88,8 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         calls.append(command)
         if command[:3] == ["gh", "run", "list"]:
             return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                                "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                                "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
         if command[:3] == ["gh", "release", "create"]:
             return "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd\n"
         return ""
@@ -112,6 +113,9 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "schema": 1,
         "skipBundles": True,
         "skipTests": False,
+        # macOS Intel and Termux are opt-in, and off unless asked for.
+        "includeMacosIntel": False,
+        "includeTermux": False,
         "version": "0.21.5",
     }
     create = calls[0]
@@ -121,10 +125,11 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert "--notes-file" in create
     assert create[-2:] == ["--title", "Hermes Agent v0.21.5"]
     assert calls[1:] == [
-        ["gh", "workflow", "run", "stable-release.yml", "--ref", "rc.1-v0.21.5",
+        # Stable dispatches the default-branch workflow. The tag is an input.
+        ["gh", "workflow", "run", "stable-release.yml", "--ref", "main",
          "--repo", "example/hermes-agent", "--raw-field", "tag=rc.1-v0.21.5"],
         ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow", "stable-release.yml",
-         "--branch", "rc.1-v0.21.5", "--json", "databaseId,url,headBranch,status"],
+         "--limit", "100", "--json", "databaseId,url,headBranch,headSha,displayTitle,status"],
     ]
     assert result["run_url"] == "https://github.com/example/hermes-agent/actions/runs/7"
     # The claim push names the claim ref and nothing else.
@@ -178,7 +183,8 @@ def test_an_unlisted_run_points_at_the_workflow_page():
 ])
 def test_release_looks_for_the_dispatched_run_only_within_its_wait(source, lists_on, wait, run_url, naps):
     listed = json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                          "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                          "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
     lists, slept = [], []
 
     def execute(command):
@@ -207,6 +213,102 @@ def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
     with pytest.raises(ReleaseRefused, match="v0.21.5 already has a final tag"):
         _release(source, commit, execute=_must_not_execute)
     assert "rc." not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_a_confirmed_abandon_clears_the_blocking_attempt_and_cuts_the_next(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    asked, calls = [], []
+
+    def inspect(command):
+        if command[1] == "run":
+            return "[]"
+        raise ReleaseRefused("release not found")
+
+    result = _release(source, _advance(source, "fix"), execute=calls.append, inspect=inspect,
+                      confirm_abandon=lambda ref: asked.append(ref) or True)
+
+    assert asked == ["rc.1-v0.21.5"]
+    assert result["tag"] == "rc.2-v0.21.5"
+    assert "refs/tags/abandoned-rc.1-v0.21.5" in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+@pytest.mark.parametrize("confirm_abandon", [None, lambda ref: False])
+def test_an_unconfirmed_abandon_refuses_as_before(source, confirm_abandon):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+
+    with pytest.raises(ReleaseRefused, match="publish or abandon it first"):
+        _release(source, _advance(source, "later"), execute=_must_not_execute,
+                 confirm_abandon=confirm_abandon)
+    assert git(source, "tag", "--list", "*rc.*") == "rc.1-v0.21.5"
+
+
+def test_a_yes_never_clears_a_cut_that_would_be_refused_anyway(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    earlier = git(source, "rev-parse", "HEAD")
+    published = _advance(source, "published")
+    _claim(source, "0.21.5", published)
+    asked = []
+
+    with pytest.raises(ReleaseRefused, match="does not descend from the published stable head"):
+        _release(source, earlier, published=("0.21.4", published), execute=_must_not_execute,
+                 confirm_abandon=lambda ref: asked.append(ref) or True)
+
+    assert asked == []
+    assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_a_yes_abandons_only_the_attempt_it_was_asked_about(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+
+    def another_operator_replaces_the_attempt(_ref):
+        _mark(source, "0.21.5")
+        _claim(source, "0.21.5", commit, attempt=2)
+        return True
+
+    with pytest.raises(ReleaseRefused, match="changed while waiting"):
+        _release(source, _advance(source, "later"), execute=_must_not_execute,
+                 confirm_abandon=another_operator_replaces_the_attempt)
+
+    assert "abandoned-rc.2-v0.21.5" not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+@pytest.mark.parametrize(("stdin_tty", "stdout_tty", "answer", "expected"), [
+    (True, True, "y", True), (True, True, "YES", True), (True, True, "", False),
+    (True, True, "n", False), (True, True, EOFError, False),
+    (False, True, "y", None), (True, False, "y", None), (False, False, "y", None),
+])
+def test_the_abandon_prompt_needs_both_streams_on_a_terminal_and_defaults_to_no(
+        monkeypatch, stdin_tty, stdout_tty, answer, expected):
+    import sys
+
+    from scripts.releases.entrypoint import _abandon_prompt
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: stdin_tty)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: stdout_tty)
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        if answer is EOFError:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    confirm = _abandon_prompt()
+    if expected is None:
+        assert confirm is None
+        assert prompts == []
+    else:
+        assert confirm("rc.1-v0.21.5") is expected
 
 
 def test_second_cut_after_abandon_is_attempt_two_of_the_same_version(source):
@@ -273,13 +375,16 @@ def test_refusal_names_the_run_and_both_ways_out(source, capsys):
 
     def execute(command):
         assert command == ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow",
-                           "stable-release.yml", "--branch", "rc.1-v0.21.5",
-                           "--json", "databaseId,url,headBranch,headSha,status"]
+                           "stable-release.yml", "--limit", "100",
+                           "--json", "databaseId,url,headBranch,headSha,displayTitle,status"]
+        # Newest first. Run 98 belongs to another claim, so it must not be named.
         return json.dumps([
-            {"databaseId": 98, "url": "https://github.com/example/hermes-agent/actions/runs/98",
-             "headBranch": "rc.1-v0.21.5", "headSha": "0" * 40, "status": "completed"},
             {"databaseId": 99, "url": "https://github.com/example/hermes-agent/actions/runs/99",
-             "headBranch": "rc.1-v0.21.5", "headSha": blocked, "status": "completed"},
+             "headBranch": "main", "headSha": "f" * 40,
+             "displayTitle": "Stable release rc.1-v0.21.5", "status": "completed"},
+            {"databaseId": 98, "url": "https://github.com/example/hermes-agent/actions/runs/98",
+             "headBranch": "main", "headSha": "f" * 40,
+             "displayTitle": "Stable release rc.1-v0.21.4", "status": "completed"},
         ])
 
     with pytest.raises(ReleaseRefused):
@@ -351,7 +456,8 @@ def test_release_draft_lists_the_commits_since_the_stable_base(source, published
                 seen["body"] = file.read()
         if command[:3] == ["gh", "run", "list"]:
             return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                                "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                                "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
         return ""
 
     result = _release(source, commit, execute=execute, published=published)
@@ -554,7 +660,8 @@ def _abandon(repo, version, *, drafts=None, runs=None, calls=None, execute=None)
 
     def inspect(command):
         if command[1] == "run":
-            return json.dumps(list((runs or {}).get(command[command.index("--branch") + 1], [])))
+            return json.dumps([{**row, "displayTitle": f"Stable release {tag}"}
+                               for tag, rows in (runs or {}).items() for row in rows])
         draft = (drafts or {}).get(command[3])
         if draft is None:
             raise ReleaseRefused("release not found")
@@ -611,7 +718,8 @@ def test_abandon_that_cannot_cancel_a_run_writes_no_marker_so_it_can_be_retried(
     from scripts.releases.entrypoint import ReleaseRefused, abandon
 
     _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
-    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}
+    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress",
+           "displayTitle": "Stable release rc.1-v0.21.5"}
 
     def refuse(_command):
         raise ReleaseRefused("HTTP 403")

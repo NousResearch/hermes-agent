@@ -219,6 +219,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._final_response_sent = False
         self._final_content_delivered = False  # content landed even if the cosmetic edit failed
         self._delivered_final_text: Optional[str] = None
+        # Unstripped twin of ``_delivered_final_text``: the raw ledger payload with MEDIA:/[[...]]
+        # directives intact, so the gateway can recover attachments a broken/reconciled stream
+        # dropped out of final_response (display strip and final_response desync = silent loss).
+        self._delivered_final_raw: Optional[str] = None
         self._turn_split_delivery = False
         # True when a full-final send timed out in a way that MAY have reached the platform
         # (``_send_empty_fallback_final`` → "ambiguous"). The only case where a payload-less delivery flag
@@ -271,6 +275,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+    delivered_final_raw = property(lambda self: self._delivered_final_raw)
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -300,6 +305,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         acked = self._last_sent_text or self._accumulated
         if self.cfg.cursor and acked.endswith(self.cfg.cursor):
             acked = acked[: -len(self.cfg.cursor)]
+        if self._accumulated and self._clean_for_display(self._accumulated) == acked:
+            # The ack IS the full ledger, display-cleaned: record the UNSTRIPPED stream
+            # (keeps hidden MEDIA:/[[...]] directives for the post-stream media rescan).
+            self._mark_final_delivered(record=self._accumulated)
+            return
         self._mark_final_delivered(record=acked)
 
     def _mark_final_delivered(self, record: Optional[str] = None) -> None:
@@ -325,6 +335,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         the gateway sees a mismatch and re-sends an answer the user already received."""
         if self._turn_split_delivery and self._stream_ledger:
             text = self._stream_ledger
+        self._delivered_final_raw = text
         self._delivered_final_text = self._display_payload(text)
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:
@@ -700,7 +711,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return
         if not self._turn_split_delivery:
             final_payload = self._clean_for_display(final_raw)
-            if final_payload and final_payload != self._clean_for_display(self._accumulated):
+            if (
+                final_payload
+                and final_payload != self._clean_for_display(self._accumulated)
+                # A final that is a strict raw prefix of what streamed is a broken/reconciled
+                # SHRINK (e.g. a mid-stream provider drop): adopting it would overwrite the
+                # accumulator with tag-less text and destroy the hidden MEDIA:/[[...]]
+                # directives the cleaned comparison cannot see. Keep the streamed raw — the
+                # cleaned payloads still match (a true divergence is repaired by the
+                # stale-finalize reconcile edit), so nothing display-visible is lost.
+                and not (self._accumulated and self._accumulated.startswith(final_raw))
+            ):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
             return

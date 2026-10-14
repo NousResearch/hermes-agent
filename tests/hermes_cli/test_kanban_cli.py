@@ -86,6 +86,19 @@ def test_kanban_show_json_includes_runtime_limit(kanban_home):
     assert uncapped["task"]["max_runtime_seconds"] is None
 
 
+def test_kanban_show_surfaces_completion_integration_reference(kanban_home):
+    """A completed card keeps its PR reference in the task projection (#137598)."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="publish integration evidence")
+        assert kb.complete_task(
+            conn, task_id, result="merged",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+
+    task = json.loads(kc.run_slash(f"show {task_id} --json"))["task"]
+    assert task["integration_ref"] == "https://github.com/acme/repo/pull/7"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

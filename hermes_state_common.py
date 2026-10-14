@@ -383,6 +383,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     created_source TEXT,
+    kanban_task_id TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,

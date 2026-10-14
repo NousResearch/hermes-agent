@@ -665,6 +665,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    integration_ref: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -696,7 +697,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "integration_ref",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -889,6 +890,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
+    -- Optional PR URL, merged commit SHA, or integration branch recorded at completion.
+    integration_ref      TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2690,6 +2693,7 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    integration_ref = _completion_integration_ref(metadata)
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
@@ -2720,11 +2724,12 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
-                       block_recurrences = 0
+                       block_recurrences = 0,
+                       integration_ref = COALESCE(?, integration_ref)
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
+        params: tuple = (result, now, integration_ref, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -2874,10 +2879,24 @@ def _completed_event_payload(
     if verified_cards:
         payload["verified_cards"] = verified_cards
     if isinstance(metadata, dict):
+        integration_ref = _completion_integration_ref(metadata)
+        if integration_ref:
+            payload["integration_ref"] = integration_ref
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
     return payload
+
+
+def _completion_integration_ref(metadata: Any) -> Optional[str]:
+    """Return one non-empty integration reference supplied at completion."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("integration_ref", "published_pr", "merged_sha", "integration_branch"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _flag_phantom_prose_refs(

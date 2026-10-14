@@ -1953,6 +1953,12 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Required checks for PR completion contracts on repos whose plan hides GitHub's branch
+        # rules (private repo on GitHub Free: the exact plan-boundary 403). OWNER/REPO -> list of
+        # check names or {context, app_id}. Consulted only on that boundary when classic
+        # protection names nothing; a GitHub-derived set always wins. Read from the assignee
+        # profile's config. Empty = undeclared: such repos fail acceptance as `policy`.
+        "pr_required_checks": {},
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

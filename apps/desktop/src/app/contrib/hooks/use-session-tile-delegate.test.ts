@@ -326,6 +326,151 @@ describe('useSessionTileDelegate resumeTile', () => {
     ).toEqual([])
   })
 
+  it('keeps the newest durable rows when an active tile refresh receives a stale partial page (#119819)', async () => {
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      // Painted by a page that carried the generation — retention is a
+      // same-generation judgement and only applies with evidence on both sides.
+      rewindGeneration: 0,
+      storedSessionId: 'stored-stale-page'
+    }
+
+    const states = { current: new Map([['runtime-stale-page', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    // Same generation as the rendered transcript: a stale partial read, not a
+    // rewind — the newer rendered rows must survive the graft.
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-stale-page',
+      rewind_generation: 0,
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-stale-page', 'runtime-stale-page']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-stale-page', { refreshTranscript: true })
+
+    expect(states.current.get('runtime-stale-page')!.messages.map(message => message.rowId)).toEqual([1, 2, 3, 4])
+  })
+
+  it('keeps undone rows gone when the post-undo refresh page outranks the rendered transcript (#119819)', async () => {
+    // The transcript was rendered at rewind generation 0 (rows 1-4, all active).
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      rewindGeneration: 0,
+      storedSessionId: 'stored-post-undo'
+    }
+
+    const states = { current: new Map([['runtime-post-undo', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    // /undo soft-deleted rows 3-4 (rewind_count bumped to 1); the REST page
+    // now legitimately holds only rows 1-2. A row-count-only guard would see
+    // a "stale page" and re-append rows 3-4 — resurrecting the undone turn.
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-post-undo',
+      rewind_generation: 1,
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-post-undo', 'runtime-post-undo']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-post-undo', { refreshTranscript: true })
+
+    // The undone rows stay gone and the page's generation is the new floor.
+    expect(states.current.get('runtime-post-undo')!.messages.map(message => message.rowId)).toEqual([1, 2])
+    expect(states.current.get('runtime-post-undo')!.rewindGeneration).toBe(1)
+  })
+
+  it('keeps undone rows gone when an older backend page carries no rewind generation (#119819)', async () => {
+    // Newer Desktop against an older backend: pages predate
+    // rewind_generation, so neither the rendered transcript nor the page
+    // carries generation evidence. An /undo legitimately shortened the page
+    // (rows 3-4 soft-deleted) and the background refresh is the only post-undo
+    // tile sync. With no evidence, a below-water page is indistinguishable
+    // from an intentional rewind, so the refresh must stay authoritative
+    // exactly as before this PR — a row-count-only guard reads the shorter
+    // page as "stale" and re-appends the rows the user just undid.
+    const state = {
+      busy: false,
+      messages: [
+        { id: '1', rowId: 1, role: 'user', parts: [{ type: 'text', text: 'first prompt' }] },
+        { id: '2', rowId: 2, role: 'assistant', parts: [{ type: 'text', text: 'first answer' }] },
+        { id: '3', rowId: 3, role: 'user', parts: [{ type: 'text', text: 'latest prompt' }] },
+        { id: '4', rowId: 4, role: 'assistant', parts: [{ type: 'text', text: 'latest answer' }] }
+      ],
+      // No rewindGeneration: an older backend's pages never carry one, so the
+      // rendered transcript was never stamped.
+      rewindGeneration: undefined,
+      storedSessionId: 'stored-undo-legacy'
+    }
+
+    const states = { current: new Map([['runtime-undo-legacy', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    // No rewind_generation on the page — an older backend never sends one.
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-undo-legacy',
+      messages: [
+        { id: 1, role: 'user', content: 'first prompt', timestamp: 1 },
+        { id: 2, role: 'assistant', content: 'first answer', timestamp: 2 }
+      ]
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-undo-legacy', 'runtime-undo-legacy']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+    await sessionTileDelegate()!.resumeTile('stored-undo-legacy', { refreshTranscript: true })
+
+    // The undone rows stay gone: the page is the authority, as before the PR.
+    expect(states.current.get('runtime-undo-legacy')!.messages.map(message => message.rowId)).toEqual([1, 2])
+    expect(states.current.get('runtime-undo-legacy')!.rewindGeneration).toBeUndefined()
+  })
+
   it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
     const state = {
       busy: true,

@@ -150,7 +150,7 @@ def test_upgrade_applicability_reaches_real_upgrade_suite() -> None:
     # No duplicate units/E2E in the native call; both partitions are required
     # for ordinary fork source merges, while releases retain the combined run.
     native = ci["jobs"]["native-install-tests"]
-    assert native["with"] == {"unit": False, "e2e": False, "upgrade": True, "upgrade_partition": "native"}
+    assert native["with"] == {"commit": "${{ inputs.commit }}", "unit": False, "e2e": False, "upgrade": True, "upgrade_partition": "native"}
     assert native["if"] == "${{ fromJSON(needs.detect.outputs.selected_jobs).native-install-tests }}"
     assert ci["jobs"]["tests"]["with"]["upgrade_partition"] == "${{ github.repository == 'mekenthompson/hermes-agent' && inputs.release != true && 'runtime' || 'all' }}"
     assert tests[True]["workflow_call"]["inputs"]["unit"]["default"] is True

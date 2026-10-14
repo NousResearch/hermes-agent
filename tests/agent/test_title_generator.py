@@ -110,6 +110,33 @@ class TestGenerateTitle:
             assert _title_language() == ""
 
 
+    @pytest.mark.parametrize(
+        ("max_words", "reply", "prompt_rule", "expected"),
+        [
+            (None, "Debug ingestion health pipeline spend alerts", "3 to 7 words", "Debug ingestion health pipeline spend alerts"),
+            (4, "Debug ingestion health pipeline spend alerts", "2 to 4 words", "Debug ingestion health pipeline"),
+            (4, "Ingestion spend alerts", "2 to 4 words", "Ingestion spend alerts"),
+            (1, "Ingestion alerts", "1 word", "Ingestion"),
+            ("junk", "Debug ingestion health pipeline spend alerts", "3 to 7 words", "Debug ingestion health pipeline spend alerts"),
+        ],
+    )
+    def test_max_words_shapes_prompt_and_caps_title(self, max_words, reply, prompt_rule, expected):
+        """The configured cap and the prompt's length rule agree, and an overshooting reply is trimmed to it."""
+        cfg = {"auxiliary": {"title_generation": {} if max_words is None else {"max_words": max_words}}}
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "%s"}' % reply
+            return resp
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("the ingestion health spend alerts keep failing") == expected
+        assert prompt_rule in captured["messages"][0]["content"]
+
     def test_generate_title_disables_reasoning(self):
         """The titling pass must explicitly disable thinking (#91927).
 

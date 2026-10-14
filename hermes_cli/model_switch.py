@@ -1091,7 +1091,21 @@ def _config_declares_model(
     new_model: str, target_provider: str, base_url: str, user_providers, custom_providers) -> bool:
     """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
-    slug alias or by base_url."""
+    slug alias or by base_url. ``model.default`` is a declaration too (#138261): the configured
+    default model is accepted, but only for the provider the config pairs it with."""
+    from hermes_cli.config import load_config, split_model_config_default
+    model_section = load_config().get("model")
+    if isinstance(model_section, dict):
+        default_model, default_provider = split_model_config_default(model_section.get("default"))
+        if not default_provider:
+            default_provider = str(model_section.get("provider") or "").strip()
+        if (
+            default_model
+            and default_provider
+            and default_model == new_model
+            and default_provider == target_provider
+        ):
+            return True
     if user_providers:
         from hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)

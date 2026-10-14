@@ -140,6 +140,11 @@ class GatewayACPAgent(acp.Agent):
         self._form_elicitation = False
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
+        # Session -> title the editor was last shown (``session_info_update`` fires on a change).
+        self._titles = {}
+        # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
+        self._usage = {}
+        self._background = set()
 
     def on_connect(self, conn):
         self._conn = conn
@@ -260,14 +265,55 @@ class GatewayACPAgent(acp.Agent):
             source="acp", cwd=_translate_acp_cwd(cwd),
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"})
-        self._snapshots[snapshot["session_id"]] = snapshot
+        session_id = snapshot["session_id"]
+        self._snapshots[session_id] = snapshot
         if mcp_servers:
-            self._editor_mcp[snapshot["session_id"]] = {
+            self._editor_mcp[session_id] = {
                 "mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers]}
-        return NewSessionResponse(session_id=snapshot["session_id"])
+        info = snapshot.get("info") or await client.rpc("session.info", session_id=session_id)
+        return NewSessionResponse(session_id=session_id, **await self._session_fields(session_id, info, session_id))
 
     def _editor_id(self, session_id):
         return next((held for held, sid in self._aliases.items() if sid == session_id), session_id)
+
+    async def _session_fields(self, session_id, info, editor_id):
+        """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
+        command list and context indicator follow once the reply is queued, as main scheduled them."""
+        from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_modes
+        title = info.get("title")
+        if isinstance(title, str) and title.strip():
+            self._titles[session_id] = title
+        models = await asyncio.to_thread(model_state, info)
+        meta = await asyncio.to_thread(provenance_meta, self._home / "state.db", editor_id, session_id)
+        if self._conn:
+            task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+        return {"models": models, "modes": session_modes(), "field_meta": meta}
+
+    async def _after_attach(self, session_id, editor_id):
+        from acp_adapter.gateway_session_meta import available_commands_update
+        await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
+        try:
+            await self._conn.session_update(session_id=editor_id, update=available_commands_update())
+            await self._project_usage(session_id, editor_id,
+                                      await (await self._client()).rpc("session.stats", session_id=session_id))
+        except Exception:
+            # Boundary: a detached editor or a refused read is not the attach's failure.
+            logger.debug("ACP post-attach notices for %s not delivered", session_id, exc_info=True)
+
+    async def _attach_info(self, client, session_id):
+        """``session.info`` for a session to attach. A thread main's in-process server wrote has no
+        gateway policy yet; ``session.resume`` is the verb that adopts it (``LEGACY_LOCAL_SOURCES``)."""
+        from hermes_cli.gateway_client import GatewayRPCError
+        try:
+            return await client.rpc("session.info", session_id=session_id)
+        except GatewayRPCError as exc:
+            if str(exc) != "not_found":
+                raise
+        adopted = await client.rpc("session.resume", session_id=session_id)
+        await client.rpc("session.detach", session_id=session_id, subscription_id=adopted["subscription_id"])
+        return await client.rpc("session.info", session_id=session_id)
 
     async def _resume(self, cwd, held_id, mcp_servers):
         client = await self._client()
@@ -277,7 +323,7 @@ class GatewayACPAgent(acp.Agent):
         self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
         if session_id != held_id:
             self._aliases[held_id] = session_id
-        info = await client.rpc("session.info", session_id=session_id)
+        info = await self._attach_info(client, session_id)
         if "cwd" in info and _normalize_cwd_for_compare(info["cwd"]) != _normalize_cwd_for_compare(_translate_acp_cwd(cwd)):
             raise GatewayClientError("cwd_policy_conflict")
         if "cwd" not in info and self._conn:
@@ -300,15 +346,13 @@ class GatewayACPAgent(acp.Agent):
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
         await self._notify_unknown(session_id)
-        return snapshot
+        return await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id)
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
-        await self._resume(cwd, session_id, mcp_servers)
-        return LoadSessionResponse()
+        return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
     async def resume_session(self, cwd, session_id, mcp_servers=None, **kwargs):
-        await self._resume(cwd, session_id, mcp_servers)
-        return ResumeSessionResponse()
+        return ResumeSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
     async def _cancel_admission(self, session_id, admission_id):
         client = await self._client()
@@ -360,7 +404,8 @@ class GatewayACPAgent(acp.Agent):
         child = result['branched_session_id']
         self._snapshots[child] = await client.rpc('session.resume', session_id=child)
         self._mutations.acknowledge(session_id, 'branch', {})
-        return ForkSessionResponse(session_id=child)
+        info = self._snapshots[child].get('info') or await client.rpc('session.info', session_id=child)
+        return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
     async def set_session_model(self, model_id, session_id, **kwargs):
         from acp.schema import SetSessionModelResponse
@@ -403,11 +448,31 @@ class GatewayACPAgent(acp.Agent):
             return isinstance(response.outcome, AllowedOutcome) and response.outcome.option_id == "allow_once"
         return confirm
 
-    async def set_session_mode(self, mode_id, session_id, **kwargs):
-        raise GatewayClientError("acp_edit_policy_mutation_unavailable")
+    def _held_session(self, session_id):
+        session_id = self._aliases.get(session_id, session_id)
+        if session_id not in self._snapshots:
+            raise GatewayClientError("not_found")
+        return session_id
 
-    async def set_config_option(self, config_id, session_id, **kwargs):
-        raise GatewayClientError("acp_config_mutation_unavailable")
+    async def set_session_mode(self, mode_id, session_id, **kwargs):
+        """The advertised mode is the owner's own policy, so selecting it changes nothing; main's
+        Accept Edits / Don't Ask need an editor-policy change the gateway has no verb for."""
+        from acp.schema import SetSessionModeResponse
+        from acp_adapter.gateway_session_meta import DEFAULT_MODE
+        self._held_session(session_id)
+        if mode_id != DEFAULT_MODE:
+            raise GatewayClientError("acp_edit_policy_mutation_unavailable")
+        return SetSessionModeResponse()
+
+    async def set_config_option(self, config_id, session_id, value=None, **kwargs):
+        """Accepted so editors do not fail on their own config writes, as main did; only the edit
+        approval policy has a meaning here, and only the owner's ``ask`` can be selected."""
+        from acp.schema import SetSessionConfigOptionResponse
+        from acp_adapter.gateway_session_meta import DEFAULT_EDIT_APPROVAL_POLICY, EDIT_APPROVAL_POLICY_CONFIG_ID
+        self._held_session(session_id)
+        if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID and value != DEFAULT_EDIT_APPROVAL_POLICY:
+            raise GatewayClientError("acp_edit_policy_mutation_unavailable")
+        return SetSessionConfigOptionResponse(config_options=[])
 
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
@@ -433,26 +498,13 @@ class GatewayACPAgent(acp.Agent):
         retained = self._unacked.pop(session_id, None)
         command = _slash_command(text) if not attachments else None
         if command is not None:
-            from hermes_cli.gateway_mutations import slash_mutation
+            from acp_adapter.gateway_commands import run_command
             parts = text.strip().split(None, 1)
-            operation, payload = slash_mutation('/' + command, parts[1] if len(parts) > 1 else '')
-            if operation == 'branch':
-                raise GatewayClientError('use_acp_fork_session')
-            client = await self._client()
-            result = await self._mutations.apply(client, session_id, operation, payload,
-                                                 confirm=self._model_confirmer(session_id) if operation == 'model' else None)
-            if result.get('status') == 'cancelled':
-                from agent.i18n import t
-                await self._conn.session_update(session_id=held_id,
-                    update=acp.update_agent_message_text(t('cli.model.switch_cancelled') + '\n'))
-            elif result.get('status') == 'preview':
-                # Read-only report: nothing changed, so the editor's snapshot is still current.
-                await self._conn.session_update(session_id=held_id,
-                    update=acp.update_agent_message_text('\n'.join(result['lines']) + '\n'))
-            else:
-                self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
-            self._mutations.acknowledge(session_id, operation, payload)
-            return PromptResponse(stop_reason='end_turn')
+            reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
+            if reply is not None:
+                if self._conn:
+                    await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
+                return PromptResponse(stop_reason='end_turn')
         # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
         self._mutations.retire(session_id)
         submit = {'text': text}
@@ -516,7 +568,10 @@ class GatewayACPAgent(acp.Agent):
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
-        return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
+        from acp_adapter.gateway_session_meta import turn_usage
+        # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
+        return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
+                              usage=turn_usage(self._usage.get(session_id)))
 
     async def _settled_receipt(self, client, held_id, session_id, receipt):
         admission_id = receipt["admission_id"]
@@ -597,11 +652,8 @@ class GatewayACPAgent(acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
-        if kind == "session.info":
-            if sid in self._snapshots and "pending" in payload:
-                async with self._changed:
-                    self._snapshots[sid]["pending"] = payload["pending"]
-                    self._changed.notify_all()
+        if kind in {"session.info", "session.updated", "session.usage"}:
+            await self._project_session_state(kind, sid, editor_id, payload)
             return
         if kind == "session.replay_gap":
             raise GatewayClientError("session_replay_gap")
@@ -669,6 +721,33 @@ class GatewayACPAgent(acp.Agent):
                     self._changed.notify_all()
             finally:
                 self._settling.discard(aid)
+
+    async def _project_session_state(self, kind, sid, editor_id, payload):
+        if kind == "session.usage":
+            await self._project_usage(sid, editor_id, payload)
+            return
+        if kind == "session.info" and sid in self._snapshots and "pending" in payload:
+            async with self._changed:
+                self._snapshots[sid]["pending"] = payload["pending"]
+                self._changed.notify_all()
+        await self._project_title(sid, editor_id, payload.get("title"))
+
+    async def _project_usage(self, sid, editor_id, stats):
+        """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""
+        from acp_adapter.gateway_session_meta import usage_update
+        self._usage[sid] = stats
+        if self._conn and (update := usage_update(stats)) is not None:
+            await self._conn.session_update(session_id=editor_id, update=update)
+
+    async def _project_title(self, sid, editor_id, title):
+        """A new title (auto-title's ``session.info``, a rename's ``session.updated``) as main's
+        ``session_info_update``; the owner republishes an unchanged one after every turn."""
+        if not isinstance(title, str) or not title.strip() or title == self._titles.get(sid):
+            return
+        self._titles[sid] = title
+        if self._conn:
+            from acp_adapter.gateway_session_meta import title_update
+            await self._conn.session_update(session_id=editor_id, update=title_update(title))
 
     def _close_segment(self, aid):
         streamed = self._streamed.pop(aid, "")

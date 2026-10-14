@@ -1,0 +1,109 @@
+"""Editor slash commands on the gateway path; each one is an existing gateway verb.
+
+Main served these in-process (``acp_adapter/commands.py``). The reports are the owner's own
+``slash.exec`` reads, ``/model``, ``/compress`` and ``/reset`` the retained ``session.mutate``
+controls, ``/steer`` the owner's ``session.steer``; ``/queue`` and an idle ``/steer`` become the
+next prompt, which the session's FIFO runs after any turn in flight.
+"""
+from __future__ import annotations
+
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+
+# Reports the owner answers for a local session (``gateway/session_commands.py::_READ_COMMANDS``).
+_READS = frozenset({'context', 'usage', 'status', 'version'})
+_MUTATIONS = frozenset({'model', 'compress', 'new', 'branch'})
+_PROMPTS = frozenset({'steer', 'queue'})
+COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools'}
+
+
+async def run_command(agent, session_id, command, arg):
+    """``(reply, None)`` for a command answered here, or ``(None, text)`` when ``text`` is to be
+    submitted as the prompt. Unsupported commands are refused before any gateway call."""
+    from acp_adapter.gateway_session_meta import help_text
+    if command not in COMMANDS:
+        raise GatewayClientError('unsupported_command')
+    if command == 'branch':
+        raise GatewayClientError('use_acp_fork_session')
+    if command == 'help':
+        return help_text(), None
+    if command in _PROMPTS:
+        if not arg:
+            return f"Usage: /{command} <{'guidance' if command == 'steer' else 'prompt'}>", None
+        steered = await _steer(agent, session_id, arg) if command == 'steer' else None
+        return (steered, None) if steered else (None, arg)
+    client = await agent._client()
+    if command in _READS:
+        result = await client.rpc('slash.exec', session_id=session_id, command=f'/{command} {arg}'.strip())
+        return str(result.get('output') or result.get('notice') or ''), None
+    if command == 'tools' or (command == 'model' and not arg):
+        info = await client.rpc('session.info', session_id=session_id)
+        return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
+    return await _mutate(agent, client, session_id, command, arg), None
+
+
+async def _steer(agent, session_id, text):
+    """Guidance for this editor's running turn; None when there is none to steer (main ran an idle
+    steer as a plain prompt, and a turn that ended meanwhile leaves the text for the next one)."""
+    if session_id not in agent._admissions:
+        return None
+    client = await agent._client()
+    try:
+        result = await client.rpc('session.steer', session_id=session_id, text=text,
+                                  execution_generation=agent._snapshots[session_id].get('execution_generation'))
+    except GatewayRPCError as exc:
+        # Only a turn that ended meanwhile (its generation moved on) leaves the text for the next
+        # prompt; any other refusal (permission, unsupported control, not ready) is the answer.
+        if str(exc) == 'stale_generation':
+            return None
+        raise
+    if result.get('status') != 'queued':
+        return None
+    return f"⏩ Steer queued for the active turn: {text[:80]}{'...' if len(text) > 80 else ''}"
+
+
+async def _mutate(agent, client, session_id, command, arg):
+    from hermes_cli.gateway_mutations import slash_mutation
+    operation, payload = ('reset', {}) if command == 'new' else slash_mutation('/' + command, arg)
+    confirm = agent._model_confirmer(session_id) if operation == 'model' else None
+    result = await agent._mutations.apply(client, session_id, operation, payload, confirm=confirm)
+    status = result.get('status')
+    if status == 'cancelled':
+        from agent.i18n import t
+        reply = t('cli.model.switch_cancelled')
+    elif status == 'preview':
+        # Read-only report: nothing changed, so the editor's snapshot is still current.
+        reply = '\n'.join(result['lines'])
+    elif status == 'noop':
+        # Nothing removable (an empty session too): the owner's shared report, nothing committed.
+        reply = _summary_text(result) or 'No changes from compression.'
+    else:
+        agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        reply = {'model': lambda: _model_text('Model switched to', result),
+                 'compress': lambda: _summary_text(result) or 'Context compressed.',
+                 'reset': lambda: 'Conversation history cleared.'}[operation]()
+    agent._mutations.acknowledge(session_id, operation, payload)
+    return reply
+
+
+def _summary_text(result):
+    summary = result.get('summary') or {}
+    return '\n'.join(filter(None, (summary.get('headline'), summary.get('token_line'), summary.get('note'))))
+
+
+def _model_text(label, fields):
+    lines = [f"{label}: {fields.get('model') or 'unknown'}"]
+    if fields.get('provider'):
+        lines.append(f"Provider: {fields['provider']}")
+    return '\n'.join(lines)
+
+
+def _tools_text(info):
+    """The session's tools by toolset (``session.info`` ``tools``: toolset -> tool names)."""
+    groups = info.get('tools') or {}
+    names = sorted({name for tools in groups.values() for name in tools})
+    if not names:
+        toolsets = info.get('enabled_toolsets') or []
+        return f"Enabled toolsets: {', '.join(toolsets)}" if toolsets else "No tools available."
+    lines = [f"Available tools ({len(names)}):"]
+    lines.extend(f"  {toolset}: {', '.join(sorted(tools))}" for toolset, tools in sorted(groups.items()) if tools)
+    return '\n'.join(lines)

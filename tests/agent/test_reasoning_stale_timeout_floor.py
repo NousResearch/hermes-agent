@@ -73,6 +73,16 @@ def test_minimax_m2_reasoning_models_get_floor_but_non_reasoning_minimax_does_no
         assert floor(slug) is None, slug
 
 
+def test_glm_reasoning_families_match_routed_variants_but_not_lookalikes():
+    """GLM thinking variants share a floor; older/chat and community slugs do not."""
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+
+    assert floor("glm-5.2") == floor("glm-5.3") == floor("zai/glm-5.3") == 300.0
+    assert floor("glm-4.6") == floor("z-ai/glm-4.6:free") == floor("glm-5.3")
+    for slug in ("glm-4-9b", "glm-4-flash", "acme-glm-5-tuned", "glm-50", "glm-4.60"):
+        assert floor(slug) is None, slug
+
+
 # ── integration: _resolved_api_call_stale_timeout_base ─────────────────────
 
 
@@ -151,6 +161,27 @@ def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 900.0)
     assert agent._resolved_api_call_stale_timeout_base() == (900.0, False)
     assert _cloud_stale_timeout(900.0, {"model": "gpt-5.6-sol", "input": "small"}) == 900.0
+
+
+def test_glm_floor_reaches_both_resolvers_and_yields_to_explicit_config(monkeypatch, tmp_path):
+    """GLM gets thinking grace on both paths, without overriding an operator's deadline."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    from agent.chat_completion_helpers import _derive_stream_stale_timeout
+
+    agent = _make_agent(tmp_path, provider="custom", model="glm-5.3",
+                        base_url="https://api.example.invalid/v1")
+    payload = {"model": agent.model, "messages": [{"role": "user", "content": "small"}]}
+    assert agent._resolved_api_call_stale_timeout_base() == (300.0, False)
+    assert _derive_stream_stale_timeout(agent, payload) == 300.0
+
+    for explicit in (60.0, 900.0):
+        _write_config(tmp_path, f"providers:\n  custom:\n    stale_timeout_seconds: {explicit}\n")
+        assert agent._resolved_api_call_stale_timeout_base() == (explicit, False)
+        assert _derive_stream_stale_timeout(agent, payload) == explicit
 
 
 def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_floor(monkeypatch, tmp_path):

@@ -589,13 +589,51 @@ def _redact_approval_command(cmd: str | None) -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False, max_len: Optional[int] = None,
+    len_fn: Callable[[str], int] = len) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
+    steps a surface without buttons needs.
+
+    ``max_len`` (in ``len_fn`` units) is the adapter's message cap: the command preview shrinks
+    below ``EA_FALLBACK_CMD_BUDGET`` so the whole prompt goes out as one message, since not every
+    adapter splits (SMS sends one body, and Twilio rejects one over 1600). It never shrinks below
+    ``EA_FALLBACK_CMD_FLOOR``, the old fixed cut; an unbounded ``description`` can still overflow."""
     from gateway.platforms.base_exec_approval import (
-        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+        EA_FALLBACK_CMD_BUDGET, EA_FALLBACK_CMD_FLOOR, approval_timeout_seconds,
+        fit_command_preview, format_approval_deadline_line)
+    deadline_line = format_approval_deadline_line(approval_timeout_seconds())  # reads config: once
+
+    def render(budget: int) -> str:
+        return _render_exec_approval_fallback(
+            fit_command_preview(command, budget), description, command_prefix, deadline_line,
+            allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied)
+
+    text = render(EA_FALLBACK_CMD_BUDGET)
+    if not max_len or len_fn(text) <= max_len:
+        return text
+    if len(command) <= EA_FALLBACK_CMD_BUDGET:
+        # The whole command did not fit, so every fitting preview is a cut one; bisect below its length.
+        hi = len(command) - 1
+    else:
+        hi = EA_FALLBACK_CMD_BUDGET - 1
+    lo = EA_FALLBACK_CMD_FLOOR
+    if hi < lo or len_fn(render(lo)) > max_len:
+        return render(min(lo, len(command)))
+    while lo < hi:  # a cut preview's rendered length never falls as its budget grows, so bisect it
+        mid = (lo + hi + 1) // 2
+        if len_fn(render(mid)) <= max_len:
+            lo = mid
+        else:
+            hi = mid - 1
+    return render(lo)
+
+
+def _render_exec_approval_fallback(
+    cmd_preview: str, description: str, command_prefix: str, deadline_line: str, *,
+    allow_permanent: bool, allow_session: bool, smart_denied: bool) -> str:
+    from gateway.platforms.base_exec_approval import command_fence, ea_header_text, ea_reason_label_text
+    fence = command_fence(cmd_preview)
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -605,12 +643,23 @@ def _format_exec_approval_fallback(
         if allow_permanent:
             choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
     choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
-    return (
-        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
-          reason_label=ea_reason_label_text(), reason=description)
+    # ``text_body`` hardcodes a 3-backtick fence, so a command containing ``` would close it and
+    # forge the lines after. Swap in a fence the command cannot close. The command is escaped for
+    # ``str.format`` first: it is user-controlled, and a ``{`` in it would raise or eat the tail.
+    safe_preview = cmd_preview.replace("{", "{{").replace("}", "}}")
+    body = t("gateway.exec_approval.text_body", heading=heading, command=safe_preview,
+             reason_label=ea_reason_label_text(), reason=description)
+    fixed = f"```\n{safe_preview}\n```"
+    grown = f"{fence}\n{safe_preview}\n{fence}"
+    if fixed not in body:
+        # A locale that dropped the fence still has to show the command inside one it cannot close.
+        body = body.replace(safe_preview, grown, 1)
+    else:
+        body = body.replace(fixed, grown, 1)
+    return (body
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
-        + format_approval_deadline_line(approval_timeout_seconds()))
+        + deadline_line)
 
 # Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
 # first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider

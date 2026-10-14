@@ -1146,7 +1146,7 @@ class TurnRunner:
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
-            user_id_alt=getattr(ctx.source, "user_id_alt", None),
+            user_id_alt=getattr(ctx.source, "user_id_alt", None), chat_name=getattr(ctx.source, "chat_name", None),
             skip_context_files=skip_context_files,
         )
         cache_lock = getattr(runner, "_agent_cache_lock", None)

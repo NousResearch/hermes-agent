@@ -235,6 +235,7 @@ class NoopPluginContext:
         pass
 
     register_tool = register_hook = register_cli_command = register_memory_provider = _noop
+    register_remote_plugin = _noop
 
 
 def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_cls: type, name: str,

@@ -161,3 +161,52 @@ def test_stateless_oneshot_still_sends_an_opencode_session_header(out_of_turn):
 
     assert opencode_session_headers("opencode-go", None, session_id=None).get("x-opencode-session")
     assert opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", session_id=None) == {}
+
+
+def test_iteration_summary_sends_session_header_chat_mode(monkeypatch):
+    """handle_max_iterations' chat path hand-builds kwargs (bypasses build_api_kwargs'
+    wrapper merge) — the summary call must still carry x-opencode-session, else the
+    OpenCode relay 400s MissingSessionID and the turn degrades to the fallback text."""
+    from agent import chat_completion_helpers as cch
+
+    captured = {}
+
+    def _rec_summary_call(ag, req_id, request, callback, *, retry_count):
+        captured.update(request)
+        return object()
+
+    monkeypatch.setattr(cch, "_managed_summary_call", _rec_summary_call)
+    monkeypatch.setattr(cch, "_summary_text", lambda ag, response, **kw: "summary ok")
+
+    agent = _agent("opencode-go", "glm-5.3-flash", "https://opencode.ai/zen/go/v1")
+    attempt = cch._chat_summary_attempt(agent, _MSGS, "test-summary-id")
+    assert attempt(0) == "summary ok"
+    # Upstream's chat path now uses agent._build_api_kwargs() -> wrapper merge -> header carried
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+
+    # Non-OpenCode targets stay untouched.
+    captured.clear()
+    other = _agent("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1")
+    cch._chat_summary_attempt(other, _MSGS, "test-summary-id")(0)
+    assert "x-opencode-session" not in (captured.get("extra_headers") or {})
+
+
+def test_iteration_summary_sends_session_header_anthropic_mode(monkeypatch):
+    """Same bypass on the anthropic_messages summary path: transport build_kwargs runs
+    without the wrapper merge, so the header must be merged before dispatch."""
+    from agent import chat_completion_helpers as cch
+
+    captured = {}
+
+    def _rec_summary_call(ag, req_id, request, callback, *, retry_count):
+        captured.update(request)
+        return object()
+
+    monkeypatch.setattr(cch, "_managed_summary_call", _rec_summary_call)
+    monkeypatch.setattr(cch, "_summary_text", lambda ag, response, **kw: "summary ok")
+
+    agent = _agent("opencode-go", "minimax-m2.7", "https://opencode.ai/zen/go/v1", api_mode="anthropic_messages")
+    attempt = cch._anthropic_summary_attempt(agent, _MSGS, "test-summary-id")
+    assert attempt(0) == "summary ok"
+    # Uses renamed helper in upstream (merge_session_affinity_headers)
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"

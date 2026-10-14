@@ -1,0 +1,25 @@
+name: anatomy-museum
+title: Anatomy Museum
+repo: https://github.com/danrudy33/anatomy-museum
+sha: 6c2f3912b6af87d1149e38be523157057533d585
+version: "0.1.0"
+description: Native Anatomy community gallery with search, local favorites and explicit sandboxed standalone playback.
+maintainer: DanRudy33
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+platforms: [macos]
+readme: true
+docs_url: https://github.com/danrudy33/anatomy-museum#readme
+screenshots:
+  - https://raw.githubusercontent.com/danrudy33/anatomy-museum/6c2f3912b6af87d1149e38be523157057533d585/docs/gallery-dark.png
+  - https://raw.githubusercontent.com/danrudy33/anatomy-museum/6c2f3912b6af87d1149e38be523157057533d585/docs/gallery-light.png
+known_issues:
+  - Requires the matching native Desktop SDK; tested source-built Desktop reports 0.0.0, not a certified prebuilt release number.
+  - Full embedded website navigation and website-wrapper Play-with-it are unsupported; repository standalone playback and external recovery are separate.
+  - Wankel, Zipper and WebGL Ripple tank were interaction-tested; the other catalog figures were not individually certified.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

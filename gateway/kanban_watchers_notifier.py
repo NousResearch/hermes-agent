@@ -676,7 +676,7 @@ class _KanbanNotification:
         self._log_woke()
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
-        """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        """Send one text ping (wake-only: just its files); raises on adapter exception or SendResult(success=False)."""
         from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
@@ -687,7 +687,8 @@ class _KanbanNotification:
         async def send_ping():
             nonlocal _send_res
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+        if self.send_passive and not await present_notification(
+                send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
@@ -727,8 +728,8 @@ class _KanbanNotification:
                     "on wake self-post instead", self.platform_str, self.task_id,
                 )
                 continue
-            if not self.send_passive:
-                # Wake-only: the wake path is the sole delivery and resolves the counter.
+            if not self.send_passive and ev.kind not in ("completed", "review_requested"):
+                # Wake-only: the wake path is the sole text delivery and resolves the counter.
                 continue
             if ev.id <= self.sub.get("last_ping_event_id", 0):
                 continue
@@ -739,7 +740,8 @@ class _KanbanNotification:
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
                 ))
-                self.clear_failures()
+                if self.send_passive:
+                    self.clear_failures()
             except Exception as exc:
                 await self.delivery_failed(
                     "kanban notifier: send failed for %s on %s (attempt %d/%d): %s", (self.task_id, self.platform_str),

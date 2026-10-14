@@ -57,8 +57,10 @@ def _model_section_has_credentials(config: dict) -> bool:
     if any_openrouter_key:
         return True
     # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are commonly set for git tooling.
-    # Mirrors resolve_provider in auth.py.
-    return any(_has_key(pconfig) for pid, pconfig in PROVIDER_REGISTRY.items() if pid != "copilot")
+    # Hidden profiles the user has not opted into are skipped too. Both mirror resolve_provider.
+    from hermes_cli.auth_plugin_providers import listed_registry
+    listed = listed_registry(PROVIDER_REGISTRY)
+    return any(_has_key(pconfig) for pid, pconfig in listed.items() if pid != "copilot")
 
 
 def _model_summary(config: dict) -> Optional[str]:

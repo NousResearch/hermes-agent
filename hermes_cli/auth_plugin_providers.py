@@ -147,6 +147,19 @@ def registry_lookup(provider_id: str) -> Optional[Any]:
     return pconfig
 
 
+def listed_registry(registry: dict) -> dict:
+    """*registry* minus hidden profiles the user has not opted into (``ProviderProfile.listed``).
+
+    What env-key auto-detection and the first-run "is a provider configured" checks may count. A
+    set env key is not an opt-in: a plugin may declare one only so the subprocess env scrub, which
+    reads every registered ``api_key_env_vars``, covers it. Typed paths keep the full registry.
+    """
+    from providers import unlisted_provider_names
+
+    hidden = unlisted_provider_names()
+    return {pid: row for pid, row in registry.items() if pid not in hidden}
+
+
 def plugin_profile(provider: str) -> Optional[Any]:
     """The registered ``ProviderProfile`` for *provider*, or None (also when the layer is unavailable)."""
     try:

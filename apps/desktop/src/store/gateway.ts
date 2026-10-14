@@ -31,6 +31,8 @@ import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
+import { isTurnSettlement, publishTurnLease, scopeHasTurnLease, TURN_LEASE_SETTLE_DELAY_MS } from './gateway-activity'
+
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
 // event handler is already session-keyed, so the only thing stopping two
@@ -200,6 +202,8 @@ interface Secondary {
    * an orphaned lease self-heals.
    */
   activationLeaseUntil: number
+  // Same bounded handoff window as submit-lease settlement, without inventing a submit lease.
+  settleLeaseUntil: number
 }
 
 // How long a mid-dial activation holds its prune lease: it must outlast every
@@ -377,9 +381,9 @@ function dispatchServerRequest(request: ServerRequest, profile: string, connecti
   return true
 }
 
-/** Fan a primary-socket server request into the registry handler with the active source tags. */
+/** Fan a primary-socket request into the registry with its own connection, not the foreground's. */
 export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): boolean {
-  return dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
+  return dispatchServerRequest(request, profile, g.primaryConnectionId)
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
@@ -1115,7 +1119,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     relayRetainCount: 0,
     wantOpen: true,
     retiredByPool: false,
-    activationLeaseUntil: 0
+    activationLeaseUntil: 0,
+    settleLeaseUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -1124,6 +1129,13 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   // the recorder must not promote an arbitrary wire `profile` field instead.
   entry.offEvent = gateway.onEvent(event => {
     const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, profile)
+
+    // Store subscribers prune synchronously inside onEvent. Protect live work
+    // BEFORE settlement, but never renew the window from an already-idle report
+    // (a pending submit-lease release is not authoritative live work).
+    if (isTurnSettlement(event) && g.config?.liveScopes?.().has(scope)) {
+      entry.settleLeaseUntil = Date.now() + TURN_LEASE_SETTLE_DELAY_MS
+    }
 
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
@@ -1258,13 +1270,7 @@ async function gatewayForProfile(
       released = true
       entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-      if (
-        entry.activeRequests === 0 &&
-        !entry.retained &&
-        !relayRetained(entry) &&
-        !foregroundPinned(entry) &&
-        g.activeKey !== entry.scope
-      ) {
+      if (canDisposeAfterRelease(entry)) {
         disposeSecondary(entry)
 
         if (g.secondaries.get(entry.scope) === entry) {
@@ -1407,14 +1413,7 @@ export async function requestGatewayForAgent<T>(
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
-    if (
-      !drainPendingConnectionRedial(entry) &&
-      entry.activeRequests === 0 &&
-      !entry.retained &&
-      !relayRetained(entry) &&
-      !foregroundPinned(entry) &&
-      g.activeKey !== entry.scope
-    ) {
+    if (!drainPendingConnectionRedial(entry) && canDisposeAfterRelease(entry)) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -1454,6 +1453,21 @@ function foregroundPinned(entry: Secondary): boolean {
  *  dev-HMR entries predate the field. */
 function relayRetained(entry: Secondary): boolean {
   return Number.isFinite(entry.relayRetainCount) && entry.relayRetainCount > 0
+}
+
+// The last request/relay/submit hold can end before the work on its socket.
+// Use the activity authority, and preserve the pruner's bounded handoff window.
+// Explicit disposal and material-edit redial deliberately do not use this guard.
+function canDisposeAfterRelease(entry: Secondary): boolean {
+  return (
+    entry.activeRequests === 0 &&
+    !entry.retained &&
+    !relayRetained(entry) &&
+    !foregroundPinned(entry) &&
+    !scopeHasCurrentWork(entry.scope) &&
+    !(entry.settleLeaseUntil > Date.now()) &&
+    g.activeKey !== entry.scope
+  )
 }
 
 /**
@@ -1548,11 +1562,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
 
     if (
       !drainPendingConnectionRedial(entry) &&
-      entry.relayRetainCount === 0 &&
-      entry.activeRequests === 0 &&
-      !entry.retained &&
-      !foregroundPinned(entry) &&
-      g.activeKey !== entry.scope &&
+      canDisposeAfterRelease(entry) &&
       g.secondaries.get(entry.scope) === entry
     ) {
       disposeSecondary(entry)
@@ -1631,13 +1641,7 @@ export async function retainGatewayForAgent(
       return
     }
 
-    if (
-      entry.activeRequests === 0 &&
-      !entry.retained &&
-      !relayRetained(entry) &&
-      !foregroundPinned(entry) &&
-      g.activeKey !== entry.scope
-    ) {
+    if (canDisposeAfterRelease(entry)) {
       disposeSecondary(entry)
 
       if (g.secondaries.get(entry.scope) === entry) {
@@ -1659,7 +1663,6 @@ export async function retainGatewayForAgent(
 }
 
 const turnLeaseKey = (scope: string, sessionId: string): string => `${scope}\u0000${sessionId}`
-const TURN_LEASE_SETTLE_DELAY_MS = 500
 
 function cancelTurnLeaseRelease(key: string): void {
   const timer = g.turnLeaseReleaseTimers.get(key)
@@ -1761,9 +1764,8 @@ export async function retainGatewayForSessionTurn(
     }
 
     cancelTurnLeaseRelease(key)
-    // Another session on the same scope may still hold a lease; report the
-    // scope's state, not this lease's.
-    publishTurnLease(scope, scopeHasTurnLease(scope))
+    // Another session or delegated child can outlive this submit lease.
+    publishTurnLease(scope, scopeHasCurrentWork(scope))
     releaseRoute()
   }
 
@@ -1773,23 +1775,11 @@ export async function retainGatewayForSessionTurn(
   return release
 }
 
-function scopeHasTurnLease(scope: string): boolean {
-  const prefix = `${scope}\u0000`
-
-  for (const key of g.turnLeases.keys()) {
-    if (key.startsWith(prefix)) {
-      return true
-    }
-  }
-
-  return false
-}
-
-// Tell main whether a prompt turn leases this scope's pooled backend. An early
-// skip for cooperative retirement (electron/pool-retire.ts), never the proof:
-// main asks the backend itself before stopping anything. From #104871.
-function publishTurnLease(scope: string, activeTurn: boolean): void {
-  void window.hermesDesktop?.touchBackend?.(scope, { activeTurn }).catch(() => undefined)
+function scopeHasCurrentWork(scope: string): boolean {
+  return Boolean(
+    g.secondaries.get(scope)?.wantOpen &&
+    (scopeHasTurnLease(scope, g.turnLeases) || g.config?.liveScopes?.().has(scope))
+  )
 }
 
 function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
@@ -1801,9 +1791,10 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (event.type === 'message.start') {
-    // The gateway emits settled session.info before immediately chaining a
-    // queued/goal follow-up. Keep the same route alive for that next turn.
+  const payload = event.payload as Record<string, unknown> | undefined
+
+  if (event.type === 'message.start' || (event.type === 'session.info' && payload?.running === true)) {
+    // An immediate queued/goal follow-up keeps the existing route lease.
     cancelTurnLeaseRelease(key)
 
     return
@@ -1814,8 +1805,6 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
     return
   }
-
-  const payload = event.payload as Record<string, unknown> | undefined
 
   if (event.type === 'session.info' && payload?.running === false && !g.turnLeaseReleaseTimers.has(key)) {
     // session.info(false) is the authoritative settled edge, but auto-followup
@@ -2270,20 +2259,17 @@ export function openSecondaryCount(): number {
   return count
 }
 
-// Keep the idle reaper from killing a backend we still need: ping every live
-// secondary. The active one is pinged separately (touchActiveGatewayBackend).
-// "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
-// backoff has no consumer on that backend, and pinging it anyway kept a
-// tile-pinned backend keepalive-fresh forever, so LRU eviction and the idle
-// reaper never freed its pool slot (#103375). Each ping also carries whether a
-// prompt turn leases the scope, so a foreground dial that must retire a
-// resident can skip leased ones early (the backend probe stays the proof).
+// Refresh only OPEN secondaries, never a route stuck in reconnect backoff
+// (#103375). Transport presence and current work are separate signals:
+// an idle open tile gets a keepalive, not an active-turn stamp. The boot hook
+// independently touches the window primary's resolved owner.
 export function touchSecondaryGateways(): void {
   const desktop = window.hermesDesktop
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen && isOpen(entry.gateway)) {
-      void desktop?.touchBackend?.(entry.scope, { activeTurn: scopeHasTurnLease(entry.scope) }).catch(() => undefined)
+      const activeTurn = scopeHasCurrentWork(entry.scope)
+      void desktop?.touchBackend?.(entry.scope, { activeTurn }).catch(() => undefined)
     }
   }
 }
@@ -2349,6 +2335,7 @@ function disposeSecondary(entry: Secondary): void {
   // Release can re-enter disposal at refcount zero. wantOpen is already false,
   // and listeners are detached, so explicit teardown never rearms reconnect.
   releaseTurnLeasesForScope(entry.scope)
+  publishTurnLease(entry.scope, false)
 }
 
 // Invariant restore for every eviction path: if the active key names a
@@ -2407,6 +2394,7 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // A mounted tile / the primary thread is bound to a runtime on this
       // socket (#93892) — pinned for as long as that surface is mounted.
       foregroundPinned(entry) ||
+      entry.settleLeaseUntil > now ||
       // Mid-dial activation target: the profile being switched TO is not yet
       // active and has no live work, so without this lease any recompute
       // during its cold spawn disposed the entry and the click died silently
@@ -2496,6 +2484,10 @@ export function closeLegacySecondaryGateways(): void {
 }
 
 export function closeSecondaryGateways(): void {
+  // Mark routes disposed before releasing leases so stale live stores cannot
+  // publish renewed activity during teardown. Dispose releases each scope.
+  closeSecondariesWhere(() => true)
+
   // Full teardown releases every routed-turn lease (class-2 #94284) and the
   // renderer-generation ledger; the predicate close leaves live sources'
   // leases alone (their sockets stay open).
@@ -2512,7 +2504,6 @@ export function closeSecondaryGateways(): void {
   g.turnLeases.clear()
   g.dialFailures.clear()
 
-  closeSecondariesWhere(() => true)
   openedSecondaryScopes().clear()
   g.reauthFailures.clear()
 }

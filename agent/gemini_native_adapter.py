@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
+from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
 from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
@@ -79,9 +80,11 @@ _INTERRUPTED_RESPONSE_PLACEHOLDER = "[The previous response was interrupted befo
 # without this sentinel Gemini 3 thinking models reject replayed history with 400 INVALID_ARGUMENT.
 _SKIP_SIGNATURE = "skip_thought_signature_validator"
 _END = object()  # stream-exhausted marker for _advance_stream_iterator
+_MAX_TOKEN_SENDS = 3  # requests one long-decode token may ride, so a network that keeps dropping ends in an error
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _FINISH_REASON_MAP = {
     "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    "CONTINUATION": "length",  # only reachable without a continuationToken: the output was cut short
 }
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (
@@ -109,19 +112,41 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
     google-shared converter).
     """
-    match = re.match(r"gemini-(\d+)", bare_gemini_model_id(model).lower())
-    return match is not None and int(match.group(1)) >= 3
+    return _gemini_version(model) >= (3, 0)
+
+
+def _gemini_version(model: str) -> tuple[int, int]:
+    """(major, minor) of a Gemini model id: ``gemini-4-argon`` -> (4, 0), ``google/gemini-3.8-flash`` ->
+    (3, 8); (0, 0) for non-Gemini and unversioned ids (``gemini-flash-latest``, ``gemini-exp-1206``)."""
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", bare_gemini_model_id(model).lower())
+    return (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
+
+
+def gemini_uses_thinking_level(model: str) -> bool:
+    """Gemini 3 and every later generation steer thinking with the ``thinkingLevel`` enum (``thinkingBudget``
+    is deprecated there), as do the ``gemini-*-latest`` aliases, which Google hot-swaps to the newest
+    release of each variant. A version-number gate, not a ``gemini-3`` prefix, so a new generation
+    (``gemini-4-argon``) isn't silently treated as legacy."""
+    bare = bare_gemini_model_id(model).lower()
+    return (bare.startswith("gemini-") and bare.endswith("-latest")) or _gemini_version(bare) >= (3, 0)
+
+
+def gemini_sampling_deprecated(model: str) -> bool:
+    """Gemini 3.6+ (Gemini 4 Argon included) ignores ``temperature``/``top_p``/``top_k`` and Google
+    slated them for removal; older families (2.x, 3.0-3.5) keep them."""
+    return _gemini_version(model) >= (3, 6)
 
 
 _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
 def is_vertex_express_base_url(base_url: str) -> bool:
-    """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
-    ``…/projects/{p}/locations/{r}/endpoints/openapi`` base is OpenAI-compatible and must stay off
+    """An aiplatform host speaking the native API with an API key: the bare express surface, or its
+    ``…/projects/{p}/locations/{l}`` form, which reaches models served only in ``global`` (Gemini 4).
+    The OAuth Vertex provider's ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off
     the native adapter."""
     normalized = str(base_url or "").strip().lower()
-    return "aiplatform.googleapis.com" in normalized and "/projects/" not in normalized
+    return "aiplatform.googleapis.com" in normalized and "/endpoints/" not in normalized
 
 
 def normalize_gemini_base_url(base_url: Optional[str]) -> str:
@@ -145,7 +170,7 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     if is_vertex_express_base_url(trimmed):
         if trimmed.lower().endswith("/publishers/google"):
             return trimmed
-        if not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+        if "/projects/" not in trimmed.lower() and not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
             trimmed = f"{trimmed}/v1beta1"
         return f"{trimmed}/publishers/google"
     if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
@@ -485,9 +510,14 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     """True when Gemini will spend output tokens on thinking: thought tokens bill against ``maxOutputTokens``,
     so a global 4096/16384 cap can be consumed entirely by high thinking (``finishReason=MAX_TOKENS``, no answer)."""
     normalized = _normalize_thinking_config(thinking_config) or {}
-    budget, has_level = normalized.get("thinkingBudget"), "thinkingLevel" in normalized
     if normalized.get("includeThoughts") is False:
-        return has_level or bool(budget)
+        # Hidden thoughts = reasoning disabled/minimised: never ask for headroom, or a small
+        # caller budget (title generation's 64 tokens) balloons to the model ceiling. Gemini 3
+        # still carries a "low" thinkingLevel here (no off-switch), which must not re-enable the
+        # bump. (#91927)
+        return False
+    budget = normalized.get("thinkingBudget")
+    has_level = "thinkingLevel" in normalized
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
 
 
@@ -591,10 +621,13 @@ def _usage_from_metadata(usage_meta: dict[str, Any]) -> SimpleNamespace:
     them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
     count = lambda key: int(usage_meta.get(key) or 0)
     reasoning_tokens = count("thoughtsTokenCount")
+    # Multi-hop long decode: the counts are summed over hops (billing); the context size is hop 1's prompt.
+    initial = {"initial_prompt_tokens": count("initialPromptTokenCount"),
+               "initial_cached_tokens": count("initialCachedContentTokenCount")} if "initialPromptTokenCount" in usage_meta else {}
     return SimpleNamespace(
         prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
-        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens), **initial,
     )
 
 
@@ -849,7 +882,9 @@ class GeminiNativeClient:
         self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
-        self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))
+        # read=1200: Gemini 4 hops can think for minutes; Google asks for a >=20 min read timeout (its
+        # stream limit), and a shorter one cuts long-decode hops off mid-think.
+        self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0))
 
     def close(self) -> None:
         self.is_closed = True
@@ -885,6 +920,10 @@ class GeminiNativeClient:
         timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
+        # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
+        budget = extra.get("max_output_tokens")
+        if isinstance(budget, int) and budget > int(max_tokens or 0):
+            max_tokens = budget
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
@@ -895,28 +934,57 @@ class GeminiNativeClient:
         url = f"{self.base_url}/models/{model}:"
         if stream:
             return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
-        response = self._http.post(url + self.GENERATE_METHOD, json=request, headers=self._headers(), timeout=timeout)
+        hops = [self._generate(url + self.GENERATE_METHOD, request, timeout)]
+        max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
+        # Long decode: same request + token, never the partial output. Past the ceiling the last hop's
+        # CONTINUATION finish translates to ``length``.
+        while (token := continuation_token(hops[-1])) and len(hops) < max_hops:
+            hops.append(self._generate(url + self.GENERATE_METHOD, {**request, "continuationToken": token}, timeout))
+        return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
+
+    def _generate(self, url: str, request: dict[str, Any], timeout: Any) -> dict[str, Any]:
+        response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise self._http_error(response)
         try:
-            payload = response.json()
+            return response.json()
         except ValueError as exc:
             raise GeminiAPIError(
                 f"Invalid JSON from Gemini native API: {exc}", code="gemini_invalid_json", status_code=response.status_code, response=response,
             ) from exc
-        return translate_gemini_response(payload, model=model)
 
     def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
-        try:
-            headers = {**self._headers(), "Accept": "text/event-stream"}
-            with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
-                if response.status_code != 200:
-                    raise self._http_error(response, read_streaming_error_body(response))
-                tool_call_indices: dict[str, dict[str, Any]] = {}
-                for event in _iter_sse_events(response):
-                    yield from translate_stream_event(event, model, tool_call_indices)
-        except httpx.HTTPError as exc:
-            raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc
+        tool_call_indices: dict[str, dict[str, Any]] = {}  # shared across hops: they form one model turn
+        hop_usage: list[dict[str, Any]] = []
+        max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
+        body: dict[str, Any] = request
+        # ``resume``: the latest token (hop end or mid-stream checkpoint) with nothing yielded after it.
+        # The next hop, or a dropped stream, resends the request with it; ``sends`` bounds a stuck token.
+        resume, sends = None, 0
+        while True:
+            try:
+                headers = {**self._headers(), "Accept": "text/event-stream"}
+                with self._http.stream("POST", url, json=body, headers=headers, timeout=timeout) as response:
+                    if response.status_code != 200:
+                        raise self._http_error(response, read_streaming_error_body(response))
+                    for event in _iter_sse_events(response):
+                        hops_done = len(hop_usage)
+                        event, token = split_stream_continuation(event, hop_usage)
+                        if token and len(hop_usage) > hops_done and len(hop_usage) >= max_hops:
+                            # Hop ceiling: end the turn as truncated, usage summed over every hop.
+                            cand = {**event["candidates"][0], "finishReason": "MAX_TOKENS"}
+                            event, token = {**event, "candidates": [cand], "usageMetadata": merge_hop_usage(hop_usage)}, None
+                        chunks = translate_stream_event(event, model, tool_call_indices)
+                        if token or chunks:  # a token commits its own event's chunks; a later chunk voids it
+                            resume, sends = token, 0 if token else sends
+                        yield from chunks
+            except httpx.HTTPError as exc:
+                if not resume or sends >= _MAX_TOKEN_SENDS:  # nothing committed to resume from: retry from the start
+                    raise GeminiAPIError(f"Gemini streaming request failed: {exc}", code="gemini_stream_error") from exc
+                logger.warning("Gemini stream dropped (%s); resuming from its last checkpoint", exc)
+            if not resume or sends >= _MAX_TOKEN_SENDS:
+                return
+            body, sends = {**request, "continuationToken": resume}, sends + 1
 
 
 class AsyncGeminiNativeClient:

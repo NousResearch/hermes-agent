@@ -175,6 +175,14 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Core infrastructure service protection — agents must never restart/stop/kill
+    # provider-proxy, agent-gateway, anthropic-oauth-proxy, or openai-oauth-proxy
+    # without explicit user permission via /restart.  Auto-restarts interrupt
+    # in-flight work and can cause outages (see 2026-10-13 incident).
+    (r'\bsystemctl\b[^\n]*(stop|restart|kill)\b[^\n]*(provider.proxy|agent.gateway|anthropic.oauth.proxy|openai.oauth.proxy)', "stop/restart core infrastructure service (use /restart)"),
+    (r'\b(pkill|killall)\b[^\n]*(unified_provider_proxy|provider.proxy)', "kill provider-proxy process (use /restart)"),
+    (r'\bkill\b.*\$\(\s*pgrep[^)]*unified_provider_proxy', "kill provider-proxy via pgrep expansion (use /restart)"),
+    (r'\bkill\b.*`\s*pgrep[^`]*unified_provider_proxy', "kill provider-proxy via backtick pgrep (use /restart)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module

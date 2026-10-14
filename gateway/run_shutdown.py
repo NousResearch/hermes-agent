@@ -801,8 +801,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
         """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
+        cron = self._active_cron_job_count()
+        if getattr(self, "_restart_requested", False):
+            # Count per profile; subtracting from bare job IDs can hide another profile's run.
+            counts = self._restart_wait_cron_counts()
+            cron = counts["awaitable"] + counts["wedged"]
         return (
-            self._running_agent_count(), self._active_cron_job_count(),
+            self._running_agent_count(), cron,
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
         )
 
@@ -1525,15 +1530,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         return self._restart_wait_cron_counts()["wedged"]
 
     def _restart_safe_cron_count(self) -> int:
-        """Cron runs whose worker owns a restart-safe systemd scope; 0 if cron can't import.
+        """Cron workers whose independent scopes and durable delivery survive restart.
 
-        Such a worker runs outside the gateway cgroup, so neither the tool-process sweep nor
-        ``mark_running_jobs_interrupted`` reaches it, and its final send rides the durable delivery
-        queue for whichever gateway is live next. The restart after-turn wait must therefore not
-        hold the gateway in ``draining`` for it: waiting buys the run nothing and refuses new turns
-        for up to the whole cap (observed live: a 100-minute job held the gateway ~30 minutes).
-        Degraded (no user bus) workers are NOT in this set — they share the cgroup and die with a
-        systemd stop, so they keep holding the wait.
+        Degraded workers share the gateway cgroup and must still drain. Status and the SessionDB
+        close guard continue to count all live work, including workers skipped by restart waits.
         """
         return self._restart_wait_cron_counts()["restart_safe"]
 

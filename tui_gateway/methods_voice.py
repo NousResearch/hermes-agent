@@ -637,6 +637,14 @@ def _voice_toggle_status(rid, params: dict) -> dict:
 
 def _voice_toggle_mode(rid, params: dict) -> dict:
     enabled = params.get("action") == "on"
+    session_id = str(params.get("session_id") or "").strip()
+    if session_id:
+        with _sessions_lock:
+            session = _sessions.get(session_id)
+            if session is not None:
+                session["voice_enabled"] = enabled
+                if not enabled:
+                    session["voice_tts_enabled"] = False
     os.environ["HERMES_VOICE"] = "1" if enabled else "0"
     stop_hint = ""
     if enabled:
@@ -660,8 +668,13 @@ def _voice_toggle_mode(rid, params: dict) -> dict:
     return _ok(rid, _voice_status_payload(stop_hint=stop_hint))
 
 
-def _set_voice_tts(on: bool) -> None:
+def _set_voice_tts(on: bool, *, session_id: str = "") -> None:
     """Flip TTS; off silences live speech. The lease pre-loads the engine (on) / releases it (off)."""
+    if session_id:
+        with _sessions_lock:
+            session = _sessions.get(session_id)
+            if session is not None:
+                session["voice_tts_enabled"] = on
     os.environ["HERMES_VOICE_TTS"] = "1" if on else "0"
     if not on:
         _tts_stream_stop(user_barge=False)
@@ -671,7 +684,7 @@ def _set_voice_tts(on: bool) -> None:
 def _voice_toggle_tts(rid, params: dict) -> dict:
     if not _voice_mode_enabled():
         return _err(rid, 4014, "enable voice mode first: /voice on")
-    _set_voice_tts(not _voice_tts_enabled())
+    _set_voice_tts(not _voice_tts_enabled(), session_id=str(params.get("session_id") or ""))
     return _ok(rid, _voice_status_payload())
 
 

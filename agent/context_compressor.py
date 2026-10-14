@@ -1046,7 +1046,8 @@ _ANCHOR_NOISE = frozenset({
 
 def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
-    text = "\n".join(c for c in (msg.get("content") for msg in turns) if isinstance(c, str) and c)
+    contents = (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else m.get("content") for m in turns)
+    text = "\n".join(c for c in contents if isinstance(c, str) and c)
     if not text:
         return ""
     sections: list[str] = []

@@ -19,6 +19,7 @@ Test patterns for the marker emit checks adapted from PR #32375
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
@@ -258,7 +259,7 @@ class TestMarkerSurvivesRealCompress:
         note = ('[IMPORTANT: The user has invoked the "probe-inv" skill, indicating they want '
                 "you to follow its instructions. The full skill content is loaded below.]")
         body = "RULE: include INV-HERON.\n" + "skill body prose. " * 600
-        invocation = _build_skill_message({"name": "probe-inv", "content": body}, None, note,
+        invocation = _build_skill_message({"name": "probe-inv", "content": body}, Path("/skills/probe-inv"), note,
                                           user_instruction="remember PLUM-77")
         c = _make_compressor(protect_first_n=1, protect_last_n=2, tail_mode="lean")
         msgs = [
@@ -280,6 +281,7 @@ class TestMarkerSurvivesRealCompress:
         assert _skill_pruned_marker("probe-inv") in summary_text
         assert "/probe-inv remember PLUM-77" in summary_text
         assert "skill body prose" not in summary_text
+        assert "scripts/foo.js" not in summary_text  # the scaffold footer's example path is not session work
 
 
 class TestReinjectionBoundsAndRedaction:

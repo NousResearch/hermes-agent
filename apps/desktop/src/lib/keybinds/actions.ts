@@ -5,6 +5,12 @@
 // like navigate / theme); labels come from i18n (`t.keybinds.actions[id]`). To
 // add a hotkey, add a row here and a handler there — nothing else.
 
+// The send-prefs contract comes from `@hermes/shared`, never from the renderer
+// store: the store pulls in notifications → desktop-metrics, which reads
+// KEYBIND_ACTION_IDS from this file at module scope, so importing the store here
+// closes a cycle and leaves that constant undefined at evaluation time.
+import { activeSendGestures, type ComposerSendGesture, type ComposerSendPrefs } from '@hermes/shared'
+
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { isMacPlatform } from '@/lib/platform'
@@ -343,10 +349,16 @@ export interface KeybindReadonly {
   id: string
   category: KeybindCategory
   keys: readonly string[]
+  /** i18n id for a row whose label depends on state (the composer send rows
+   *  follow the send mode). Falls back to `id`, so the tooltip hints — which
+   *  look rows up by the stable `id` — are unaffected. */
+  labelKey?: string
 }
 
-export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
-  { id: 'composer.send', category: 'composer', keys: ['enter'] },
+// Composer rows for the default mode, where a bare Enter sends, plus the fixed
+// rows that do not depend on the send settings.
+export const DEFAULT_COMPOSER_READONLY: readonly KeybindReadonly[] = [
+  { id: 'composer.send', category: 'composer', keys: ['enter', 'mod+enter'] },
   { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
   { id: 'composer.steer', category: 'composer', keys: ['enter'] },
   { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
@@ -362,7 +374,26 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // for both. The row is fixed because the selection shortcut below uses the
   // same chord. Who claims a contested press: see the priority ladder in
   // app/chat/composer/focus-chord.ts.
-  { id: 'composer.focus', category: 'composer', keys: ['mod+l'] },
+  { id: 'composer.focus', category: 'composer', keys: ['mod+l'] }
+]
+
+// Multiline-first composer (desktop.composer.enter_sends = false): Enter is a
+// newline, Cmd/Ctrl+Enter sends or queues, Shift+Enter steers a live turn.
+export const MULTILINE_COMPOSER_READONLY: readonly KeybindReadonly[] = [
+  { id: 'composer.newline', category: 'composer', keys: ['enter'] },
+  { id: 'composer.send', category: 'composer', keys: ['mod+enter'] },
+  { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
+  { id: 'composer.steer', category: 'composer', keys: ['shift+enter'] },
+  { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
+  { id: 'composer.mention', category: 'composer', keys: ['@'] },
+  { id: 'composer.slash', category: 'composer', keys: ['/'] },
+  { id: 'composer.help', category: 'composer', keys: ['?'] },
+  { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
+  { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
+  { id: 'composer.focus', category: 'composer', keys: ['mod+l'] }
+]
+
+const NON_COMPOSER_READONLY: readonly KeybindReadonly[] = [
   // Fixed, context-local shortcuts, listed so users can find them. This row
   // uses the same ⌘/Ctrl+L chord as `composer.focus` above. It is the
   // selection half of the chord: the selected text (terminal text, preview
@@ -376,3 +407,54 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]
+
+export const KEYBIND_READONLY: readonly KeybindReadonly[] = [...DEFAULT_COMPOSER_READONLY, ...NON_COMPOSER_READONLY]
+
+// A gated press can also be turned into a sequence (double tap) or a hold, and an
+// armed gesture gets its OWN row: "Enter, Enter" and a long press are different
+// instructions, so squashing them into one line would teach neither.
+const GESTURE_SEND_ROW: Record<ComposerSendGesture, KeybindReadonly> = {
+  doubleTap: {
+    id: 'composer.send.double',
+    category: 'composer',
+    keys: ['enter', 'enter'],
+    labelKey: 'composer.send.double'
+  },
+  hold: { id: 'composer.send.hold', category: 'composer', keys: ['enter'], labelKey: 'composer.send.hold' },
+  pause: { id: 'composer.send.pause', category: 'composer', keys: ['enter'], labelKey: 'composer.send.pause' }
+}
+
+/** The row that represents "a draft can be committed this way" for these prefs:
+ *  the direct Enter when it sends, otherwise the first armed gesture, otherwise
+ *  the chord that always works. */
+export function primarySendRow(prefs: ComposerSendPrefs): KeybindReadonly {
+  if (prefs.enterSends) {
+    return { id: 'composer.send', category: 'composer', keys: ['enter'] }
+  }
+
+  const [gesture] = activeSendGestures(prefs)
+
+  return gesture ? GESTURE_SEND_ROW[gesture] : { id: 'composer.send', category: 'composer', keys: ['mod+enter'], labelKey: 'composer.send.mod' }
+}
+
+/** The keys that commit a draft, for the hint tooltips and the send button.
+ *  Derived from the same row the panel prints, so the two cannot disagree. */
+export function composerSendKeys(prefs: ComposerSendPrefs): readonly string[] {
+  return primarySendRow(prefs).keys
+}
+
+/** Every fixed shortcut, with the composer rows resolved for these prefs. The
+ *  one entry point for both the shortcuts panel and the hint tooltips, so the
+ *  two can't drift apart. */
+export function readonlyKeybindsFor(prefs: ComposerSendPrefs): readonly KeybindReadonly[] {
+  if (prefs.enterSends) {
+    return [...DEFAULT_COMPOSER_READONLY, ...NON_COMPOSER_READONLY]
+  }
+
+  const gestures = activeSendGestures(prefs).map(gesture => GESTURE_SEND_ROW[gesture])
+  // Drop the newline row when the settings just removed the line break, so the map
+  // never advertises a key behaviour that is switched off.
+  const composer = MULTILINE_COMPOSER_READONLY.filter(row => prefs.enterNewline || row.id !== 'composer.newline')
+
+  return [...gestures, ...composer, ...NON_COMPOSER_READONLY]
+}

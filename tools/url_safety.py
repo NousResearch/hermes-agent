@@ -16,6 +16,7 @@ import os
 import socket
 import asyncio
 import re
+import time
 from contextlib import contextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
@@ -243,8 +244,27 @@ def _iter_resolved_ips(addr_info: Any):
         yield raw, ip_str, _parse_ip(ip_str)
 
 
+_DNS_LOOKUP_ATTEMPTS = 3
+_DNS_LOOKUP_RETRY_DELAY = 0.3
+
+
 def _getaddrinfo(hostname: str, port: Optional[int] = None):
-    return socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    """``socket.getaddrinfo`` with a bounded retry on transient resolution failures.
+
+    A single ``gaierror`` here aborts an otherwise healthy request: the lookup is the first
+    network call of the URL guard, so a momentary resolver hiccup reads as "unresolvable host"
+    and blocks a legitimate destination. Still raises the final ``gaierror`` when every attempt
+    fails, so callers keep their fail-closed behaviour.
+    """
+    last_exc: Optional[BaseException] = None
+    for attempt in range(_DNS_LOOKUP_ATTEMPTS):
+        try:
+            return socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            last_exc = exc
+            if attempt + 1 < _DNS_LOOKUP_ATTEMPTS:
+                time.sleep(_DNS_LOOKUP_RETRY_DELAY * (attempt + 1))
+    raise last_exc
 
 
 def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:

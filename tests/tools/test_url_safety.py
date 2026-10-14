@@ -602,3 +602,46 @@ class TestDeclaredFakeIpSentinelRanges:
                 assert is_safe_url("https://example.com/") is True
         finally:
             _reset_allow_private_cache()
+
+
+class TestGetaddrinfoRetry:
+    """``_getaddrinfo`` retries a transient resolver failure, and still fails closed.
+
+    The lookup is the first network call of the URL guard, so a single ``gaierror``
+    used to read as "unresolvable host" and block an otherwise healthy destination.
+    """
+
+    def test_retries_a_transient_failure_then_succeeds(self):
+        from tools.url_safety import _DNS_LOOKUP_ATTEMPTS, _getaddrinfo
+
+        calls = []
+
+        def flaky(host, port, *args, **kwargs):
+            calls.append(host)
+            if len(calls) < _DNS_LOOKUP_ATTEMPTS:
+                raise socket.gaierror(-2, "Name or service not known")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        with patch("socket.getaddrinfo", side_effect=flaky), \
+                patch("tools.url_safety.time.sleep"):
+            resolved = _getaddrinfo("example.com", 443)
+
+        assert len(calls) == _DNS_LOOKUP_ATTEMPTS
+        assert resolved
+
+    def test_still_raises_when_every_attempt_fails(self):
+        from tools.url_safety import _DNS_LOOKUP_ATTEMPTS, _getaddrinfo
+
+        calls = []
+
+        def dead(host, port, *args, **kwargs):
+            calls.append(host)
+            raise socket.gaierror(-2, "Name or service not known")
+
+        with patch("socket.getaddrinfo", side_effect=dead), \
+                patch("tools.url_safety.time.sleep"):
+            with pytest.raises(socket.gaierror):
+                _getaddrinfo("no-such-host.invalid", 443)
+
+        assert len(calls) == _DNS_LOOKUP_ATTEMPTS
+

@@ -5,7 +5,7 @@ description: "Observability + budget guardrails for Hermes Agent — tokens, cos
 maintainer: nujovich
 tier: community
 category: general
-docs_url: https://github.com/nujovich/hermes-telemetry#readme
+docs_url: https://nujovich.github.io/hermes-telemetry/
 capabilities:
   provides_tools: []
   provides_hooks:

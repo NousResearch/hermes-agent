@@ -1769,11 +1769,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session": "✅ " + t("platform.feishu.approval.action_session"),
                 "always": "✅ " + t("platform.feishu.approval.action_always"),
                 "deny": "❌ " + t("gateway.exec_approval.action_deny")}
+    _enforces_delegation_admin_identity = True
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
-        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
+        route to ``resolve_gateway_approval()`` and unblock the waiting agent thread.
+        ``prompt.admin_user_id`` (delegation) is stored with the card state so the click can be
+        validated against the configured admin."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1786,6 +1789,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                admin_user_id=str(prompt.admin_user_id or ""),
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1794,6 +1798,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_interactive_card(
         self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
         state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
+        admin_user_id: str = "",
     ) -> SendResult:
         """Send a button card and, on success, remember where it went so a click can be validated."""
         response = await self._feishu_send_with_retry(
@@ -1806,6 +1811,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
+                "admin_user_id": admin_user_id,
             }
         return result
 
@@ -2267,6 +2273,25 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning(
                 "[Feishu] %s callback chat mismatch for %s (expected=%s, got=%s)",
                 label.capitalize(), ident, expected_chat_id, callback_chat_id,
+            )
+            return None
+
+        # Validate delegation admin identity: the button click must come
+        # from the configured admin user, not just any member of the chat.
+        # Compare against operator.user_id (the internal Feishu user ID used
+        # in config), NOT open_id which is the cross-tenant application ID.
+        expected_admin_uid = str(state.get("admin_user_id", "") or "")
+        _clicker_uid = str(getattr(operator, "user_id", "") or "")
+        if not expected_admin_uid:
+            logger.warning(
+                "[Feishu] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (%s=%s)", label, ident,
+            )
+        if expected_admin_uid and _clicker_uid and _clicker_uid != expected_admin_uid:
+            logger.warning(
+                "[Feishu] Unauthorized %s click: expected admin %s, "
+                "got %s (%s=%s)",
+                label, expected_admin_uid, _clicker_uid, label, ident,
             )
             return None
         return open_id, callback_chat_id, self._get_cached_sender_name(open_id) or open_id

@@ -16,6 +16,10 @@ class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
     reply_expected: Optional[bool] = None
+    # Plugin-injected turns are automated work, so their end-of-turn background
+    # memory/skill review must not run. This is per-turn because cached agents
+    # serve subsequent human messages too.
+    skip_background_review: bool = False
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False

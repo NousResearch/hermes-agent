@@ -1271,6 +1271,9 @@ class TurnRunner:
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        # This cached agent can serve the next human turn, so reset the flag on
+        # every turn rather than setting it only while creating the agent.
+        agent.skip_background_review = ctx.skip_background_review
         agent._voice_turn_pending = ctx.voice_turn  # auxiliary.voice_chat route
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never

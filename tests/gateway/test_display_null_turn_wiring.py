@@ -15,9 +15,9 @@ import pytest
 from gateway.run_turn_runner import TurnRunner
 
 
-def _wire(user_config):
+def _wire(user_config, *, skip_background_review=False, agent=None):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
-    agent = types.SimpleNamespace()
+    agent = agent or types.SimpleNamespace()
     ctx = types.SimpleNamespace(
         progress_callback=None,
         native_tool_start_callback=None,
@@ -35,6 +35,7 @@ def _wire(user_config):
         user_config=user_config,
         source=types.SimpleNamespace(platform="telegram"),
         mute_notification_reply=False,
+        skip_background_review=skip_background_review,
         _thinking_enabled=False,
         agent_holder=[None],
         tools_holder=[None],
@@ -67,3 +68,9 @@ def test_null_or_missing_display_falls_back_to_on(user_config):
 def test_memory_notifications_setting_still_applies():
     agent = _wire({"display": {"memory_notifications": "verbose"}})
     assert agent.memory_notifications == "verbose"
+
+
+def test_background_review_skip_is_reset_for_each_turn():
+    agent = types.SimpleNamespace()
+    assert _wire({}, skip_background_review=True, agent=agent).skip_background_review is True
+    assert _wire({}, skip_background_review=False, agent=agent).skip_background_review is False

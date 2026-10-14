@@ -43,7 +43,21 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # Membership is the real contract, NOT the leading underscore: the chat-completions transport happens
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
+    # Three DB-replay carriers leak into the wire on a replayed gateway turn, and a strict Chat
+    # Completions schema (Fireworks' ``ChatMessage`` is ``additionalProperties: false``) 400s the
+    # whole request — non-retryably, and again on every turn the offending rows stay in context:
+    #   * ``message_id`` — the JSONL-transcript alias of the ``messages.platform_message_id``
+    #     column (``hermes_state_messages._rows_to_conversation``); its sibling was already
+    #     stripped everywhere, the alias was not.
+    #   * ``observed`` — the ``messages.observed`` flag (``msg["observed"] = True`` on replay).
+    #   * ``finish_reason`` — the ``messages.finish_reason`` column, rehydrated for assistant rows.
+    # All three are persistence-only: the durable row keeps them (the write path reads the live
+    # dict, not this outgoing copy), so stripping them here loses nothing. #48523.
+    # This set is the single source of truth for the DB-replay carriers: the chat-completions
+    # transport derives its wire strip list from it (``_STRIP_MSG_KEYS``), so a new carrier is
+    # added here only.
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
+     "message_id", "observed", "finish_reason",
      MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
      MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}

@@ -197,7 +197,8 @@ class TestBuildJobPromptScansSkillContent:
 
         prompt = scheduler._build_job_prompt(job)
         assert prompt is not None
-        assert "Authorization: token $GITHUB_TOKEN" in prompt
+        assert 'skill_view(name="github-auth")' in prompt
+        assert "Authorization: token ***" not in prompt
 
     def test_skill_with_injection_payload_raises(self, cron_env):
         """The core attack: planted skill carries an injection payload.
@@ -256,7 +257,8 @@ class TestBuildJobPromptScansSkillContent:
         # inside skill bodies; that's what security docs look like.
         prompt = scheduler._build_job_prompt(job)
         assert prompt is not None
-        assert "cat ~/.hermes/.env" in prompt
+        assert 'skill_view(name="security-postmortem")' in prompt
+        assert "cat ~/.hermes/.env" not in prompt
 
 
     def test_no_skills_still_scans_user_prompt(self, cron_env):

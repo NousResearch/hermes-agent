@@ -386,6 +386,7 @@ def _project_model_pin(cwd: str = "") -> Optional[tuple[str, str]]:
 
         pin = _pdb.resolve_default_model_for_path(cwd or os.getcwd())
     except Exception:
+        logging.getLogger(__name__).debug("project model pin lookup failed", exc_info=True)
         return None
     return None if pin is None else (pin[0], pin[1])
 

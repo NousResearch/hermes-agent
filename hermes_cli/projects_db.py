@@ -7,6 +7,7 @@ opening an old DB is always safe.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import secrets
@@ -18,6 +19,8 @@ from typing import Iterable, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 def projects_db_path() -> Path:
@@ -550,6 +553,7 @@ def resolve_default_model_for_path(path: str, *, db_path: Optional[Path] = None)
         with connect_closing(db_path=db_path) as conn:
             return project_model_for_path(conn, path)
     except Exception:
+        logger.debug("project model pin lookup failed for %s", path, exc_info=True)
         return None
 
 

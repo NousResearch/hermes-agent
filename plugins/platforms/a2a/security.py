@@ -92,11 +92,12 @@ class A2ASecurityContext:
         parts = (auth_header or "").split(None, 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return None
-        presented = parts[1].strip()
+        # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the header is remote input.
+        presented = parts[1].strip().encode()
         for token, name in self.peer_tokens:
-            if hmac.compare_digest(presented, token):
+            if hmac.compare_digest(presented, token.encode()):
                 return name
-        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token):
+        if self.bearer_token and hmac.compare_digest(presented, self.bearer_token.encode()):
             return f"ip:{client_ip or 'unknown'}"
         return None
 

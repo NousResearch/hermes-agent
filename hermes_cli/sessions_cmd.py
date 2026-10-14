@@ -616,11 +616,23 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
+    from hermes_state_runtime import RuntimeStoreError
     try:
         if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir(), exclude_active_write_guards=True):
             return _not_found(args.session_id)
     except SessionActiveWriteGuardError as exc:
         print(f"Cannot delete active session: {exc}")
+        return 1
+    except RuntimeStoreError as exc:
+        # The ledger refuses to delete a session with accepted, unfinished turns; say what to do.
+        if exc.reason == 'unknown_execution':
+            print(f"Cannot delete session '{resolved_session_id}': a turn was lost across a gateway restart. "
+                  f"Acknowledge it first with: hermes sessions discard {resolved_session_id}")
+        elif exc.reason == 'session_busy':
+            print(f"Cannot delete session '{resolved_session_id}': it has a queued or running turn. "
+                  "Wait for it to finish (or stop it), then retry.")
+        else:
+            print(f"Cannot delete session '{resolved_session_id}': {exc.reason}")
         return 1
     print(f"Deleted session '{resolved_session_id}'.")
 
@@ -665,9 +677,19 @@ def _prune_never_active_keyed(db, args):
     if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
         print("Aborted.")
         return
-    deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
-        older_than_days=days, sessions_dir=_sessions_dir()
-    )
+    owner = getattr(args, "owner_endpoint", None)
+    if owner is not None:
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        try:
+            result = owner_prune(owner, never_active_days=days)
+        except (GatewayClientError, OSError, TimeoutError) as exc:
+            return report_owner_failure(exc)
+        deleted, routing_deleted, skipped = result["deleted"], result["routing_deleted"], result["skipped"]
+    else:
+        deleted, routing_deleted, skipped = db.prune_never_active_keyed_sessions(
+            older_than_days=days, sessions_dir=_sessions_dir()
+        )
     print(f"Deleted {deleted} never-active session(s) and {routing_deleted} stale routing entr(ies).")
     if skipped:
         print(f"Skipped {skipped} session(s) with a live turn or compression lock.")
@@ -753,7 +775,15 @@ def _cmd_prune_or_archive(db, args, action):
     if not args.yes and not _confirm_prompt(f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] "):
         print("Cancelled.")
         return
-    if prune:
+    if prune and getattr(args, "owner_endpoint", None) is not None:
+        # The live gateway owns the store: it deletes, through the housekeeping retirement path.
+        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        try:
+            print(f"Pruned {owner_prune(args.owner_endpoint, filters=filters)['deleted']} session(s).")
+        except (GatewayClientError, OSError, TimeoutError) as exc:
+            return report_owner_failure(exc)
+    elif prune:
         print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
@@ -1185,10 +1215,16 @@ def _cmd_set_journal_mode(args):
     return cmd_set_journal_mode(args)
 
 
+def _cmd_discard(args):
+    from hermes_cli.sessions_discard import cmd_discard
+    return cmd_discard(args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
+    "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
@@ -1221,13 +1257,28 @@ def cmd_sessions(args, sessions_parser=None):
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
-    observational = action in _OBSERVATIONAL_DB_ACTIONS
-    from hermes_state import SessionDB, _default_db_path
+    from hermes_state import SessionDB
+    from hermes_constants import get_hermes_home
+    # Verified deletion is an explicit mutation, not a read-only export.
+    deleting_export = (
+        action == "export" and getattr(args, "delete_after_verified", False)
+        and getattr(args, "yes", False) and getattr(args, "session_id", None)
+        and getattr(args, "format", None) in ("md", "qmd")
+    )
+    observational = action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+    if action == "prune":
+        # The always-on gateway owns the store: this process only reads the preview, the owner
+        # deletes. No gateway: the local prune below, behind the holder scan, as before.
+        from hermes_cli.sessions_owner import live_owner
+        args.owner_endpoint = live_owner()
+        observational = args.owner_endpoint is not None
+    # A served-profile process has no single default home: pass the store path explicitly.
+    path = get_hermes_home() / "state.db"
     try:
-        db = SessionDB(read_only=observational)
+        db = SessionDB(db_path=path, read_only=observational)
     except Exception as e:
         # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
-        if observational and not _default_db_path().exists():
+        if observational and not path.exists():
             return _print_empty_store(action, args)
         print("Could not open your session history database. "
               "Run: hermes sessions repair to fix it (a backup is made first).")
@@ -1238,10 +1289,11 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
+        if (action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False)
+                and getattr(args, "owner_endpoint", None) is None):
             from hermes_state_holders import held_store_refusal
-            # Same resolver the SessionDB above opened, so the scan never depends on the db object.
-            refusal = held_store_refusal(_default_db_path(), command=action)
+            # Same path the SessionDB above opened, so the scan never depends on the db object.
+            refusal = held_store_refusal(path, command=action)
             if refusal:
                 print(refusal)
                 return 1

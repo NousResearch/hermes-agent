@@ -8,6 +8,7 @@ plugin-registered slash commands. Bound onto ``GatewayRunner`` through ``Gateway
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 from typing import Optional, Tuple
@@ -138,14 +139,16 @@ class GatewayInboundHooksMixin:
                     return False, None, event.get_command()
         return False, None, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
-        """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
-        gateway process has every API key in os.environ; output is redacted too)."""
+    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str, cwd: Optional[str] = None) -> str:
+        """Run a ``type: exec`` quick command as a host shell of the gateway process: sanitized env
+        (the gateway process has every API key in os.environ), redacted output, killed after 30 s.
+        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
+        proc = None
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                env=build_subprocess_env(), cwd=cwd,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = (stdout or stderr).decode().strip()
@@ -154,6 +157,11 @@ class GatewayInboundHooksMixin:
                 output = redact_sensitive_text(output)
             return output or t("gateway.quick_command.no_output")
         except TimeoutError:
+            if proc is not None and proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
             return t("gateway.quick_command.timed_out")
         except Exception as e:  # health: allow BLE001 -- moved unchanged from run_inbound.py (main has the same handler): an operator quick command's failure is its reply
             return t("gateway.quick_command.error", error=e)

@@ -128,6 +128,10 @@ class AuthorityConnection:
         handlers['session.active_list'] = partial(active_list, self)
         from gateway.session_viewer_automation import automation
         handlers['session.automation'] = partial(automation, self)
+        from gateway.session_reactions import react
+        handlers['message.react'] = partial(react, self)
+        from gateway.session_control_actions import control
+        handlers['session.control'] = partial(control, self)
         return handlers
 
     async def dispatch(self, request):

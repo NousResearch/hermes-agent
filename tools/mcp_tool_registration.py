@@ -409,6 +409,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     registered = _register_candidates(
         name, _resolve_name_collisions(name, candidates),
         check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
+    _schema.log_clamped_name_summary(name, len(registered))
     if registered:
         _write_schema_cache(name, server, config, should_register)
     return registered
@@ -598,6 +599,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
     registered = _register_candidates(
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
+    _schema.log_clamped_name_summary(name, len(registered))
     if registered:
         with _core._lock:
             key = _server_key(name)

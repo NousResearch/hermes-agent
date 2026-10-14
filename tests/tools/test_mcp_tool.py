@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -688,6 +689,71 @@ class TestSchemaConversion:
             mcp_prefixed_tool_name(server_name, "reply_communication_todo")
             == schema["name"]
         )
+
+
+class TestClampedNameLogging:
+    """A server with hundreds of auto-generated endpoint names (Cloudflare's API MCP clamps
+    over a thousand) must not write one WARNING per name: the per-name record is DEBUG and a
+    single per-server count reaches WARNING, once per process."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_clamp_state(self, monkeypatch):
+        import tools.mcp_tool_schema as schema
+
+        monkeypatch.setattr(schema, "_clamped_names_seen", set())
+        monkeypatch.setattr(schema, "_clamped_by_server", {})
+        monkeypatch.setattr(schema, "_clamped_summary_logged", set())
+
+    @staticmethod
+    def _clamp_many(server: str, count: int) -> list:
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+
+        return [mcp_prefixed_tool_name(server, f"patch_zones_ssl_verification_by_certificate_pack_id_{i:04d}")
+                for i in range(count)]
+
+    def test_per_name_record_is_debug_not_warning(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="tools.mcp_tool")
+        names = self._clamp_many("cloudflare", 50)
+        assert all(len(n) <= 64 for n in names)
+        records = [r for r in caplog.records if "exceeds the 64-char provider limit" in r.getMessage()]
+        assert len(records) == 50
+        assert {r.levelno for r in records} == {logging.DEBUG}
+
+    def test_summary_is_one_warning_per_server(self, caplog):
+        from tools.mcp_tool_schema import log_clamped_name_summary
+
+        caplog.set_level(logging.DEBUG, logger="tools.mcp_tool")
+        self._clamp_many("cloudflare", 50)
+        self._clamp_many("cloudflare", 50)  # health refresh recomputes the same names
+        log_clamped_name_summary("cloudflare", registered_count=80)
+        log_clamped_name_summary("cloudflare", registered_count=80)  # list_changed refresh
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert msg.startswith("MCP server 'cloudflare': 50 of 80 tool name(s) exceed the 64-char")
+        assert "DEBUG" in msg
+
+    def test_no_summary_for_a_server_without_long_names(self, caplog):
+        from tools.mcp_tool_schema import log_clamped_name_summary, mcp_prefixed_tool_name
+
+        caplog.set_level(logging.DEBUG, logger="tools.mcp_tool")
+        assert mcp_prefixed_tool_name("github", "create_issue") == "mcp__github__create_issue"
+        log_clamped_name_summary("github", registered_count=12)
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_summaries_are_scoped_per_server(self, caplog):
+        from tools.mcp_tool_schema import log_clamped_name_summary
+
+        caplog.set_level(logging.WARNING, logger="tools.mcp_tool")
+        self._clamp_many("cloudflare", 3)
+        self._clamp_many("aws_knowledge", 2)
+        log_clamped_name_summary("cloudflare", registered_count=3)
+        log_clamped_name_summary("aws_knowledge", registered_count=2)
+        texts = sorted(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+        assert len(texts) == 2
+        assert texts[0].startswith("MCP server 'aws_knowledge': 2 of 2")
+        assert texts[1].startswith("MCP server 'cloudflare': 3 of 3")
 
 
 # ---------------------------------------------------------------------------

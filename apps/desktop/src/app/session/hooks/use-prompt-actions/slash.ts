@@ -159,6 +159,7 @@ interface SlashCommandDeps {
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
+  startFreshSessionTile?: (runtimeId: string) => Promise<boolean | null>
   submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
   updateSessionState: (
     sessionId: string,
@@ -199,6 +200,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     resumeStoredSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
+    startFreshSessionTile,
     submitPromptText,
     updateSessionState
   } = deps
@@ -523,7 +525,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // registry row in desktop-slash-commands.ts plus an entry here — never a
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
-        new: async () => {
+        new: async ({ sessionHint }) => {
+          if (sessionHint && startFreshSessionTile) {
+            const handled = await startFreshSessionTile(sessionHint)
+
+            if (handled !== null) {
+              return
+            }
+          }
+
           prepareDefaultNewSession()
           startFreshSessionDraft()
         },
@@ -1416,6 +1426,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       resumeStoredSession,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,
+      startFreshSessionTile,
       submitPromptText,
       updateSessionState
     ]

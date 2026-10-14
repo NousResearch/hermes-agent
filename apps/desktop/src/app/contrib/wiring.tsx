@@ -550,6 +550,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     createBackendSessionForSend,
     openNewSessionTile,
     removeSession,
+    replaceSessionTileWithNew,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
@@ -724,6 +725,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
+    startFreshSessionTile: replaceSessionTileWithNew,
     sttEnabled,
     updateSessionState
   })

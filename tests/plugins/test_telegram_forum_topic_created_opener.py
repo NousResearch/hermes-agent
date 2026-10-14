@@ -69,7 +69,31 @@ def topic_created(bot, *, uid=10, chat=42, user=88, thread=40798, message_id=407
 
 
 def opener(bot, *, uid=11, chat=42, user=88, message_id=40800, text="Prova 3", thread=None,
-           is_topic=None, group=False, is_bot=False):
+           is_topic=None, group=False, is_bot=False, reply_to_message_id=None, reply_to_user=None):
+    """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to.
+
+    ``is_bot=True`` models an opening message from a bot other than the service message's
+    author (the same-sender bot case is covered by ``test_bot_created_topic_opener_is_adopted``).
+    ``reply_to_message_id``/``reply_to_user`` model an opener that is a Telegram reply to the
+    creation service message — the shape the field captures associate with a labeled opener.
+    """
+    message = {
+        "message_id": message_id, "date": 1800000001, "chat": _chat(chat, group, is_forum=group),
+        "from": {"id": user, "is_bot": is_bot, "first_name": "Bot" if is_bot else "Human"}, "text": text,
+    }
+    if thread is not None:
+        message["message_thread_id"] = thread
+    if is_topic is not None:
+        message["is_topic_message"] = is_topic
+    if reply_to_message_id is not None:
+        message["reply_to_message"] = {
+            "message_id": reply_to_message_id, "date": 1800000000,
+            "chat": _chat(chat, group, is_forum=group),
+            "from": {"id": reply_to_user if reply_to_user is not None else user,
+                     "is_bot": reply_to_user is not None,
+                     "first_name": "Creation"},
+        }
+    return Update.de_json({"update_id": uid, "message": message}, bot)
     """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to.
 
     ``is_bot=True`` models an opening message from a bot other than the service message's
@@ -313,3 +337,60 @@ async def test_pending_created_topics_stays_bounded(monkeypatch):
         assert pending[("42", "88")][0] == "50000"
         await _deliver(app, adapter, opener(app.bot, uid=2000, message_id=50002, text="fresh"))
         assert delivered[-1].source.thread_id == "50000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_id, opener_id, update_service, update_opener, topic_id, opener_thread, is_reply",
+    [
+        # itsjustmichele's verbatim captures, Telegram for Android, receiving side, between
+        # 2026-10-13 13:45 and 2026-10-14 12:55. Texts redacted; ids, thread ids and update ids
+        # verbatim. Both shapes of the same defect, same device, same chat, same day.
+        (9406, 9407, 990665605, 990665606, "494984", None, False),      # regressed: thread-less opener
+        (9499, 9500, 990665619, 990665620, "495077", "495077", True),   # healthy: labeled opener
+        (9538, 9539, 990665626, 990665627, "494984", None, False),      # regressed
+        (9604, 9605, 990665630, 990665631, "495182", "495182", True),   # healthy
+    ],
+)
+async def test_reported_captures_are_routed_by_the_adoption_gate(
+        monkeypatch, service_id, opener_id, update_service, update_opener, topic_id,
+        opener_thread, is_reply):
+    """Every capture the reporter supplied must land in the topic it was created for.
+
+    A regression matrix, not a single case. ``opener_thread`` is what the opener actually
+    carried: the two regressed rows arrive with no thread id at all and must be *adopted* into
+    the topic the preceding service message announced; the two healthy rows already carry it and
+    must keep it. ``update_id`` is the reporter's own, so both axes they named (message id
+    adjacency, update id adjacency) are exercised.
+    """
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot, uid=update_service, chat=42, user=88,
+                          thread=topic_id, message_id=service_id),
+            opener(app.bot, uid=update_opener, chat=42, user=88, message_id=opener_id,
+                   thread=opener_thread, is_topic=opener_thread is not None,
+                   reply_to_message_id=service_id if is_reply else None),
+        )
+
+    assert [event.text for event in delivered] == ["Prova 3"], "the service message must not reach the agent"
+    assert delivered[0].source.thread_id == topic_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_reply", [True, False])
+async def test_reply_to_the_creation_does_not_change_routing(monkeypatch, is_reply):
+    """``reply_to_message`` must not alter adoption: it correlates with the two shapes in the
+    field, but it is a consequence of the client race, not a routing input (#136567).
+
+    Both directions are pinned deliberately: a reply must not create a record where there is
+    none, and its absence must not stop one being claimed.
+    """
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot),
+            opener(app.bot, reply_to_message_id=40799 if is_reply else None),
+        )
+
+    assert delivered[0].source.thread_id == "40798", "adjacency governs adoption, not the reply flag"

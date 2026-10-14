@@ -859,6 +859,19 @@ def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: st
     )
 
 
+def _log_write_refusal(tool: str, path: str, err: str) -> None:
+    """Log a guard refusal so a refused write/patch is visible in agent.log.
+
+    Guard rejections previously returned ``tool_error`` to the caller silently:
+    the tool call reported failure but no line reached the logs, leaving a
+    refused write reconstructable only by hand. One WARNING names the tool,
+    target path, and the guard's reason (first line, length-capped) — the
+    full text still goes back through the tool error (#136835).
+    """
+    reason = (err or "").splitlines()[0][:200] if err else ""
+    logger.warning("%s refused: path=%s reason=%s", tool, path, reason)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
                     session_id: str | None = None) -> str:
@@ -879,6 +892,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                "Strip read_file line-number prefixes or reconstruct the intended "
                "file contents before writing.")
     if err:
+        _log_write_refusal("write_file", path, err)
         return tool_error(err)
     try:
         # Resolution failure falls back to the legacy unlocked path (the write
@@ -976,6 +990,7 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         _entry_paths = collected[2]
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
+        _log_write_refusal("patch", path or "(v4a patch)", precheck_err)
         return tool_error(precheck_err)
     try:
         # Lock paths in sorted, deduplicated order so concurrent callers with

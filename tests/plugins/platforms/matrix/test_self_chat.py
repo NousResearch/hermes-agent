@@ -116,7 +116,7 @@ async def test_every_send_path_records_its_event_for_echo_suppression():
     type("U", (), {"transaction_id": "hermes_1727000000000_deadbeef"})(),  # attr-shaped (nio)
 ], ids=["dict", "attr"])
 async def test_hermes_txn_echoes_are_dropped(unsigned):
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     handled = []
     _wire(adapter, handled)
     await adapter._on_room_message(_Event(unsigned=unsigned, event_id="$echo"))
@@ -125,7 +125,7 @@ async def test_hermes_txn_echoes_are_dropped(unsigned):
 
 @pytest.mark.asyncio
 async def test_own_message_without_txn_is_processed_as_user_input():
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     handled = []
     _wire(adapter, handled)
     await adapter._on_room_message(_Event(unsigned={}, event_id="$typed"))
@@ -147,7 +147,7 @@ async def test_unresolved_identity_never_treats_strangers_as_owner():
     """`_is_self_sender` is fail-closed — True for EVERY sender while `_user_id` is unresolved.
     The self-chat branch must never consume that heuristic as "the owner is typing", or every DM
     from every other user reaches the agent (review finding #1)."""
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     adapter._user_id = ""  # whoami has not resolved yet
     handled = []
     _wire(adapter, handled)
@@ -160,7 +160,7 @@ async def test_group_room_is_never_self_chat_even_when_home_room(monkeypatch):
     """`MATRIX_HOME_ROOM` is a delivery target (/sethome writes it from any chat) — it must not
     license self-chat in a group room (review finding #2)."""
     monkeypatch.setenv("MATRIX_HOME_ROOM", _GROUP_ROOM)
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     handled = []
     _wire(adapter, handled)
     await adapter._on_room_message(_Event(room_id=_GROUP_ROOM, event_id="$homegroup"))
@@ -172,7 +172,7 @@ async def test_group_room_is_never_self_chat_even_when_home_room(monkeypatch):
 @pytest.mark.asyncio
 async def test_group_rooms_never_trigger_self_chat(monkeypatch):
     monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     handled = []
     _wire(adapter, handled)
     await adapter._on_room_message(_Event(room_id=_GROUP_ROOM, event_id="$group"))
@@ -201,7 +201,7 @@ async def test_self_chat_room_scope_fails_closed():
 
 @pytest.mark.asyncio
 async def test_reaction_echoes_drop_but_own_reactions_pass():
-    adapter = _make_adapter(**{"self_chat": "true"})
+    adapter = _make_adapter(self_chat="true")
     seen = []
 
     async def record(room_id, reacts_to, key, sender):

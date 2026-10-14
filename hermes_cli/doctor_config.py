@@ -295,6 +295,15 @@ def _validate_model_config(config_path, issues: list) -> None:
                    "(vendor-prefixed slugs belong to aggregators like openrouter)")
         issues.append(f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
                       "Either set model.provider to 'openrouter', or drop the vendor prefix.")
+    if model_base_url and runtime_provider and runtime_provider not in ("auto", "custom"):
+        from hermes_cli.runtime_provider import _stale_cross_provider_config_base_url
+        with warn_on_error(""):
+            if _stale_cross_provider_config_base_url(runtime_provider, model_base_url):
+                check_warn(f"model.base_url '{model_base_url}' is another provider's canonical endpoint",
+                           f"(model.provider is '{provider_raw}' — at runtime the stale URL is ignored)")
+                issues.append(f"model.base_url '{model_base_url}' belongs to a different provider than "
+                              f"model.provider '{provider_raw}'; every request to the mismatched pair 404s with a "
+                              "provider-looking outage message. Fix: run 'hermes config unset model.base_url'")
     if runtime_provider and runtime_provider not in ("auto", "custom"):
         from hermes_cli.doctor import _DHH
         with warn_on_error(""):

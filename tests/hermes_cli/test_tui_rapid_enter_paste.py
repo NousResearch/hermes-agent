@@ -62,3 +62,17 @@ def test_fast_backslash_continuation_still_consumes_the_backslash():
     shell._tui_handle_enter(_event(buf))          # < 50 ms after the text change
     assert buf.text == "alpha \n"
     shell._tui_enter_while_busy.assert_not_called()
+
+
+def test_busy_moa_slash_queues_for_after_turn_instead_of_steering():
+    """Classic CLI: /moa typed mid-run is queued on _pending_input and dispatched after the turn."""
+    import queue
+    shell = _shell()
+    shell._pending_input = queue.Queue()
+    buf = Buffer()
+    buf.on_text_changed += shell._tui_on_text_changed
+    buf.insert_text("/moa compare answers")
+    time.sleep(_RAPID_INPUT_ENTER_WINDOW_S * 3)
+    shell._tui_handle_enter(_event(buf))
+    shell._tui_enter_while_busy.assert_not_called()
+    assert shell._pending_input.get_nowait() == "/moa compare answers"

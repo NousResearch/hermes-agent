@@ -942,6 +942,30 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
+  it('keeps a queued /moa prompt in the Ink queue instead of steering the live turn', async () => {
+    patchUiState({ busy: true, busyInputMode: 'steer', sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            Promise.resolve(
+              method === 'slash.exec'
+                ? { display: '/moa compare', message: 'compare', notice: 'MoA queued', queued: true, type: 'send' }
+                : {}
+            )
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/moa compare')).toBe(true)
+    await vi.waitFor(() => expect(ctx.composer.enqueue).toHaveBeenCalledWith('compare', '/moa compare'))
+    expect(ctx.transcript.send).not.toHaveBeenCalled()
+  })
+
   it('/history pages the current TUI transcript (user + assistant)', () => {
     const ctx = buildCtx({
       local: {

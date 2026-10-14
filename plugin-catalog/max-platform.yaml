@@ -6,19 +6,7 @@ version: "2.11.0"
 requires_hermes: ">=0.21.4"
 image: https://raw.githubusercontent.com/Realmagnum/hermes-max-integration/50c7a9a7c16b6207a079b7b883718dd863e9e951/assets/banner.jpg
 docs_url: https://github.com/Realmagnum/hermes-max-integration/blob/50c7a9a7c16b6207a079b7b883718dd863e9e951/README.md
-description: >-
-  MAX messenger gateway with polling/webhook, streaming, interactive questions,
-  native attachments, Core voice transcription, optional PNG tables and a Desktop
-  sessions sidebar. Disclosure — sends bot credentials and message/file content
-  to the MAX Bot API (platform-api2.max.ru) and upload hosts; inbound downloads
-  use a host allowlist and SSRF protections. The bundled Russian Trusted Root CA
-  extends trust only for API/upload clients, not attachment downloads. Caches
-  media under HERMES_HOME. Webhook mode opens a listener and requires a secret
-  and public HTTPS; polling startup may remove existing webhook subscriptions.
-  Optional Playwright/Chromium rendering launches browser processes. A public
-  output hook adds filename captions to file-only MAX agent replies. No plugin
-  telemetry, self-update or Core source rewriting. The pinned Core dependency
-  audit reports PyJWT 2.13.0 advisories; see the pinned compatibility documentation.
+description: "MAX messenger gateway with polling/webhook, streaming, interactive questions, native attachments, Core voice transcription, optional PNG tables and a Desktop sessions sidebar. Disclosure — sends the bot token and message/file content to the MAX Bot API (platform-api2.max.ru) and MAX upload hosts (*.max.ru, *.oneme.ru, *.okcdn.ru). Inbound attachments are downloaded only for allowlisted senders, with SSRF protection, and cached under HERMES_HOME. The bundled Russian Trusted Root CA is trusted only by the MAX API/upload clients, not attachment downloads. Its platform hint lets the agent attach local host files to MAX replies via MEDIA paths, and a public output hook adds a filename caption to file-only MAX replies. Webhook mode opens a listener (default 0.0.0.0:8646) that requires a secret and public HTTPS. Polling startup deletes all of the bot's webhook subscriptions. Optional table rendering launches Playwright/Chromium; with MAX_AUTO_INSTALL_PLAYWRIGHT=true it pip-installs playwright==1.62.0 and downloads Chromium (~115 MB). The MAX allowlist does not honour Hermes pairing approvals. No telemetry or self-update."
 maintainer: Realmagnum
 tier: community
 category: platform

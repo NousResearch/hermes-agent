@@ -160,8 +160,13 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
     except Exception as exc:
         logger.info("describe: API call failed for %s (%s)", canon, exc)
         return DescribeOutcome(canon, False, f"LLM error: {type(exc).__name__}")
+    # Segmented (list) content from OpenAI-compatible relays: flatten at the
+    # extraction boundary — the old `or ""` passed the truthy list into
+    # _extract_json_blob's raw.strip(), raising AttributeError out of
+    # describe_profile and killing the whole profile sweep.
+    from agent.message_content import flatten_message_text
     try:
-        raw = resp.choices[0].message.content or ""
+        raw = flatten_message_text(resp.choices[0].message.content)
     except Exception:
         raw = ""
     parsed = _extract_json_blob(raw)

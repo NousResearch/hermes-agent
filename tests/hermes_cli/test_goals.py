@@ -97,6 +97,76 @@ class TestJudgeGoal:
         assert reason == "achieved"
 
 
+class TestJudgeGoalSegmentedContent:
+    """Relays returning list (segmented) content must not kill the loop.
+
+    Some OpenAI-compatible relays (e.g. dahetao.org glm-5.3-fast) return content as
+    [{"type": "thinking", ...}, {"type": "text", "text": ...}]; the old
+    `or ""` passthrough let the non-empty list (truthy) reach
+    _extract_json_object's raw.strip(), raising AttributeError that escaped
+    evaluate_after_turn BEFORE state._save() — the goal silently died as an
+    active orphan with turns_used=0.
+    """
+
+    @staticmethod
+    def _segmented_response():
+        msg = MagicMock()
+        msg.content = [
+            {"type": "thinking", "thinking": "must be dropped"},
+            {"type": "text", "text": '{"verdict": "done", "reason": "all tests pass"}'},
+        ]
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=msg)]
+        return resp
+
+    def test_segmented_content_yields_verdict(self):
+        from hermes_cli import goals
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=self._segmented_response(),
+        ):
+            verdict, reason, parse_failed, _wd, transport_failed = goals.judge_goal(
+                "goal", "agent response"
+            )
+        assert verdict == "done"
+        assert reason == "all tests pass"
+        assert parse_failed is False
+        assert transport_failed is False
+
+    def test_segmented_content_without_text_part_fails_open(self):
+        from hermes_cli import goals
+
+        msg = MagicMock()
+        msg.content = [{"type": "thinking", "thinking": "no text part"}]
+        resp = MagicMock()
+        resp.choices = [MagicMock(message=msg)]
+        with patch("agent.auxiliary_client.call_llm", return_value=resp):
+            verdict, reason, parse_failed, _wd, _tf = goals.judge_goal("goal", "response")
+        assert verdict == "continue"          # fail-open, never a crash
+        assert parse_failed is True           # flagged so the N-in-a-row pause can engage
+
+    def test_parser_crash_fails_open(self):
+        """Defense in depth: a bug inside _parse_judge_response must fail open
+        (continue) instead of raising out of judge_goal and killing the loop."""
+        from hermes_cli import goals
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=MagicMock(
+                choices=[MagicMock(message=MagicMock(content='{"verdict": "done"}'))]
+            ),
+        ), patch.object(
+            goals, "_parse_judge_response", side_effect=RuntimeError("parser bug")
+        ):
+            verdict, reason, parse_failed, _wd, transport_failed = goals.judge_goal(
+                "goal", "agent response"
+            )
+        assert verdict == "continue"
+        assert parse_failed is True
+        assert transport_failed is False
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

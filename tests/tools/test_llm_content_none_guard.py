@@ -85,3 +85,21 @@ class TestExtractContentOrReasoning:
             {"content": "", "reasoning_content": "short"},
             max_reasoning_chars=8000,
         ) == "short"
+
+    def test_segmented_list_content_flattened(self):
+        """Relays returning segmented (list) content: text parts must join as
+        the visible text, not be str()'d into Python repr garbage."""
+        response = _make_response([
+            {"type": "thinking", "thinking": "internal"},
+            {"type": "text", "text": "Visible summary"},
+        ])
+        assert extract_content_or_reasoning(response) == "Visible summary"
+
+    def test_segmented_list_without_text_parts_returns_reasoning_fallback(self):
+        """Thinking-only segmented content: no text parts → content is empty →
+        the structured reasoning-field fallback must engage (not repr garbage)."""
+        response = _make_response(
+            [{"type": "thinking", "thinking": "only thoughts"}],
+            reasoning="fallback text",
+        )
+        assert extract_content_or_reasoning(response) == "fallback text"

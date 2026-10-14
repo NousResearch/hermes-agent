@@ -133,6 +133,26 @@ class TestGenerateTitle:
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
 
+    def test_segmented_content_still_titles(self):
+        """Relays returning segmented (list) content must still produce a title.
+
+        The old `message.content or ""` passed the non-empty list (truthy)
+        into _extract_title_text, whose content.strip() raised inside the
+        surrounding try — the except swallowed it and generate_title
+        returned None, so sessions on such relays were never titled.
+        """
+        def mock_call_llm(**kwargs):
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = [
+                {"type": "thinking", "thinking": "internal"},
+                {"type": "text", "text": '{"title": "Segmented OK"}'},
+            ]
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question") == "Segmented OK"
+
     @pytest.mark.parametrize(
         ("content", "expected"),
         [

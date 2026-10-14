@@ -1112,7 +1112,12 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
     try:
-        raw = (resp.choices[0].message.content or "").strip()
+        # Segmented (list) content from OpenAI-compatible relays: flatten at the
+        # extraction boundary — the old `(content or "").strip()` raised
+        # AttributeError inside this try and every estimate degraded to a
+        # silent parse failure.
+        from agent.message_content import flatten_message_text
+        raw = flatten_message_text(resp.choices[0].message.content).strip()
         model = getattr(resp, "model", None)
     except Exception:
         raw, model = "", None

@@ -13,6 +13,7 @@ only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
 import subprocess
+import sys
 import time
 
 import pytest
@@ -684,8 +685,10 @@ def test_only_a_lone_printer_is_a_single_parse(command, single):
     assert _single_parse_only(command) is single
 
 
-# The premise, measured on a real shell: only a second parse turns `\>` into a redirect.
-@pytest.mark.linux_only
+# The premise, measured on a real shell: only a second parse turns `\>` into a redirect. Gated with a
+# plain skipif: this branch's base knows only `linux_only`, current main only `platforms("linux")`
+# and rejects the old mark at collection, and a skipif means the same thing under both.
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="measures a real bash")
 @pytest.mark.parametrize("script,writes", [
     ("echo hello \\> out", False),
     ("eval echo hello \\> out", True),

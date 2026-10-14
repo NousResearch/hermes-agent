@@ -19,6 +19,7 @@ import {
   switcherRowKey
 } from '../domain/sessionGroups.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
+import { type SwitcherIntent, switcherKeyIntent, type SwitcherRowKind } from '../domain/switcherKeys.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import { useSessionDelete } from '../hooks/useSessionDelete.js'
@@ -35,6 +36,7 @@ import { TextInput } from './textInput.js'
 const VISIBLE = 12
 
 type SwitcherListRow = SwitcherRow<SessionActiveItem, SessionListRow>
+type SwitcherHeaderRow = Extract<SwitcherListRow, { kind: 'header' }>
 // Enough to cover every row `session.list` can return (its own limit is 200).
 const PROJECT_TREE_SESSION_LIMIT = 500
 const MIN_WIDTH = 64
@@ -56,10 +58,7 @@ export const sessionStatusLabel = (status: string): string => {
   return labels[status] ?? status
 }
 
-const CTRL_OFFSET = 96
-
 const shortModel = (model = '') => model.replace(/^.*\//, '') || messages().pickers.session.modelUnknown
-const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
@@ -643,9 +642,6 @@ export function ActiveSessionSwitcher({
     [deriveHistory, items, rows.length]
   )
 
-  const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
-  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
-
   const cycleGroupView = useCallback((group: SessionGroup<SessionListRow>) => {
     const key = groupKey(group)
 
@@ -677,6 +673,22 @@ export function ActiveSessionSwitcher({
     setSel(i >= 0 ? i + 1 : Math.min(sel, nextRows.length))
   }, [grouped, groupViews, history, historyGroups, items, query, rows, sel])
 
+  const activateRow = useCallback(
+    (row: SwitcherListRow) => {
+      if (row.kind === 'live') {
+        onSelect(row.item.id)
+      } else if (row.kind === 'history') {
+        onResume(row.row.id)
+      } else {
+        cycleGroupView(row.group)
+      }
+    },
+    [cycleGroupView, onResume, onSelect]
+  )
+
+  const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
+  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
+
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
@@ -687,156 +699,70 @@ export function ActiveSessionSwitcher({
       }
 
       const row = rows[index - 1]
-      const clamped = Math.max(0, Math.min(index, total - 1))
 
-      if (row?.kind === 'live') {
-        setSel(clamped)
-        onSelect(row.item.id)
+      setSel(row ? Math.max(0, Math.min(index, total - 1)) : 0)
 
-        return
+      if (row) {
+        activateRow(row)
       }
-
-      if (row?.kind === 'history') {
-        setSel(clamped)
-        onResume(row.row.id)
-
-        return
-      }
-
-      if (row?.kind === 'header') {
-        setSel(clamped)
-        cycleGroupView(row.group)
-
-        return
-      }
-
-      setSel(0)
     },
-    [cycleGroupView, deletePending, onResume, onSelect, rows, total]
+    [activateRow, deletePending, rows, total]
   )
 
+  const onQueryChange = useCallback((value: string) => {
+    setQuery(value)
+    setSel(1)
+  }, [])
+
   const selectedRow = rows[sel - 1]
-  const selectedKind: 'header' | 'history' | 'live' | 'new' = sel === 0 || !selectedRow ? 'new' : selectedRow.kind
-  const newSelected = selectedKind === 'new'
+  const selectedKind: SwitcherRowKind = sel === 0 || !selectedRow ? 'new' : selectedRow.kind
   const draftHasText = Boolean(draft.trim())
 
+  // What each key meaning does; which key means what is `switcherKeyIntent` (domain/switcherKeys.ts).
+  const keyIntents: Record<Exclude<SwitcherIntent, 'none'>, () => void> = {
+    activate: () => (selectedRow ? activateRow(selectedRow) : onNew()),
+    'arm-delete': () => setConfirmDelete(selectedRow?.kind === 'history' ? selectedRow.row.id : null),
+    cancel: onCancel,
+    'clear-query': () => setQuery(''),
+    'close-live': () => void closeSelected(),
+    'delete-confirm': () => {
+      setConfirmDelete(null)
+      performDelete(history.find(h => h.id === confirmDelete))
+    },
+    'delete-dismiss': () => setConfirmDelete(null),
+    down: () => setSel(s => Math.min(total - 1, s + 1)),
+    new: onNew,
+    'open-search': () => setSearching(true),
+    'pick-model': () => setPickingModel(true),
+    refresh: () => void load(),
+    'search-cancel': () => {
+      setSearching(false)
+      setQuery('')
+    },
+    'search-down': () => setSel(s => Math.min(total - 1, s + 1)),
+    'search-up': () => setSel(s => Math.max(rows.length ? 1 : 0, s - 1)),
+    'toggle-group': toggleGrouped,
+    up: () => setSel(s => Math.max(0, s - 1))
+  }
+
   useInput((ch, key) => {
-    if (pickingModel || deletePending()) {
-      return
-    }
+    const intent = switcherKeyIntent(
+      {
+        busy: pickingModel || deletePending(),
+        canMoveDown: sel < total - 1,
+        canMoveUp: sel > 0,
+        confirmingDelete: confirmDelete !== null,
+        draftHasText,
+        hasQuery: Boolean(query),
+        kind: selectedKind,
+        searching
+      },
+      ch,
+      key
+    )
 
-    // Two-press history delete: once armed, only a second `d` deletes; any
-    // other key cancels the prompt (mirrors the standalone resume picker).
-    if (confirmDelete !== null) {
-      if (ch?.toLowerCase() === 'd') {
-        setConfirmDelete(null)
-        performDelete(history.find(h => h.id === confirmDelete))
-      } else {
-        setConfirmDelete(null)
-      }
-
-      return
-    }
-
-    const lower = ch?.toLowerCase() ?? ''
-    const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
-
-    // Search box: keys belong to it; arrows still move through the matches and
-    // Enter (its onSubmit) keeps the filter and returns to the list.
-    if (searching) {
-      if (key.escape) {
-        setSearching(false)
-        setQuery('')
-      } else if (key.upArrow) {
-        setSel(s => Math.max(rows.length ? 1 : 0, s - 1))
-      } else if (key.downArrow) {
-        setSel(s => Math.min(total - 1, s + 1))
-      }
-
-      return
-    }
-
-    if (key.escape) {
-      return query ? setQuery('') : onCancel()
-    }
-
-    if (isCtrl('n')) {
-      return onNew()
-    }
-
-    if (isCtrl('r')) {
-      void load()
-
-      return
-    }
-
-    if (key.tab) {
-      if (newSelected) {
-        setPickingModel(true)
-      }
-
-      return
-    }
-
-    if (isCtrl('d')) {
-      if (selectedKind === 'live') {
-        void closeSelected()
-      }
-
-      return
-    }
-
-    // `d` arms deletion on a resumable history row. (On the New row `d` is
-    // captured by the prompt's TextInput, so it never reaches here.)
-    if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(selectedRow?.kind === 'history' ? selectedRow.row.id : null)
-
-      return
-    }
-
-    if (ch === '/' && !key.ctrl && !key.meta && !newSelected) {
-      setSearching(true)
-
-      return
-    }
-
-    // `g` ungroups / regroups by project (typed into the prompt on the New row).
-    if (lower === 'g' && !key.ctrl && !key.meta && !newSelected) {
-      return toggleGrouped()
-    }
-
-    if (newSelected && draftHasText) {
-      return
-    }
-
-    if (key.upArrow && sel > 0) {
-      return setSel(s => Math.max(0, s - 1))
-    }
-
-    if (key.downArrow && sel < total - 1) {
-      return setSel(s => Math.min(total - 1, s + 1))
-    }
-
-    if (key.return) {
-      if (newSelected) {
-        if (!draftHasText) {
-          return onNew()
-        }
-
-        return
-      }
-
-      if (selectedRow?.kind === 'live') {
-        return onSelect(selectedRow.item.id)
-      }
-
-      if (selectedRow?.kind === 'history') {
-        return onResume(selectedRow.row.id)
-      }
-
-      if (selectedRow?.kind === 'header') {
-        return cycleGroupView(selectedRow.group)
-      }
+    if (intent !== 'none') {
+      keyIntents[intent]()
     }
   })
 
@@ -867,12 +793,6 @@ export function ActiveSessionSwitcher({
   const visibleCount = Math.max(0, Math.min(VISIBLE, listLen - offset))
   const visibleRows = Array.from({ length: visibleCount }, (_, k) => offset + k + 1)
 
-  const newSelectedRow = sel === 0
-  const newRowStyle = newSelectedRow ? selectedSessionRowStyle(t) : null
-  const newRowTextColor = newRowStyle?.color
-  const newRowMarkerColor = newSessionMarkerColor(t, newSelectedRow)
-  const promptTitle = draftTitleFromPrompt(draft) || S.row.startNew
-
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
@@ -883,261 +803,388 @@ export function ActiveSessionSwitcher({
       {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
 
       {(searching || query) && (
-        <Box>
-          <Text color={t.color.label}>{S.searchPrompt}</Text>
-          {searching ? (
-            <TextInput
-              color={t.color.text}
-              columns={promptColumns}
-              onChange={value => {
-                setQuery(value)
-                setSel(1)
-              }}
-              onSubmit={() => setSearching(false)}
-              value={query}
-            />
-          ) : (
-            <Text color={t.color.text}>
-              {query}
-              <Text color={t.color.muted}>{S.searchClear}</Text>
-            </Text>
-          )}
-        </Box>
+        <SearchLine
+          columns={promptColumns}
+          onChange={onQueryChange}
+          onSubmit={() => setSearching(false)}
+          query={query}
+          searching={searching}
+          t={t}
+        />
       )}
 
-      <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
-        <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
-          {newSelectedRow ? '▸ ' : '  '}
-        </Text>
-
-        <Box {...fixedSessionColumnStyle()} width={5}>
-          <Text bold={newSelectedRow} color={newRowMarkerColor}>
-            {'+'.padStart(2)}
-          </Text>
-        </Box>
-
-        <Box {...fixedSessionColumnStyle()} width={11}>
-          <Text bold={newSelectedRow} color={newRowMarkerColor} wrap="truncate-end">
-            {S.row.new}
-          </Text>
-        </Box>
-
-        <Box {...fixedSessionColumnStyle()} width={11}>
-          <Text color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
-            {S.row.draft}
-          </Text>
-        </Box>
-
-        <Box {...fixedSessionColumnStyle()} width={18}>
-          <Text color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
-            {draftModelDisplayLabel(draftModel)}
-          </Text>
-        </Box>
-
-        <Box flexGrow={1} flexShrink={1} minWidth={0}>
-          <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
-            {promptTitle}
-          </Text>
-        </Box>
-      </Box>
+      <NewSessionRow draft={draft} draftModel={draftModel} onClick={handleRowClick(0)} selected={sel === 0} t={t} />
 
       {offset > 0 && <Text color={t.color.muted}>{C.moreAbove(offset)}</Text>}
       {!listLen && <Text color={t.color.muted}>{query ? S.noMatches : S.noOtherSessions}</Text>}
 
-      {visibleRows.map(i => {
-        const selected = sel === i
-        const selectedStyle = selected ? selectedSessionRowStyle(t) : null
-        const rowTextColor = selectedStyle?.color
-        const row = rows[i - 1]!
-
-        if (row.kind === 'header') {
-          const { group, shown, view } = row
-          const marker = view === 'collapsed' ? '▸' : view === 'all' ? '▼' : '▾'
-
-          // A collapsed header shows no sessions by design, so `0/n` would read as an empty project.
-          const count =
-            view === 'collapsed' || shown === group.rows.length
-              ? `${group.rows.length}`
-              : `${shown}/${group.rows.length}`
-
-          return (
-            <Box
-              backgroundColor={selectedStyle?.backgroundColor}
-              flexDirection="row"
-              key={`group:${groupKey(group)}`}
-              onClick={handleRowClick(i)}
-              width="100%"
-            >
-              <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                {selected ? '▸ ' : '  '}
-              </Text>
-              <Text bold color={rowTextColor ?? t.color.accent} wrap="truncate-end">
-                {`${marker} ${group.label} (${count})`}
-              </Text>
-            </Box>
-          )
-        }
-
-        if (row.kind === 'history') {
-          const h = row.row
-          const pendingDelete = confirmDelete === h.id
-
-          const title = pendingDelete
-            ? S.row.pressDAgain
-            : deleting && selected
-              ? S.row.deleting
-              : h.title || h.preview || S.row.untitled
-
-          return (
-            <Box
-              backgroundColor={selectedStyle?.backgroundColor}
-              flexDirection="row"
-              key={h.id}
-              onClick={handleRowClick(i)}
-              width="100%"
-            >
-              <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                {selected ? '▸ ' : '  '}
-              </Text>
-
-              <Box {...fixedSessionColumnStyle()} width={5}>
-                <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                  {String(i).padStart(2)}.
-                </Text>
-              </Box>
-
-              <Box {...fixedSessionColumnStyle()} width={11}>
-                <Text bold={selected} color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {h.id}
-                </Text>
-              </Box>
-
-              <Box {...fixedSessionColumnStyle()} width={11}>
-                <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {relativeSessionAge(h.started_at)}
-                </Text>
-              </Box>
-
-              <Box {...fixedSessionColumnStyle()} width={18}>
-                <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {S.row.messageCount(h.message_count ?? 0)}
-                </Text>
-              </Box>
-
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text
-                  bold={selected}
-                  color={pendingDelete ? t.color.label : (rowTextColor ?? t.color.muted)}
-                  wrap="truncate-end"
-                >
-                  {title}
-                </Text>
-              </Box>
-            </Box>
-          )
-        }
-
-        const s = row.item
-        const status = s.status ?? 'idle'
-        const current = s.current || s.id === currentSessionId
-        const title = closingId === s.id ? S.row.closing : s.title || s.preview || S.row.untitled
-
-        return (
-          <Box
-            backgroundColor={selectedStyle?.backgroundColor}
-            flexDirection="row"
-            key={s.id}
-            onClick={handleRowClick(i)}
-            width="100%"
-          >
-            <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-              {selected ? '▸ ' : '  '}
-            </Text>
-
-            <Box {...fixedSessionColumnStyle()} width={5}>
-              <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                {String(i).padStart(2)}.
-              </Text>
-            </Box>
-
-            <Box {...fixedSessionColumnStyle()} width={11}>
-              <Text
-                bold={selected}
-                color={rowTextColor ?? (current ? t.color.label : t.color.muted)}
-                wrap="truncate-end"
-              >
-                {current ? S.row.current : s.id}
-              </Text>
-            </Box>
-
-            <Box {...fixedSessionColumnStyle()} width={11}>
-              <Text
-                color={
-                  rowTextColor ??
-                  (status === 'working' ? t.color.ok : status === 'waiting' ? t.color.label : t.color.muted)
-                }
-                wrap="truncate-end"
-              >
-                {STATUS_GLYPH[status] ?? '·'} {sessionStatusLabel(status)}
-              </Text>
-            </Box>
-
-            <Box {...fixedSessionColumnStyle()} width={18}>
-              <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                {shortModel(s.model)}
-              </Text>
-            </Box>
-
-            <Box flexGrow={1} flexShrink={1} minWidth={0}>
-              <Text bold={selected} color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                {title}
-              </Text>
-            </Box>
-          </Box>
-        )
-      })}
+      {visibleRows.map(i => (
+        <SwitcherListRowView
+          closingId={closingId}
+          confirmDelete={confirmDelete}
+          currentSessionId={currentSessionId}
+          deleting={deleting}
+          index={i}
+          key={switcherRowKey(rows[i - 1]!)}
+          onClick={handleRowClick(i)}
+          row={rows[i - 1]!}
+          selected={sel === i}
+          t={t}
+        />
+      ))}
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}>{C.moreBelow(listLen - offset - VISIBLE)}</Text>}
 
-      {newSelected && !searching ? (
-        <>
-          <Box marginTop={1}>
-            <Text color={t.color.label}>{S.promptLabel}</Text>
-            <TextInput
-              color={t.color.text}
-              columns={promptColumns}
-              onChange={setDraft}
-              onSubmit={submitDraft}
-              value={draft}
-            />
-          </Box>
-          <OrchestratorHintText segments={orchestratorContextHintSegments(true)} t={t} />
-          <Text color={t.color.muted} wrap="truncate-end">
-            {S.draftModel(draftModelDisplayLabel(draftModel))}
-          </Text>
-        </>
-      ) : (
-        <Box flexDirection="column" marginTop={1}>
-          <OrchestratorHintText
-            segments={
-              selectedKind === 'header'
-                ? groupRowContextHintSegments()
-                : selectedKind === 'history'
-                  ? resumeRowContextHintSegments(historyGroups.length ? (grouped ? 'ungroup' : 'group') : null)
-                  : orchestratorContextHintSegments(false)
-            }
-            t={t}
-          />
-          <Text color={t.color.muted} wrap="truncate-end">
-            {S.selectNewPrefix}
-            <Text color={newSessionMarkerColor(t, false)}>{S.newRowMarker}</Text>
-            {S.selectNewSuffix}
-          </Text>
-          {!searching && <Text color={t.color.muted}>{S.searchHint}</Text>}
-        </Box>
-      )}
+      <SwitcherFooter
+        draft={draft}
+        draftModel={draftModel}
+        kind={selectedKind}
+        onDraftChange={setDraft}
+        onDraftSubmit={submitDraft}
+        promptColumns={promptColumns}
+        searching={searching}
+        t={t}
+        toggle={historyGroups.length ? (grouped ? 'ungroup' : 'group') : null}
+      />
 
       <OrchestratorHintText segments={orchestratorGlobalHotkeyHintSegments()} t={t} />
+    </Box>
+  )
+}
+
+const rowSelection = (t: Theme, selected: boolean) => {
+  const style = selected ? selectedSessionRowStyle(t) : null
+
+  return { backgroundColor: style?.backgroundColor, color: style?.color }
+}
+
+interface SwitcherRowProps {
+  onClick: (event: { stopImmediatePropagation?: () => void }) => void
+  selected: boolean
+  t: Theme
+}
+
+function SearchLine({
+  columns,
+  onChange,
+  onSubmit,
+  query,
+  searching,
+  t
+}: {
+  columns: number
+  onChange: (value: string) => void
+  onSubmit: () => void
+  query: string
+  searching: boolean
+  t: Theme
+}) {
+  const S = useT().pickers.session
+
+  return (
+    <Box>
+      <Text color={t.color.label}>{S.searchPrompt}</Text>
+      {searching ? (
+        <TextInput color={t.color.text} columns={columns} onChange={onChange} onSubmit={onSubmit} value={query} />
+      ) : (
+        <Text color={t.color.text}>
+          {query}
+          <Text color={t.color.muted}>{S.searchClear}</Text>
+        </Text>
+      )}
+    </Box>
+  )
+}
+
+function NewSessionRow({
+  draft,
+  draftModel,
+  onClick,
+  selected,
+  t
+}: SwitcherRowProps & { draft: string; draftModel: string }) {
+  const S = useT().pickers.session
+  const { backgroundColor, color } = rowSelection(t, selected)
+  const markerColor = newSessionMarkerColor(t, selected)
+
+  return (
+    <Box backgroundColor={backgroundColor} flexDirection="row" onClick={onClick} width="100%">
+      <Text bold={selected} color={color ?? t.color.muted}>
+        {selected ? '▸ ' : '  '}
+      </Text>
+
+      <Box {...fixedSessionColumnStyle()} width={5}>
+        <Text bold={selected} color={markerColor}>
+          {'+'.padStart(2)}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text bold={selected} color={markerColor} wrap="truncate-end">
+          {S.row.new}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text color={color ?? t.color.muted} wrap="truncate-end">
+          {S.row.draft}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={18}>
+        <Text color={color ?? t.color.muted} wrap="truncate-end">
+          {draftModelDisplayLabel(draftModel)}
+        </Text>
+      </Box>
+
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Text bold={selected} color={color ?? t.color.muted} wrap="truncate-end">
+          {draftTitleFromPrompt(draft) || S.row.startNew}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
+function GroupHeaderRow({ row, onClick, selected, t }: SwitcherRowProps & { row: SwitcherHeaderRow }) {
+  const { group, shown, view } = row
+  const { backgroundColor, color } = rowSelection(t, selected)
+  const marker = view === 'collapsed' ? '▸' : view === 'all' ? '▼' : '▾'
+
+  // A collapsed header shows no sessions by design, so `0/n` would read as an empty project.
+  const count =
+    view === 'collapsed' || shown === group.rows.length ? `${group.rows.length}` : `${shown}/${group.rows.length}`
+
+  return (
+    <Box backgroundColor={backgroundColor} flexDirection="row" onClick={onClick} width="100%">
+      <Text bold={selected} color={color ?? t.color.muted}>
+        {selected ? '▸ ' : '  '}
+      </Text>
+      <Text bold color={color ?? t.color.accent} wrap="truncate-end">
+        {`${marker} ${group.label} (${count})`}
+      </Text>
+    </Box>
+  )
+}
+
+function HistoryRow({
+  deleting,
+  h,
+  index,
+  onClick,
+  pendingDelete,
+  selected,
+  t
+}: SwitcherRowProps & { deleting: boolean; h: SessionListRow; index: number; pendingDelete: boolean }) {
+  const S = useT().pickers.session
+  const { backgroundColor, color } = rowSelection(t, selected)
+
+  const title = pendingDelete
+    ? S.row.pressDAgain
+    : deleting && selected
+      ? S.row.deleting
+      : h.title || h.preview || S.row.untitled
+
+  return (
+    <Box backgroundColor={backgroundColor} flexDirection="row" onClick={onClick} width="100%">
+      <Text bold={selected} color={color ?? t.color.muted}>
+        {selected ? '▸ ' : '  '}
+      </Text>
+
+      <Box {...fixedSessionColumnStyle()} width={5}>
+        <Text bold={selected} color={color ?? t.color.muted}>
+          {String(index).padStart(2)}.
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text bold={selected} color={color ?? t.color.muted} wrap="truncate-end">
+          {h.id}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text color={color ?? t.color.muted} wrap="truncate-end">
+          {relativeSessionAge(h.started_at)}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={18}>
+        <Text color={color ?? t.color.muted} wrap="truncate-end">
+          {S.row.messageCount(h.message_count ?? 0)}
+        </Text>
+      </Box>
+
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Text bold={selected} color={pendingDelete ? t.color.label : (color ?? t.color.muted)} wrap="truncate-end">
+          {title}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
+const liveStatusColor = (t: Theme, status: string) =>
+  status === 'working' ? t.color.ok : status === 'waiting' ? t.color.label : t.color.muted
+
+function LiveRow({
+  closing,
+  current,
+  index,
+  onClick,
+  s,
+  selected,
+  t
+}: SwitcherRowProps & { closing: boolean; current: boolean; index: number; s: SessionActiveItem }) {
+  const S = useT().pickers.session
+  const { backgroundColor, color } = rowSelection(t, selected)
+  const status = s.status ?? 'idle'
+  const title = closing ? S.row.closing : s.title || s.preview || S.row.untitled
+
+  return (
+    <Box backgroundColor={backgroundColor} flexDirection="row" onClick={onClick} width="100%">
+      <Text bold={selected} color={color ?? t.color.muted}>
+        {selected ? '▸ ' : '  '}
+      </Text>
+
+      <Box {...fixedSessionColumnStyle()} width={5}>
+        <Text bold={selected} color={color ?? t.color.muted}>
+          {String(index).padStart(2)}.
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text bold={selected} color={color ?? (current ? t.color.label : t.color.muted)} wrap="truncate-end">
+          {current ? S.row.current : s.id}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={11}>
+        <Text color={color ?? liveStatusColor(t, status)} wrap="truncate-end">
+          {STATUS_GLYPH[status] ?? '·'} {sessionStatusLabel(status)}
+        </Text>
+      </Box>
+
+      <Box {...fixedSessionColumnStyle()} width={18}>
+        <Text color={color ?? t.color.muted} wrap="truncate-end">
+          {shortModel(s.model)}
+        </Text>
+      </Box>
+
+      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+        <Text bold={selected} color={color ?? t.color.muted} wrap="truncate-end">
+          {title}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
+function SwitcherListRowView({
+  closingId,
+  confirmDelete,
+  currentSessionId,
+  deleting,
+  index,
+  row,
+  ...rest
+}: SwitcherRowProps & {
+  closingId: string
+  confirmDelete: null | string
+  currentSessionId: null | string
+  deleting: boolean
+  index: number
+  row: SwitcherListRow
+}) {
+  if (row.kind === 'header') {
+    return <GroupHeaderRow row={row} {...rest} />
+  }
+
+  if (row.kind === 'history') {
+    return (
+      <HistoryRow
+        deleting={deleting}
+        h={row.row}
+        index={index}
+        pendingDelete={confirmDelete === row.row.id}
+        {...rest}
+      />
+    )
+  }
+
+  const s = row.item
+
+  return (
+    <LiveRow
+      closing={closingId === s.id}
+      current={Boolean(s.current) || s.id === currentSessionId}
+      index={index}
+      s={s}
+      {...rest}
+    />
+  )
+}
+
+const contextHintSegments = (kind: SwitcherRowKind, toggle: 'group' | 'ungroup' | null) =>
+  kind === 'header'
+    ? groupRowContextHintSegments()
+    : kind === 'history'
+      ? resumeRowContextHintSegments(toggle)
+      : orchestratorContextHintSegments(false)
+
+function SwitcherFooter({
+  draft,
+  draftModel,
+  kind,
+  onDraftChange,
+  onDraftSubmit,
+  promptColumns,
+  searching,
+  t,
+  toggle
+}: {
+  draft: string
+  draftModel: string
+  kind: SwitcherRowKind
+  onDraftChange: (value: string) => void
+  onDraftSubmit: (value: string) => void
+  promptColumns: number
+  searching: boolean
+  t: Theme
+  toggle: 'group' | 'ungroup' | null
+}) {
+  const S = useT().pickers.session
+
+  if (kind === 'new' && !searching) {
+    return (
+      <>
+        <Box marginTop={1}>
+          <Text color={t.color.label}>{S.promptLabel}</Text>
+          <TextInput
+            color={t.color.text}
+            columns={promptColumns}
+            onChange={onDraftChange}
+            onSubmit={onDraftSubmit}
+            value={draft}
+          />
+        </Box>
+        <OrchestratorHintText segments={orchestratorContextHintSegments(true)} t={t} />
+        <Text color={t.color.muted} wrap="truncate-end">
+          {S.draftModel(draftModelDisplayLabel(draftModel))}
+        </Text>
+      </>
+    )
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <OrchestratorHintText segments={contextHintSegments(kind, toggle)} t={t} />
+      <Text color={t.color.muted} wrap="truncate-end">
+        {S.selectNewPrefix}
+        <Text color={newSessionMarkerColor(t, false)}>{S.newRowMarker}</Text>
+        {S.selectNewSuffix}
+      </Text>
+      {!searching && <Text color={t.color.muted}>{S.searchHint}</Text>}
     </Box>
   )
 }

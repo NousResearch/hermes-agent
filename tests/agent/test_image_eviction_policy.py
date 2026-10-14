@@ -37,8 +37,9 @@ MB = 1_000_000
         ([OUTBOUND_IMAGE_LIMIT + 5], 0, None, 0, 1),
         # four 10-block carriers: retire until it fits, not everything
         ([10, 10, 10, 10], 0, None, 0, 2),
-        # uploads alone breach: unfixable, keep the floor
-        ([1] * 5, OUTBOUND_IMAGE_LIMIT + 1, None, 0, 5 - OUTBOUND_IMAGE_FLOOR),
+        # uploads alone breach: unfixable, shelter the floor, retire only whole batches
+        ([1] * 5, OUTBOUND_IMAGE_LIMIT + 1, None, 0, 0),
+        ([1] * (OUTBOUND_IMAGE_FLOOR + IMAGE_EVICTION_BATCH), OUTBOUND_IMAGE_LIMIT + 1, None, 0, IMAGE_EVICTION_BATCH),
         # uploads alone breach with fewer carriers than the floor: nothing to gain
         ([1, 1], OUTBOUND_IMAGE_LIMIT + 5, None, 0, 0),
         # byte pressure from uploads: floor never shelters a 413
@@ -67,3 +68,29 @@ def test_quantum_shrinks_to_the_fit_window_for_heavy_carriers():
     assert all(3 * (n - c) <= OUTBOUND_IMAGE_LIMIT for n, c in zip(range(window + 1, window + 10), counts))
     moves = sum(a != b for a, b in itertools.pairwise(counts))
     assert moves <= len(counts) // (window - OUTBOUND_IMAGE_FLOOR)
+
+
+def test_unfixable_upload_breach_still_retires_in_batches():
+    """#133999: when reserved uploads alone exceed the block ceiling, retiring tool images
+    cannot make the request fit, so the retire count must still be a step function of the
+    carrier count. Retiring to exactly ``total - floor`` would rewrite the cached prefix on
+    every new tool image."""
+    uploads = 51
+    span = range(1, 31)
+    counts = [outbound_image_retire_count([1] * n, uploads) for n in span]
+    kept = [n - c for n, c in zip(span, counts)]
+    assert all(k >= min(n, OUTBOUND_IMAGE_FLOOR) for n, k in zip(span, kept))
+    assert all(k < OUTBOUND_IMAGE_FLOOR + IMAGE_EVICTION_BATCH for k in kept)
+    moves = sum(a != b for a, b in itertools.pairwise(counts))
+    assert moves <= -(-(len(span) - OUTBOUND_IMAGE_FLOOR) // IMAGE_EVICTION_BATCH)
+
+
+def test_unfixable_upload_breach_still_honours_the_byte_budget():
+    """The batch hold never keeps a request over the byte budget: it advances further (down
+    to the floor at most) until the kept carriers fit."""
+    sizes = [3 * MB] * 10
+    retire = outbound_image_retire_count(
+        [1] * 10, OUTBOUND_IMAGE_LIMIT + 1, carrier_bytes_newest_first=sizes, reserved_bytes=10 * MB
+    )
+    assert 10 * MB + 3 * MB * (10 - retire) <= 24 * MB
+    assert 10 - retire >= OUTBOUND_IMAGE_FLOOR

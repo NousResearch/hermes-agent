@@ -1,0 +1,19 @@
+name: make-parts-now
+title: Make Parts Now
+repo: https://github.com/makepartsnow/makepartsnow-hermes
+sha: 116918e75d82cbe3fc94e419fe57a8c19ee38de6
+description: "Quote and order custom 3D printed and CNC machined parts from your CAD files through the hosted Make Parts Now MCP server (Streamable HTTP, no sign-in to quote), with the quote-parts workflow skill bundled: upload an STL, STEP, 3MF or OBJ file, get the price and ship date for each production speed (SLS nylon, FDM plastic, CNC aluminum and brass), change the quantity, material or speed, and get a checkout link. Portable Agent Plugins v1 package (mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to makepartsnow.com. To quote a local file, the agent PUTs that one CAD file to a one-time upload link with curl through the terminal tool (Hermes approvals apply), or gives the user an upload page. Nothing is charged in the chat: a checkout link opens Stripe Checkout on makepartsnow.com, where the user enters the address and pays. US shipping only."
+maintainer: Make Parts Now
+tier: community
+category: tools
+version: "1.0.0"
+docs_url: https://github.com/makepartsnow/makepartsnow-hermes
+image: https://raw.githubusercontent.com/makepartsnow/makepartsnow-hermes/116918e75d82cbe3fc94e419fe57a8c19ee38de6/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Order status needs a signed-in Make Parts Now account, which the plugin's server doesn't have; it answers with a link to makepartsnow.com/orders. To ask Hermes about orders, add a signed-in server once: hermes mcp add makepartsnow-orders --url \"https://makepartsnow.com/mcp/assistant/signin?client=hermes\" --auth oauth --connect-timeout 300"

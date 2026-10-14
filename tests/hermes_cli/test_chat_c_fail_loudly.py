@@ -15,7 +15,16 @@ Two behaviors are fixed here:
    deterministic "send to this named thread, making it if needed" primitive.
 """
 
+import sys
+import types
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_bootstrap(monkeypatch):
+    """These CLI helper tests do not exercise PM bootstrap activation."""
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap", types.ModuleType("hermes_bootstrap"))
 
 
 @pytest.fixture
@@ -82,6 +91,38 @@ class TestCreateTitledSession:
         try:
             resolved = db.resolve_session_by_title("Bot Chat")
             assert resolved == sid
+        finally:
+            db.close()
+
+    def test_create_if_missing_records_in_dir_workspace(self, isolated_home, tmp_path, monkeypatch):
+        """The complete ``--in`` resolution path persists the selected repo and branch."""
+        import hermes_cli.main as main_mod
+
+        workspace = tmp_path / "wedding-planner"
+        workspace.mkdir()
+        monkeypatch.setattr("tui_gateway.git_probe.branch", lambda cwd: "main")
+        monkeypatch.setattr("tui_gateway.git_probe.common_repo_root", lambda cwd: str(workspace))
+        args = types.SimpleNamespace(
+            in_dir=str(workspace),
+            continue_last="Wedding Planner MVP3",
+            create_if_missing=True,
+            resume=None,
+            no_restore_cwd=False,
+            worktree=False,
+        )
+
+        main_mod._resolve_chat_session_args(args, use_tui=False)
+        assert args.resume
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(args.resume)
+            assert session is not None
+            assert session["cwd"] == str(workspace)
+            assert session["git_repo_root"] == str(workspace)
+            assert session["git_branch"] == "main"
         finally:
             db.close()
 

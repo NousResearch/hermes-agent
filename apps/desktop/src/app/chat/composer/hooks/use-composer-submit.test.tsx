@@ -10,7 +10,7 @@ import {
   type ComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
-import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
 import { $onboardingPhase } from '@/store/onboarding-phase'
@@ -114,7 +114,6 @@ function renderSubmitHook({
         disabled: false,
         draftScopeRef,
         draftRef,
-        drainNextQueued: vi.fn(async () => false),
         editorRef,
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
@@ -126,7 +125,6 @@ function renderSubmitHook({
         onSubmit,
         queueCurrentDraft,
         queueEdit: null,
-        queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
         stashAt
@@ -154,6 +152,27 @@ function renderSubmitHook({
     }
   }
 }
+
+describe('useComposerSubmit empty-idle behavior', () => {
+  afterEach(() => {
+    cleanup()
+    clearQueuedPrompts('stored-session')
+    vi.restoreAllMocks()
+  })
+
+  it('does not drain a queued message from an empty form submission', () => {
+    const entry = enqueueQueuedPrompt('stored-session', { attachments: [], text: 'keep queued' })!
+    const { hook, onSubmit, onCancel } = renderSubmitHook()
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session').map(item => item.id)).toEqual([entry.id])
+  })
+})
 
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {

@@ -10,6 +10,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { parse } from 'yaml'
+
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
@@ -194,9 +196,15 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
   return null
 }
 
-// A top-level `provides_locales:` with a non-empty value — either inline (`[ko]`) or a block list on
-// the following lines. Empty forms (`[]`, `{}`, `null`, `~`, `''`) declare nothing, as in the backend.
-const PROVIDES_LOCALES_RE = /^provides_locales:(?![ \t]*(?:\[\s*\]|\{\s*\}|null|~|''|"")[ \t]*(?:#.*)?$)/m
+// The backend's truthiness check on `provides_locales`: a non-empty list, mapping or string. Empty
+// forms (`[]`, `{}`, `''`) and a bare key (YAML null) declare nothing.
+function isDeclared(value: unknown): boolean {
+  if (Array.isArray(value) || typeof value === 'string') {
+    return value.length > 0
+  }
+
+  return value !== null && typeof value === 'object' && Object.keys(value).length > 0
+}
 
 async function declaresLanguagePack(yamlPath: string, pluginRoot: string): Promise<boolean> {
   if (!pathExistsSync(path.join(pluginRoot, 'locales'))) {
@@ -204,7 +212,9 @@ async function declaresLanguagePack(yamlPath: string, pluginRoot: string): Promi
   }
 
   try {
-    return PROVIDES_LOCALES_RE.test(await fsp.readFile(yamlPath, 'utf8'))
+    const manifest: unknown = parse(await fsp.readFile(yamlPath, 'utf8'), { maxAliasCount: 20 })
+
+    return isDeclared((manifest as { provides_locales?: unknown } | null)?.provides_locales)
   } catch {
     return false
   }

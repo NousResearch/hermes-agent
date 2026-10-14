@@ -159,11 +159,25 @@ describe('detectPluginComponents', () => {
     await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: false, desktop: false })
   })
 
-  it('does not treat an empty provides_locales as a language pack', async () => {
+  it('accepts a block list that follows a comment on the key line', async () => {
     const root = mkdtemp('hermes-plugin-langpack-')
     roots.push(root)
     fs.mkdirSync(path.join(root, 'locales'), { recursive: true })
-    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: empty-pack\nprovides_locales: []\n')
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), 'name: commented-pack\nprovides_locales: # languages\n  - xx\n')
+
+    await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: true, agentName: 'commented-pack' })
+  })
+
+  it.each([
+    ['empty list', 'provides_locales: []\n'],
+    ['bare key at end of file (null)', 'provides_locales:\n'],
+    ['bare key before another key (null)', 'provides_locales:\nversion: 1.0.0\n'],
+    ['bare key with only a comment (null)', 'provides_locales: # none yet\n']
+  ])('does not treat %s as a language pack', async (_label, manifestTail) => {
+    const root = mkdtemp('hermes-plugin-langpack-')
+    roots.push(root)
+    fs.mkdirSync(path.join(root, 'locales'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'plugin.yaml'), `name: empty-pack\n${manifestTail}`)
 
     await expect(detectPluginComponents(root)).resolves.toMatchObject({ agent: false, desktop: false })
   })

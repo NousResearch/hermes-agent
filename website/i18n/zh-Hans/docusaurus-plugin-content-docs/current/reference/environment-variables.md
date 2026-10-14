@@ -75,8 +75,12 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `NOVITA_BASE_URL` | 覆盖 NovitaAI base URL（默认：`https://api.novita.ai/openai/v1`） |
 | `NVIDIA_API_KEY` | NVIDIA NIM API 密钥——Nemotron 及开源模型（[build.nvidia.com](https://build.nvidia.com)） |
 | `NVIDIA_BASE_URL` | 覆盖 NVIDIA base URL（默认：`https://integrate.api.nvidia.com/v1`；本地 NIM 端点设为 `http://localhost:8000/v1`） |
-| `STEPFUN_API_KEY` | StepFun API 密钥——Step 系列模型（[platform.stepfun.com](https://platform.stepfun.com)） |
-| `STEPFUN_BASE_URL` | 覆盖 StepFun base URL（默认：`https://api.stepfun.com/v1`） |
+| `STEPFUN_API_KEY` | StepFun 国际站 API 密钥——`stepfun` 与 `stepfun-plan`（[platform.stepfun.ai](https://platform.stepfun.ai)） |
+| `STEPFUN_CN_API_KEY` | StepFun 国内 API 密钥——`stepfun-cn` 与 `stepfun-plan-cn`（[platform.stepfun.com](https://platform.stepfun.com)）。账号按地区隔离：国际站 key 调用 `api.stepfun.com` 会 401 |
+| `STEPFUN_BASE_URL` | 覆盖 `stepfun` 的 base URL（默认：`https://api.stepfun.ai/v1`） |
+| `STEPFUN_CN_BASE_URL` | 覆盖 `stepfun-cn` 的 base URL（默认：`https://api.stepfun.com/v1`） |
+| `STEPFUN_STEP_PLAN_BASE_URL` | 覆盖 `stepfun-plan` 的 base URL（默认：`https://api.stepfun.ai/step_plan/v1`） |
+| `STEPFUN_CN_STEP_PLAN_BASE_URL` | 覆盖 `stepfun-plan-cn` 的 base URL（默认：`https://api.stepfun.com/step_plan/v1`） |
 | `OLLAMA_API_KEY` | Ollama Cloud API 密钥——无需本地 GPU 的托管 Ollama 目录（[ollama.com/settings/keys](https://ollama.com/settings/keys)） |
 | `OLLAMA_BASE_URL` | 覆盖 Ollama Cloud base URL（默认：`https://ollama.com/v1`） |
 | `XAI_API_KEY` | xAI（Grok）API 密钥，支持聊天、TTS 和网络搜索（[console.x.ai](https://console.x.ai/)） |

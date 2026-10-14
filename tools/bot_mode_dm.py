@@ -641,11 +641,29 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+def _delivery_python() -> str:
+    """Interpreter for the ``--run-delivery`` child: the install's managed
+    (store/venv) python, not this process's ``sys.executable``.
+
+    Under PM the sender runs on the bare store interpreter — dependencies are
+    activated in-process, never inherited — so a child respawned with
+    ``sys.executable`` cannot boot its Hermes imports (#128876). Developer
+    checkouts and PATH installs have no managed python; those keep the
+    historical sender executable. Lazy import: this module also runs directly
+    as the background runner, so top-level imports stay stdlib-only.
+    """
+    with contextlib.suppress(Exception):
+        from hermes_cli._launchers import resolve_store_python
+        store_python = resolve_store_python(Path(__file__).resolve().parent.parent)
+        if store_python is not None:
+            return str(store_python)
+    return sys.executable
+
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
+    runner_argv = [_delivery_python(), str(Path(__file__).resolve()), "--run-delivery",
                    "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
@@ -883,8 +901,8 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
-    # Spawned as a script with the sender's sys.executable, which under PM is the bare store
-    # interpreter (dependencies are activated in-process, never inherited), so boot like every
+    # Spawned as a script with the delivery python (the managed store/venv python,
+    # falling back to the sender's sys.executable where there is none), so boot like every
     # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the

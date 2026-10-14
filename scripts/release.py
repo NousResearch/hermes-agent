@@ -647,7 +647,7 @@ def main():
     release_cmd = subcommands.add_parser(
         "release", help="Claim a version, cut a draft, and dispatch the gate")
     release_cmd.add_argument("--commit", required=True, metavar="SHA",
-                             help="The main commit to release")
+                             help="The commit to release; it must be on main or a release/* branch")
     release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")

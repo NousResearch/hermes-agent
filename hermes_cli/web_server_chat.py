@@ -131,32 +131,15 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
         await asyncio.to_thread(bridge.close)
 
 
-# Starlette's TestClient reports the peer as "testclient"; treat it as
-# loopback so tests don't need to rewrite request scope.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+from hermes_cli.web_server_boundary import _LOOPBACK_HOSTS
 
 
 def _ws_client_reason(ws: WebSocket) -> Optional[str]:
-    """Return a rejection reason token for the peer IP, or None when allowed.
-
-    Loopback bind: only loopback peers (the legacy ``?token=`` is the only auth,
-    LAN hosts must not get to guess it); an empty peer fails closed.  Explicit
-    non-loopback bind (``--insecure``) or gated mode: any peer — DNS-rebinding is
-    blocked by :func:`_ws_host_origin_reason`, and in gated mode
-    ``ws.client.host`` is the X-Forwarded-For value anyway.
-    """
+    """Return a rejection reason token for the peer IP, or None when allowed
+    (:func:`hermes_cli.web_server_boundary.ws_client_reason` on the dashboard app state)."""
     from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
-        return None
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
-        return None
-    client_host = ws.client.host if ws.client else ""
-    if not client_host:
-        return f"missing_or_empty_peer bound={bound_host or '?'}"
-    if client_host in _LOOPBACK_HOSTS:
-        return None
-    return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
+    from hermes_cli.web_server_boundary import ws_client_reason
+    return ws_client_reason(ws, app.state)
 
 
 def _ws_client_is_allowed(ws: WebSocket) -> bool:
@@ -165,33 +148,11 @@ def _ws_client_is_allowed(ws: WebSocket) -> bool:
 
 
 def _ws_host_origin_reason(ws: WebSocket) -> Optional[str]:
-    """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed.
-
-    HTTP middleware does not run for WebSocket routes, so the DNS-rebinding
-    Host check is repeated here; an Origin header, when present, must target the
-    bound host.  Non-web origins (packaged Electron: file://, null, app://) are
-    trusted — the credential check is the real auth boundary there.
-    """
-    from hermes_cli.web_server import _is_accepted_host, app
-    bound_host = getattr(app.state, "bound_host", None)
-    if not bound_host:
-        return None
-    trusted_public_hosts = getattr(app.state, "trusted_public_hosts", frozenset())
-    host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
-        return f"host_mismatch host={host_header or '?'} bound={bound_host}"
-    origin = ws.headers.get("origin", "")
-    if not origin:
-        return None
-    try:
-        parsed = urllib.parse.urlparse(origin)
-    except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
-        parsed = None
-    if parsed is not None and parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed
+    (:func:`hermes_cli.web_server_boundary.ws_host_origin_reason` on the dashboard app state)."""
+    from hermes_cli.web_server import app
+    from hermes_cli.web_server_boundary import ws_host_origin_reason
+    return ws_host_origin_reason(ws, app.state)
 
 
 def _ws_host_origin_is_allowed(ws: WebSocket) -> bool:
@@ -204,22 +165,11 @@ def _ws_request_is_allowed(ws: WebSocket) -> bool:
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
 
-_GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
-_GATEWAY_WS_TICKET_PROTOCOL_PREFIX = "hermes-gateway-ticket."
-
-
-def _gateway_ws_ticket_from_subprotocol(ws: WebSocket) -> tuple[str, str]:
-    """Return ``(ticket, reason)`` from an unambiguous gateway protocol set."""
-    raw = str(ws.headers.get("sec-websocket-protocol", "") or "")
-    protocols = [value.strip() for value in raw.split(",") if value.strip()]
-    ticket_protocols = [
-        value for value in protocols if value.startswith(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX)]
-    if not ticket_protocols:
-        return "", "none"
-    if _GATEWAY_WS_PROTOCOL not in protocols or len(ticket_protocols) != 1:
-        return "", "invalid"
-    ticket = ticket_protocols[0][len(_GATEWAY_WS_TICKET_PROTOCOL_PREFIX):]
-    return (ticket, "ok") if ticket else ("", "invalid")
+from hermes_cli.web_server_boundary import (
+    _GATEWAY_WS_PROTOCOL,
+    _GATEWAY_WS_TICKET_PROTOCOL_PREFIX,
+    _gateway_ws_ticket_from_subprotocol,
+)
 
 
 def _ws_request_view(ws: WebSocket) -> Request:
@@ -282,10 +232,12 @@ def _ws_auth_reason(ws: WebSocket) -> tuple[Optional[str], str]:
             # Server-minted {user_id, provider} stamped onto the WS object is the
             # sole identity authority downstream (gateway transport / controller
             # registration); a client can never supply it through RPC params.
-            # Only the two identity fields are carried — bookkeeping such as
+            # Only identity fields are carried — bookkeeping such as
             # ``minted_at`` is not part of the identity contract.
             ws._hermes_auth_identity = {
                 "user_id": info.get("user_id"), "provider": info.get("provider")}
+            if info.get("issuer"):
+                ws._hermes_auth_identity["issuer"] = info["issuer"]
 
         internal = ws.query_params.get("internal", "")
         if internal:
@@ -389,7 +341,7 @@ def _resolve_chat_argv(
     through ``HERMES_TUI_RESUME`` (``ui-tui`` does not parse argv), resolved to
     the newest descendant; ``HERMES_TUI_GATEWAY_URL`` attaches to this process's
     in-memory gateway but is SKIPPED for profile-scoped chats (that gateway runs
-    under the dashboard's own profile, so a scoped chat spawns its own);
+    under the dashboard's own profile, so a scoped chat attaches to its profile's gateway);
     ``profile`` scopes the ENTIRE chat by pointing ``HERMES_HOME`` at the profile
     dir, the same propagation ``hermes -p <name>`` performs. ``workspace_cwd``
     (an already-validated host directory, ``chat_workspaces.resolve_chat_cwd``)
@@ -462,8 +414,9 @@ def _resolve_chat_argv(
     if active_session_file:
         env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
 
-    # Without the attach URL, gatewayClient spawns its own `tui_gateway.entry`,
-    # which inherits the profile HERMES_HOME set above.
+    # Without the attach URL, gatewayClient bootstraps through the profile's own
+    # gateway (ui-tui/scripts/gateway_bootstrap.py) under the HERMES_HOME set above;
+    # it never spawns a standalone `tui_gateway.entry` writer.
     if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 

@@ -573,34 +573,6 @@ class GatewayTurnMixin:
         # was_auto_reset was consumed in _hmwa_open_session; only the reason needs clearing.
         session_entry.auto_reset_reason = None
 
-    def _hmwa_auto_load_skills(self, event, _auto, _quick_key, session_key):
-        """Prepend topic/channel-bound skill payload(s) to ``event.text`` on a new session."""
-        _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
-        try:
-            from agent.skill_commands import _load_skill_payload, _build_skill_message
-            _combined_parts: list[str] = []
-            _loaded_names: list[str] = []
-            for _sname in _skill_names:
-                _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                if not _loaded:
-                    logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
-                    continue
-                _loaded_skill, _skill_dir, _display_name = _loaded
-                _part = _build_skill_message(
-                    _loaded_skill, _skill_dir,
-                    f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                    f"Follow its instructions for this session.]",
-                )
-                if _part:
-                    _combined_parts.append(_part)
-                    _loaded_names.append(_sname)
-            if _combined_parts:
-                _combined_parts.append(event.text)  # user's original text after the payloads
-                event.text = "\n\n".join(_combined_parts)
-                logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
-        except Exception as e:
-            logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
-
     async def _hmwa_acquire_turn_lease(self, _quick_key, run_generation, session_entry, _session_env_tokens):
         """Serialize [load history → run → flush] per resolved SESSION_ID so another routing key on
         the same session waits for the prior flush. Fail-closed on timeout (outer dispatch returns
@@ -2079,10 +2051,11 @@ class GatewayTurnMixin:
         # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
         title_user_message = event.text or None
 
-        # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
+        # NEW sessions only: auto-load bound skill(s) (ongoing ones carry them in history), then the
+        # optional session-start model picker, which can hold this first turn until the user picks.
+        if _is_new_session:
+            from gateway.run_turn_session_start import run_session_start_hooks
+            await run_session_start_hooks(self, event, source, session_key, _quick_key)
 
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
 

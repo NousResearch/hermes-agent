@@ -1358,6 +1358,15 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Send the interactive /model picker when a NEW session opens on these
+  # platforms, and hold the first turn until a model is picked (a session-
+  # scoped choice, like a bare /model). Absent = off. Only platforms with an
+  # interactive picker (e.g. discord, telegram) are affected.
+  # session_start_model_picker: [discord, telegram]
+  # Seconds the first turn waits for the pick before continuing with the
+  # current model (a one-line note says which). 0 = send the picker, no wait.
+  # session_start_model_picker_timeout: 60
+
 # =============================================================================
 # Toolsets
 # =============================================================================

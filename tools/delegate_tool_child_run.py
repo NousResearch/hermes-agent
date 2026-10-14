@@ -402,6 +402,16 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
+def _finish_child_tabs(child: Any) -> None:
+    with _quiet("Browser child retirement held: %s"):
+        from tools.browser_tab_lifecycle import native_child_finished, after_call
+        home = getattr(child, '_browser_tab_home', None)
+        task = getattr(child, '_browser_tab_task', None)
+        if home and task:
+            native_child_finished(task, home)
+            after_call(home)
+
+
 def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
 
@@ -412,7 +422,10 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
     resources until process exit.
     """
-    child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
+    def _settled(_done):
+        _close_child(child, "Failed to close timed-out child after worker exit")
+        _finish_child_tabs(child)
+    child_future.add_done_callback(_settled)
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
@@ -749,6 +762,10 @@ class _ChildRun:
         ``goal`` is extended with the worktree contract note when isolation engaged."""
         import uuid as _uuid
         self.child_task_id = self.subagent_id or f"subagent-{self.task_index}-{_uuid.uuid4().hex[:8]}"
+        with _quiet("Browser child identity unavailable: %s"):
+            from hermes_constants import get_hermes_home
+            self.child._browser_tab_home = str(get_hermes_home())
+            self.child._browser_tab_task = self.child_task_id
         self.parent_task_id = getattr(self.parent_agent, "_current_task_id", None)
         # Seed the child's cwd record from the parent's: same starting directory,
         # but the child's later `cd`s stay in its own record. Per-session container
@@ -1088,3 +1105,5 @@ class _ChildRun:
             )
             if runtime is not None and child_session_id and not child_turn_is_active:
                 runtime.unregister_subagent({"child_session_id": child_session_id})
+        if not close_deferred:
+            _finish_child_tabs(child)

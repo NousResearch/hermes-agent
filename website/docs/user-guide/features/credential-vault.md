@@ -34,6 +34,29 @@ fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
+## Protected registration
+
+With Browser Use's opt-in `browser.tab_cleanup_enabled` ownership tracking,
+Vault can fill a single same-form **new password + confirmation** pair on the
+exact completed owned page, including same-site frames and cross-site iframes.
+The account email must match the saved login. Each registration fill requires
+explicit human approval; it does not submit the form or create an account.
+Ambiguous forms, changed fields, changed ownership or human-control leases
+refuse the operation rather than falling back to another tab.
+
+A password document's origin, not its embedding page's origin, controls the
+binding. A parent-site login cannot directly fill a different-origin iframe.
+For a unique registration frame, `browser_vault` with `action="save_login"`
+can separately ask permission to reuse the parent-bound password in a **new
+local encrypted item** bound only to the frame's exact origin. The original
+item is unchanged. This saves without filling; a subsequent `action="fill"`
+requires its own registration approval. Approve password reuse only when you
+intend it: independent accounts should normally have different passwords.
+
+This flow reuses an existing saved password. It does not generate credentials,
+commit a registration transaction, or add a new model-facing tool. Ordinary
+login, verification-code and payment flows retain their existing behavior.
+
 ## Two-factor codes
 
 Sites that ask for a code after the password are handled the same way:

@@ -93,12 +93,73 @@ browser:
 
 Browser Use's own cloud browsers need `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
+If an individual CDP response takes longer than five seconds, configure `browser.ipc_response_timeout_seconds` (integer 5–120; default 5), for example `hermes config set browser.ipc_response_timeout_seconds 20`. This per-response limit covers ordinary helper requests, including preliminary dialog probes and event drains. It does not change explicit request overrides, connection timeouts, page-load budgets, or the overall `browser_exec(timeout_s=...)` limit. Incompatible Harness versions emit a warning on stderr.
+
 :::note
 Because Browser Use mode executes model-written Python on your machine, the
 `browser_exec` tool is only offered to sessions that also have terminal
 access. Platforms configured without the terminal toolset (e.g. a locked-down
 messaging surface) keep the default browser tools instead.
 :::
+
+#### Exact tab ownership and automatic cleanup (opt-in, Linux CDP)
+
+`browser.tab_cleanup_enabled` defaults to `false`. Enable only after testing your
+Harness version with an explicitly configured Chromium CDP endpoint:
+
+```bash
+hermes config set browser.tab_cleanup_enabled true
+# Disable new automatic closes without deleting profiles or cookies:
+hermes config set browser.tab_cleanup_enabled false
+```
+
+This mode records only exact `Target.createTarget` response IDs on the Harness
+helper transport, including Hermes's private initial tab and a daemon startup blank only when its exact dedicated-creation receipt and verified daemon identity match. A reused blank tab,
+popup, old tab, or target created by another CDP client is **not** claimed by
+comparing snapshots. Namespaced daemons isolate profile, owner/run, named session,
+and immutable browser WebSocket identity. No domain exceptions are used.
+
+Cleanup is deterministic: cron execution terminal state without pending
+handoff/effects; completed or archived Kanban run after its worker exits; native
+child runner completion (including a deferred timeout callback); or explicit
+session reset/new-session retirement across compression lineage. An answer,
+turn end, idle time, generic session close, suspension, or gateway PID is not
+semantic completion. Ordinary conversations retain tabs until explicit session
+retirement; goals without a verified runtime mapping remain unknown.
+
+An explicit request such as “Закрой использованные вкладки” uses the existing
+`browser_exec` tool with `action="close_owned"` (omit `code`). This releases only
+the current authoritative runtime owner's exact creations across named browser
+sessions. It does not retire the conversation, reset compression lineage, launch
+a daemon, create a blank tab, or stop the shared browser. Further browser work in
+the same conversation remains allowed. Unresolved ownership, disabled ownership
+tracking, and active/quarantined calls fail closed without snapshot or URL-based
+fallbacks. Holds remain authoritative; failed closes are retained for bounded
+retries, and `closed` counts only ledger entries removed after verified absence.
+A response with `remaining > 0` is pending, not proof that all tabs were closed.
+Natural-language intent is handled by the agent using this explicit operation;
+ordinary final answers still do not trigger cleanup.
+
+The profile-local `browser_tabs.sqlite` ledger fences calls, exact holds, and
+pending closes. Trusted integrations must register a borrowed target **before**
+handing it to a continuation: `OwnershipRegistry.hold(browser_ws, target_id,
+json.dumps([owner, generation]))`. Native child receipts and exact cron/Kanban
+state release these holds. A registered host `ProcessSession` uses
+`register_process_hold(home, browser_ws, target_id, process)`; release requires
+its matching canonical process-result receipt and proven process exit. An
+unrelated background process neither claims nor retains all parent tabs.
+Opaque holds, missing evidence, ambiguous requests, and unverified identities
+remain retained. Arbitrary Python CDP clients and unregistered background tab
+sharing are outside this capture contract; register explicit target holds first.
+
+Bounded retries run after browser calls and on the existing native periodic
+scheduler, including gateway startup recovery. A close is acknowledged only
+after the exact target is absent. Old browser identities never rediscover a
+reused port. Disabling is checked again before every automatic close; it cannot
+undo a close request already sent. No LLM cleanup job or additional core tool
+is introduced. Capture requires a Linux Harness daemon with an explicit immutable CDP browser
+endpoint. Unsupported or direct-cloud/non-CDP backends fail admission when opted in. Installing changed Python code in a
+running gateway requires a separately approved controlled restart.
 
 ### Firecrawl cloud mode
 

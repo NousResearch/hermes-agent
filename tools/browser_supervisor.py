@@ -210,8 +210,53 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _err(e)
         return {"ok": True, "dialog": dialog.to_dict()}
 
+    def bind_owned_vault(self):
+        """Pin the completed mission's exact page and transport before any user prompt."""
+        from tools.browser_tab_ownership import OwnershipBusy, OwnershipRegistry
+
+        call = self._vault_owned_call
+        browser, target = OwnershipRegistry(call[0]).current_for_vault(call[1])
+        if browser != self.cdp_url or self._loop is None or not self._active:
+            raise OwnershipBusy("owned browser unavailable")
+        transport = self._ws
+
+        async def attach():
+            response = await self._cdp("Target.attachToTarget", {"targetId": target, "flatten": True})
+            return response["result"]["sessionId"]
+
+        try:
+            session = _schedule(attach(), self._loop, timeout=11)
+        except Exception:
+            raise OwnershipBusy("owned page attachment unavailable") from None
+        binding = (call, browser, target, session, transport)
+        try:
+            self.validate_owned_vault(binding)
+        except Exception:
+            self.release_owned_vault(binding)
+            raise
+        return binding
+
+    def release_owned_vault(self, binding):
+        """Detach only the private session on the transport that created it."""
+        async def detach():
+            if self._ws is binding[4]:
+                await self._cdp("Target.detachFromTarget", {"sessionId": binding[3]})
+        try:
+            _schedule(detach(), self._loop, timeout=11)
+        except Exception:
+            logger.debug("vault page session detach unavailable")
+
+    def validate_owned_vault(self, binding):
+        from tools.browser_tab_ownership import OwnershipBusy, OwnershipRegistry
+
+        call, browser, target, _, transport = binding
+        if (getattr(self, "_vault_owned_call", None) != call
+                or self.cdp_url != browser or self._ws is not transport or not self._active
+                or OwnershipRegistry(call[0]).current_for_vault(call[1]) != (browser, target)):
+            raise OwnershipBusy("owned current target changed or unavailable")
+
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0, vault_binding=None) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
@@ -221,6 +266,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor loop is not running")
         with self._state_lock:
             active, session_id = self._active, self._page_session_id
+        if vault_binding is not None:
+            session_id = vault_binding[3]
         if not active:
             return _fail("supervisor is not active")
         if not session_id:
@@ -230,8 +277,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # userGesture: clipboard / fullscreen APIs need user activation.
             params = {"expression": expression, "returnByValue": by_value,
                       "awaitPromise": await_promise, "userGesture": True}
-            coro = self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
-            return _schedule(coro, loop, timeout=timeout + 1)
+            async def evaluate():
+                if vault_binding is not None:
+                    self.validate_owned_vault(vault_binding)
+                return await self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
+            return _schedule(evaluate(), loop, timeout=timeout + 1)
 
         try:
             response = _run_eval(return_by_value)
@@ -449,17 +499,25 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         await self._install_dialog_bridge(sid)
 
     async def _cdp(self, method: str, params: Optional[dict[str, Any]] = None, *,
-                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0) -> dict[str, Any]:
-        """Send a CDP command and await its response."""
-        if self._ws is None:
+                   session_id: Optional[str] = None, timeout: Optional[float] = 10.0,
+                   expected_ws=None, before_send=None) -> dict[str, Any]:
+        """Send a CDP command; document captures can fence their exact wire."""
+        ws = self._ws
+        if ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
+        if expected_ws is not None and ws is not expected_ws:
+            raise RuntimeError("captured supervisor connection changed")
         call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
         payload: dict[str, Any] = {"id": call_id, "method": method}
         payload.update({k: v for k, v in (("params", params), ("sessionId", session_id)) if v})
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_calls[call_id] = fut
-        await self._ws.send(json.dumps(payload))
         try:
+            if expected_ws is not None and self._ws is not ws:
+                raise RuntimeError("captured supervisor connection changed")
+            if before_send is not None:
+                before_send()
+            await ws.send(json.dumps(payload))
             return await asyncio.wait_for(fut, timeout=timeout)
         finally:
             self._pending_calls.pop(call_id, None)

@@ -1,12 +1,14 @@
 name: Stable Release
 run-name: Stable release ${{ inputs.tag }}
 
-# Dispatch on the tag so reusable workflows and github.sha identify the same tree.
+# Dispatch on the default branch, like canary: workflows and scripts come from main and
+# Actions caches live in main's scope. The claim tag is an input. Admission resolves it to
+# a commit and every lane that tests or builds the payload is passed that commit.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact annotated claim tag, matching the selected workflow ref
+        description: Exact annotated claim tag. Admission resolves it to the commit under test
         required: true
         type: string
       baseline-manifest:
@@ -76,6 +78,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/ci.yaml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   docker:
@@ -89,6 +92,7 @@ jobs:
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
       tag: ${{ needs.admit.outputs.claim-tag }}
@@ -100,6 +104,7 @@ jobs:
     if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/nix.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
       version: ${{ needs.admit.outputs.version }}
 
@@ -112,7 +117,7 @@ jobs:
     uses: ./.github/workflows/pm-bundle.yml
     with:
       release: true
-      ref: ${{ github.sha }}
+      ref: ${{ needs.admit.outputs.commit }}
 
   termux-checks:
     needs: admit
@@ -123,6 +128,7 @@ jobs:
     uses: ./.github/workflows/termux-verify.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   windows-live:
@@ -130,6 +136,7 @@ jobs:
     if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   install-e2e:
@@ -141,6 +148,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/install-e2e.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
       route: all
       tag-count: '3'
@@ -423,7 +431,7 @@ jobs:
 
   windows-packaged:
     name: Windows signed-package acceptance
-    needs: transitions-win32
+    needs: [admit, transitions-win32]
     # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-win32.outputs.baseline != 'none'
     strategy:
@@ -431,6 +439,7 @@ jobs:
       matrix: ${{ fromJSON(needs.transitions-win32.outputs.windows) }}
     uses: ./.github/workflows/install-e2e-windows-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -441,7 +450,7 @@ jobs:
 
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
-    needs: transitions-darwin-arm64
+    needs: [admit, transitions-darwin-arm64]
     # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
@@ -449,6 +458,7 @@ jobs:
       matrix: ${{ fromJSON(needs.transitions-darwin-arm64.outputs.macos) }}
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -459,7 +469,7 @@ jobs:
 
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
-    needs: transitions-darwin-x64
+    needs: [admit, transitions-darwin-x64]
     # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
@@ -467,6 +477,7 @@ jobs:
       matrix: ${{ fromJSON(needs.transitions-darwin-x64.outputs.macos) }}
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -542,6 +553,7 @@ jobs:
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release-phase: publish
       tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}

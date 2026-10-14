@@ -16,6 +16,11 @@ name: Prompt surface diff
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       changed:
         description: Whether the prompt-surface snapshot changed relative to the target branch.
@@ -28,8 +33,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: prompt-surface-diff-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: prompt-surface-diff-${{ inputs.commit != '' && github.run_id || github.event.pull_request.number || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   diff:
@@ -43,6 +49,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0 # need history for the merge base
           persist-credentials: false
 

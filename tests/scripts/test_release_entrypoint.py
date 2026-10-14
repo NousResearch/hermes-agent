@@ -88,7 +88,8 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         calls.append(command)
         if command[:3] == ["gh", "run", "list"]:
             return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                                "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                                "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
         if command[:3] == ["gh", "release", "create"]:
             return "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd\n"
         return ""
@@ -124,10 +125,11 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert "--notes-file" in create
     assert create[-2:] == ["--title", "Hermes Agent v0.21.5"]
     assert calls[1:] == [
-        ["gh", "workflow", "run", "stable-release.yml", "--ref", "rc.1-v0.21.5",
+        # Stable dispatches the default-branch workflow. The tag is an input.
+        ["gh", "workflow", "run", "stable-release.yml", "--ref", "main",
          "--repo", "example/hermes-agent", "--raw-field", "tag=rc.1-v0.21.5"],
         ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow", "stable-release.yml",
-         "--branch", "rc.1-v0.21.5", "--json", "databaseId,url,headBranch,status"],
+         "--limit", "100", "--json", "databaseId,url,headBranch,headSha,displayTitle,status"],
     ]
     assert result["run_url"] == "https://github.com/example/hermes-agent/actions/runs/7"
     # The claim push names the claim ref and nothing else.
@@ -181,7 +183,8 @@ def test_an_unlisted_run_points_at_the_workflow_page():
 ])
 def test_release_looks_for_the_dispatched_run_only_within_its_wait(source, lists_on, wait, run_url, naps):
     listed = json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                          "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                          "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
     lists, slept = [], []
 
     def execute(command):
@@ -372,13 +375,16 @@ def test_refusal_names_the_run_and_both_ways_out(source, capsys):
 
     def execute(command):
         assert command == ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow",
-                           "stable-release.yml", "--branch", "rc.1-v0.21.5",
-                           "--json", "databaseId,url,headBranch,headSha,status"]
+                           "stable-release.yml", "--limit", "100",
+                           "--json", "databaseId,url,headBranch,headSha,displayTitle,status"]
+        # Newest first. Run 98 belongs to another claim, so it must not be named.
         return json.dumps([
-            {"databaseId": 98, "url": "https://github.com/example/hermes-agent/actions/runs/98",
-             "headBranch": "rc.1-v0.21.5", "headSha": "0" * 40, "status": "completed"},
             {"databaseId": 99, "url": "https://github.com/example/hermes-agent/actions/runs/99",
-             "headBranch": "rc.1-v0.21.5", "headSha": blocked, "status": "completed"},
+             "headBranch": "main", "headSha": "f" * 40,
+             "displayTitle": "Stable release rc.1-v0.21.5", "status": "completed"},
+            {"databaseId": 98, "url": "https://github.com/example/hermes-agent/actions/runs/98",
+             "headBranch": "main", "headSha": "f" * 40,
+             "displayTitle": "Stable release rc.1-v0.21.4", "status": "completed"},
         ])
 
     with pytest.raises(ReleaseRefused):
@@ -450,7 +456,8 @@ def test_release_draft_lists_the_commits_since_the_stable_base(source, published
                 seen["body"] = file.read()
         if command[:3] == ["gh", "run", "list"]:
             return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
-                                "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+                                "headBranch": "main", "displayTitle": "Stable release rc.1-v0.21.5",
+                                "status": "queued"}])
         return ""
 
     result = _release(source, commit, execute=execute, published=published)
@@ -653,7 +660,8 @@ def _abandon(repo, version, *, drafts=None, runs=None, calls=None, execute=None)
 
     def inspect(command):
         if command[1] == "run":
-            return json.dumps(list((runs or {}).get(command[command.index("--branch") + 1], [])))
+            return json.dumps([{**row, "displayTitle": f"Stable release {tag}"}
+                               for tag, rows in (runs or {}).items() for row in rows])
         draft = (drafts or {}).get(command[3])
         if draft is None:
             raise ReleaseRefused("release not found")
@@ -710,7 +718,8 @@ def test_abandon_that_cannot_cancel_a_run_writes_no_marker_so_it_can_be_retried(
     from scripts.releases.entrypoint import ReleaseRefused, abandon
 
     _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
-    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}
+    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress",
+           "displayTitle": "Stable release rc.1-v0.21.5"}
 
     def refuse(_command):
         raise ReleaseRefused("HTTP 403")

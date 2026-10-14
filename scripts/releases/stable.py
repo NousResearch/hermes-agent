@@ -503,13 +503,42 @@ def tagger_epoch(tag_object: str, run=output) -> int:
     return epoch
 
 
+CONTROLLER_BRANCH = "main"
+CONTROLLER_REF = f"refs/heads/{CONTROLLER_BRANCH}"
+CONTROLLER_WORKFLOW = "stable-release.yml"
+
+
+def claim_run_title(claim_tag: str) -> str:
+    """The run-name stable-release.yml sets. Every run is on the default branch, so this names the claim."""
+    return f"Stable release {claim_tag}"
+
+
+def is_claim_run(*, title: str | None, head_branch: str | None, head_sha: str | None,
+                 claim_tag: str, commit: str) -> bool:
+    """A Stable Release run for this claim. Runs started before the controller moved sat on the tag."""
+    return title == claim_run_title(claim_tag) or (head_branch == claim_tag and head_sha == commit)
+
+
+def check_controller(env: dict) -> None:
+    """Require the default-branch dispatch of Stable Release.
+
+    Reusable workflows keep the top-level caller's identity, so the same check holds
+    inside every called workflow. The commit under test comes from the claim tag, not
+    from GITHUB_SHA, which is the default branch tip here.
+    """
+    repository = env.get("GITHUB_REPOSITORY", "")
+    expected = f"{repository}/.github/workflows/{CONTROLLER_WORKFLOW}@{CONTROLLER_REF}"
+    if (not repository or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or env.get("GITHUB_REF") != CONTROLLER_REF or env.get("GITHUB_WORKFLOW_REF") != expected):
+        raise ValueError("Stable release must run from the default-branch controller workflow")
+
+
 def check_claim(env: dict, run=output) -> dict:
     """Bind the run to one remote annotated claim object and its commit."""
-    claim_tag, commit = env.get("RELEASE_CLAIM_TAG"), env.get("GITHUB_SHA")
-    if not isinstance(claim_tag, str) or env.get("GITHUB_REF") != f"refs/tags/{claim_tag}":
-        raise ValueError("Stable release must run on its exact claim ref")
-    if not isinstance(commit, str) or not SHA.fullmatch(commit):
-        raise ValueError("Stable claim needs an exact commit")
+    claim_tag = env.get("RELEASE_CLAIM_TAG")
+    if not isinstance(claim_tag, str) or not claim_tag:
+        raise ValueError("Stable release needs a claim tag")
+    check_controller(env)
     claim_ref = f"refs/tags/{claim_tag}"
     local_object = run(["git", "rev-parse", claim_ref])
     local_commit = run(["git", "rev-parse", f"{claim_ref}^{{commit}}"])
@@ -521,10 +550,12 @@ def check_claim(env: dict, run=output) -> dict:
     remote_object = remote.get(claim_ref)
     remote_commit = remote.get(f"{claim_ref}^{{}}")
     expected_object = env.get("RELEASE_CLAIM_OBJECT")
-    if (local_commit != commit or remote_commit != commit or remote_object != local_object
-            or (expected_object and remote_object != expected_object)
-            or run(["git", "rev-parse", "HEAD"]) != commit):
-        raise ValueError("Stable claim tag or checkout moved")
+    commit = local_commit
+    if not SHA.fullmatch(commit):
+        raise ValueError("Stable claim needs an exact commit")
+    if (remote_commit != commit or remote_object != local_object
+            or (expected_object and remote_object != expected_object)):
+        raise ValueError("Stable claim tag moved")
     run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"])
 
     def on_main(sha: str) -> bool:

@@ -159,7 +159,8 @@ def host_state_dir() -> Path:
 
 
 def ensure_host_state_dir() -> Path:
-    """The rendezvous dir, created owner-only (``0o700``) and tightened if it is not.
+    """The rendezvous dir, created owner-only (``0o700``; on Windows the parent ACL is
+    inherited) and tightened if it is not.
 
     A bare ``mkdir`` under the common ``umask 002`` leaves the dir group-writable, and the record
     inside it is what every lifecycle verb believes: a same-group process could unlink+replace it
@@ -167,7 +168,12 @@ def ensure_host_state_dir() -> Path:
     Ownership of the dir is ours, so widening is repaired rather than refused.
     """
     directory = host_state_dir()
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if sys.platform == "win32":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        directory.mkdir(parents=True, exist_ok=True)
+    else:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if sys.platform != "win32":
         with contextlib.suppress(OSError):
             if stat.S_IMODE(directory.stat().st_mode) & 0o077:

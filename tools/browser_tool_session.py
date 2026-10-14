@@ -168,7 +168,12 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
     ownerless agent-browser-* dir in the shared tmpdir."""
     socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
-    os.makedirs(socket_dir, mode=0o700, exist_ok=True)
+    if os.name == "nt":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        os.makedirs(socket_dir, exist_ok=True)
+    else:
+        os.makedirs(socket_dir, mode=0o700, exist_ok=True)
     _lifecycle._write_owner_pid(socket_dir, session_name)
     return socket_dir
 

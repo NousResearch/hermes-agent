@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -61,7 +62,12 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
     """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
     carries it so the consumer recognizes the marker by the record, never by its text."""
     root = _root()
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        root.mkdir(parents=True, exist_ok=True)
+    else:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
         record = read_pending(key)
         if record is not None:

@@ -7,6 +7,7 @@ parents cannot overwrite each other's results in the running-PID checkpoint.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -59,7 +60,12 @@ def save_completed_result(session) -> None:
     try:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == "nt":
+            # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+            # same user's other processes; inherit the parent ACL instead.
+            directory.mkdir(parents=True, exist_ok=True)
+        else:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
         _result_paths()
     except OSError:

@@ -1270,10 +1270,15 @@ def _create_quick_snapshot_locked(
     snap_dir = root / snap_id
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.name != "nt":
+    if os.name == "nt":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        root.mkdir(parents=True, exist_ok=True)
+        staging_dir.mkdir(exist_ok=False)
+    else:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(root, 0o700)
-    staging_dir.mkdir(mode=0o700, exist_ok=False)
+        staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
     manifest: dict[str, int] = {}  # rel_path -> file size
@@ -1403,9 +1408,10 @@ def _create_quick_snapshot_locked(
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    # Make the staged quick snapshot owner-only before it is published. The
-    # staging directory is private from creation, so copied source modes can
-    # be normalized safely before the final atomic rename exposes the
+    # Make the staged quick snapshot owner-only before it is published (POSIX;
+    # on Windows this block is skipped and the dir inherits the parent ACL).
+    # The staging directory is private from creation, so copied source modes
+    # can be normalized safely before the final atomic rename exposes the
     # snapshot. Permission failures are intentionally fatal: publishing a
     # readable recovery bundle is worse than reporting a failed snapshot.
     if os.name != "nt":

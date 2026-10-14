@@ -21,14 +21,21 @@ _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
     """Create ``path`` (and parents) as a directory, refusing symlinks. ``private=True``
-    creates the leaf ``0o700`` and tightens an existing leaf. Raises ``OSError`` if the leaf
+    creates the leaf ``0o700`` and tightens an existing leaf; on Windows there are no mode
+    bits to set, so the leaf inherits the parent ACL instead (a protected ``0o700`` DACL
+    can strand the dir for the same user's other processes). Raises ``OSError`` if the leaf
     is not a real directory."""
     path = Path(path)
-    path.mkdir(mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+    if os.name == "nt":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        path.mkdir(mode=0o700 if private else 0o777, parents=True, exist_ok=True)
     st = os.lstat(path)
     if not stat.S_ISDIR(st.st_mode):
         raise OSError(f"spill dir is not a directory (symlink?): {path}")
-    if private and stat.S_IMODE(st.st_mode) != 0o700:
+    if private and os.name != "nt" and stat.S_IMODE(st.st_mode) != 0o700:
         os.chmod(path, 0o700)
     return path
 

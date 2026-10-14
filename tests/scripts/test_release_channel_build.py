@@ -31,7 +31,7 @@ def test_dispatch_names_channel_and_binds_to_pushed_source(source):
     calls = []
     options = dict(name="custom-branch", revision="main", remote="origin", repo=source,
                    repository="example/hermes-agent", default_branch="main",
-                   dispatch=calls.append, bundle_env={"HERMES_GUEST_ONBOARDING": "1"})
+                   dispatch=calls.append, bundle_env={"HERMES_PREVIEW_FULL_CONNECTORS": "1"})
     dry = prepare_build(**options)
     assert dry["commit"] == git(source, "rev-parse", "HEAD")
     assert dry["sourceVersion"] == "1.2.3"

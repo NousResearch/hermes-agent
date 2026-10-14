@@ -1012,7 +1012,7 @@ class SessionMessagesMixin:
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
         """
-        from hermes_state import SessionCompressionInProgressError
+        from hermes_state import SessionCompressionInProgressError, TranscriptInvariantError
         def _do(conn):
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -1067,7 +1067,47 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
-        return self._execute_transcript_write(_do, compacted_messages)
+
+        def _do_checked(conn):
+            # One ACTIVE result per LOGICAL tool call (tool_call_uid), never per raw provider id: providers
+            # reuse ids such as ``terminal:0``, so a new call occurrence is not a duplicate and a double
+            # carry must still show when the raw id already repeats. Per raw id, count results beyond one
+            # per logical call; only an INCREASE (proved-coverage or watermark path) rolls the txn back, so
+            # a legacy excess the compaction merely carries forward does not wedge it.
+            before = self._active_tool_result_excess(conn, session_id)
+            result = _do(conn)
+            after = self._active_tool_result_excess(conn, session_id)
+            introduced = sorted(tc_id for tc_id, n in after.items() if n > before.get(tc_id, 0))
+            if introduced:
+                raise TranscriptInvariantError(
+                    f"archive_and_compact({session_id!r}) would publish {len(introduced)} tool_call_id(s) "
+                    f"with more than one active result row for one tool call (e.g. {introduced[:3]}); rolled back")
+            return result
+        return self._execute_transcript_write(_do_checked, compacted_messages)
+
+    @staticmethod
+    def _active_tool_result_excess(conn, session_id: str) -> Dict[str, int]:
+        """Per raw ``tool_call_id``: ACTIVE ``role='tool'`` rows beyond one per logical call occurrence.
+        A result's occurrence is its stored ``tool_call_uid``, else the uid of the NEAREST preceding active
+        assistant row naming the id (the read path's pairing, reset at a user turn), else the raw id."""
+        index: Dict[str, str] = {}
+        per_key: Dict[tuple, int] = {}
+        for row in conn.execute(
+                "SELECT role, tool_calls, tool_call_uids, tool_call_id, tool_call_uid FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id", (session_id,)):
+            if row["role"] == "assistant" and row["tool_calls"]:
+                index_tool_call_uids(index, {"tool_calls": _parse_tool_calls(row["tool_calls"]) or (),
+                                             TOOL_CALL_UIDS: _tool_call_uid_map({"tool_call_uids": row["tool_call_uids"]})})
+            elif row["role"] == "user":
+                index.clear()
+            elif row["role"] == "tool" and (tc_id := row["tool_call_id"]):
+                uid = row["tool_call_uid"] or resolve_tool_call_uid(index, tc_id)
+                per_key[(tc_id, uid)] = per_key.get((tc_id, uid), 0) + 1
+        excess: Dict[str, int] = {}
+        for (tc_id, _), n in per_key.items():
+            if n > 1:
+                excess[tc_id] = excess.get(tc_id, 0) + n - 1
+        return excess
 
     def _message_column_names(self, conn) -> list[str]:
         """Column names of the messages table, cached per-connection era."""

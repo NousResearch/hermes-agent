@@ -160,6 +160,28 @@ def test_streamed_already_sent_none_recovers_text_for_hooks():
 
 
 @pytest.mark.asyncio
+async def test_non_streamed_stripped_reply_still_completes_loop_tick(loop_env):
+    """Non-streamed delivery returns display text with LOOP_COMPLETE stripped; the post-turn
+    hook must read the raw reply stashed on the event so the loop still finishes."""
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    event = _make_event("wakeup")
+    event._raw_final_response = "CI is done.\nLOOP_COMPLETE"
+    # _handle_message_with_agent returned the stripped display text.
+    final_text = GatewayRunner._final_text_for_post_turn_hooks("CI is done.", event)
+    assert final_text == "CI is done.\nLOOP_COMPLETE"
+
+    await GatewayRunner._post_turn_loop_completion(
+        runner, session_entry=_FakeSessionEntry(), source=None, final_response=final_text,
+    )
+    assert loops.load_loop("sid-gateway-loop").status == "done"
+
+
+@pytest.mark.asyncio
 async def test_streamed_already_sent_completes_loop_tick(loop_env):
     """A streamed wakeup must not leave awaiting_response stuck."""
     runner = _make_runner()

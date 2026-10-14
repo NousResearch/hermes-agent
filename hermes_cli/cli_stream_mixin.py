@@ -314,9 +314,60 @@ class CLIStreamMixin:
         ``None`` = intermediate turn boundary (tools about to run): flush boxes and reset state.
         """
         if text is None:
+            # An intermediate tool boundary means more assistant text will follow, so a held
+            # marker candidate is content there: release it through the normal display path.
+            held = getattr(self, "_loop_complete_hold", "")
+            self._loop_complete_hold = ""
+            if held:
+                self._emit_unheld(held)
             self._flush_stream()
             self._reset_stream_state()
             return
+        if not text:
+            return
+        from gateway.response_filters import (
+            ends_with_partial_loop_complete_marker,
+            split_trailing_loop_complete_marker,
+        )
+        # Judge the hold against everything streamed this segment so an open code fence
+        # earlier in the reply keeps a marker-looking line as content.
+        seen = getattr(self, "_loop_complete_seen", "")
+        held = getattr(self, "_loop_complete_hold", "")
+        candidate = held + text
+        if ends_with_partial_loop_complete_marker(seen + candidate):
+            safe, partial = split_trailing_loop_complete_marker(candidate, context=seen)
+            if safe:
+                self._emit_unheld(safe)
+            self._loop_complete_hold = partial
+            return
+        self._loop_complete_hold = ""
+        self._emit_unheld(candidate)
+
+    def _resolve_loop_complete_hold(self) -> None:
+        """End of turn: drop a held tail only when it is a complete top-level marker.
+
+        A partial prefix (a reply that just ends in "LOOP") or a marker inside an open fence
+        is content and is emitted through the normal display path.
+        """
+        held = getattr(self, "_loop_complete_hold", "")
+        self._loop_complete_hold = ""
+        if not held:
+            return
+        from gateway.response_filters import strip_trailing_loop_complete_marker
+        full = getattr(self, "_loop_complete_seen", "") + held
+        if strip_trailing_loop_complete_marker(full) != full:
+            return
+        self._emit_unheld(held)
+
+    def _emit_unheld(self, text: str) -> None:
+        """Record released text for fence context, then send it down the display path."""
+        if not text:
+            return
+        self._loop_complete_seen = getattr(self, "_loop_complete_seen", "") + text
+        self._stream_delta_unheld(text)
+
+    def _stream_delta_unheld(self, text: str) -> None:
+        """Display path (reasoning tags, line buffering) for text cleared of a loop marker."""
         if not text:
             return
         self._stream_started = True
@@ -331,28 +382,7 @@ class CLIStreamMixin:
         if not getattr(self, "_in_reasoning_block", False):
             # Lowercased view catches mixed-case variants (<Think>, <THINKING>, …).
             prefilt_lower = self._stream_prefilt.lower()
-            for tag in _OPEN_TAGS:
-                tag_lower = tag.lower()
-                search_start = 0
-                while True:
-                    idx = prefilt_lower.find(tag_lower, search_start)
-                    if idx == -1:
-                        break
-                    preceding = self._stream_prefilt[:idx]
-                    # Boundary: only whitespace since the last newline — or, with no newline
-                    # buffered yet, since the last emit (which must have ended a line).
-                    is_block_boundary = preceding[preceding.rfind("\n") + 1:].strip() == "" and (
-                        "\n" in preceding or getattr(self, "_stream_last_was_newline", True))
-                    if is_block_boundary:
-                        if preceding:
-                            self._emit_stream_text(preceding)
-                            self._stream_last_was_newline = preceding.endswith("\n")
-                        self._in_reasoning_block = True
-                        self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
-                        break
-                    search_start = idx + 1
-                if getattr(self, "_in_reasoning_block", False):
-                    break
+            self._stream_enter_reasoning_block(prefilt_lower)
 
             if not getattr(self, "_in_reasoning_block", False):
                 # Hold back a possible partial open tag at the end (case-insensitive).
@@ -384,7 +414,7 @@ class CLIStreamMixin:
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
                     if after:  # re-filter: the remainder could contain another open tag
-                        self._stream_delta(after)
+                        self._stream_delta_unheld(after)
                     return
             # Stream reasoning live when show_reasoning is on; keep only a possible partial
             # close-tag tail.
@@ -393,6 +423,31 @@ class CLIStreamMixin:
                     self._stream_reasoning_delta(self._stream_prefilt[:-_MAX_CLOSE_TAG_LEN])
                 self._stream_prefilt = self._stream_prefilt[-_MAX_CLOSE_TAG_LEN:]
             return
+
+    def _stream_enter_reasoning_block(self, prefilt_lower: str) -> None:
+        """Enter a reasoning block at the first open tag on a block boundary, emitting the prose
+        before it. Open tags only count at a boundary (stream start / after a newline plus
+        optional whitespace) so prose that *mentions* a tag is not swallowed."""
+        for tag in _OPEN_TAGS:
+            tag_lower = tag.lower()
+            search_start = 0
+            while True:
+                idx = prefilt_lower.find(tag_lower, search_start)
+                if idx == -1:
+                    break
+                preceding = self._stream_prefilt[:idx]
+                # Boundary: only whitespace since the last newline — or, with no newline
+                # buffered yet, since the last emit (which must have ended a line).
+                is_block_boundary = preceding[preceding.rfind("\n") + 1:].strip() == "" and (
+                    "\n" in preceding or getattr(self, "_stream_last_was_newline", True))
+                if is_block_boundary:
+                    if preceding:
+                        self._emit_stream_text(preceding)
+                        self._stream_last_was_newline = preceding.endswith("\n")
+                    self._in_reasoning_block = True
+                    self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                    return
+                search_start = idx + 1
 
     def _emit_stream_line(self, printed_line: str) -> None:
         """Print one response line with the skin's true-color text escape (if any)."""
@@ -498,6 +553,9 @@ class CLIStreamMixin:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        # End of turn: a held complete top-level LOOP_COMPLETE is control text and is dropped;
+        # anything else held (a partial prefix, a marker inside an open fence) is content.
+        self._resolve_loop_complete_hold()
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -528,6 +586,8 @@ class CLIStreamMixin:
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
+        self._loop_complete_hold = ""
+        self._loop_complete_seen = ""
         self._stream_started = False
         self._stream_box_opened = False
         self._stream_text_ansi = ""

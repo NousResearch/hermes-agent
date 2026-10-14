@@ -28,8 +28,10 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
+    ends_with_partial_loop_complete_marker as _ends_with_partial_loop_complete_marker,
     is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker)
+    is_partial_silence_marker as _is_partial_silence_marker,
+    strip_trailing_loop_complete_marker as _strip_trailing_loop_complete_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -317,7 +319,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _display_payload(self, text: str) -> str:
         """Normalize like ``_send_or_edit`` output: directive strip + fence close + strip."""
-        return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
+        return ensure_closed_code_fences(
+            _strip_trailing_loop_complete_marker(self._clean_for_display(text or ""))
+        ).strip()
 
     def _record_turn_final_payload(self, text: str) -> None:
         """Record what the user actually saw as this turn's final answer.  On a split ``text``
@@ -747,7 +751,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+            self._clean_for_display(self._accumulated)) and not _ends_with_partial_loop_complete_marker(
+                self._clean_for_display(self._accumulated))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the

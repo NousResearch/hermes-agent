@@ -517,6 +517,19 @@ async def _drain_split_turn(consumer, lines):
 
 
 @pytest.mark.asyncio
+async def test_streaming_loop_complete_marker_is_held_then_removed():
+    adapter, consumer = _split_consumer()
+    await _drain_split_turn(consumer, ["Done.", "LOOP_COMPLETE"])
+
+    delivered = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert "LOOP_COMPLETE" not in delivered
+    assert consumer.delivered_final_matches("Done.\nLOOP_COMPLETE") is True
+
+
+@pytest.mark.asyncio
 async def test_complete_overflow_split_still_suppresses_duplicate():
     """A fully delivered multi-message reply must NOT be re-sent (#45517)."""
     _adapter, consumer = _split_consumer()

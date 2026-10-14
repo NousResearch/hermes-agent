@@ -442,3 +442,27 @@ async def test_handoff_direct_create_requests_public_thread():
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_create_thread_direct_requests_public_thread():
+    """Direct channel thread creation via _create_thread explicitly specifies public_thread."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    create_thread = AsyncMock(return_value=SimpleNamespace(id=9002, name="test-thread", send=AsyncMock()))
+    parent = SimpleNamespace(create_thread=create_thread, type=0)
+    adapter._thread_parent_channel = lambda _ch: parent
+
+    interaction = SimpleNamespace(
+        channel=parent,
+        user=SimpleNamespace(display_name="Alice"),
+    )
+
+    res = await adapter._create_thread(interaction, name="test-thread")
+
+    assert res.get("success") is True
+    assert res.get("thread_id") == "9002"
+    create_thread.assert_awaited_once()
+    assert create_thread.await_args.kwargs.get("type") == discord_platform.discord.ChannelType.public_thread
+    assert create_thread.await_args.kwargs.get("name") == "test-thread"

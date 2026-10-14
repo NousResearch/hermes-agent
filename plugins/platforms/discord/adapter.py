@@ -7163,11 +7163,15 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_message = (message or "").strip()
 
         try:
-            thread = await parent_channel.create_thread(
-                name=name,
-                auto_archive_duration=auto_archive_duration,
-                reason=reason,
-            )
+            thread_kwargs: dict = {
+                "name": name,
+                "auto_archive_duration": auto_archive_duration,
+                "reason": reason,
+            }
+            channel_type = getattr(discord, "ChannelType", None)
+            if channel_type is not None and hasattr(channel_type, "public_thread"):
+                thread_kwargs["type"] = channel_type.public_thread
+            thread = await parent_channel.create_thread(**thread_kwargs)
             if starter_message:
                 await thread.send(starter_message)
             return {

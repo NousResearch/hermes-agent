@@ -173,6 +173,8 @@ def show_config():
     print(color("│              ☤ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     _show_managed_banner()
+    from hermes_cli import config_d
+    config_d.show_config_d_banner()
 
     _section("Paths")
     print(f"  Config:       {_cfg.get_config_path()}")

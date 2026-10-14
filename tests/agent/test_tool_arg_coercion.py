@@ -143,6 +143,23 @@ class TestCoerceToolArgs:
             assert coerce_tool_args("test_tool", {"flag": '["a"]'}) == {"flag": ["a"]}
             assert coerce_tool_args("test_tool", {"flag": "maybe"}) == {"flag": "maybe"}
 
+    def test_typeless_union_branches_behind_a_ref_are_resolved(self):
+        """A union branch that is a local $ref counts with the type it points at; a cycle stays uncoerced."""
+        schema = self._mock_schema({
+            "flag": {"anyOf": [{"$ref": "#/$defs/Flag"}, {"type": "array"}]},
+            "ref": {"anyOf": [{"$ref": "#/$defs/Name"}, {"type": "integer"}]},
+            "node": {"$ref": "#/$defs/Node"},
+        })
+        schema["parameters"]["$defs"] = {
+            "Flag": {"type": "boolean"},
+            "Name": {"type": "string"},
+            "Node": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "integer"}]},
+        }
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            assert coerce_tool_args("test_tool", {"flag": "true", "ref": "42", "node": "5"}) == {
+                "flag": True, "ref": "42", "node": "5",
+            }
+
 
 
 

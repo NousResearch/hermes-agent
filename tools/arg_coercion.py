@@ -42,7 +42,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not prop_schema:
             continue
         prop_schema = resolve_local_schema_ref(prop_schema, parameters)
-        expected = prop_schema.get("type") or _union_branch_types(prop_schema)
+        expected = prop_schema.get("type") or _union_branch_types(prop_schema, parameters)
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
@@ -87,17 +87,19 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     return args
 
 
-def _union_branch_types(schema: dict) -> list | None:
+def _union_branch_types(schema: dict, root_schema: Any) -> list | None:
     """Branch types of a type-less anyOf/oneOf property (``notify: anyOf[boolean, array]``), in schema order.
 
-    None when a branch has no plain type or accepts a string: a string value is
-    then already valid (or ambiguous), so it must not be reinterpreted.
+    A branch that is a local ``$ref`` counts with the type it points at. None when a
+    branch has no plain type (a dangling or cyclic ref included) or accepts a string:
+    a string value is then already valid (or ambiguous), so it must not be reinterpreted.
     """
     for union_key in ("anyOf", "oneOf"):
         branches = schema.get(union_key)
         if not isinstance(branches, list) or not branches:
             continue
-        types = [b.get("type") if isinstance(b, dict) else None for b in branches]
+        resolved = [resolve_local_schema_ref(b, root_schema) for b in branches]
+        types = [b.get("type") if isinstance(b, dict) else None for b in resolved]
         if all(isinstance(t, str) for t in types) and "string" not in types:
             return types
         return None

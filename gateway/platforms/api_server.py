@@ -355,6 +355,17 @@ def _request_agent_overrides(
     return overrides
 
 
+def _request_cwd(body: Any) -> str:
+    """Sanitized request-scoped working directory from the chat/run body.
+
+    Shared by every agent-entry route so ``"cwd"`` means the same thing
+    everywhere: an absolute path under the server-side allowlist
+    (/workspace, /root, /tmp). Invalid values degrade to no pin (""),
+    never fail the turn.
+    """
+    return APIServerAdapter._sanitize_request_cwd(body.get("cwd") if isinstance(body, dict) else None)
+
+
 def _request_relay_metadata(body: Any) -> dict[str, Any]:
     """Extract Relay metadata from an OpenAI request body."""
     if not isinstance(body, dict):
@@ -3409,7 +3420,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # #98619: the client addresses this session by construction — the id is in the
             # request path (/api/sessions/{session_id}/chat) — so a wake self-post lands where
             # the client will read it. The audited native-session opt-in.
-            session_history_delivery="1", **agent_overrides)
+            session_history_delivery="1", **agent_overrides,
+            cwd=_request_cwd(body))
         return {
             "gateway_session_key": gateway_session_key, "session_id": session_id, "body": body,
             "user_message": user_message, "runtime_request": runtime_request,
@@ -4094,11 +4106,36 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 code="rate_limit_exceeded", headers={"Retry-After": "1"})
         return None
 
+    # Server-side allowlist for the request-scoped ``cwd`` (REST contract's
+    # workspace anchor). Aligned with the browse whitelist (/workspace, /root,
+    # /tmp): a client must not pin the agent to an arbitrary directory.
+    _API_CWD_PREFIXES = ("/workspace", "/root", "/tmp")
+
+    @classmethod
+    def _sanitize_request_cwd(cls, raw: object) -> str:
+        """Normalize and validate a client-supplied ``cwd``.
+
+        Accepts a non-empty absolute path under an allowlisted prefix; returns
+        ``""`` (no pin) for anything else — never raises, so a malformed field
+        degrades to the pre-change behaviour instead of failing the turn.
+        """
+        if not isinstance(raw, str) or not raw.strip():
+            # abspath("") resolves to cwd; bail before normalizing to avoid
+            # accidental anchoring when the API runs from an allowlisted root.
+            return ""
+        candidate = os.path.abspath(os.path.expanduser(raw.strip()))
+        if not os.path.isdir(candidate):
+            return ""
+        for prefix in cls._API_CWD_PREFIXES:
+            if candidate == prefix or candidate.startswith(prefix + "/"):
+                return candidate
+        return ""
+
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", cwd: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -4108,11 +4145,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
-        return set_session_vars(
+        tokens = set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery,
+            cwd=cwd)
+        # Seed the terminal/file-tool cwd record for this session so the
+        # request-scoped ``cwd`` also anchors default command directories and
+        # relative file-path resolution (same registration the TUI/ACP
+        # surfaces perform for their workspaces). Keyed by BOTH the raw
+        # session_key binding and the session id the agent's
+        # ``effective_task_id`` falls back to — consumers read either way.
+        if cwd:
+            try:
+                from tools.terminal_tool import record_session_cwd
+
+                for _key in {session_key, session_id}:
+                    if _key:
+                        record_session_cwd(_key, cwd)
+            except Exception:
+                pass
+        return tokens
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[dict[str, Any]], requested_runtime: Optional[dict[str, Any]],
@@ -4197,7 +4251,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_history_delivery: str = "", turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None, cwd: str = "") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4226,7 +4280,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
-                    session_history_delivery=session_history_delivery)
+                    session_history_delivery=session_history_delivery, cwd=cwd)
                 agent = None
                 from agent.notification_presentation import notification_turn
                 from gateway.warning_notifications import diagnostic_turn_muted

@@ -501,6 +501,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    cwd: str = ""  # sanitized request-scoped working directory (``_request_cwd``)
 
     @property
     def approval_session_key(self) -> str:
@@ -619,6 +620,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
 
 async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs — start an agent run, return run_id immediately."""
+    from gateway.platforms.api_server import _request_cwd
     _openai_error = _api_server._openai_error
     # Long-term memory scope header (see chat_completions for details).
     gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -738,7 +740,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author,
+        cwd=_request_cwd(body))
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -815,7 +818,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "", cwd=run.cwd)
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:

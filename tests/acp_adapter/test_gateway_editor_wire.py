@@ -51,7 +51,9 @@ class EditPeer(BaseHTTPRequestHandler):
 
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
-async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
+async def test_acp_load_from_another_folder_moves_the_session_there(daemon, tmp_path):
+    """Main rebound a session opened from another folder (#134889 ACP-12): the owner's workspace
+    mutation moves the authoritative cwd, which every viewer then reads."""
     other = tmp_path / 'other'
     other.mkdir()
     async with viewer(daemon) as ws:
@@ -60,10 +62,17 @@ async def test_acp_load_checks_authoritative_cwd(daemon, tmp_path):
         assert created['info']['cwd'] == str(tmp_path)
         async with editor(daemon, tmp_path) as acp:
             await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
-            refused = await acp.rpc('session/load', sessionId=sid, cwd=str(other), mcpServers=[])
-            assert 'cwd_policy_conflict' in json.dumps(refused)
-            loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
-            assert 'result' in loaded
+            loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(other), mcpServers=[])
+            assert 'result' in loaded, loaded
+            assert (await ws.rpc('session.info', session_id=sid))['cwd'] == str(other)
+            resumed = await acp.rpc('session/resume', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+            assert 'result' in resumed, resumed
+            assert (await ws.rpc('session.info', session_id=sid))['cwd'] == str(tmp_path)
+            forked = await acp.rpc('session/fork', sessionId=sid, cwd=str(other), mcpServers=[])
+            assert 'result' in forked, forked
+            child = forked['result']['sessionId']
+            assert (await ws.rpc('session.info', session_id=child))['cwd'] == str(other)
+            assert (await ws.rpc('session.info', session_id=sid))['cwd'] == str(tmp_path)
 
 
 @pytest.mark.platforms("linux")

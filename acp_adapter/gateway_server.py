@@ -261,10 +261,13 @@ class GatewayACPAgent(acp.Agent):
         if ("acp" not in descriptor.get("session_create", {}).get("sources", [])
                 or "acp-editor-policy-v1" not in descriptor.get("capabilities", [])):
             raise GatewayClientError("acp_policy_unavailable")
+        from hermes_cli.gateway_chat import env_launch_flags
+        # `hermes acp --yolo` / `--safe-mode` / ... reach this process as their env equivalents; the
+        # owner does not inherit them, so they freeze into this session's policy or not at all.
         snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,
             source="acp", cwd=_translate_acp_cwd(cwd),
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
-                    "edit_approval_policy": "ask"})
+                    "edit_approval_policy": "ask"}, **env_launch_flags())
         session_id = snapshot["session_id"]
         self._snapshots[session_id] = snapshot
         if mcp_servers:
@@ -324,8 +327,8 @@ class GatewayACPAgent(acp.Agent):
         if session_id != held_id:
             self._aliases[held_id] = session_id
         info = await self._attach_info(client, session_id)
-        if "cwd" in info and _normalize_cwd_for_compare(info["cwd"]) != _normalize_cwd_for_compare(_translate_acp_cwd(cwd)):
-            raise GatewayClientError("cwd_policy_conflict")
+        if self._moved(info, cwd):
+            info = await self._move_workspace(client, session_id, cwd)
         if "cwd" not in info and self._conn:
             await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
@@ -347,6 +350,19 @@ class GatewayACPAgent(acp.Agent):
             self._permission(session_id, pending)
         await self._notify_unknown(session_id)
         return await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id)
+
+    @staticmethod
+    def _moved(info, cwd):
+        return "cwd" in info and _normalize_cwd_for_compare(info["cwd"]) != _normalize_cwd_for_compare(_translate_acp_cwd(cwd))
+
+    async def _move_workspace(self, client, session_id, cwd):
+        """Main rebound a session opened from another folder to that folder; the owner's ``workspace``
+        mutation (Move to project) moves execution cwd and TERMINAL_CWD together, idle sessions only."""
+        payload = {'cwd': _translate_acp_cwd(cwd)}
+        self._unacked.pop(session_id, None)
+        await self._mutations.apply(client, session_id, 'workspace', payload)
+        self._mutations.acknowledge(session_id, 'workspace', payload)
+        return await client.rpc("session.info", session_id=session_id)
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
@@ -396,12 +412,15 @@ class GatewayACPAgent(acp.Agent):
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         info = await client.rpc('session.info', session_id=session_id)
-        if (mcp_servers or _normalize_cwd_for_compare(info.get('cwd', '')) !=
-                _normalize_cwd_for_compare(_translate_acp_cwd(cwd))):
+        if mcp_servers:
+            # The branch inherits the parent's borrowed-MCP scope; binding other servers to the child
+            # (or giving it its own scope) has no owner verb.
             raise GatewayClientError('cwd_policy_conflict')
         self._unacked.pop(session_id, None)
         result = await self._mutations.apply(client, session_id, 'branch', {})
         child = result['branched_session_id']
+        if self._moved(info, cwd):
+            await self._move_workspace(client, child, cwd)
         self._snapshots[child] = await client.rpc('session.resume', session_id=child)
         self._mutations.acknowledge(session_id, 'branch', {})
         info = self._snapshots[child].get('info') or await client.rpc('session.info', session_id=child)

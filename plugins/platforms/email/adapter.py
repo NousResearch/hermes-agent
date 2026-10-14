@@ -33,6 +33,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
+from plugins.platforms.email.markdown_html import markdown_to_email_html
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,14 @@ def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool 
             cached_path, kind = cache_document_from_bytes(payload, filename), "document"
         attachments.append({"path": cached_path, "filename": filename, "type": kind, "media_type": content_type})
     return attachments
+
+
+def _body_alternative(body: str) -> MIMEMultipart:
+    """Plain part first, HTML second: a client that cannot render HTML keeps the original text."""
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(body, "plain", "utf-8"))
+    alternative.attach(MIMEText(markdown_to_email_html(body), "html", "utf-8"))
+    return alternative
 
 
 def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
@@ -871,7 +880,7 @@ class EmailAdapter(BasePlatformAdapter):
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(_body_alternative(body))
         return msg, msg_id, subject
 
     def _smtp_send(self, msg: MIMEMultipart) -> None:
@@ -972,7 +981,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        msg = _body_alternative(message)
         for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)

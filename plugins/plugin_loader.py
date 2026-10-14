@@ -247,7 +247,11 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
             if instance:
                 return instance
         except Exception as e:
-            logger.debug("register() failed for %s: %s", name, e)
+            # WARNING with traceback, not debug: when construction fails the host silently falls back
+            # (for context engines, every session drops to the built-in compressor) and this line is
+            # the only breadcrumb. At debug level the real exception (e.g. a SQLite schema error in
+            # the plugin's storage init) is invisible in production.
+            logger.warning("register() failed for %s: %s", name, e, exc_info=True)
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
         if isinstance(attr, type) and issubclass(attr, base_cls) and attr is not base_cls:

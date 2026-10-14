@@ -9,7 +9,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 WEIXIN_COPY_LINE_WIDTH = 120
@@ -344,11 +344,35 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
     return await asyncio.wait_for(_do(), timeout=120)
 
 
+_MEDIA_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MEDIA_REDIRECT_LIMIT = 10  # matches aiohttp.ClientSession's default max_redirects
+
+
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
+    """Fetch a media payload, following redirects manually so every hop re-passes the SSRF check.
+
+    aiohttp follows redirects by default, which would let an SSRF-checked first URL 302 to an
+    intranet or cloud-metadata address. Callers validate the first URL (``is_safe_url`` or
+    ``_assert_weixin_cdn_url``); every redirect target is re-validated here, fail-closed.
+    """
+    from tools.url_safety import is_safe_url
+
     async def _do() -> bytes:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            return await response.read()
+        current = url
+        for _ in range(_MEDIA_REDIRECT_LIMIT + 1):
+            async with session.get(current, allow_redirects=False) as response:
+                if response.status not in _MEDIA_REDIRECT_STATUSES:
+                    response.raise_for_status()
+                    return await response.read()
+                location = response.headers.get("Location")
+            if not location:
+                raise ValueError(f"Media redirect from {urlparse(current).hostname!r} carried no Location header.")
+            target = urljoin(current, location)
+            if not is_safe_url(target):
+                target_host = urlparse(target).hostname or ""
+                raise ValueError(f"Blocked redirect to unsafe media host {target_host!r} (SSRF protection).")
+            current = target
+        raise ValueError(f"Media download exceeded {_MEDIA_REDIRECT_LIMIT} redirects from {urlparse(url).hostname!r}.")
     return await asyncio.wait_for(_do(), timeout=timeout_seconds)
 
 

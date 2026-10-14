@@ -393,7 +393,9 @@ gateway's error code in its result: `connection_required` (connection required
 or expired), `not_allowed`, `alias` (alias required or unknown),
 `invalid_arguments`, and `connector_backend` for every backend-family code
 (vendor error, rate limit, timeout, policy or gateway failure); other codes keep
-`tool_error`. Hermes does not infer retries from repeated tool names or
+`tool_error`. Hermes's own file-input refusals count the same way: a refused
+path is `not_allowed`, a missing or oversized file is `invalid_arguments`, and a
+failed upload is `connector_backend`. Hermes does not infer retries from repeated tool names or
 adjacent calls; when the
 hook does not provide an explicit retry relationship, the retry bucket is
 `unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
@@ -777,8 +779,7 @@ Both keys are asked once per profile, with the same three answers everywhere
 "No thanks" is the default in the terminal, so pressing Enter never opts
 anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
 open, so it is asked again next time. The Desktop strip appears only after
-first-run onboarding is finished or skipped, and never in the internal setup
-profile that hosts the welcome chat. Answering on any surface writes both keys
+first-run onboarding is finished or skipped. Answering on any surface writes both keys
 to the profile's `config.yaml`, plus `offer_version`, and a profile that already
 carries either key is never asked again. A managed install is never offered.
 

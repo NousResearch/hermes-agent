@@ -13,8 +13,9 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
+from typing import Iterable
 
-from scripts.releases import optional_platforms
+from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
 
@@ -161,26 +162,26 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
 
 
 ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
-OPTIONAL_HANDOFFS = optional_platforms.HANDOFFS  # opt-in handoff -> manifest target
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
              *, smoke_results: dict, release_epoch: int, archive: str,
-             handoffs: tuple[str, ...] = ALL_HANDOFFS) -> dict:
+             lanes: Iterable[str]) -> dict:
     """Bind the native metadata to files already staged by their build jobs.
 
     `tag` stays the plain payload identity; `archive` is the attempt ref the
-    manifest and every artifact URL are keyed under. `handoffs` names the
-    groups this release built: the opt-in darwin-x64 and termux groups may be
-    left out, and then their targets must be absent from the manifest."""
+    manifest and every artifact URL are keyed under. `lanes` are the claim's:
+    a handoff group a lane did not build must have no target in the manifest.
+    The Windows groups build together, so the universal bundle (`windows`) and
+    the Store bundle (`windows-store`) are each present exactly when their lane is."""
     from scripts.releases.handoff import receipt_name, validate_receipt
     from scripts.releases.r2 import put, staging_key_for
 
-    expected = tuple(handoffs)
-    if (len(set(expected)) != len(expected) or not set(expected) <= set(ALL_HANDOFFS)
-            or not set(ALL_HANDOFFS) - set(OPTIONAL_HANDOFFS) <= set(expected)):
-        raise ValueError(f"Invalid candidate handoff set: {', '.join(expected)}")
-    absent = frozenset(target for name, target in OPTIONAL_HANDOFFS.items() if name not in expected)
+    lanes = frozenset(lanes)
+    expected = lane_set.handoffs(lanes, ALL_HANDOFFS)
+    if not expected:
+        raise ValueError("Invalid candidate handoff set: the lanes built no package")
+    absent = frozenset(lane_set.TARGET_LANE) - lane_set.targets(lanes)
     smoke_results = accepted_smoke_results(smoke_results, absent=absent)
     by_name = {}
     for name in expected:
@@ -203,10 +204,15 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
                 raise ValueError(f"Candidate local digest mismatch: {name}")
             if name.startswith("metadata-"):
                 rows.append(json.loads(file.read_text(encoding="utf-8-sig")))
-    universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
-    single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
-    windows = [r for r in rows if r["platform"] == "windows"]
-    validate_windows_bundle(root / universal_name, windows)
+    universal_name = None
+    if "windows" in lanes:
+        universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
+        validate_windows_bundle(root / universal_name, [r for r in rows if r["platform"] == "windows"])
+    elif any(name.endswith(".msixbundle") and not name.startswith("Store-") for name in by_name):
+        raise ValueError("Candidate carries a signed Windows bundle the claim did not build")
+    stores = [name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-")]
+    if len(stores) != ("windows-store" in lanes):
+        raise ValueError("Candidate Store bundle differs from the claim's windows-store lane")
     files = [{**row, "url": f"{public_base.rstrip('/')}/{staging_key_for(archive, name)}"}
              for name, row in sorted(by_name.items()) if not name.startswith("metadata-")]
     by_name = {item["path"]: item for item in files}
@@ -223,9 +229,8 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
               "packages": packages, "files": files, "smoke_results": smoke_results}
     validate_candidates(result, tag, commit, public_base, release_epoch, archive=archive)
     present = {f"{row['platform']}/{row['arch']}" for row in packages}
-    for name, target in OPTIONAL_HANDOFFS.items():
-        if (target in present) != (name in expected):
-            raise ValueError(f"Candidate {target} row differs from the built handoffs")
+    if present != set(lane_set.TARGET_LANE) - absent:
+        raise ValueError("Candidate package rows differ from the built handoffs")
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     put(tag=archive, key="release-candidates.json", file=out, immutable=True)
     return result
@@ -377,7 +382,7 @@ def promote(manifest: dict, root: Path, public_base: str) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["record", "assemble", "publish", "promote", "materialize", "appinstaller", "publish-appinstaller"])
+    parser.add_argument("command", choices=["record", "publish", "promote", "materialize", "appinstaller", "publish-appinstaller"])
     parser.add_argument("--platform", choices=["windows", "macos", "termux"])
     parser.add_argument("--arch")
     parser.add_argument("--channel-request", type=Path)
@@ -387,9 +392,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tag", default=os.environ.get("RELEASE_TAG"))
     parser.add_argument("--archive", default=os.environ.get("HERMES_ARCHIVE_TAG"),
                         help="Attempt ref the release archive is keyed under when the payload tag is plain vX.Y.Z")
-    parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
+    # A stable run dispatches from the default branch, so GITHUB_SHA is not the admitted claim commit.
+    parser.add_argument("--commit", default=os.environ.get("RELEASE_COMMIT") or os.environ.get("GITHUB_SHA"))
     parser.add_argument("--public-base", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"))
-    parser.add_argument("--release-epoch", type=int, default=os.environ.get("HERMES_RELEASE_EPOCH"))
     parser.add_argument("--store-only", action="store_true")
     for name in ("identity", "publisher", "version", "self-uri", "artifact-uri"):
         parser.add_argument(f"--{name}")
@@ -413,17 +418,6 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "record":
         request = json.loads(args.channel_request.read_text(encoding="utf-8-sig")) if args.channel_request else None
         record(args.platform, args.arch, args.root, args.tag, args.commit, args.out, channel_request=request)
-    elif args.command == "assemble":
-        if args.release_epoch is None:
-            parser.error("assemble requires the admitted --release-epoch")
-        if not args.archive:
-            parser.error("assemble requires the admitted --archive ref")
-        assemble(args.root, args.tag, args.commit, args.public_base, args.out,
-                 smoke_results=json.loads(os.environ.get("RELEASE_NEEDS", "{}")),
-                 release_epoch=args.release_epoch, archive=args.archive)
-        if os.environ.get("GITHUB_OUTPUT"):
-            with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
-                file.write(f"manifest-url={args.public_base.rstrip('/')}/releases/tag/{args.archive}/release-candidates.json\nmanifest-sha256={sha256_file(args.out)}\n")
     else:
         if not args.archive:
             parser.error(f"{args.command} requires the admitted --archive ref")

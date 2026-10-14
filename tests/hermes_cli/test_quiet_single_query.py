@@ -7,6 +7,7 @@ the re-run resumes that row instead of appending a second copy of the DM.
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -96,7 +97,7 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
         return {"final_response": "ok"}
 
     def linger(*args, **kwargs):
-        seen["report_at_linger"] = qsq.read_turn_report(str(report), os.getpid())
+        seen["report_at_linger"] = qsq.read_turn_report(str(report))
         return {"waited": [], "completed": [], "timed_out": []}
 
     monkeypatch.setattr("tools.process_registry.process_registry.wait_for_pending_completions", linger)
@@ -107,8 +108,21 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
         assert exc.code == 0
     assert seen["env_during_turn"] is None and seen["report_during_turn"] is False
     assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": "", "reply": "ok"}
-    # Another process's record is not this child's report.
-    assert qsq.read_turn_report(str(report), os.getpid() + 1) is None
+    # Identity is the path, not the writer's pid: the spawner owns a fresh per-delivery temp
+    # name and pops it before the turn, and a launcher that re-execs makes the pid unknowable.
+    # The fix itself: a report whose writer pid is NOT the pid the spawner holds is still this
+    # child's report. Under a re-execing argv[0] (a venv Scripts/python.exe redirector, a
+    # pip/uv console script) the spawner holds the launcher's pid while the child writes the
+    # interpreter's, so gating on equality rejected every real report and booked a delivered
+    # turn as a timeout.
+    foreign = {"pid": os.getpid() + 1, "exit_code": 0, "error": "", "reply": "ok"}
+    report.write_text(json.dumps(foreign), encoding="utf-8")
+    assert qsq.read_turn_report(str(report)) == foreign
+    # What must still fail closed is a record that is not a turn report.
+    report.write_text('{"pid": 1}', encoding="utf-8")
+    assert qsq.read_turn_report(str(report)) is None
+    report.write_text("not json", encoding="utf-8")
+    assert qsq.read_turn_report(str(report)) is None
 
 
 def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monkeypatch, tmp_path):
@@ -128,7 +142,7 @@ def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monke
         return {"final_response": next(answers), "messages": []}
 
     def linger_then_follow_up(session_id, run_turn, **kwargs):
-        seen["report_before_follow_up"] = qsq.read_turn_report(str(report), os.getpid())["reply"]
+        seen["report_before_follow_up"] = qsq.read_turn_report(str(report))["reply"]
         return run_turn("teammate: done")
 
     monkeypatch.setattr(qsq, "continue_quiet_notify_completions", linger_then_follow_up)
@@ -142,5 +156,5 @@ def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monke
     except SystemExit as exc:
         assert exc.code == 0
     assert seen["report_before_follow_up"] == "asking the teammate"
-    assert qsq.read_turn_report(str(report), os.getpid())["reply"] == "teammate says: done"
+    assert qsq.read_turn_report(str(report))["reply"] == "teammate says: done"
     assert ("teammate says: done",) in printed, "the report and stdout name the same answer"

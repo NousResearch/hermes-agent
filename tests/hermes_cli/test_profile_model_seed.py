@@ -185,6 +185,7 @@ def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch
 
 
 URL = "http://127.0.0.1:11434/v1"
+LAB = {"provider": "custom:lab", "default": "synthetic-model"}
 
 
 @pytest.mark.parametrize(
@@ -196,25 +197,11 @@ URL = "http://127.0.0.1:11434/v1"
             {"providers": {"stale": {"name": "lab", "base_url": URL + "x"}}},
             {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
         ),
-        # URL-less destination tuning never shadows, so it is kept.
+        # A scheme-less keyed URL still matches at runtime, so it is evicted too.
         (
             {"custom_providers": [{"name": "Lab", "base_url": URL}]},
-            {"providers": {"lab": {"request_timeout_seconds": 9}}},
-            {
-                "providers": {"lab": {"request_timeout_seconds": 9}},
-                "custom_providers": [{"name": "Lab", "base_url": URL}],
-            },
-        ),
-        # A URL-less tuning seed replaces only its own key.
-        (
-            {"providers": {"custom": {"request_timeout_seconds": 5}}},
-            {"providers": {"local": {"name": "custom", "base_url": URL}}},
-            {
-                "providers": {
-                    "custom": {"request_timeout_seconds": 5},
-                    "local": {"name": "custom", "base_url": URL},
-                }
-            },
+            {"providers": {"lab": {"base_url": "localhost:9999/v1"}}},
+            {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
         ),
         # A camelCase ``baseUrl`` legacy seed is a live endpoint and still evicts its shadow.
         (
@@ -222,18 +209,44 @@ URL = "http://127.0.0.1:11434/v1"
             {"providers": {"lab": {"base_url": URL + "x"}}},
             {"providers": {}, "custom_providers": [{"name": "Lab", "baseUrl": URL}]},
         ),
-        # A disabled destination entry can never shadow, so it is kept.
+        # A disabled legacy seed is still live at runtime and evicts a keyed shadow.
         (
-            {"providers": {"lab": {"base_url": URL}}},
-            {"providers": {"old": {"name": "lab", "base_url": URL + "x", "enabled": False}}},
+            {"custom_providers": [{"name": "Lab", "base_url": URL, "enabled": False}]},
+            {"providers": {"lab": {"base_url": URL + "x"}}},
             {
-                "providers": {
-                    "lab": {"base_url": URL},
-                    "old": {"name": "lab", "base_url": URL + "x", "enabled": False},
-                }
+                "providers": {},
+                "custom_providers": [{"name": "Lab", "base_url": URL, "enabled": False}],
+            },
+        ),
+        # Unrelated destination entries are kept.
+        (
+            {"custom_providers": [{"name": "Lab", "base_url": URL}]},
+            {"providers": {"other": {"base_url": URL + "x"}}},
+            {
+                "providers": {"other": {"base_url": URL + "x"}},
+                "custom_providers": [{"name": "Lab", "base_url": URL}],
             },
         ),
     ],
 )
-def test_merge_endpoint_seed_drops_only_shadowing_entries(seed, dst, expected):
-    assert merge_endpoint_seed(dst, seed) == expected
+def test_merge_endpoint_seed_drops_same_identity_entries(seed, dst, expected):
+    merged = merge_endpoint_seed(dst, {"model": LAB, **seed})
+
+    assert merged == expected
+    resolved = runtime_provider._get_named_custom_provider(
+        "custom:lab", config=merged, resolve_credentials=False
+    )
+    assert resolved["base_url"] == URL
+
+
+def test_merge_endpoint_seed_tuning_seed_replaces_only_its_key():
+    seed = {
+        "model": {"provider": "custom", "default": "synthetic-model", "base_url": URL},
+        "providers": {"custom": {"request_timeout_seconds": 5}},
+    }
+    dst = {"providers": {"local": {"name": "custom", "base_url": URL + "x"}}}
+
+    assert merge_endpoint_seed(dst, seed)["providers"] == {
+        "custom": {"request_timeout_seconds": 5},
+        "local": {"name": "custom", "base_url": URL + "x"},
+    }

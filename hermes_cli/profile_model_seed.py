@@ -1,6 +1,6 @@
 """Copy the model and its selected custom endpoint when creating an independent profile."""
 
-from hermes_cli.config import _expand_env_vars, find_provider_entry, is_provider_enabled
+from hermes_cli.config import _expand_env_vars, find_provider_entry
 from hermes_cli.config_providers import _normalize_custom_provider_entry
 from hermes_cli.providers import custom_provider_aliases
 from hermes_cli.runtime_provider_custom import (
@@ -8,6 +8,34 @@ from hermes_cli.runtime_provider_custom import (
     _normalize_custom_provider_name,
     _shadowed_by_builtin,
 )
+
+
+def _requested_provider(model_cfg) -> str | None:
+    provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    # Runtime expands ``model.provider: ${VAR}`` before resolving; select with the same value.
+    return str(_expand_env_vars(provider)) if isinstance(provider, str) else None
+
+
+def _resolve(provider: str, cfg: dict):
+    return _get_named_custom_provider(provider, config=cfg, resolve_credentials=False)
+
+
+def _source_of(cfg: dict, resolved: dict):
+    """Where in *cfg* the resolver found *resolved*: ``("providers", key)`` or
+    ``("custom_providers", index)``. Keyed results carry ``provider_key``; legacy results do not
+    (their normalizer runs without one), so they are located by normalized name and URL."""
+    key, entry = find_provider_entry(cfg.get("providers"), resolved.get("provider_key"))
+    if entry is not None:
+        return "providers", key
+    custom = cfg.get("custom_providers")
+    for index, entry in enumerate(custom if isinstance(custom, list) else ()):
+        normalized = _normalize_custom_provider_entry(entry)
+        if normalized and (normalized["name"], normalized["base_url"]) == (
+            resolved["name"],
+            resolved["base_url"],
+        ):
+            return "custom_providers", index
+    return None
 
 
 def launch_model_seed(source_cfg: dict) -> dict:
@@ -20,17 +48,13 @@ def launch_model_seed(source_cfg: dict) -> dict:
     if not model_cfg:
         return {}
     seed = {"model": model_cfg}
-    provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
-    if not isinstance(provider, str):
+    provider = _requested_provider(model_cfg)
+    if provider is None:
         return seed
-    # Runtime expands ``model.provider: ${VAR}`` before resolving; select with the same value.
-    provider = str(_expand_env_vars(provider))
     requested = _normalize_custom_provider_name(provider)
     providers = source_cfg.get("providers")
     providers = providers if isinstance(providers, dict) else {}
-    selected = _get_named_custom_provider(
-        provider, config=source_cfg, resolve_credentials=False
-    )
+    selected = _resolve(provider, source_cfg)
     if selected is None:
         exact = providers.get(provider)
         # Bare ``custom`` runs as provider ``custom`` and reads ``providers.custom`` tuning too.
@@ -41,60 +65,54 @@ def launch_model_seed(source_cfg: dict) -> dict:
         ):
             seed["providers"] = {provider: exact}
         return seed
-    key, entry = find_provider_entry(providers, selected.get("provider_key"))
-    if entry is not None:
-        seed["providers"] = {key: entry}
-        return seed
-    custom_providers = source_cfg.get("custom_providers")
-    for entry in custom_providers if isinstance(custom_providers, list) else ():
-        normalized = _normalize_custom_provider_entry(entry)
-        if normalized and (normalized["name"], normalized["base_url"]) == (
-            selected["name"],
-            selected["base_url"],
-        ):
-            seed["custom_providers"] = [entry]
-            return seed
+    found = _source_of(source_cfg, selected)
+    if found is not None:
+        section, where = found
+        seed[section] = (
+            {where: providers[where]}
+            if section == "providers"
+            else [source_cfg["custom_providers"][where]]
+        )
     return seed
 
 
-def _identity(entry, key: str = "") -> frozenset[str]:
-    """Aliases runtime can match *entry* by: empty for non-dicts, disabled entries and entries
-    the shared normalizer rejects (no usable URL; ``baseUrl`` counts, as it does at runtime)."""
-    if not isinstance(entry, dict) or not is_provider_enabled(entry):
-        return frozenset()
-    if _normalize_custom_provider_entry(entry, provider_key=key) is None:
+def _aliases(entry, key: str = "") -> frozenset[str]:
+    """Every identity name-based lookups (runtime, ``/model`` pinning, pickers) accept for *entry*."""
+    if not isinstance(entry, dict):
         return frozenset()
     key = key or str(entry.get("provider_key") or "")
     return custom_provider_aliases(str(entry.get("name") or key), key)
 
 
 def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
-    """Return a copy of *dst_cfg* with the seeded endpoint written first. Runtime takes the first
-    alias match (keyed ``providers:`` before ``custom_providers:``), so destination entries with a
-    URL that claim the same identity would shadow the inherited endpoint and are dropped; a
-    same-key destination entry is replaced whole. Entries runtime cannot match (no URL, disabled)
-    never shadow: such a seed replaces only its own key, and such destination entries are kept."""
+    """Return a copy of *dst_cfg* with the seeded endpoint written first; a same-key destination
+    entry is replaced whole. When the seed is an endpoint (it resolves), destination entries that
+    claim any of its identities are dropped in both sections: Hermes has several name lookups with
+    different skip rules (URL validation, ``enabled``, keyed-first), so only removing every
+    same-identity entry guarantees each of them lands on the inherited endpoint. A URL-less tuning
+    seed (``providers.custom``) claims no identity and replaces only its own key."""
     seed_providers = seed.get("providers") or {}
     seed_custom = seed.get("custom_providers") or []
-    claimed: set[str] = set()
-    for key, entry in seed_providers.items():
-        claimed |= _identity(entry, str(key))
-    for entry in seed_custom:
-        claimed |= _identity(entry)
+    provider = _requested_provider(seed.get("model"))
+    claimed: frozenset[str] = frozenset()
+    if provider and _resolve(provider, seed) is not None:
+        claimed = frozenset().union(
+            *(_aliases(e, str(k)) for k, e in seed_providers.items()),
+            *(_aliases(e) for e in seed_custom),
+        )
 
     merged = dict(dst_cfg)
     dst_providers = dst_cfg.get("providers")
     if isinstance(dst_providers, dict) or seed_providers:
         kept = {
             k: v for k, v in (dst_providers if isinstance(dst_providers, dict) else {}).items()
-            if k not in seed_providers and not claimed & _identity(v, str(k))
+            if k not in seed_providers and not claimed & _aliases(v, str(k))
         }
         merged["providers"] = {**seed_providers, **kept}
     dst_custom = dst_cfg.get("custom_providers")
     if isinstance(dst_custom, list) or seed_custom:
-        kept_list = [
+        merged["custom_providers"] = seed_custom + [
             e for e in (dst_custom if isinstance(dst_custom, list) else [])
-            if not claimed & _identity(e)
+            if not claimed & _aliases(e)
         ]
-        merged["custom_providers"] = seed_custom + kept_list
     return merged

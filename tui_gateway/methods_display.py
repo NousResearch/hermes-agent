@@ -25,7 +25,6 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 _DISPLAY_ERR = 5300
-_lease_listener_installed = threading.Event()
 
 
 def _display_snapshot() -> dict:
@@ -35,16 +34,26 @@ def _display_snapshot() -> dict:
     return {**st.as_dict(), "lease": _bd_lease.public_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 
 
-def _install_lease_listener() -> None:
-    """Once per process: broadcast every lease change to all connected clients."""
-    if _lease_listener_installed.is_set():
-        return
+def _lease_change_broadcast(profile_key: str, lease) -> None:
+    """Broadcast one lease transition to every connected client (the ``display.lease`` event)."""
     from tools.bot_desktop import lease as _bd_lease
 
-    def _on_change(profile_key: str, lease) -> None:
-        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _bd_lease.public_view(lease)})
-    _bd_lease.on_change(_on_change)
-    _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
+    _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _bd_lease.public_view(lease)})
+
+
+def _install_lease_listener() -> None:
+    """Once per process: broadcast every lease change to all connected clients.
+
+    The guard is identity against the lease module's live listener list, not a process-wide flag:
+    ``lease._reset_for_tests()`` clears that list, and a still-set flag would then leave every
+    later registration silently unsubscribed (observed: a display_watch test heard no transition
+    after a display_methods fixture reset the listeners).
+    """
+    from tools.bot_desktop import lease as _bd_lease
+
+    if any(cb is _lease_change_broadcast for cb in _bd_lease.change_listeners()):
+        return
+    _bd_lease.on_change(_lease_change_broadcast)
 
 
 @method("display.status")

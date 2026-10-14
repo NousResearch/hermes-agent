@@ -53,7 +53,9 @@ def demote_stale_tail_tools(
     skill-marker rows untouched. A demoted ``skill_view`` body carries the canonical reload marker, as its
     Phase-1 stub does, so the model does not act on instructions it no longer has (#32106). Returns a new list
     (untouched rows shared, demoted copied) and the number of rows demoted."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _rewritten, _skill_pruned_marker
+    from agent.context_compressor import (
+        SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
+    )
 
     rounds_seen = 0
     protected: set[int] = set()
@@ -76,7 +78,7 @@ def demote_stale_tail_tools(
             continue
         stub = _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id)
         skills = _skill_view_names_by_call_id(messages) if skills is None else skills
-        if skill := skills.get(str(msg.get("tool_call_id") or "")):
+        if (skill := skills.get(str(msg.get("tool_call_id") or ""))) and not _result_failure_suffix(content):
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)
         demoted += 1

@@ -873,8 +873,11 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
 
 
 def _skill_view_failed(content: Any) -> bool:
-    """True for a ``skill_view`` result that loaded nothing (``success: false``), so it carries no instructions to lose."""
-    return isinstance(content, str) and _json_dict(content).get("success") is False
+    """True for a ``skill_view`` that loaded nothing: the raw failure payload or its ``[skill_view] … FAILED`` stub."""
+    if not isinstance(content, str):
+        return False
+    return bool(_result_failure_suffix(content)) or (
+        content.startswith("[skill_view] ") and " FAILED" in content.split(" (", 1)[0])
 
 
 def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
@@ -894,7 +897,7 @@ def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
         names += _extract_pruned_skill_names(text)
         if msg.get("role") == "user":
             names += skills_loaded_by_scaffold(text)
-        elif msg.get("role") == "tool" and not _skill_view_failed(content):
+        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
             names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
     return [name for name in dict.fromkeys(names) if name]
 
@@ -1724,8 +1727,9 @@ def _sum_execute_code(name, args, content, content_len, line_count):
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
     # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
-    marker = "" if skill == "?" or _skill_view_failed(content) else " " + _skill_pruned_marker(str(skill))
-    return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
+    failed = _result_failure_suffix(content)
+    marker = "" if skill == "?" or failed else " " + _skill_pruned_marker(str(skill))
+    return f"[skill_view] name={skill}{failed} ({content_len:,} chars)" + marker
 
 
 # Runtime notices that clarify producers persisted as user_response before per-response

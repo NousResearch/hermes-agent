@@ -422,6 +422,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
             with open(log_path, "ab") as log_f:
                 proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    # detached-spawn: ok — dashboard service launch, meant to outlive the CLI that starts it
                     start_new_session=True, close_fds=True)
             spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:

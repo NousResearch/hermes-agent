@@ -2953,7 +2953,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=True,
+            start_new_session=True,  # detached-spawn: ok — restart-safe kanban worker, must survive the dispatcher
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
     except FileNotFoundError:

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.verify.recipes import Recipe
+from hermes_cli.process_identity import release_process_groups, spawn_owned
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
@@ -172,13 +173,16 @@ def _run_start_phase(
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
-    # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
+    # Owned: the app leads its own group (clean group teardown below) and that group dies with this
+    # process if it is killed mid-poll, instead of leaving the dev server running on the port.
+    proc = spawn_owned(recipe.start, purpose="verify-app", cwd=str(root), **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
     finally:
         _terminate_process_group(proc)
+        if proc.poll() is not None:
+            release_process_groups([proc.pid])
         try:
             output = proc.stdout.read() or "" if proc.stdout is not None else ""
         except (OSError, ValueError):

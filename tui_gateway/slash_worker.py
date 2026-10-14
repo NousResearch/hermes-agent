@@ -21,41 +21,14 @@ import json
 import logging
 import os
 import sys
-import threading
-import time
 from typing import TYPE_CHECKING
 
-from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
     from cli import HermesCLI
 
-# Env-overridable so the integration test can drive sub-second timing.
-_WATCHDOG_POLL_S = max(0.05, env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
-_ORPHAN_GRACE_S = max(0.0, env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
-_in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
-
-
-def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
-    """Return whether this worker no longer has its original POSIX parent."""
-    return getppid() != original_ppid
-
-
-def _watchdog_parent(parent_pid: int, *, is_windows: bool, getppid=os.getppid) -> int:
-    """Return the PID the parent-death watchdog should treat as our parent.
-
-    The gateway passes its PID at spawn so a fast exit cannot make this child
-    mistake a subreaper for its original parent before the watchdog starts.
-    The watchdog compares the kernel's live PPID against it, so a reused PID
-    can never pass for the parent. Windows never reparents, and a venv
-    python.exe redirector makes the launcher (not the gateway) our direct
-    parent there, so keep the observed PPID or the worker would exit at once.
-    """
-    if is_windows or not parent_pid:
-        return getppid()
-    return parent_pid
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -67,17 +40,6 @@ def _prepare_slash_worker_runtime() -> None:
     from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
-
-
-def _start_parent_death_watchdog(original_ppid) -> None:
-    def _loop():
-        while not _is_orphaned(original_ppid):
-            time.sleep(_WATCHDOG_POLL_S)
-        deadline = time.monotonic() + _ORPHAN_GRACE_S
-        while _in_flight.is_set() and time.monotonic() < deadline:
-            time.sleep(0.05)  # let an in-flight command finish/flush
-        os._exit(0)
-    threading.Thread(target=_loop, daemon=True).start()
 
 
 def _slash_base(command: str) -> str:
@@ -163,14 +125,13 @@ def main():
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
-    p.add_argument("--parent-pid", type=int, default=0)
+    # Accepted and ignored: a gateway started before an update still passes it to the updated worker
+    # code on disk. The worker dies with its gateway through the gateway's owner-death supervisor.
+    p.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
-    _start_parent_death_watchdog(_watchdog_parent(args.parent_pid, is_windows=sys.platform == "win32"))
-    # Keep the heavyweight CLI import behind the watchdog (importing it at module
-    # load left a reparenting window before main() could snapshot PPID), but ahead
-    # of MCP discovery: importing cli loads ~/.hermes/.env and sets HERMES_QUIET,
+    # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
     from cli import HermesCLI
     _prepare_slash_worker_runtime()
@@ -195,7 +156,6 @@ def main():
         line = raw.strip()
         if not line:
             continue
-        _in_flight.set()
         rid = None
         try:
             req = json.loads(line)
@@ -205,7 +165,6 @@ def main():
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:
-            _in_flight.clear()
             # Workers persist for the TUI session: release allocator pages at the command boundary like
             # other long-lived gateway processes (trim_memory's shared cooldown coalesces nearby activity).
             try:

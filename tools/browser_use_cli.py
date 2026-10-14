@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
+from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
@@ -615,6 +616,7 @@ def _group_popen_kwargs() -> dict:
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                 "startupinfo": si}
+    # detached-spawn: ok — awaited CLI; a timeout kills its whole group (_run_cli_killing_process_group)
     return _quiet(_flags, {}, "Windows hide-flags unavailable") if os.name == "nt" else {"start_new_session": True}
 
 
@@ -688,6 +690,60 @@ def stop_harness_daemons() -> None:
     for name in names:
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+        with _owned_daemon_groups_lock:
+            pgid = _owned_daemon_groups.pop(name, None)
+        if pgid is not None:
+            release_process_groups([pgid])
+
+
+# BU_NAME -> process group of the harness daemon this process owns. The harness starts its daemon with
+# start_new_session so it outlives each CLI call (that is how a session persists across browser_exec
+# calls), which also means it outlives a SIGKILLed or OOM-killed Hermes forever (#121095). Its group
+# goes to this process's owner-death supervisor, so it dies with us however we die.
+_owned_daemon_groups: dict[str, int] = {}
+_owned_daemon_groups_lock = threading.Lock()
+
+
+def _own_harness_daemon(env: dict) -> None:
+    """Hand the daemon behind ``env``'s BU_NAME to the owner-death supervisor.
+
+    The harness publishes its daemon pid in ``<runtime dir>/bu-<name>.pid`` (JSON ``{"pid", "started"}``
+    or a bare pid). The daemon is accepted only while it is this user's live ``browser_harness.daemon``
+    leading its own session, so a stale or planted pid file can never hand a stranger's group to the
+    supervisor."""
+    if os.name != "posix":
+        return  # Windows: the harness daemon is outside this process's job; nothing to register.
+    import psutil
+
+    # Where the daemon's pid file lives, resolved from the env the CLI ran with (a profile scope can
+    # differ from os.environ) the way browser_harness.paths / _ipc resolve it.
+    name = env.get("BU_NAME", "default")
+    isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    home = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
+    if isolated:
+        runtime = Path(isolated).expanduser()
+    elif home:
+        runtime = Path(home).expanduser() / "runtime"
+    else:
+        runtime = Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser() / "browser-harness" / "runtime"
+    stem = "bu" if isolated and env.get("BH_RUNTIME_DIR_SHARED") != "1" else f"bu-{name}"
+    try:
+        raw = (runtime / f"{stem}.pid").read_text(encoding="utf-8-sig").strip()
+        pid = int(json.loads(raw)["pid"]) if raw.startswith("{") else int(raw.split()[0])
+        proc = psutil.Process(pid)
+        argv = proc.cmdline()
+        if (os.getsid(pid) != pid or proc.uids().real != os.getuid()  # windows-footgun: ok — posix-only, returned above
+                or argv[argv.index("-m") + 1] != "browser_harness.daemon"):
+            return
+    except (OSError, ValueError, KeyError, TypeError, IndexError, psutil.Error) as exc:
+        logger.debug("browser_exec: no harness daemon to supervise for %s: %s", name, exc)
+        return
+    with _owned_daemon_groups_lock:
+        if _owned_daemon_groups.get(name) == pid:
+            return
+        _owned_daemon_groups[name] = pid
+    own_process_groups([pid])
+    register_child(pid, "browser-harness-daemon")
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -765,6 +821,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
+    _own_harness_daemon(env)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]

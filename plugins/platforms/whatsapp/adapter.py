@@ -17,7 +17,8 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli.process_identity import release_process_groups, spawn_owned
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -180,6 +181,14 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         start = get_process_start_time(pid)
         text = str(pid) if start is None else f"{pid}\n{start}" + ("" if port is None else f"\n{port}")
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
+
+
+def _spawn_bridge_process(argv: list, log_fh, env: dict) -> subprocess.Popen:
+    """Start the Node bridge as an owned child. It leads its own session (so a container stop
+    reaches it directly, #127047) and dies with this process however this process dies: a SIGKILLed
+    or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session."""
+    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                       stderr=log_fh, env=env, creationflags=windows_detach_flags())
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -685,9 +694,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(  # noqa: ASYNC220 -- persistent bridge; callers use the Popen object (pid, poll)
+            self._bridge_process = _spawn_bridge_process(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdin=subprocess.DEVNULL, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, self._bridge_env())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             if not await self._wait_for_bridge():
                 return False
@@ -753,6 +762,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     self._terminate_bridge(force=True)
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
+            if not _IS_WINDOWS and self._bridge_process.poll() is not None:
+                # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
+                # (POSIX only: Windows has no supervised group, and its stop path stays as on main.)
+                release_process_groups([self._bridge_process.pid])
         if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
             _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)

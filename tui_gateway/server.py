@@ -12,6 +12,7 @@ import logging
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
@@ -263,8 +265,7 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
-                "--parent-pid", str(os.getpid())] \
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
@@ -290,16 +291,19 @@ class _SlashWorker:
         env["PYTHONPATH"] = os.pathsep.join(
             part for part in (module_root, env.get("PYTHONPATH", "")) if part
         )
-        # start_new_session: otherwise the worker inherits the gateway's pgid and mcp_tool's orphan
-        # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
-        # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.
+        # spawn_owned: the worker leads its own process group (otherwise it inherits the gateway's
+        # pgid and mcp_tool's orphan sweep, racing the spawn, killpg()s the TUI parent itself), and
+        # that group dies with this process however it dies: SIGKILL/OOM of the gateway used to leave
+        # a quick command's shell, and anything else the worker started in its group, running forever.
+        # errors="replace": bytes invalid in the system locale (GBK Windows) must not raise
+        # UnicodeDecodeError in the drain threads.
         # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so slash_worker child processes
         # can resolve Hermes-managed CLIs (browser-use, uvx) even when the parent gateway was launched with
         # a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", bufsize=1, cwd=os.getcwd(), env=env,
-            creationflags=windows_hide_flags(), start_new_session=True)
+        self.proc = spawn_owned(
+            argv, purpose="slash-worker", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
+            cwd=os.getcwd(), env=env, creationflags=windows_hide_flags())
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 
@@ -355,22 +359,42 @@ class _SlashWorker:
         self._closed = True
         proc = self.proc
         try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1)
-                except Exception:
-                    proc.kill()
-                    with contextlib.suppress(Exception):
-                        proc.wait(timeout=1)  # reap the zombie SIGKILL leaves behind
-        except Exception:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                proc.wait(timeout=1)
+            _stop_worker_group(proc)
         finally:
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 with contextlib.suppress(Exception):
                     stream.close()
+
+
+def _stop_worker_group(proc) -> None:
+    """TERM the slash worker, give it 1 s, then KILL; never raises.
+
+    POSIX signals the worker's whole process group (``spawn_owned`` made it the leader): signalling
+    the leader alone left a running quick command's shell, or anything else the worker started in
+    its group, alive after every session close. The group is released from the owner-death
+    supervisor once it is empty; a group that is not stays covered.
+    """
+    if os.name != "posix":
+        for stop in (proc.terminate, proc.kill):
+            if proc.poll() is not None:
+                return
+            with contextlib.suppress(Exception):
+                stop()
+                proc.wait(timeout=1)  # also reaps the zombie a kill leaves behind
+        return
+    pgid = proc.pid
+    # Only a leader still alive on entry proves the number is still this worker's group. A worker
+    # that already died leaves its group to the owner-death supervisor rather than risk signalling
+    # a recycled pgid.
+    if proc.poll() is None:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            # Members that outlive the leader keep the group (and its number) alive.
+            with contextlib.suppress(OSError):
+                os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only, Windows returned above
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1)
+    # Killed members are reaped by init asynchronously; one still alive after that stays covered.
+    release_process_group_once_empty(pgid, proc=proc)
 
 
 def _display_cfg() -> dict:

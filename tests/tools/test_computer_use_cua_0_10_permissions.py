@@ -160,6 +160,9 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         cua_backend, "_cua_no_overlay", return_value=False,
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
+    ), patch("hermes_cli.process_identity._update_supervised_pgids") as supervise, patch(
+        # A Mock pid must never reach the real owner-death supervisor or the spawn ledger.
+        "hermes_cli.process_identity.register_child"
     ):
         daemon.start()
         command = popen.call_args.args[0]
@@ -167,6 +170,10 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         proxy_command, proxy_args = daemon.proxy_invocation()
         daemon.stop()
 
+    # The private daemon is an owned child: its group is handed to the owner-death supervisor at start
+    # and released once stop() has stopped it.
+    assert popen.call_args.kwargs["start_new_session"] is True
+    assert [c.args for c in supervise.call_args_list] == [("register", [process.pid]), ("unregister", [process.pid])]
     assert command[:2] == ["/opt/cua-driver", "serve"]
     assert "--embedded" in command
     assert command[command.index("--permission-mode") + 1] == "unrestricted"

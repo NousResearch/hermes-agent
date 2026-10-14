@@ -23,6 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
+from hermes_cli.process_identity import release_process_groups, spawn_owned
 from utils import is_truthy_value
 
 
@@ -146,13 +147,15 @@ def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
     windows_detach_flags_without_breakaway) adds CREATE_NO_WINDOW so the child
     owns a hidden console its descendants inherit instead — deliberately without
     CREATE_BREAKAWAY_FROM_JOB: this child is foreground-owned and killed by us on
-    idle timeout, so job teardown propagation must keep working. POSIX keeps the
-    session detach (setsid) so the tree can be signalled on idle timeout.
+    idle timeout, so job teardown propagation must keep working. POSIX: the child
+    leads its own group (``spawn_owned``) so the tree can be signalled on idle
+    timeout, and the group dies with this process: the idle timer lives here, so
+    a stalled command used to outlive a SIGKILLed Hermes forever.
     """
     from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
     if os_name == "nt":
         return {"creationflags": windows_detach_flags_without_breakaway()}
-    return {"start_new_session": True}
+    return {}
 
 
 def run_command_provider(
@@ -177,9 +180,9 @@ def run_command_provider(
     # flashes a window on windowless hosts). Lossy UTF-8 decode: locale-mismatched bytes
     # must not raise in the reader threads.
     group = provider_popen_group_kwargs(os.name)
-    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
-                            stdin=subprocess.DEVNULL, **group)
+    proc = spawn_owned(command, purpose="tts-command", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
+                       stdin=subprocess.DEVNULL, **group)
     output_queue: queue.Queue[tuple[str, Optional[str]]] = queue.Queue()
     chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
     open_streams = {"stdout", "stderr"}
@@ -229,6 +232,8 @@ def run_command_provider(
             name, chunk = output_queue.get_nowait()
             if chunk:
                 chunks[name].append(chunk)
+    if proc.poll() is not None:
+        release_process_groups([proc.pid])  # a tree we failed to stop stays covered
     stdout, stderr = "".join(chunks["stdout"]), "".join(chunks["stderr"])
     if timed_out:
         raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from (

@@ -920,6 +920,9 @@ def _run_browser_command(
         # the same way and retry once on the replacement before handing the caller the error.
         # ``close`` is exempt: a dead daemon is already closed, and cleanup must never spawn
         # a fresh session just to close it.
+        if command != "close" and (session_info.get("features") or {}).get("local") \
+                and not session_info.get("cdp_url") and not session_info.get("bb_session_id"):
+            _lifecycle._own_local_daemon(session_info.get("session_name", ""))
         if attempt == 0 and command != "close" and _is_recoverable_local_backend_failure(session_info, result):
             _bt.logger.warning("browser '%s' failed at the backend level (task=%s, rc=%s); recycling the session "
                                "and retrying once", command, task_id, result.get("returncode"))

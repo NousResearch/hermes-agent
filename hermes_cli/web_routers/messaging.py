@@ -26,6 +26,7 @@ from gateway.status import (
     resolve_gateway_liveness, retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
+from hermes_cli.process_identity import release_process_groups, spawn_owned
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -442,23 +443,27 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     env = with_hermes_node_path()
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
-    return subprocess.Popen(
+    # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
+    return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
-        cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace", start_new_session=True, env=env,
-        creationflags=windows_hide_flags(),
+        purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(),
     )
 
 
 def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        with contextlib.suppress(Exception):
-            proc.kill()
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+    if proc.poll() is not None:
+        # Stopped; one we failed to stop stays covered by the owner-death supervisor.
+        release_process_groups([proc.pid])
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -511,6 +516,7 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                     return
                 _apply_pairing_event(record, payload)
         returncode = proc.wait()
+        release_process_groups([proc.pid])
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return

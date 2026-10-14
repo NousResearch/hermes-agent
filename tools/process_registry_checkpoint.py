@@ -55,6 +55,9 @@ class ProcessCheckpointMixin:
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
 
+        # This host adopts what a crashed predecessor left running, so the jobs it starts must
+        # survive its own crash for the next one: they stay out of the owner-death supervisor.
+        self._jobs_outlive_host = True
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0

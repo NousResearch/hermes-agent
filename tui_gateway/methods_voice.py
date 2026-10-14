@@ -425,6 +425,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
         try:
             _emit("wake.detected", sid, {
                 "phrase": matched_phrase or phrase, "profile": matched_profile or None,
+                # detached-spawn: ok — not a spawn: a wake.detected event field
                 "start_new_session": new_session})
         finally:
             reset_transport(token)

@@ -1453,7 +1453,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         # Break away from the parent CLI's job object or be reaped when the CLI exits; a job without
         # BREAKAWAY_OK rejects CREATE_BREAKAWAY_FROM_JOB (OSError) — retry once without the bit.
         try:
-            subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())
+            subprocess.Popen(watcher_argv, **popen_kwargs, **windows_detach_popen_kwargs())  # detached-spawn: ok — restart watcher, must outlive the gateway it restarts
         except OSError:
             try:
                 subprocess.Popen(
@@ -1497,7 +1497,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(  # noqa: ASYNC220 -- fire-and-forget spawn; Popen returns immediately and callers need the Popen object
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
+            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,  # detached-spawn: ok — restart watcher, must outlive the gateway it restarts
         )
 
     def _wedged_agent_count(self) -> int:

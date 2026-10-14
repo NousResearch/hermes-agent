@@ -101,6 +101,7 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     # Detach: stdout/stderr → log file, new session so parent signals don't propagate.
     with open(log_path, "ab", buffering=0) as log_fh:
         proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
+                                # detached-spawn: ok — reached via files across turns, stopped by meet_leave (pid in .active.json)
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
     record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,

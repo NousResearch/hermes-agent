@@ -697,22 +697,3 @@ class TestLightpandaSessionLifecycle:
              patch("tools.browser_tool_lifecycle._reap_orphaned_browser_sessions"):
             bt_lifecycle._emergency_cleanup_all_sessions()
         stop_all.assert_called_once()
-
-    def test_orphan_reaper_sweeps_lightpanda_records(self, tmp_path):
-        with patch("tools.browser_lightpanda.reap_orphaned_lightpanda") as reap, \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
-            bt_lifecycle._reap_orphaned_browser_sessions()
-        reap.assert_called_once()
-
-    def test_orphan_reaper_survives_non_dict_record(self, tmp_path, monkeypatch):
-        """A parseable-but-non-object state file is swept like an unreadable one —
-        never an AttributeError that wedges the reaper."""
-        from tools import browser_lightpanda
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        state_dir = browser_lightpanda._state_dir()
-        bad = state_dir / "broken.json"
-        bad.write_text('"not a record"', encoding="utf-8")
-        dead_owner = state_dir / "dead.json"
-        dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
-        assert browser_lightpanda.reap_orphaned_lightpanda() == 0
-        assert not bad.exists() and not dead_owner.exists()

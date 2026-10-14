@@ -26,6 +26,7 @@ from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from hermes_cli.process_identity import release_process_groups
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +203,9 @@ class LlamaServerSupervisor:
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
-        # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+        # list-args, never a shell: spaced paths (user homes) must survive. owned: the router
+        # tree dies with this process on every OS, however this process dies (#126631).
+        self.proc, self._job = spawn_server(cmd, owned=True, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                              cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
@@ -294,6 +296,10 @@ class LlamaServerSupervisor:
                 if self._job is not None:
                     self._job.close()
                     self._job = None
+            if self.proc is not None:
+                # Stopped by us: the owner-death supervisor has nothing left to cover. Only
+                # after a terminate that returned, so a tree we failed to kill stays covered.
+                release_process_groups([self.proc.pid])
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()

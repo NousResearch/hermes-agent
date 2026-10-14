@@ -162,6 +162,18 @@ class TestSnapshotRealProfile:
 class TestRealProfileCdpLaunch:
     """The agent-browser-based launcher in browser_tool_real_profile._real_profile_cdp."""
 
+    @pytest.fixture(autouse=True)
+    def _owned(self, monkeypatch):
+        """FakeChrome / Mock processes have no real group: keep them away from the owner-death
+        supervisor and the spawn ledger, and record what the launcher handed over."""
+        from hermes_cli import process_identity
+        self.supervised = []
+        monkeypatch.setattr(process_identity, "_update_supervised_pgids",
+                            lambda verb, pgids: self.supervised.append((verb, list(pgids))))
+        monkeypatch.setattr(process_identity, "register_child", lambda pid, purpose: None)
+        import tools.browser_tool as bt
+        monkeypatch.setattr(bt, "_real_profile_chrome_procs", [])
+
     def _reset(self):
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
@@ -251,11 +263,14 @@ class TestRealProfileCdpLaunch:
             return Mock(wait=Mock(return_value=0), returncode=0)
 
         class FakeChrome:
+            pid = 424242
+
             def poll(self):
                 return None
 
         def fake_popen(argv, **kw):
             captured["chrome_argv"] = argv
+            captured["chrome_kwargs"] = kw
             (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
             return FakeChrome()
 
@@ -273,6 +288,9 @@ class TestRealProfileCdpLaunch:
             bt_real_profile._real_profile_cdp()
         # The chrome launch itself is headless (no window, no focus steal).
         assert "--headless=new" in captured["chrome_argv"]
+        # ...and owned: its group dies with this process, however this process dies.
+        assert captured["chrome_kwargs"]["start_new_session"] is True
+        assert ("register", [424242]) in self.supervised
         # agent-browser attaches, it does not launch.
         assert "--headless" not in captured["argv"]
         assert "--profile" not in captured["argv"]
@@ -293,6 +311,8 @@ class TestRealProfileCdpLaunch:
         closed = {"n": 0}
 
         class FakeChrome:
+            pid = 424243
+
             def poll(self):
                 return None
 

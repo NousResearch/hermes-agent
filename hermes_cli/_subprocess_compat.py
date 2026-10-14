@@ -271,6 +271,7 @@ def windows_detach_popen_kwargs() -> dict:
     """
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
+    # detached-spawn: ok — the detach helper itself; every call site is checked on its own
     return {"start_new_session": True}
 
 

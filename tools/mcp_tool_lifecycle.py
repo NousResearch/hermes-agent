@@ -6,6 +6,7 @@ import asyncio
 import os
 import time
 from typing import Dict, Optional
+from hermes_cli.process_identity import release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -385,7 +386,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
     # dance still leaves the supervisor holding them.
-    _core._update_death_supervisor("unregister", pgids.values())
+    release_process_groups(pgids.values())
 
 
 def _stop_mcp_loop_if_idle() -> bool:

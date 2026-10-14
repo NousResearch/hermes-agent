@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.process_identity import own_process_groups, register_child, release_process_group_once_empty
 
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
@@ -263,10 +264,17 @@ class LSPClient:
                 cmd[0], *cmd[1:], limit=_STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=delegated_child_subprocess_env({**hermes_subprocess_env(), **(self._env or {})}), cwd=self._cwd,
-                start_new_session=True, creationflags=windows_hide_flags(),
+                start_new_session=True,  # detached-spawn: ok — the group goes to own_process_groups below
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e
+        # The server itself exits on stdin EOF when we die, but a descendant that does not hold or
+        # watch that pipe (a wrapper's background child, a SIGTERM-ignoring worker) outlived a
+        # SIGKILLed / OOM-killed Hermes forever. The owner-death supervisor kills the whole group
+        # the moment this process dies, by any cause. No-op on Windows (job object instead).
+        own_process_groups([self._proc.pid])
+        register_child(self._proc.pid, "lsp-server")
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader_task = asyncio.create_task(self._reader_loop())
@@ -430,6 +438,7 @@ class LSPClient:
             if proc.returncode is not None:
                 if self._exit_code is None:
                     self._exit_code = proc.returncode
+                release_process_group_once_empty(proc.pid, timeout=0)
                 return
             try:
                 # ``shutdown`` has already given the protocol a grace period.  Hard-kill
@@ -447,6 +456,7 @@ class LSPClient:
                 pass
             if self._exit_code is None and proc.returncode is not None:
                 self._exit_code = proc.returncode
+            release_process_group_once_empty(proc.pid, timeout=0)
 
     # ---- request / notification plumbing ----
 

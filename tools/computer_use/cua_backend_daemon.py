@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
+from hermes_cli.process_identity import release_process_groups, spawn_owned
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
@@ -168,9 +169,16 @@ class _EmbeddedCuaDaemon:
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
         env = self._sanitized_env()
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
-        self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                         env=env)
+        popen_kwargs: dict[str, Any] = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                            text=True, encoding="utf-8", errors="replace", env=env)
+        if sys.platform == "darwin":
+            # `open` hands the daemon to LaunchServices: it is launchd's child, never in our tree, so there is no
+            # group of ours to own. The daemon's own --embedded lifetime is the only bound there.
+            self._process = subprocess.Popen(command, **popen_kwargs)
+        else:
+            # Owned: the daemon dies with this process however it dies. It used to be stopped only by stop()
+            # (session release / atexit), so a SIGKILLed or OOM-killed Hermes left a YOLO-mode daemon running.
+            self._process = spawn_owned(command, purpose="cua-driver-embedded", **popen_kwargs)
         self._owns_runtime = True
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
@@ -207,6 +215,7 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
+            release_process_groups([process.pid])  # stopped it ourselves (a no-op for the macOS `open` launcher)
         if sys.platform != "win32" and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)

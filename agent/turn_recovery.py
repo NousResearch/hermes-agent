@@ -414,12 +414,12 @@ def _refresh_credentials_after_401(
         return False
     if (
         agent.api_mode == "codex_responses"
-        and agent.provider in {"openai-codex", "xai-oauth"}
+        and agent.provider in {"openai-codex", "xai-oauth", "meta-oauth"}
         and not _retry.codex_auth_retry_attempted
     ):
         _retry.codex_auth_retry_attempted = True
         if agent._try_refresh_codex_client_credentials(force=True):
-            _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
+            _label = {"xai-oauth": "xAI OAuth", "meta-oauth": "Meta OAuth"}.get(agent.provider, "Codex")
             agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
             return True
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
@@ -896,7 +896,7 @@ def _print_nonretryable_auth_guidance(
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
         return
-    if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+    if provider in {"openai-codex", "xai-oauth", "meta-oauth", "nous"} and status_code == 401:
         if provider == "openai-codex":
             from agent.turn_failure_copy import oauth_relogin_command
 
@@ -911,6 +911,12 @@ def _print_nonretryable_auth_guidance(
                 agent,
                 "   💡 xAI OAuth token was rejected (HTTP 401). To fix:",
                 "      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.",
+            )
+        elif provider == "meta-oauth":
+            _vlines(
+                agent,
+                "   💡 Meta OAuth token was rejected (HTTP 401). To fix:",
+                "      re-authenticate with Meta (Muse subscription) from `hermes model`.",
             )
         else:  # nous
             _vlines(

@@ -73,7 +73,8 @@ _OAUTH_BLOCKS = (
         ("Region:", "region", None, True),
         ("Access exp:", "expires_at", None, None),
         ("Error:", "error", None, False))),
-    ("xAI OAuth", "get_xai_oauth_auth_status", "hermes auth add xai-oauth", _FILE_REFRESH_ROWS))
+    ("xAI OAuth", "get_xai_oauth_auth_status", "hermes auth add xai-oauth", _FILE_REFRESH_ROWS),
+    ("Meta OAuth", "get_meta_oauth_auth_status", "hermes auth add meta-oauth", _FILE_REFRESH_ROWS))
 
 _APIKEY_PROVIDERS = {
     "Z.AI / GLM": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "Kimi / Moonshot": ("KIMI_API_KEY",),
@@ -112,6 +113,11 @@ def _render_auth_providers(ctx):
         statuses["get_xai_oauth_auth_status"] = auth.get_xai_oauth_auth_status() or {}
     except Exception:
         statuses["get_xai_oauth_auth_status"] = {}
+    # Meta OAuth likewise (its status is a refresh-free snapshot, safe for this surface).
+    try:
+        statuses["get_meta_oauth_auth_status"] = auth.get_meta_oauth_auth_status() or {}
+    except Exception:
+        statuses["get_meta_oauth_auth_status"] = {}
 
     info = None
     if any(nous_status.get(k) for k in ("logged_in", "access_token", "portal_base_url",

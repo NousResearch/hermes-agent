@@ -19,6 +19,7 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
     ("nous", "device_code"),
     ("openai-codex", "device_code"),
     ("xai-oauth", "device_code"),
+    ("meta-oauth", "device_code"),
 })
 
 # Metadata keys that look secret-ish by suffix but are safe to persist.

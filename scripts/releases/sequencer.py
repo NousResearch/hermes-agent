@@ -225,7 +225,7 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
 
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
-    from scripts.releases.stable import tagger_epoch, validate_claim, validate_final
+    from scripts.releases.stable import is_claim_run, tagger_epoch, validate_claim, validate_final
 
     log("Fetching stable receipt tags, attempt refs and abandon markers from origin")
     run([
@@ -309,8 +309,9 @@ def discover(repository: str, run=output) -> list[dict]:
                                         or release.get("draft") is not True
                                         or release.get("prerelease") is not False):
                 raise ValueError(f"{claim_tag} draft state is invalid")
-            matching_runs = [row for row in workflow_runs
-                             if row.get("head_branch") == claim_tag and row.get("head_sha") == commit]
+            matching_runs = [row for row in workflow_runs if is_claim_run(
+                title=row.get("display_title"), head_branch=row.get("head_branch"),
+                head_sha=row.get("head_sha"), claim_tag=claim_tag, commit=commit)]
             state, retry = classify_runs(
                 matching_runs,
                 claimed_at=datetime.fromtimestamp(claim_epoch, tz=UTC),

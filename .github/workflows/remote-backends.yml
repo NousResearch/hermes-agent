@@ -15,13 +15,18 @@ name: Remote terminal backends
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: remote-backends-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: remote-backends-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 env:
   # One small image for both the sshd host and the docker backend's sandbox, pinned
@@ -36,6 +41,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Pull the test image
         uses: ./.github/actions/retry

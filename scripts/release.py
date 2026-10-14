@@ -67,17 +67,16 @@ def list_remotes() -> list[str]:
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     """Dispatch the release pipeline after its draft exists.
 
-    Stable workflows run on the tag so all reusable checks see the same
-    commit. Their gate owns artifact publication and channel promotion.
-    Canary builds keep default-branch workflow/cache scope and tagged inputs.
-    Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Both channels run the default-branch workflow with the tag as an input, so
+    caches share one scope and scripts come from main. A stable run resolves its
+    claim tag to the commit under test. Its gate owns artifact publication and
+    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
     if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
     workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
-    cmd = ["gh", "workflow", "run", workflow, "--ref", "main" if canary else tag,
-           "-f", f"tag={tag}"]
+    cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
     if canary:
         cmd += ["-f", "upload_release=true"]
     if gh_repo:
@@ -88,7 +87,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    dispatch_ref = (_default_branch(gh_repo) or "main") if canary else tag
+    dispatch_ref = _default_branch(gh_repo) or "main"
     cmd[cmd.index("--ref") + 1] = dispatch_ref
 
     result = subprocess.run(

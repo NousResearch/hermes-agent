@@ -3107,7 +3107,7 @@ def _show_skill_settings() -> None:
         _section("Skill Settings")
         for var in skill_vars:
             value = resolved.get(var["key"], "")
-            display_val = str(value) if value else color("(not set)", Colors.DIM)
+            display_val = color("(not set)", Colors.DIM) if value is None or value == "" else str(value)
             skill_tag = color(f"[{var.get('skill', '')}]", Colors.DIM)
             print(f"  {var['key']:<20s} {display_val}  {skill_tag}")
     except Exception:

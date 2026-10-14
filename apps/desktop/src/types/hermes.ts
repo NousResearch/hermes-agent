@@ -1606,6 +1606,11 @@ export interface BackendUpdateCheckResponse {
   update_available: boolean
   /** A stable release this build already contains: applying it moves back. */
   rollback_to?: null | string
+  /** Update-available only; absent on older backends. */
+  channel?: string
+  branch?: null | string
+  /** Stable: the release version the update installs, e.g. `0.22.0`. */
+  source_version?: null | string
   can_apply: boolean
   update_command: string | null
   message: string | null

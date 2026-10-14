@@ -11,8 +11,8 @@ This file is the REINTRODUCTION GUARD. It fails when:
   * the deprecation banner stops naming the curated surface as the replacement.
 
 Run:  <hermes-venv>/bin/python -m pytest tests/agent/test_skills_index_deprecated.py -q
-Red proof (the hatch re-arms the index, and the guard catches it):
-      HERMES_SKILLS_INDEX=flat ... -m pytest tests/agent/test_skills_index_deprecated.py -q
+Red proof (the hatch re-arms the index, and the guard catches it): pin `skills.index: flat` in a
+profile's config.yaml — the hatch is a config setting, never a `HERMES_*` env var.
 """
 
 import re
@@ -22,7 +22,7 @@ import pytest
 from agent import prompt_builder as pb
 
 # An index line looks exactly like `    - yaan-something: Use when ...`
-INDEX_LINE_RE = re.compile(r"^\s+- [A-Za-z0-9_.:-]+:", re.M)
+INDEX_LINE_RE = re.compile(r"^\s+- [A-Za-z0-9_.:-]+:", re.MULTILINE)
 
 SAMPLE = {
     "yoyodine": [("yaan-agent-principles", "Use FIRST every task: yoyodine operating principles.")],
@@ -33,8 +33,12 @@ SAMPLE = {
 @pytest.fixture(autouse=True)
 def _config_is_silent(monkeypatch):
     """Never let the host's own config.yaml decide this test's verdict."""
-    monkeypatch.delenv("HERMES_SKILLS_INDEX", raising=False)
     monkeypatch.setattr(pb, "_config_readonly", lambda what: {}, raising=False)
+
+
+def _config(monkeypatch, skills: dict) -> None:
+    """Point the prompt builder at a config.yaml shape for one test."""
+    monkeypatch.setattr(pb, "_config_readonly", lambda what: {"skills": skills}, raising=False)
 
 
 def test_default_is_dark():
@@ -56,16 +60,16 @@ def test_empty_skills_tree_stays_silent():
 
 def test_escape_hatch_is_explicit_and_per_profile(monkeypatch):
     """Flat is reachable ONLY through the hatch — and the hatch is what the guard catches."""
-    monkeypatch.setenv("HERMES_SKILLS_INDEX", "dark")
+    _config(monkeypatch, {"index": "dark"})
     assert pb.skills_index_dark() is True
-    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
+    _config(monkeypatch, {"index": "flat"})
     assert pb.skills_index_dark() is False
     block = pb._render_skills_index(SAMPLE, {}, None, {"terminal"})
     assert INDEX_LINE_RE.search(block), "the hatch must restore the legacy rendering (red proof)"
 
 
 def test_config_hatch_is_recognised(monkeypatch):
-    monkeypatch.setattr(pb, "_config_readonly", lambda what: {"skills": {"index": "flat"}}, raising=False)
+    _config(monkeypatch, {"index": "flat"})
     assert pb.skills_index_dark() is False
 
 
@@ -76,10 +80,8 @@ def test_assembled_block_for_a_real_tree_shape_is_index_free(tmp_path):
     (tests/home_io_guard.py). The live leg is scripts/check_skills_index_dark.py in yaan-platform,
     which renders every lane home's real block and fails the same way.
     """
-    import os
     from pathlib import Path
 
-    os.environ.pop("HERMES_SKILLS_INDEX", None)  # noqa: S105 - not a secret, an env key
     skill = tmp_path / "skills" / "yoyodine" / "yaan-example" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text(

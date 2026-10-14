@@ -185,7 +185,7 @@ The agent only loads the full skill content when it actually needs it.
 
 The per-call system prompt no longer lists every visible skill as a flat `- name: description` line. That index was retired 2026-09-30: it duplicated the curated surface a profile already carries in its `SOUL.md` (`## Skills — your curated surface`) and charged every API call for a list most sessions never searched. Nothing is disabled — `skills_list()` still enumerates the whole tree on demand and `skill_view(name)` still loads any skill by name.
 
-A profile with no curated surface can restore the legacy index with `skills.index: flat` in `~/.hermes/config.yaml`, or `HERMES_SKILLS_INDEX=flat` in the process environment (the env override wins). Anything else — unset, `dark`, `off`, or an unreadable config — is the dark default.
+A profile with no curated surface can restore the legacy index with `skills.index: flat` in `~/.hermes/config.yaml`. Anything else — unset, `dark`, `off`, or an unreadable config — is the dark default.
 
 ### Skills added during a conversation
 

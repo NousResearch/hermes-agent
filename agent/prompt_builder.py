@@ -1436,7 +1436,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 # What did NOT go: nothing is disabled. `skills_list()` still enumerates the same tree on demand
 # (a tool call the lane chooses to pay for, instead of a per-call prompt tax), `skill_view(name)`
 # still loads any skill by name, and a profile with no curated surface can restore the legacy
-# index with `skills.index: flat` in its config.yaml or `HERMES_SKILLS_INDEX=flat`.
+# index with `skills.index: flat` in its config.yaml.
 #
 # ENFORCEMENT: tests/agent/test_skills_index_deprecated.py fails if an index line is rendered
 # again. Do not restore the index by editing this file back — the guard is the point of the change.
@@ -1458,28 +1458,16 @@ def skills_index_dark() -> bool:
     """True when the flat skills index is suppressed (the DEFAULT).
 
     The operator ruling is that the curated hierarchy wins, so dark is the default and re-enabling
-    the index is an explicit, per-profile act:
-
-      * ``HERMES_SKILLS_INDEX=flat`` (env override, wins over config), or
-      * ``skills.index: flat`` in the active profile's ``config.yaml``.
-
-    Anything else — unset, unreadable config, ``dark``/``off``/``false`` — is dark. A profile with
-    no curated SOUL surface is the only legitimate caller of the hatch: every lane carries one.
+    the index is an explicit, per-profile act: ``skills.index: flat`` in the active profile's
+    ``config.yaml``. Anything else — unset, unreadable config, ``dark``/``off``/``false`` — is dark.
+    A profile with no curated SOUL surface is the only legitimate caller of the hatch: every lane
+    carries one. Behavioural settings live in config.yaml, never in a ``HERMES_*`` env var.
     """
-    env = (os.environ.get("HERMES_SKILLS_INDEX") or "").strip().lower()
-    if env in ("flat", "legacy", "on", "1", "true"):
-        return False
-    if env in ("dark", "deprecated", "off", "0", "false"):
-        return True
-    node: Any = None
-    try:
-        node = _config_readonly("skills.index")
-        for part in ("skills", "index"):
-            node = node.get(part) if isinstance(node, dict) else None
-            if node is None:
-                break
-    except Exception:
-        node = None
+    node: Any = _config_readonly("skills.index")
+    for part in ("skills", "index"):
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            break
     if node is True or (isinstance(node, str) and node.strip().lower() in ("flat", "legacy", "on", "true")):
         return False
     return True

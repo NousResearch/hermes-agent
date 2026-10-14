@@ -47,6 +47,8 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_CACHE_MOUNTS_LABEL_KEY = "hermes-cache-mounts"
+_CACHE_MOUNTS_LABEL_VALUE = "v1"
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
 
 
@@ -732,7 +734,9 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-agent": "1",
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
+            _EGRESS_LABEL_KEY: egress_label,
+            _CACHE_MOUNTS_LABEL_KEY: _CACHE_MOUNTS_LABEL_VALUE,
+        }
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
@@ -1224,7 +1228,9 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", "label=hermes-agent=1",
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
-            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+            "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}",
+            "--filter", f"label={_CACHE_MOUNTS_LABEL_KEY}={_CACHE_MOUNTS_LABEL_VALUE}",
+        ]
         if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
             filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(

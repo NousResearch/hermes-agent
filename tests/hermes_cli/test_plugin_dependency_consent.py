@@ -50,7 +50,8 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
 
     target = tmp_path / 'plugin'
     target.mkdir()
-    (target / 'package.json').write_text('{}', encoding='utf-8')
+    (target / 'package.json').write_text(
+        json.dumps({'name': 'sidecar', 'dependencies': {'left-pad': '^1.0.0'}}), encoding='utf-8')
     prompts, installs, lines = [], [], []
     monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
     monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
@@ -64,6 +65,55 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     assert installs == [(target, {'explicit': True})]
     assert len(prompts) == 1 and 'node_modules' in prompts[0]
     assert not any('Python dependencies' in str(line) for line in lines)
+
+
+def test_build_only_package_json_skips_the_node_question(tmp_path, monkeypatch):
+    """A prebuilt bundle whose package.json only carries its toolchain under
+    devDependencies gets no Node question and no npm install — nothing in the
+    manifest is used at runtime, so consenting installs the whole dev toolchain
+    for nothing (#138640)."""
+    from pm import workspace
+
+    target = tmp_path / 'plugin'
+    target.mkdir()
+    (target / 'package.json').write_text(json.dumps({
+        'name': 'bundled-plugin', 'version': '1.0.0',
+        'devDependencies': {'esbuild': '^0.24.0', 'typescript': '^5.6.0', 'vitest': '^2.1.0'},
+    }), encoding='utf-8')
+    prompts, installs, lines = [], [], []
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'yes')
+    monkeypatch.setattr(workspace, 'install_node_sidecar', lambda path, **kwargs: installs.append((path, kwargs)))
+    from types import SimpleNamespace
+
+    result = plugins_cmd._install_plugin_python_deps(
+        {'name': 'bundled-plugin'}, target, SimpleNamespace(print=lambda *args, **kwargs: lines.extend(args)))
+    assert result == (True, None)
+    assert prompts == [] and installs == []
+    assert any('build toolchain only' in str(line) for line in lines)
+    assert not any('declares Node dependencies' in str(line) for line in lines)
+
+
+def test_unreadable_package_json_keeps_the_node_question(tmp_path, monkeypatch):
+    """A package.json that fails to parse keeps today's prompt instead of
+    silently skipping the sidecar; npm reports the breakage on consent."""
+    from pm import workspace
+
+    target = tmp_path / 'plugin'
+    target.mkdir()
+    (target / 'package.json').write_text('{not json', encoding='utf-8')
+    prompts, installs, lines = [], [], []
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'yes')
+    monkeypatch.setattr(workspace, 'install_node_sidecar', lambda path, **kwargs: installs.append((path, kwargs)))
+    from types import SimpleNamespace
+
+    result = plugins_cmd._install_plugin_python_deps(
+        {'name': 'sidecar'}, target, SimpleNamespace(print=lambda *args, **kwargs: lines.extend(args)))
+    assert result == (True, None)
+    assert len(prompts) == 1 and installs == [(target, {'explicit': True})]
 
 
 def test_yes_deps_carries_consent_through_non_interactive_install(admission_env, monkeypatch, capsys):

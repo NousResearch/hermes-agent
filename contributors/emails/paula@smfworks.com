@@ -1,2 +1,0 @@
-smfworks
-# SMF Works contributor

@@ -7,9 +7,18 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from agent import prompt_builder as pb
 from agent.skills_index_delta import stage_skills_index_note
 from agent.turn_context import consume_skills_index_note
+
+
+@pytest.fixture(autouse=True)
+def _legacy_flat_skills_index(flat_skills_index):
+    """This file tests the index's per-turn delta channel, so it exercises the explicit flat hatch
+    (`skills.index: flat` in config.yaml; tests/conftest.py::flat_skills_index). The DARK default is
+    guarded by tests/agent/test_skills_index_deprecated.py."""
 
 
 def _write_skill(skills, name, description):
@@ -35,9 +44,6 @@ def _turn(agent, prompt, history):
 
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # The flat skills index is retired by default (agent/prompt_builder.skills_index_dark); this
-    # file tests the index's per-turn delta channel, so it exercises the explicit flat hatch.
-    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
     monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *_: set())
     pb.clear_skills_system_prompt_cache(clear_snapshot=True)
     return tmp_path / "skills"

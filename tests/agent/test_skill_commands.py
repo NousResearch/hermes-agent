@@ -549,15 +549,15 @@ class TestBuildPreloadedSkillsPrompt:
 
 
 @pytest.fixture(autouse=True)
-def _legacy_flat_skills_index(monkeypatch):
+def _legacy_flat_skills_index(flat_skills_index):
     """This module renders the LEGACY flat skills index.
 
     The index is RETIRED by default (card t_cc3c6951, operator ruling 2026-09-30); the curated
     hierarchical surface is the routing surface now. These tests exercise the renderer that still
-    exists behind the explicit escape hatch, so it is pinned ON here. The DARK default is guarded by
-    tests/agent/test_skills_index_deprecated.py.
+    exists behind the explicit escape hatch, so it is pinned ON here — through the hatch a profile
+    uses (`skills.index: flat` in config.yaml; tests/conftest.py::flat_skills_index). The DARK
+    default is guarded by tests/agent/test_skills_index_deprecated.py.
     """
-    monkeypatch.setenv("HERMES_SKILLS_INDEX", "flat")
 
 
 class TestDuplicateNamesAgreeAcrossSurfaces:

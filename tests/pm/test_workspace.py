@@ -87,7 +87,10 @@ def test_plugin_workspace_trusts_core_lock_instead_of_rechecking_release_age(lay
     policy = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]
     assert "exclude-newer" not in policy and "exclude-newer-package" not in policy
     assert "constraint-dependencies" not in policy
-    locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    lock_doc = tomllib.loads((root / "uv.lock").read_text())
+    options = lock_doc.get("options") or {}
+    assert "exclude-newer" not in options and "exclude-newer-span" not in options
+    locked = {p["name"] for p in lock_doc["package"]}
     assert "member-dep" in locked
 
 
@@ -115,6 +118,83 @@ def test_core_only_generation_carries_no_release_age_cutoff(layout):
     ws._generate_pyproject([], root, source=core)
     generated = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "exclude-newer" not in generated and "[tool.uv]" in generated
+
+
+def test_without_release_age_lock_strips_options_and_empty_section():
+    """Lock-level exclude-newer* must not survive onto a user-side generation (#138131)."""
+    raw = (
+        'version = 1\n'
+        '[options]\n'
+        'exclude-newer = "0001-01-01T00:00:00Z" # relative span companion\n'
+        'exclude-newer-span = "P3D"\n'
+        '\n'
+        '[manifest]\n'
+        'overrides = []\n'
+    )
+    cleaned = ws._without_release_age_lock(raw)
+    assert "exclude-newer" not in cleaned
+    assert "[options]" not in cleaned
+    assert "[manifest]" in cleaned
+
+
+def test_seeded_lock_drops_release_age_options(layout, monkeypatch):
+    """hermes update seeds core's uv.lock; that copy must not keep exclude-newer-span (#138131)."""
+    import tomllib
+
+    tmp, core, _, _ = layout
+    seed = core / "uv.lock"
+    assert seed.is_file()
+    body = seed.read_text(encoding="utf-8")
+    if "[options]" in body:
+        seeded = body.replace(
+            "[options]\n",
+            '[options]\nexclude-newer = "0001-01-01T00:00:00Z"\nexclude-newer-span = "P3D"\n',
+            1,
+        )
+    else:
+        seeded = body.replace("version = 1\n", 'version = 1\n\n[options]\nexclude-newer-span = "P3D"\n\n', 1)
+    seed.write_text(seeded, encoding="utf-8")
+    assert "exclude-newer-span" in seed.read_text(encoding="utf-8")
+
+    class _Env:
+        def sync(self, root, extras, frozen=False):
+            return None
+
+    root = tmp / "workspace"
+    ws.lock_and_sync([], [], root=root, source=core, seed_lock=seed, environment=_Env(), frozen=True)
+    options = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8")).get("options") or {}
+    assert "exclude-newer" not in options and "exclude-newer-span" not in options
+
+
+def test_replayed_lock_drops_release_age_options(layout, monkeypatch):
+    """Repair replay must strip a recorded lock's cutoff the same way (#138131)."""
+    import tomllib
+
+    tmp, core, _, _ = layout
+    replay = tmp / "recorded"
+    replay.mkdir()
+    (replay / "pyproject.toml").write_text(
+        '[project]\nname="r"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=[]\n[tool.uv]\npackage=false\nexclude-newer = "3 days"\n',
+        encoding="utf-8",
+    )
+    (replay / "uv.lock").write_text(
+        'version = 1\n\n[options]\nexclude-newer-span = "P3D"\n\n[manifest]\noverrides = []\n',
+        encoding="utf-8",
+    )
+
+    class _Env:
+        def sync(self, root, extras, frozen=False):
+            self.frozen = frozen
+
+    env = _Env()
+    root = tmp / "workspace"
+    ws.lock_and_sync([], [], root=root, source=core, seed_lock=None, environment=env, replay=replay)
+    assert env.frozen is True
+    policy = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["uv"]
+    assert "exclude-newer" not in policy
+    options = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8")).get("options") or {}
+    assert "exclude-newer" not in options and "exclude-newer-span" not in options
 
 
 def test_undated_index_failure_names_the_index_not_a_conflict():

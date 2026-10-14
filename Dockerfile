@@ -270,6 +270,12 @@ FROM runtime_base AS python_deps
 # is baked so hosted/immutable images can enable the adapter without writing
 # the sealed venv.
 #
+# The holographic memory provider's HRR algebra needs NumPy. The catalog plugin
+# declares NumPy, but plugin deps lazy-install into /opt/data/installs at first
+# use, which an offline/immutable container cannot do; without NumPy the provider
+# silently falls back to FTS-only (hrr_weight 0.3 -> 0.0). Bake it like matrix.
+# Fixes #136707.
+#
 # --record-selection writes these extras to the store's facts.json as the venv
 # selection, as a bundle build does. Without it, the first opt-in extra a
 # container installs on use (FAL, a plugin's deps) records a selection of
@@ -289,7 +295,8 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --cache /opt/hermes/uv-cache \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat
+    --extra azure-identity --extra matrix --extra google-chat \
+    --extra holographic
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its

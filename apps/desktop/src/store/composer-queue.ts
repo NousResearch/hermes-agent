@@ -537,6 +537,59 @@ export const updateQueuedPrompt = (
 export const updateQueuedPromptText = (key: string | null | undefined, id: string, text: string): boolean =>
   updateQueuedPrompt(key, id, { text })
 
+/** A queued turn the merge can fold without losing anything: text the user
+ *  typed. An entry with a display projection (a queued `/skill` invocation
+ *  standing in for its expanded body, a hidden setup note) or a frozen
+ *  terminal payload carries something a single merged transport cannot
+ *  re-express, so those queues keep the affordance hidden rather than silently
+ *  dropping it (#41247). */
+export const isMergeableQueuedEntry = (entry: QueuedPromptEntry): boolean =>
+  !entry.displayKind && !entry.displayText && !queuedEntryHasTerminalChips(entry)
+
+export const canMergeQueuedPrompts = (entries: QueuedPromptEntry[]): boolean =>
+  entries.length >= 2 && entries.every(isMergeableQueuedEntry)
+
+/**
+ * Fold every queued turn into one: texts join with `separator` (a blank line by
+ * default) and attachments concat in queue order. The head entry's `id` +
+ * `queuedAt` survive, so everything that tracks the head — the auto-drain
+ * target, the in-place edit pointer, arrow history — keeps pointing at the same
+ * logical slot. Returns the merged entry, or null when the queue holds fewer
+ * than two turns or any turn is not mergeable (`canMergeQueuedPrompts`).
+ *
+ * The merged turn is fresh intent rather than a replay, so the head's
+ * drain-failure budget is dropped, exactly as a manually sent entry clears it
+ * (#98015).
+ */
+export const mergeQueuedPrompts = (key: string | null | undefined, separator = '\n\n'): null | QueuedPromptEntry => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return null
+  }
+
+  let merged: null | QueuedPromptEntry = null
+
+  mutateSession(sid, queue => {
+    if (!canMergeQueuedPrompts(queue)) {
+      return null
+    }
+
+    const head = queue[0]!
+
+    merged = {
+      id: head.id,
+      queuedAt: head.queuedAt,
+      text: queue.map(entry => entry.text).join(separator),
+      attachments: cloneAttachments(queue.flatMap(entry => entry.attachments))
+    }
+
+    return [merged]
+  })
+
+  return merged
+}
+
 export const clearQueuedPrompts = (key: string | null | undefined) => {
   const sid = sidOf(key)
 

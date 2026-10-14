@@ -13,18 +13,22 @@ const entry = (id: string, text: string): QueuedPromptEntry => ({
   text
 })
 
-function renderPanel(entries: QueuedPromptEntry[]) {
+function renderPanel(
+  entries: QueuedPromptEntry[],
+  overrides: { editingId?: null | string; onMergeAll?: () => void; parked?: boolean } = {}
+) {
   return render(
     <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
       <QueuePanel
         busy={false}
-        editingId={null}
+        editingId={overrides.editingId ?? null}
         entries={entries}
         onDelete={vi.fn()}
         onEdit={vi.fn()}
+        onMergeAll={overrides.onMergeAll}
         onResume={vi.fn()}
         onSendNow={vi.fn()}
-        parked={false}
+        parked={overrides.parked ?? false}
       />
     </I18nProvider>
   )
@@ -78,5 +82,54 @@ describe('QueuePanel expandable previews', () => {
 
     fireEvent.click(collapse)
     expect(screen.getByRole('button', { name: /expand/i }).getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+// #41247: a queue of several short follow-ups is usually one instruction. The
+// header's merge button folds them into a single entry in place.
+describe('QueuePanel merge affordance', () => {
+  it('offers the merge button for two or more plain queued turns and fires the host hook', () => {
+    const onMergeAll = vi.fn()
+
+    renderPanel([entry('a', 'one'), entry('b', 'two')], { onMergeAll })
+
+    fireEvent.click(screen.getByRole('button', { name: /merge all queued turns/i }))
+
+    expect(onMergeAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the merge button for a single entry and when the host has no merge path', () => {
+    renderPanel([entry('a', 'one'), entry('b', 'two')])
+
+    expect(screen.queryByRole('button', { name: /merge all queued turns/i })).toBeNull()
+
+    cleanup()
+    renderPanel([entry('a', 'one')], { onMergeAll: vi.fn() })
+
+    expect(screen.queryByRole('button', { name: /merge all queued turns/i })).toBeNull()
+  })
+
+  it('hides the merge button while an entry sits in the composer for editing', () => {
+    renderPanel([entry('a', 'one'), entry('b', 'two')], { editingId: 'b', onMergeAll: vi.fn() })
+
+    expect(screen.queryByRole('button', { name: /merge all queued turns/i })).toBeNull()
+  })
+
+  it('hides the merge button when an entry cannot be folded losslessly', () => {
+    renderPanel([entry('a', 'one'), entry('chip', 'look at @terminal:`zsh:23-58`')], { onMergeAll: vi.fn() })
+
+    expect(screen.queryByRole('button', { name: /merge all queued turns/i })).toBeNull()
+
+    cleanup()
+    renderPanel([entry('a', 'one'), { ...entry('note', 'setup'), displayKind: 'hidden' }], { onMergeAll: vi.fn() })
+
+    expect(screen.queryByRole('button', { name: /merge all queued turns/i })).toBeNull()
+  })
+
+  it('keeps the resume affordance alongside the merge button on a parked queue', () => {
+    renderPanel([entry('a', 'one'), entry('b', 'two')], { onMergeAll: vi.fn(), parked: true })
+
+    expect(screen.getByRole('button', { name: /merge all queued turns/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /resume/i })).toBeTruthy()
   })
 })

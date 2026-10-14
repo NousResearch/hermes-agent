@@ -8,7 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { CornerDownLeft, iconSize, Pencil, SteeringWheel } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
+import { canMergeQueuedPrompts, isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
   busy: boolean
@@ -16,6 +16,9 @@ interface QueuePanelProps {
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
+  /** Fold every queued turn into one. Absent when the host has no merge path —
+   *  the affordance hides rather than dead-clicks. */
+  onMergeAll?: () => void
   /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
   onResume: () => void
   onSendNow: (id: string) => void
@@ -41,6 +44,7 @@ export function QueuePanel({
   entries,
   onDelete,
   onEdit,
+  onMergeAll,
   onResume,
   onSendNow,
   onSteerNow,
@@ -68,21 +72,44 @@ export function QueuePanel({
     return null
   }
 
+  // Merging is offered only when it can be lossless (plain text turns — see
+  // `canMergeQueuedPrompts`), when no entry is being edited in the composer,
+  // and when the host really has a merge path.
+  const canMergeAll = Boolean(onMergeAll) && !editingId && canMergeQueuedPrompts(entries)
+
   return (
     <StatusSection
       accessory={
-        parked ? (
-          <Tip label={c.queueResumeTip}>
-            <Button
-              className="text-muted-foreground/75 hover:text-foreground/90"
-              onClick={onResume}
-              size="micro"
-              type="button"
-              variant="text"
-            >
-              {c.queueResume}
-            </Button>
-          </Tip>
+        canMergeAll || parked ? (
+          <>
+            {canMergeAll && (
+              <Tip label={c.mergeQueued}>
+                <Button
+                  aria-label={c.mergeQueued}
+                  className="size-5 rounded-md text-muted-foreground/75 hover:text-foreground/90"
+                  onClick={onMergeAll}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Codicon name="merge" size="0.8rem" />
+                </Button>
+              </Tip>
+            )}
+            {parked && (
+              <Tip label={c.queueResumeTip}>
+                <Button
+                  className="text-muted-foreground/75 hover:text-foreground/90"
+                  onClick={onResume}
+                  size="micro"
+                  type="button"
+                  variant="text"
+                >
+                  {c.queueResume}
+                </Button>
+              </Tip>
+            )}
+          </>
         ) : undefined
       }
       icon={<Codicon className="text-muted-foreground/70" name={parked ? 'debug-pause' : 'layers'} size="0.8rem" />}

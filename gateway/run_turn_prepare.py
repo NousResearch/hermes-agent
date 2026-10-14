@@ -116,6 +116,80 @@ def _recover_or_remember_model(runner, skey, model):
     return model
 
 
+def _session_override_uses_managed_oauth(override: Optional[dict]) -> bool:
+    """Only official Codex/xAI routes borrow the profile's current OAuth credential.
+
+    A direct alias can retain the provider label but owns its endpoint/key. Never refresh a
+    custom host's credential from the official provider's store (or the reverse).
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    if not override or override.get("owns_credentials"):
+        return False
+    provider = override.get("provider")
+    if provider not in {"openai-codex", "xai-oauth"}:
+        return False
+    return (override.get("base_url") or "").rstrip("/") == PROVIDER_REGISTRY[provider].inference_base_url.rstrip("/")
+
+
+def _resolve_session_override_runtime(override: dict, *, managed_oauth: bool) -> dict:
+    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+
+    runtime = _resolve_runtime_agent_kwargs_for_provider(
+        override["provider"], target_model=override.get("model") or None)
+    if managed_oauth:
+        if (runtime.get("provider") != override["provider"]
+                or (runtime.get("base_url") or "").rstrip("/") != override["base_url"].rstrip("/")
+                or not runtime.get("api_key")):
+            raise RuntimeError("Managed OAuth resolution no longer matches the session route")
+        # _apply_session_model_override reads this dict again: replacing only the returned
+        # runtime would re-overlay the switch-time key and its obsolete pool.
+        override.update(api_key=runtime["api_key"], credential_pool=runtime.get("credential_pool"))
+    return runtime
+
+
+def _log_missing_session_override(runner, skey, model) -> None:
+    # The override_keys scan walks every session; only pay for it when DEBUG is on.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "No session model override: session=%s config_model=%s override_keys=%s",
+            skey or "", model,
+            [key for key, state in list(runner._sessions_map().items())
+             if state.conversation.model_override is not None][:5] or "[]",
+        )
+
+
+def _session_override_snapshot(override: dict) -> dict:
+    runtime = {key: override.get(key) for key in (
+        "provider", "requested_provider", "api_key", "base_url", "api_mode",
+        "max_tokens", "credential_pool", "request_overrides", "capabilities",
+    )}
+    runtime["capabilities"] = dict(runtime["capabilities"] or {})
+    return runtime
+
+
+def _resolve_channel_runtime(runner, source, model, runtime_kwargs) -> tuple[str, dict]:
+    from gateway.run import _get_channel_override, _resolve_runtime_agent_kwargs_for_provider
+
+    cfg = getattr(runner, "config", None)
+    if cfg and source is not None:
+        ch = _get_channel_override(
+            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+        )
+        if ch:
+            if ch.model:
+                model = ch.model
+            if ch.provider:
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
+                ch_runtime_model = runtime_kwargs.pop("model", None)
+                # Adopt the provider's bundled model only when the override named none.
+                if ch_runtime_model and not ch.model:
+                    model = ch_runtime_model
+    return model, runtime_kwargs
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -126,8 +200,7 @@ class GatewayTurnPrepareMixin:
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _credential_pool_for_provider, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
         )
         from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
@@ -142,16 +215,11 @@ class GatewayTurnPrepareMixin:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
+        managed_oauth = _session_override_uses_managed_oauth(override)
         if override:
             override_model = override.get("model", model)
-            override_runtime = {
-                k: override.get(k) for k in (
-                    "provider", "requested_provider", "api_key", "base_url", "api_mode",
-                    "max_tokens", "credential_pool", "request_overrides", "capabilities",
-                )
-            }
-            override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
-            if override_runtime.get("api_key"):
+            override_runtime = _session_override_snapshot(override)
+            if override_runtime.get("api_key") and not managed_oauth:
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
@@ -159,28 +227,19 @@ class GatewayTurnPrepareMixin:
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
-            # for the override's own provider below, never layer it over the default provider's runtime.
+            # Managed OAuth keys are snapshots, not authority. Resolve them (and keyless
+            # rehydrated overrides) for this provider, never over the default route.
             logger.debug(
-                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+                "Session model override (provider resolution): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,
             )
-        elif logger.isEnabledFor(logging.DEBUG):
-            # The override_keys scan walks every session; only pay for it when DEBUG is on.
-            logger.debug(
-                "No session model override: session=%s config_model=%s override_keys=%s",
-                skey or "", model,
-                [
-                    _key for _key, _st in list(self._sessions_map().items())
-                    if _st.conversation.model_override is not None
-                ][:5] or "[]",
-            )
+        else:
+            _log_missing_session_override(self, skey, model)
 
         runtime_kwargs, unavailable_override = None, None
         if override and override.get("provider"):
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                    override["provider"], target_model=override.get("model") or None)
+                runtime_kwargs = _resolve_session_override_runtime(override, managed_oauth=managed_oauth)
             except Exception as exc:
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
@@ -188,6 +247,13 @@ class GatewayTurnPrepareMixin:
                 logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc,
                                exc_info=True)
                 unavailable_override, override = override, None
+            else:
+                if managed_oauth:
+                    # A validated session route outranks the channel entirely. Only auth rotates;
+                    # retain the user's selected transport/options and clear an absent pool.
+                    override_runtime.update(
+                        api_key=override["api_key"], credential_pool=override["credential_pool"])
+                    return _recover_or_remember_model(self, skey, override_model), override_runtime
         if runtime_kwargs is None:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
@@ -202,22 +268,7 @@ class GatewayTurnPrepareMixin:
             self._pre_agent_fallback_notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None:
-            ch = _get_channel_override(
-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+        model, runtime_kwargs = _resolve_channel_runtime(self, source, model, runtime_kwargs)
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

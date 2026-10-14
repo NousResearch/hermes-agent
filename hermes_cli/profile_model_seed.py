@@ -58,34 +58,41 @@ def launch_model_seed(source_cfg: dict) -> dict:
     return seed
 
 
+def _identity(entry: dict, key: str = "") -> frozenset[str]:
+    """Aliases runtime matches *entry* by; empty when it has no URL (runtime skips those)."""
+    if not _entry_url(entry):
+        return frozenset()
+    key = key or str(entry.get("provider_key") or "")
+    return custom_provider_aliases(str(entry.get("name") or key), key)
+
+
 def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
-    """*dst_cfg* with the seeded endpoint written ahead of, and instead of, destination entries
-    claiming the same identity. Runtime takes the first alias match (keyed ``providers:`` before
-    ``custom_providers:``), so a colliding entry already in the profile would shadow the inherited
-    endpoint. URL-less tuning seeds only replace their own key."""
+    """Return a copy of *dst_cfg* with the seeded endpoint written first. Runtime takes the first
+    alias match (keyed ``providers:`` before ``custom_providers:``), so destination entries with a
+    URL that claim the same identity would shadow the inherited endpoint and are dropped; a
+    same-key destination entry is replaced whole. URL-less entries never match at runtime: a
+    URL-less tuning seed replaces only its own key, and URL-less destination entries are kept."""
     seed_providers = seed.get("providers") or {}
     seed_custom = seed.get("custom_providers") or []
-    claimed: frozenset[str] = frozenset().union(
-        *(custom_provider_aliases(str(e.get("name") or k), str(k))
-          for k, e in seed_providers.items() if _entry_url(e)),
-        *(custom_provider_aliases(str(e.get("name") or ""), str(e.get("provider_key") or ""))
-          for e in seed_custom),
-    )
-
-    def unclaimed(entry, key="") -> bool:
-        if not isinstance(entry, dict):
-            return True
-        key = key or str(entry.get("provider_key") or "")
-        return not claimed & custom_provider_aliases(str(entry.get("name") or key), key)
+    claimed: set[str] = set()
+    for key, entry in seed_providers.items():
+        claimed |= _identity(entry, str(key))
+    for entry in seed_custom:
+        claimed |= _identity(entry)
 
     merged = dict(dst_cfg)
-    existing = dst_cfg.get("providers")
-    if isinstance(existing, dict) or seed_providers:
-        merged["providers"] = {**seed_providers, **{
-            k: v for k, v in (existing if isinstance(existing, dict) else {}).items()
-            if k not in seed_providers and unclaimed(v, str(k))}}
-    existing = dst_cfg.get("custom_providers")
-    if isinstance(existing, list) or seed_custom:
-        merged["custom_providers"] = seed_custom + [
-            e for e in (existing if isinstance(existing, list) else []) if unclaimed(e)]
+    dst_providers = dst_cfg.get("providers")
+    if isinstance(dst_providers, dict) or seed_providers:
+        kept = {
+            k: v for k, v in (dst_providers if isinstance(dst_providers, dict) else {}).items()
+            if k not in seed_providers and not (isinstance(v, dict) and claimed & _identity(v, str(k)))
+        }
+        merged["providers"] = {**seed_providers, **kept}
+    dst_custom = dst_cfg.get("custom_providers")
+    if isinstance(dst_custom, list) or seed_custom:
+        kept_list = [
+            e for e in (dst_custom if isinstance(dst_custom, list) else [])
+            if not (isinstance(e, dict) and claimed & _identity(e))
+        ]
+        merged["custom_providers"] = seed_custom + kept_list
     return merged

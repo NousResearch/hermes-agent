@@ -11,7 +11,7 @@ from hermes_cli.config import (
     read_user_config_raw,
 )
 from hermes_cli.profiles import create_profile
-from hermes_cli.profile_model_seed import launch_model_seed
+from hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
 from hermes_cli import runtime_provider
 
 
@@ -182,3 +182,41 @@ def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch
     seed = launch_model_seed(source)
 
     assert seed == source
+
+
+URL = "http://127.0.0.1:11434/v1"
+
+
+@pytest.mark.parametrize(
+    "seed,dst,expected",
+    [
+        # Cross-schema: a seeded legacy entry evicts a same-named keyed entry (keyed wins at runtime).
+        (
+            {"custom_providers": [{"name": "Lab", "base_url": URL}]},
+            {"providers": {"stale": {"name": "lab", "base_url": URL + "x"}}},
+            {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
+        ),
+        # URL-less destination tuning never shadows, so it is kept.
+        (
+            {"custom_providers": [{"name": "Lab", "base_url": URL}]},
+            {"providers": {"lab": {"request_timeout_seconds": 9}}},
+            {
+                "providers": {"lab": {"request_timeout_seconds": 9}},
+                "custom_providers": [{"name": "Lab", "base_url": URL}],
+            },
+        ),
+        # A URL-less tuning seed replaces only its own key.
+        (
+            {"providers": {"lab": {"request_timeout_seconds": 5}}},
+            {"providers": {"lab-alt": {"name": "lab", "base_url": URL}}},
+            {
+                "providers": {
+                    "lab": {"request_timeout_seconds": 5},
+                    "lab-alt": {"name": "lab", "base_url": URL},
+                }
+            },
+        ),
+    ],
+)
+def test_merge_endpoint_seed_drops_only_shadowing_entries(seed, dst, expected):
+    assert merge_endpoint_seed(dst, seed) == expected

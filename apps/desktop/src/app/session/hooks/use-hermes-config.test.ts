@@ -10,6 +10,7 @@ import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $currentServiceTier,
   $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
@@ -202,7 +203,8 @@ describe('useHermesConfig refreshHermesConfig', () => {
       refreshC = result.current.refreshHermesConfig(true)
     })
 
-    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'normal' } })
+    // A raw OpenAI tier word the composer cannot send (create would 4002) seeds Standard.
+    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'flex' } })
     await act(async () => {
       await refreshC
     })
@@ -213,6 +215,7 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
+    expect($currentServiceTier.get()).toBe('normal')
   })
 
   it('does not let an older profile response restore its terminal font', async () => {

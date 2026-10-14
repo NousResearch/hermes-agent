@@ -149,14 +149,20 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['a', '', 'b', '   ', 'c'])).toEqual(['a', 'b', 'c'])
   })
 
-  it('drops strings with newlines', () => {
-    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'd'])
+  it('keeps strings with newlines so option reasons can wrap', () => {
+    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'b\nc', 'd'])
   })
 
-  it('drops strings over 200 chars', () => {
-    const long = 'x'.repeat(201)
-    const ok = 'y'.repeat(200)
-    expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
+  it('keeps long strings and only drops them past the abuse cap', () => {
+    const long = 'x'.repeat(1500)
+    const atCap = 'y'.repeat(8000)
+    const over = 'z'.repeat(8001)
+    expect(normalizeChoices(['a', long, atCap, over])).toEqual(['a', long, atCap])
+  })
+
+  it('measures the cap on the bare text, discounting the (Recommended) label', () => {
+    const atCap = 'x'.repeat(8000) + ' (Recommended)'
+    expect(normalizeChoices([atCap])).toEqual([atCap])
   })
 })
 

@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import TextIO
 
+from pm.filesystem import native
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
 
@@ -48,6 +49,17 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
+# cannot date the file. uv words it as "no solution", but the index is at fault,
+# not the requested set, so it must never read as a dependency conflict (#135589).
+# A seeded lock says "has no publish time"; a cold one only warns the date is missing
+# and hints the version was filtered, so that case needs both lines.
+_UNDATED_PIN = "has no publish time"
+_UNDATED_FILE = ("is missing an upload date", "was filtered by `exclude-newer")
+UNDATED_INDEX_HINT = ("the package index did not report upload times, which locking Hermes's "
+                      "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
+                      "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
+
 
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
@@ -66,6 +78,8 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
+    if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
+        return InstallError("venv", cause, UNDATED_INDEX_HINT)
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
@@ -142,7 +156,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextSink) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
     deadline = time.monotonic() + timeout
-    proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(command, cwd=native(cwd), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=0)
     pipe = proc.stdout
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
@@ -284,11 +298,13 @@ class PythonEnvironment:
             from pm.index_config import is_index_redirect
 
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
-        env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
-                   UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # uv is a child: it gets the ordinary spelling of store paths (pm.filesystem.native),
+        # or the venv it writes would record the extended-length one in pyvenv.cfg.
+        env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
+                   UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
-            command = [str(self.uv), *args]
+            command = [native(self.uv), *map(native, args)]
             if self.no_config and "--no-config" not in command:
                 command.append("--no-config")
             if self.offline:
@@ -314,8 +330,8 @@ class PythonEnvironment:
                         raise
                     tail.close(result.returncode == 0)
                     return result
-                return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
-                                      text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
+                                      text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
                 from pm.index_config import TIMEOUT_HINT
 

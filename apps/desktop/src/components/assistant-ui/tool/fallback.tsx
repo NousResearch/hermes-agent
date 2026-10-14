@@ -20,6 +20,7 @@ import {
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
+import { SET_THEME_TOOL, setThemeCall } from '@/components/assistant-ui/theme-picker/args'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -50,7 +51,6 @@ import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $showToolActivity } from '@/store/tool-activity'
-import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import {
   $anyToolDisclosureOpen,
@@ -74,7 +74,6 @@ import {
   looksRedundant,
   type SearchResultRow,
   selectMessageRunning,
-  stripInlineDiffChrome,
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
@@ -360,12 +359,24 @@ function ToolEntry({ part }: ToolEntryProps) {
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
+  const {
+    args,
+    completedAt,
+    innerToolName,
+    interrupted,
+    isError,
+    result,
+    toolResultMetadata,
+    timestamp,
+    toolCallId,
+    toolName
+  } = part
 
   const stablePart = useMemo<ToolPart>(
     () => ({
       args,
       completedAt,
+      innerToolName,
       interrupted,
       isError,
       result,
@@ -375,16 +386,24 @@ function ToolEntry({ part }: ToolEntryProps) {
       toolName,
       type: 'tool-call'
     }),
-    [args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
+    [
+      args,
+      completedAt,
+      innerToolName,
+      interrupted,
+      isError,
+      result,
+      toolResultMetadata,
+      timestamp,
+      toolCallId,
+      toolName
+    ]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined && completedAt === undefined
-  // Subscribe to this tool's diff only, so a live patch for one tool doesn't
-  // re-render every mounted tool row (the factory caches a per-id atom).
-  const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
+  const inlineDiff = inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
   const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
@@ -1028,6 +1047,16 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   )
 }
 
+// The name the run splitter classifies a part by: connector and MCP calls are cards, and so is set_theme
+// reached through the tool_call bridge (a reloaded transcript).
+function toolGroupKey(toolName: string, args: ToolCallMessagePartProps['args']): string {
+  if (connectorCalls(toolName, args).length || mcpTargets(toolName, args).length) {
+    return CONNECTION_CARD_KEY
+  }
+
+  return setThemeCall(toolName, args) ? SET_THEME_TOOL : toolName
+}
+
 /**
  * A range of consecutive tool calls, split into the cards that must stay on
  * screen and the runs of activity between them.
@@ -1052,13 +1081,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part =>
-        part.type === 'tool-call'
-          ? connectorCalls(part.toolName, part.args).length || mcpTargets(part.toolName, part.args).length
-            ? CONNECTION_CARD_KEY
-            : part.toolName
-          : ''
-      )
+      .map(part => (part.type === 'tool-call' ? toolGroupKey(part.toolName, part.args) : ''))
       .join('\u0000')
   )
 
@@ -1094,13 +1117,14 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * group-shape changes.
  */
 type TimelineToolCallProps = ToolCallMessagePartProps &
-  Pick<ToolPart, 'completedAt' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
+  Pick<ToolPart, 'completedAt' | 'innerToolName' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
   toolName,
   args,
   completedAt,
+  innerToolName,
   interrupted,
   isError,
   result,
@@ -1110,6 +1134,7 @@ export const ToolFallback = ({
   const part: ToolPart = {
     args,
     completedAt,
+    innerToolName,
     interrupted,
     isError,
     result,

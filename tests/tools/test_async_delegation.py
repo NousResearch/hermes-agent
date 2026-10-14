@@ -417,7 +417,7 @@ def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="stall metadata", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: ((0, "terminal"), True),
     )
     assert res["status"] == "dispatched"
@@ -444,7 +444,7 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="live listing", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: (((3, "web_search", base_ts),), True),
     )
     try:
@@ -816,7 +816,6 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     assert "finished cleanly" in text
     assert "cut off mid-work" in text
     # ...but the banner is tied to the truncated task, not the clean one.
-    trunc_pos = text.index("cut off mid-work")
     clean_pos = text.index("finished cleanly")
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
@@ -1011,7 +1010,7 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
              {"goal": "review PR 3 thoroughly and report", "group": "g"}]
@@ -1030,7 +1029,7 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
     and a unit must not be judged stalled for time it spent waiting to start."""
     _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
     started, release = [], threading.Event()
-    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+    frozen = lambda: (((0, None, None),), False)
 
     def blocker(uid):
         def run():
@@ -1083,7 +1082,7 @@ dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
 time.sleep(2.0)
 sys.stdout.flush(); os._exit(1)
 '''
-    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30, check=False)
     consumer = r'''
 import json, queue
 from tools import async_delegation as ad

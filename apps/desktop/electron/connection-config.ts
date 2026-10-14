@@ -112,6 +112,39 @@ function isStaleAppTokenRejection(error: unknown) {
   return Boolean(error && typeof error === 'object' && (error as any).appTokenRejected === true)
 }
 
+/**
+ * User-facing copy for a ticket mint that failed as a TRANSPORT fault (the
+ * gateway never answered with a usable HTTP status — timeout, refused
+ * connection, DNS). Distinguishing these lets the user act on the real
+ * problem instead of a blanket "could not reach" (#98647's diagnostic-cost
+ * complaint): a timeout suggests a network/VPN path issue, a refused
+ * connection a stopped gateway, DNS a wrong hostname.
+ */
+export function gatewayTicketTransportMessage(error: unknown): string {
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : ''
+
+  if (['ETIMEDOUT', 'ETIMEOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)) {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection timed out or the host could not be resolved. ' +
+      'Check your network/VPN path and the gateway URL, then reconnect.'
+    )
+  }
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket: ' +
+      'the connection was refused. The gateway process is likely down or listening on another port. ' +
+      'Start the gateway (or fix its URL), then reconnect.'
+    )
+  }
+
+  return 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
 
@@ -275,8 +308,8 @@ function connectionScopeKey(profile) {
 function resolveRemoteSshDashboardProfile(configuredRemoteProfile, poolOrProfileKey) {
   const configured = String(configuredRemoteProfile || '').trim()
 
-  if (configured && configured !== 'default') {
-    return configured
+  if (configured) {
+    return configured === 'default' ? '' : configured
   }
 
   const key = String(poolOrProfileKey || '').trim()

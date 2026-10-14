@@ -1,3 +1,4 @@
+import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -30,7 +31,6 @@ import {
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
 
-import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
 import {
   applySessionInfoStatePatch,
   hasSessionInfoStatePatch,

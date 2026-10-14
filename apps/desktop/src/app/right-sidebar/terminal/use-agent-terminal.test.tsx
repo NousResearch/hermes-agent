@@ -179,4 +179,79 @@ describe('useAgentTerminal', () => {
     expect(() => handler()).not.toThrow()
     expect(xterm.refresh).toHaveBeenCalledWith(0, 23)
   })
+
+  it('retries the mount once a host rendered disconnected joins the document', async () => {
+    // The #118004 strand: the pane shell can render the host before it is
+    // connected to the document, so the font wait's isCurrent() goes false at
+    // an await boundary and resolves null — the old code returned silently
+    // and the pane stayed blank forever (no open, no stream attach). The
+    // mount must re-arm and run as soon as the host connects.
+    const frames = new Map<number, FrameRequestCallback>()
+    let nextFrameId = 1
+
+    const request = vi.fn((callback: FrameRequestCallback) => {
+      const id = nextFrameId++
+
+      frames.set(id, callback)
+
+      return id
+    })
+
+    vi.stubGlobal('requestAnimationFrame', request)
+    vi.stubGlobal(
+      'cancelAnimationFrame',
+      vi.fn((id: number) => frames.delete(id))
+    )
+
+    // The effect runs while the container is still attached (the font wait
+    // starts against a connected host), then the container is detached so
+    // isCurrent() goes false at the warm() await boundary — the same race as
+    // a pane shell that renders its host before the document connects it.
+    const mount = render(<Harness />, {
+      container: globalThis.document.body.appendChild(globalThis.document.createElement('div'))
+    })
+
+    const host = mount.container.querySelector('div')!
+
+    // Disconnect the container so host.isConnected is false when the font
+    // promise settles.
+    mount.container.remove()
+
+    await act(async () => {
+      resolveFontLoad([])
+      await Promise.resolve()
+    })
+
+    expect(host.isConnected).toBe(false)
+    expect(xterm.open).not.toHaveBeenCalled()
+    expect(terminalRegistrations.registerWriter).not.toHaveBeenCalled()
+
+    // The watch is armed: reconnecting the host and draining the frame loop
+    // retries the font wait (fonts resolve immediately now) and mounts.
+    globalThis.document.body.appendChild(mount.container)
+
+    await act(async () => {
+      while (frames.size > 0) {
+        const next = frames.entries().next().value as [number, FrameRequestCallback]
+        frames.delete(next[0])
+        next[1](0)
+      }
+
+      await Promise.resolve()
+    })
+
+    expect(xterm.open).toHaveBeenCalledWith(host)
+    expect(terminalRegistrations.registerWriter).toHaveBeenCalled()
+
+    // Tearing down while the watch is still armed must cancel it cleanly.
+    mount.unmount()
+    expect(() => {
+      while (frames.size > 0) {
+        const next = frames.entries().next().value as [number, FrameRequestCallback]
+        frames.delete(next[0])
+        next[1](0)
+      }
+    }).not.toThrow()
+    expect(xterm.dispose).toHaveBeenCalled()
+  })
 })

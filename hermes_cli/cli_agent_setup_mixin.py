@@ -268,11 +268,6 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
-        if resolved_provider != "nous":
-            # An explicit provider carries inference. The free-tier identity (for connectors) was
-            # created by the boot bootstrap before this point, never here; this prints the one-time
-            # "free tier is here" notice the first time an identity is seen beside an own key.
-            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -346,20 +341,6 @@ class CLIAgentSetupMixin:
             _retire_agent(self)
             self._active_agent_route_signature = None
         return True
-
-    def _maybe_print_free_tier_available_notice(self) -> None:
-        """One-time notice for installs whose inference is carried by an explicit provider: the free
-        tier (inference + connectors) now exists. Printed the first time an identity is present, then
-        flagged on that identity so it never repeats. Never blocks or raises."""
-        from cli import logger
-        try:
-            from hermes_cli import anon_auth
-            if not anon_auth.guest_notice_pending():
-                return
-            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
-            anon_auth.mark_guest_notice_shown()
-        except Exception as exc:
-            logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
@@ -523,16 +504,18 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With `/fast` on (service_tier == "priority") attach request_overrides;
+        provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
+        from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
         overrides = None
-        if getattr(self, "service_tier", None) == "priority":
+        tier = getattr(self, "service_tier", None)
+        if tier in STATIC_TIERS:
             try:
                 overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier)
             except Exception:
                 pass
         route["request_overrides"] = overrides
@@ -620,7 +603,7 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str | None = None, runtime_override: dict | None = None, request_overrides: dict | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
@@ -633,7 +616,6 @@ class CLIAgentSetupMixin:
         self.finalize_preloaded_skills()
         _prepare_deferred_agent_startup()
         self._install_tool_callbacks()
-        self._ensure_tirith_security()
         if not self._ensure_runtime_credentials():
             return False
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
@@ -785,6 +767,16 @@ class CLIAgentSetupMixin:
             session_meta,
             lambda rid: self._console_print(
                 f"[dim]{_escape(t('cli.resume.compressed_into', session_id=self.session_id, descendant=rid))}[/]"))
+        # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779) —
+        # an ordinary CLI resume would be a live writer the board cannot observe. Refuse AND
+        # fall back to a fresh session id, so this process never appends to the worker row.
+        from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+        if (kanban_refusal := kanban_resume_refusal(self._session_db, self.session_id)):
+            self._console_print(f"[bold red]{_escape(kanban_refusal)}[/]")
+            self._resumed = False
+            from hermes_state_ids import new_session_id
+            self.session_id = new_session_id(self.session_start)
+            return False
         resume_limit_error = self._resume_history_limit_error()
         if resume_limit_error:
             self._resume_history_error = resume_limit_error

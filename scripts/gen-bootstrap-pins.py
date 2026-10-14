@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Generate the bootstrap pin fragments inside the installers.
 
 The installers bootstrap uv (and, on Windows, git) BEFORE any checkout
@@ -29,7 +29,7 @@ PINS_PATH = REPO_ROOT / "pm" / "lock.json"
 
 # Standalone installers cannot read the shared mirror layout before checkout.
 sys.path.insert(0, str(REPO_ROOT))
-from pm.artifact_mirror import mirror_url  # noqa: E402
+from pm.artifact_mirror import mirror_url
 
 BEGIN_MARK = "# --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---"
 END_MARK = "# --- END GENERATED: bootstrap pins ---"

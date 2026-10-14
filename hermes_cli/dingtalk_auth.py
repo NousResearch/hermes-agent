@@ -61,7 +61,7 @@ def poll_registration(device_code: str) -> dict:
 
 def wait_for_registration_success(
     device_code: str, interval: int = 3, expires_in: int = 7200, on_waiting: Optional[callable] = None,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Block until the registration succeeds or times out.
 
     Transient errors and FAIL/EXPIRED/UNKNOWN statuses are retried for ``_RETRY_WINDOW`` seconds
@@ -102,7 +102,7 @@ def wait_for_registration_success(
 def _ensure_qrcode_installed() -> bool:
     """Enable DingTalk dependencies; only render QR codes importable in this process."""
     with contextlib.suppress(ImportError):
-        import qrcode  # noqa: F401
+        import qrcode
         return True
     import pm
     with contextlib.suppress(pm.InstallError, OSError, ValueError):
@@ -131,7 +131,7 @@ def render_qr_to_terminal(url: str) -> bool:
     return True
 
 
-def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
+def dingtalk_qr_auth() -> Optional[tuple[str, str]]:
     """Run the interactive QR-code device-flow authorization (setup wizard entry point)."""
     from hermes_cli.setup import print_info, print_success, print_warning, print_error
     print()

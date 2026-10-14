@@ -31,8 +31,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -57,7 +57,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -222,17 +222,10 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+        """``agent.service_tier`` parsed like the CLI (``hermes_cli.cli_config_load``); None when unset/unknown."""
+        from hermes_cli.cli_config_load import _parse_service_tier_config
+
+        return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -445,7 +438,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """

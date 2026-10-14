@@ -52,7 +52,7 @@ def test_uv_cache_dir_cold_machine_no_payload(monkeypatch, tmp_path):
 
 def test_bundle_uses_shipped_environment_until_an_extension_is_committed(monkeypatch, tmp_path):
     import json
-    import pm.paths as paths
+    from pm import paths
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))

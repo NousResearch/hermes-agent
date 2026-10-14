@@ -43,7 +43,11 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     }
 
     const left = Math.min(rect.width, Math.max(0, leftControls.right + 12 - rect.left))
-    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 24))
+    // No extra pad on the right: a +N here is a dead strip (the spacer has no
+    // app-region) flush against Settings. The 48px data-window-drag-handle is
+    // already the gutter (#131729). Do not mark this spacer drag — it sits
+    // under the z-70 cluster, and Electron app-region ignores stacking.
+    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)
     element.style.setProperty('--panel-titlebar-right', `${right}px`)
     setBelowControls(minimized || rect.width - left - right < 120)

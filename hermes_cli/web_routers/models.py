@@ -60,7 +60,7 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 _MODEL_INFO_PROBE_BUDGET_S = 5.0
 
 
-def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
+def _bounded_context_length_probe(model: str, base_url: str, provider: str, api_key: object = "") -> int:
     """``get_model_context_length`` with the route's blocking budget.
 
     On timeout the abandoned probe keeps running in its worker thread (bounded
@@ -73,7 +73,7 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
     try:
         return pool.submit(
             get_model_context_length, model=model, base_url=base_url, provider=provider,
-            config_context_length=None
+            api_key=api_key, config_context_length=None
         ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
     except concurrent.futures.TimeoutError:
         _log.warning(
@@ -85,6 +85,34 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
         # wait=False: never block the response (or interpreter exit) on the
         # abandoned probe.
         pool.shutdown(wait=False)
+
+
+def _model_endpoint_credentials(profile: Optional[str], model_name: str, provider: str,
+                                base_url: str) -> tuple[str, object]:
+    """(base_url, api_key) the agent would use for the configured route.
+
+    The live context probe needs the provider's endpoint and key: without them a custom or
+    local OpenAI-compatible provider answers 401 and the lookup silently falls back to the
+    catalog maximum instead of the context the server actually loaded. Resolution runs inside
+    the profile scope so ``?profile=`` reads that profile's credentials; any failure keeps the
+    config values, so the endpoint degrades exactly as it did before.
+
+    ``api_key`` is returned as resolved, not stringified: a ``key_cmd`` provider yields a
+    callable token source, and ``agent.model_metadata._auth_headers`` materializes it per
+    probe. Coercing it with ``str()`` would send ``Bearer <function …>``.
+    """
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with _profile_scope(profile):
+            runtime = resolve_runtime_provider(requested=provider or None,
+                                               explicit_base_url=base_url or None,
+                                               target_model=model_name or None)
+        return str(runtime.get("base_url") or base_url or ""), runtime.get("api_key") or ""
+    except Exception:
+        _log.debug("model/info: runtime credential resolution failed", exc_info=True)
+        return base_url or "", ""
+
+
 
 
 @router.get("/api/model/info")
@@ -102,10 +130,11 @@ def get_model_info(profile: Optional[str] = None):
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
         try:
+            base_url, api_key = _model_endpoint_credentials(profile, model_name, provider, base_url)
             # config_context_length=None: ignore the override — we want the auto value.
             # Bounded: the resolver's provider probes can hang for tens of seconds
             # when model.base_url is unreachable (#63214).
-            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
+            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider, api_key)
         except Exception:
             auto_ctx = 0
 

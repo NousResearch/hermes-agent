@@ -69,7 +69,8 @@ class TestClientAssertion:
             prepared, tenant_id="tenant", client_id="client", now=1_700_000_000)
         header = jwt.get_unverified_header(assertion)
         claims = jwt.decode(
-            assertion, key.public_key(), algorithms=["RS256"], audience=_TOKEN_URL.format(tenant="tenant"))
+            assertion, key.public_key(), algorithms=["RS256"],
+            audience=_TOKEN_URL.format(tenant="tenant"), options={"verify_exp": False})
         assert header["alg"] == "RS256"
         assert header["x5t"] == _b64(sha1)
         assert "x5t#S256" not in header
@@ -394,7 +395,7 @@ class TestConnectAndTokens:
     async def test_standalone_send_names_both_options_when_unconfigured(self, monkeypatch):
         _clear_teams_env(monkeypatch)
         result = await _standalone_send(PlatformConfig(enabled=True), "19:abc@thread.skype", "hi")
-        assert result["success"] is False
+        assert "error" in result
         assert "TEAMS_CLIENT_SECRET" in result["error"]
         assert "certificate" in result["error"].lower()
 

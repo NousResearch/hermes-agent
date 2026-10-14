@@ -176,14 +176,34 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", session_id: str | None = None) -> SessionState:
+        """Create a new session with a fresh AIAgent. ``session_id`` adopts an id the client
+        already holds instead of minting one (see :meth:`adopt_session`)."""
         cwd = _translate_acp_cwd(cwd)
-        session_id = str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
+
+    def adopt_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
+        """Reopen the chat a client holds the id for when this process knows nothing about it.
+
+        An empty ACP session is deliberately never persisted (``_persist``), so after a restart
+        the client's id has no row: minting a *new* id there orphans the chat the client still
+        shows — it loads "successfully" and then refuses every prompt. Adopting the client's id
+        keeps that chat continuable, and the row lands on the first turn like any other session.
+        A malformed id, or one already owned by a session from another surface, is refused
+        rather than hijacked.
+        """
+        try:
+            uuid.UUID(session_id)
+        except (ValueError, AttributeError, TypeError):
+            return None
+        db = self._get_db()
+        if db is not None and db.get_session(session_id) is not None:
+            return None
+        return self.create_session(cwd=cwd, session_id=session_id)
 
     def session_ids(self) -> list[str]:
         """Every session this process serves, for routing a background completion to its owner."""
@@ -505,7 +525,12 @@ class SessionManager:
         from hermes_constants import resolve_reasoning_config
 
         resolved = resolve_reasoning_config(config, model)
-        state = self.get_session(session_id)
+        # In-memory only, deliberately: this runs inside the restore path (_make_agent is called
+        # by _restore) while get_session still holds the non-reentrant _restore_lock, and the
+        # session being restored is not in _sessions yet. Calling get_session here re-enters that
+        # lock on the same thread and deadlocks the whole session/load RPC (#acp-load-hang).
+        with self._lock:
+            state = self._sessions.get(session_id)
         chosen = getattr(state, "reasoning_effort", None) if state is not None else None
         if not chosen:
             return resolved

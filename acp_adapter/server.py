@@ -742,6 +742,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> LoadSessionResponse | None:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
+            # An empty ACP session is never persisted, so a client reopening such a chat after a
+            # restart holds an id this process has no row for: adopt it rather than report "loaded"
+            # and then refuse every prompt on an unknown session.
+            state = await asyncio.to_thread(self.session_manager.adopt_session, session_id, cwd)
+        if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
@@ -751,6 +756,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ResumeSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        if state is None:
+            state = await asyncio.to_thread(self.session_manager.adopt_session, session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)

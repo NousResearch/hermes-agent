@@ -10,7 +10,8 @@ const REPOSITORY = 'NousResearch/hermes-agent'
 const API = `https://api.github.com/repos/${REPOSITORY}`
 const SITE = `https://github.com/${REPOSITORY}`
 const MAX_ITEMS = 5
-const MAX_CHARS = 140
+// Recent merges move constantly; re-read them, but not on every dialog open.
+const PULLS_TTL_MS = 10 * 60_000
 
 export type UpdateNotesSource = { kind: 'release'; tag: null | string } | { kind: 'prs' }
 
@@ -47,7 +48,8 @@ export function updateNotesSource(status: NotesStatus): null | UpdateNotesSource
     return { kind: 'release', tag: updateReleaseTag(status) }
   }
 
-  return status.branch === 'main' || status.channel === 'main' ? { kind: 'prs' } : null
+  // A named branch decides on its own; only a branch-less status (packaged feed) goes by channel.
+  return (status.branch ?? status.channel) === 'main' ? { kind: 'prs' } : null
 }
 
 const isSha = (value?: string): value is string => Boolean(value && /^[0-9a-f]{7,40}$/i.test(value))
@@ -63,14 +65,11 @@ export function updateNotesUrl(source: UpdateNotesSource, status: NotesStatus): 
     : `${SITE}/commits/main`
 }
 
-function clip(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-
-  return flat.length <= MAX_CHARS ? flat : `${flat.slice(0, MAX_CHARS - 1).replace(/\s+\S*$/, '')}…`
-}
-
+// Full text: the dialog clamps the display and keeps the whole item for hover.
 function plain(markdown: string): string {
   return markdown
+    .replace(/\s+/g, ' ')
+    .trim()
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\*\*|__|`/g, '')
     .replace(/\s*\([^()]*#\d+[^()]*\)\s*$/, '')
@@ -107,7 +106,7 @@ export function extractReleaseHighlights(body: string, max = MAX_ITEMS): string[
     }
 
     // A bold lead-in is the item's own headline; the prose after it is detail.
-    const text = clip(plain(/^\*\*(.+?)\*\*/.exec(bullet[1])?.[1] ?? bullet[1]))
+    const text = plain(/^\*\*(.+?)\*\*/.exec(bullet[1])?.[1] ?? bullet[1])
 
     if (text && items.push(text) >= max) {
       break
@@ -136,7 +135,7 @@ export function latestMergedPrTitles(
     .filter(pull => !complete || shas.some(sha => pull.merge_commit_sha?.startsWith(sha)))
     .sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)))
     .slice(0, max)
-    .map(pull => clip(pull.title ?? ''))
+    .map(pull => (pull.title ?? '').replace(/\s+/g, ' ').trim())
 }
 
 async function getJson(url: string): Promise<unknown> {
@@ -152,35 +151,49 @@ async function getJson(url: string): Promise<unknown> {
   return response.json()
 }
 
-const cache = new Map<string, Promise<string[]>>()
+const releases = new Map<string, Promise<string[]>>()
+let pulls: null | { at: number; rows: Promise<readonly PullRow[]> } = null
 
-/** The notes' items; [] when GitHub is unreachable or has none. Cached per target. */
-export function fetchUpdateNoteItems(source: UpdateNotesSource, status: NotesStatus): Promise<string[]> {
-  const key =
-    source.kind === 'release' ? `release:${source.tag ?? 'latest'}` : `prs:${status.currentSha}:${status.targetSha}`
+function recentPulls(): Promise<readonly PullRow[]> {
+  if (!pulls || Date.now() - pulls.at > PULLS_TTL_MS) {
+    // Recently updated closed PRs hold the newest merges; one request, no auth.
+    const rows = getJson(`${API}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100`).then(
+      (json): readonly PullRow[] => (Array.isArray(json) ? json : [])
+    )
 
-  const cached = cache.get(key)
+    pulls = { at: Date.now(), rows }
+    rows.catch(() => {
+      pulls = null
+    })
+  }
+
+  return pulls.rows
+}
+
+function releaseHighlights(tag: null | string): Promise<string[]> {
+  const key = tag ?? 'latest'
+  const cached = releases.get(key)
 
   if (cached) {
     return cached
   }
 
-  const pending = (
-    source.kind === 'release'
-      ? getJson(source.tag ? `${API}/releases/tags/${encodeURIComponent(source.tag)}` : `${API}/releases/latest`).then(
-          release => extractReleaseHighlights(String((release as { body?: unknown })?.body ?? ''))
-        )
-      : // Recently updated closed PRs hold the newest merges; one request, no auth.
-        getJson(`${API}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100`).then(pulls =>
-          latestMergedPrTitles(Array.isArray(pulls) ? pulls : [], status.commits ?? [], status.behind)
-        )
-  ).catch(() => {
-    cache.delete(key)
+  const pending = getJson(tag ? `${API}/releases/tags/${encodeURIComponent(tag)}` : `${API}/releases/latest`).then(
+    release => extractReleaseHighlights(String((release as { body?: unknown })?.body ?? ''))
+  )
 
-    return []
-  })
-
-  cache.set(key, pending)
+  releases.set(key, pending)
+  pending.catch(() => releases.delete(key))
 
   return pending
+}
+
+/** The notes' items; [] when GitHub is unreachable or has none. Merged PRs are filtered per status. */
+export function fetchUpdateNoteItems(source: UpdateNotesSource, status: NotesStatus): Promise<string[]> {
+  const items =
+    source.kind === 'release'
+      ? releaseHighlights(source.tag)
+      : recentPulls().then(rows => latestMergedPrTitles(rows, status.commits ?? [], status.behind))
+
+  return items.catch(() => [])
 }

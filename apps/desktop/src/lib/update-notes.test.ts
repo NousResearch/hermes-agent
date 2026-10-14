@@ -34,7 +34,8 @@ describe('update notes', () => {
         '## Updating\r\n- Docker: pull :stable\r\n## Security Fixes\r\n**Auth**\r\n- Spoofed headers reset limits (#1)'
       )
     ).toEqual(['Spoofed headers reset limits'])
-    expect(extractReleaseHighlights(`## Highlights\n- **${'word '.repeat(60)}**`)[0]).toMatch(/^.{1,140}$/)
+    // The dialog clamps the display; the item keeps its whole text for hover.
+    expect(extractReleaseHighlights(`## Highlights\n- **${'word '.repeat(60).trim()}**`)[0]).toHaveLength(299)
   })
 
   it('lists the newest merged PRs, pinned to the update when its commit list is complete', () => {
@@ -57,6 +58,8 @@ describe('update notes', () => {
     })
     expect(updateNotesSource({ branch: 'main' })).toEqual({ kind: 'prs' })
     expect(updateNotesSource({ branch: 'my-feature' })).toBeNull()
+    expect(updateNotesSource({ branch: 'my-feature', channel: 'main' })).toBeNull()
+    expect(updateNotesSource({ channel: 'main' })).toEqual({ kind: 'prs' })
     expect(updateNotesSource({ channel: 'stable', rollback: true, sourceVersion: '0.21.0' })).toBeNull()
   })
 })

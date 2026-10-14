@@ -11,6 +11,7 @@ Two contracts that must never regress:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import stat
@@ -45,8 +46,26 @@ if argv[:2] == ["list", "items"]:
     print(json.dumps([{"id": "abc", "type": 1, "name": "Example", "creationDate": "2026-01-01T00:00:00Z",
                        "login": {"username": "jane@example.com", "uris": [{"uri": "https://example.com/login"}]}},
                       {"id": "note", "type": 2, "name": "Secure note"}])); sys.exit(0)
+if argv[:3] == ["get", "template", "item"]:
+    print(json.dumps({"type": 1, "name": "", "login": None})); sys.exit(0)
+if argv[:3] == ["get", "template", "item.login"]:
+    print(json.dumps({"username": None, "password": None, "uris": None})); sys.exit(0)
 if argv[:2] == ["get", "password"]:
     print("plain sentence nobody would flag 7"); sys.exit(0)
+if argv[:2] == ["get", "item"] and len(argv) > 2:
+    print(json.dumps({"id": argv[2], "type": 1, "name": "Shop", "creationDate": "2026-01-02T00:00:00Z",
+                      "login": {"username": "jane@example.com", "password": "old",
+                                "uris": [{"uri": "https://example.com"}]}})); sys.exit(0)
+if argv[:2] == ["create", "item"] or argv[:2] == ["edit", "item"]:
+    # The real CLI takes the base64 item JSON on stdin; it never reads it from argv.
+    import base64
+    if not stdin.strip():
+        sys.stderr.write("You must provide the item encoded in base64. Try again.\n"); sys.exit(1)
+    item = json.loads(base64.b64decode(stdin.strip()).decode("utf-8"))
+    if not item.get("id"):
+        item["id"] = "created-1"
+    item["creationDate"] = "2026-01-02T00:00:00Z"
+    print(json.dumps(item)); sys.exit(0)
 sys.exit(2)
 '''
 
@@ -147,6 +166,44 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     unlock_mod.lock("bitwarden")
     assert not backend.is_unlocked()
     assert os.environ.get("BW_SESSION") is None, "session token must never touch the process env"
+
+
+def test_create_and_edit_item_payload_travel_by_stdin_never_argv(fake_bw):
+    """The encoded item JSON (password, TOTP inside) reaches `bw create/edit item` on stdin only —
+    argv is world-readable via /proc/<pid>/cmdline for the life of the process."""
+    exe, log = fake_bw
+    _, backend = _enabled(exe)
+    backend.unlock("correct horse")
+
+    def secrets():
+        assert backend.create_login(
+            label="Shop", origin="https://example.com", identifier_type="username",
+            identifier="jane@example.com", password="a passphrase for argv 41",
+            otp_secret="otp-secret-for-argv 42").id == "bw:created-1"
+        backend.update_login("bw:created-1", label="Shop", origin="https://example.com",
+                              identifier_type="username", identifier="jane@example.com",
+                              password="a passphrase for argv 41")
+        return "a passphrase for argv 41", "otp-secret-for-argv 42"
+
+    password, otp = secrets()
+    unlock_mod.lock("bitwarden")
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    write_calls = [c for c in calls if c["argv"][:2] in (["create", "item"], ["edit", "item"])]
+    assert write_calls, "expected at least one create/edit invocation"
+    for call in write_calls:
+        joined_argv = " ".join(call["argv"])
+        assert password not in joined_argv, "password must never be argv"
+        assert otp not in joined_argv, "TOTP secret must never be argv"
+        assert not any(
+            part.startswith(("eyJ", "W3", "W1", "W7", "W10")) and len(part) > 40
+            for part in call["argv"]), "base64 item payload must never be argv"
+        payload = json.loads(base64.b64decode(call["stdin"].strip()).decode("utf-8"))
+        assert payload["login"]["password"] == password
+        assert payload["login"].get("totp") == otp or call["argv"][:2] == ["edit", "item"]
+    # Locking forgets the session; no secret survives in argv across every logged call.
+    assert all(password not in " ".join(c["argv"]) for c in calls)
+    assert not backend.is_unlocked()
 
 
 def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_token(fake_bw, monkeypatch):

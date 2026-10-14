@@ -1,7 +1,6 @@
 """RoomLink dispatch validation and hidden member-session ownership."""
 
 import asyncio
-import hashlib
 import hmac
 import time
 from typing import Any
@@ -22,11 +21,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
+    from gateway.platforms.api_server_run_authority import hosted_member_session_id
     home = self._run_idempotency_store.room_origin_home(dispatch.as_mapping())
-    seed = (
-        f"{home}\0{dispatch.room_id}\0"
-        f"{dispatch.member_id}\0{dispatch.target_profile}")
-    session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    session_id = hosted_member_session_id(
+        home, dispatch.room_id, dispatch.member_id, dispatch.target_profile)
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()

@@ -158,6 +158,8 @@ def _record_invitation(self, claims, body, *, db_path=None):
                     "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
                     (claims["room_id"], claims["target_profile"])).fetchone() is not None:
                 raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            # Durable before the rooms commit. observe() can still fail after that commit.
+            self._run_idempotency_store.checkpoint_open_transaction()
             hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
             conn.commit()
         self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)

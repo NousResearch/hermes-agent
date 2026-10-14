@@ -23,6 +23,17 @@ def room_namespace(claims):
     return hashlib.sha256("\0".join(str(claims[key]) for key in fields).encode()).hexdigest()
 
 
+def hosted_member_session_id(home: str, room_id: str, member_id: str, target_profile: str) -> str:
+    """Hidden session id for one home, room, and member. Gateway and epoch are not part of it.
+
+    Pre-column ``run_idempotency`` rows store this id on their status. The scope hash cannot
+    be rebuilt once the admitting gateway id has been overwritten, but this id still names
+    the member that admitted the run.
+    """
+    seed = f"{home}\0{room_id}\0{member_id}\0{target_profile}"
+    return "room_" + hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
 # A successor grant can name any integer epoch. Hash at most this many predecessor
 # epochs so a skipped epoch or an authority takeover still finds the live row, without
 # walking an unbounded caller-supplied value. The newest half and the oldest half are
@@ -237,6 +248,53 @@ def _stamp_unstamped_scope(conn, key, scope, epoch):
         (key, int(epoch), key, scope))
 
 
+def _legacy_member_session_ids(conn, claims):
+    """Session ids this grant's member could have stored on a pre-column run.
+
+    Main hashed the grant's own home. This build hashes the origin home once a move has
+    been authorized. Both exclude the gateway id, so either one still finds the row after
+    that id has been overwritten.
+    """
+    if not isinstance(claims, dict):
+        return []
+    try:
+        room_id, member_id, profile = claims["room_id"], claims["member_id"], claims["target_profile"]
+        own_home = claims["home_install_id"]
+    except KeyError:
+        return []
+    homes = [own_home]
+    try:
+        origin = origin_home(conn, room_authority(claims), own_home)
+    except (KeyError, TypeError, ValueError):
+        origin = own_home
+    if origin and origin not in homes:
+        homes.append(origin)
+    return [hosted_member_session_id(home, room_id, member_id, profile) for home in homes if home]
+
+
+def _stamp_legacy_member_rows(conn, key, epoch, claims):
+    """Bind pre-column rows whose stored session is this member, whatever gateway hashed the scope."""
+    session_ids = set(_legacy_member_session_ids(conn, claims))
+    if not session_ids:
+        return
+    rows = conn.execute(
+        """SELECT scope, status_json FROM run_idempotency
+           WHERE room_authority_key IS NULL AND client_replay=0"""
+    ).fetchall()
+    stamped = set()
+    for scope, status_json in rows:
+        if scope in stamped:
+            continue
+        try:
+            status = json.loads(status_json)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(status, dict) or status.get("session_id") not in session_ids:
+            continue
+        _stamp_unstamped_scope(conn, key, scope, epoch)
+        stamped.add(scope)
+
+
 def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None, claims=None,
             extra_gateways=None):
     """Bind old receipts on authenticated observation, then advance one room/member watermark."""
@@ -252,6 +310,9 @@ def observe(conn, scope, authority, previous=None, previous_home=None, namespace
         conn.execute("""INSERT INTO run_room_authority_aliases(home_key,authority_key,origin_home)
             VALUES(?,?,?) ON CONFLICT(home_key) DO NOTHING""",
             (authority[0], key, origin_home(conn, previous, previous_home)))
+    # A migrated row's scope includes a gateway id main may already have overwritten.
+    # The hidden session id does not. Stamp that member's rows before the watermark moves.
+    _stamp_legacy_member_rows(conn, key, epoch, claims)
     # Read the watermark before this grant replaces it. Production POST /v1/runs does not
     # receive previous_authority; the gateway that admitted the live row is whatever this
     # lineage last stored, plus every gateway remembered since.

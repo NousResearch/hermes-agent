@@ -344,6 +344,16 @@ class RunIdempotencyStore:
         authority_key = canonical(self._conn, room_authority(claims))[0]
         remember_seen_gateways(self._conn, authority_key, gateway_ids)
 
+    def checkpoint_open_transaction(self):
+        """Commit the open idempotency transaction and start another. The lock stays held.
+
+        Invitation remembers admitting gateway ids here, before ``reserve_peer_room``
+        commits the rooms database. A later ``observe`` failure must not roll those ids
+        back: the reservation row is about to replace the only other copy.
+        """
+        self._conn.commit()
+        self._conn.execute("BEGIN IMMEDIATE")
+
     def commit_room_invitation(self, claims, previous, previous_home, commit_reservation):
         """Grant writer precedes this lock; keep admissions fenced through both commits.
 

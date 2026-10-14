@@ -815,6 +815,160 @@ async def test_http_takeover_without_previous_replays_an_unstamped_row(tmp_path,
         adapter._run_idempotency_store.close()
 
 
+@pytest.mark.asyncio
+async def test_http_legacy_row_replays_after_gateway_was_already_overwritten(tmp_path, monkeypatch):
+    """Main already replaced the reservation. POST still finds the pre-column run and stop reaches it."""
+    adapter = _adapter(tmp_path / 'runs.db')
+    create = MagicMock(return_value=_finishing_agent())
+    monkeypatch.setattr(adapter, '_create_agent', create)
+    try:
+        application = app(adapter)
+        application.router.add_post('/v1/runs/{run_id}/stop', adapter._handle_stop_run)
+        async with TestClient(TestServer(application)) as cli:
+            invited = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+                'authority_epoch': 1, 'member_id': 'member-1'})
+            assert invited.status == 201, await invited.text()
+            invitation = await invited.json()
+            grant, catalog = invitation['grant'], invitation['catalog']
+            prompt = 'Run this generation once.'
+            body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                {'input': prompt}, catalog, gateway='gateway-a', epoch=1, member='member-1')}
+            first = await cli.post(
+                '/v1/runs', headers={**_headers(grant), 'Idempotency-Key': 'room:task-1:1'}, json=body)
+            assert first.status == 202, await first.text()
+            run_id = (await first.json())['run_id']
+            await _await_runs(adapter)
+            assert create.call_count == 1
+            store = adapter._run_idempotency_store
+            stored = json.loads(store._conn.execute(
+                'SELECT status_json FROM run_idempotency WHERE run_id=?', (run_id,)).fetchone()[0])
+            assert str(stored.get('session_id') or '').startswith('room_')
+            # The state main leaves: the reservation names only the new gateway, and this
+            # build has not yet recorded a watermark or a seen-gateway id.
+            _forget_room_stamp(store)
+            store._conn.execute('DELETE FROM run_room_authorities')
+            store._conn.execute('DELETE FROM run_room_seen_gateways')
+            store._conn.commit()
+            moved = {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-b',
+                'authority_epoch': 2, 'member_id': 'member-1', 'target_profile': 'default',
+                'target_install_id': catalog['installation_id']}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=moved, expires_at=time.time() + 3600)
+            grant_b = issue_room_grant(
+                adapter._room_grant_secret(), grant_id='gateway-b', room_id='room-1',
+                home_install_id='home', authority_gateway_id='gateway-b', authority_epoch=2,
+                member_id='member-1', target_install_id=catalog['installation_id'],
+                target_profile='default',
+                execution_policy_digest=catalog['execution_policy']['policy_digest'],
+                permissions=('dispatch', 'status', 'stop'))
+            replay_body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                {'input': prompt}, catalog, gateway='gateway-b', epoch=2, member='member-1')}
+            replay = await cli.post(
+                '/v1/runs', headers={**_headers(grant_b), 'Idempotency-Key': 'room:task-1:1'},
+                json=replay_body)
+            payload = await replay.json()
+            assert replay.status == 202, payload
+            assert payload['run_id'] == run_id and payload['replayed'] is True
+            assert create.call_count == 1
+            other_claims = {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-b',
+                'authority_epoch': 2, 'member_id': 'member-2', 'target_profile': 'default',
+                'target_install_id': catalog['installation_id']}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=other_claims, expires_at=time.time() + 3600)
+            other_grant = issue_room_grant(
+                adapter._room_grant_secret(), grant_id='member-2', room_id='room-1',
+                home_install_id='home', authority_gateway_id='gateway-b', authority_epoch=2,
+                member_id='member-2', target_install_id=catalog['installation_id'],
+                target_profile='default',
+                execution_policy_digest=catalog['execution_policy']['policy_digest'],
+                permissions=('dispatch', 'status', 'stop'))
+            other = await cli.post('/v1/runs/stop', headers={
+                'Authorization': f'HermesRoom {other_grant}', 'Idempotency-Key': 'room:task-1:1'},
+                json=replay_body | {'hosted_room_dispatch': _dispatch_for(
+                    {'input': prompt}, catalog, gateway='gateway-b', epoch=2, member='member-2')})
+            other_payload = await other.json()
+            assert other.status == 200, other_payload
+            assert other_payload['run_id'] != run_id
+            assert store.stop_requested(run_id) is False
+            stopped = await cli.post(f'/v1/runs/{run_id}/stop', headers=_headers(grant_b), json={})
+            assert stopped.status == 200, await stopped.text()
+            assert store.stop_requested(run_id) is True
+    finally:
+        adapter._run_idempotency_store.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_observe_keeps_the_admitting_gateway_for_the_retry(tmp_path, monkeypatch):
+    """The rooms commit must not be the only copy of the gateway observe still needs."""
+    adapter = _adapter(tmp_path / 'runs.db')
+    create = MagicMock(return_value=_finishing_agent())
+    monkeypatch.setattr(adapter, '_create_agent', create)
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            other = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+                'authority_epoch': 1, 'member_id': 'member-2'})
+            assert other.status == 201, await other.text()
+            catalog = (await other.json())['catalog']
+            claims = {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+                'authority_epoch': 1, 'member_id': 'member-1', 'target_profile': 'default',
+                'target_install_id': catalog['installation_id']}
+            hosted_rooms.reserve_peer_room(
+                hosted_rooms.default_db_path(), claims=claims, expires_at=time.time() + 3600)
+            scope = room_run_scope(claims)
+            store = adapter._run_idempotency_store
+            now = time.time()
+            store._conn.execute(
+                """INSERT INTO run_idempotency(
+                       scope, idempotency_key, fingerprint, run_id, status_json,
+                       owner_pid, owner_started, retention_until, created_at, updated_at, client_replay)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,0)""",
+                (scope, 'room:task-p1:1', 'fp', 'run-live', json.dumps({'status': 'running'}),
+                 0, 0, now + 3600, now, now))
+            store._conn.commit()
+            import gateway.platforms.api_server_run_authority as auth
+            original_observe = auth.observe
+
+            def killed(*_args, **_kwargs):
+                raise RuntimeError('killed after reservation commit')
+
+            monkeypatch.setattr(auth, 'observe', killed)
+            crashed = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-b',
+                'authority_epoch': 2, 'member_id': 'member-1'})
+            assert crashed.status == 400, await crashed.text()
+            seen = [row[0] for row in store._conn.execute(
+                'SELECT gateway_id FROM run_room_seen_gateways')]
+            assert 'gateway-a' in seen
+            monkeypatch.setattr(auth, 'observe', original_observe)
+            retried = await invite(cli, {
+                'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-b',
+                'authority_epoch': 2, 'member_id': 'member-1'})
+            assert retried.status == 201, await retried.text()
+            grant_b = (await retried.json())['grant']
+            prompt = 'Run this generation once.'
+            replay_body = {'input': prompt, 'hosted_room_dispatch': _dispatch_for(
+                {'input': prompt}, catalog, gateway='gateway-b', epoch=2, member='member-1',
+                task_id='task-p1')}
+            replay = await cli.post(
+                '/v1/runs', headers={**_headers(grant_b), 'Idempotency-Key': 'room:task-p1:1'},
+                json=replay_body)
+            payload = await replay.json()
+            assert replay.status == 202, payload
+            assert payload['run_id'] == 'run-live' and payload['replayed'] is True
+            assert create.call_count == 0
+            stopped = await cli.post('/v1/runs/stop', headers={
+                **_headers(grant_b), 'Idempotency-Key': 'room:task-p1:1'}, json=replay_body)
+            assert stopped.status == 200, await stopped.text()
+            assert store.stop_requested('run-live') is True
+    finally:
+        adapter._run_idempotency_store.close()
+
+
 def test_unbound_invitation_does_not_reserve_peer_room(monkeypatch):
     import tui_gateway.methods_groups as groups
     monkeypatch.setattr(groups, '_bound_server', None)

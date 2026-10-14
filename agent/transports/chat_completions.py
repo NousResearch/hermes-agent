@@ -478,6 +478,10 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         profile = kwargs.get("provider_profile")
         provider = getattr(profile, "name", None) or kwargs.get("provider")
+        from agent.message_sanitization import rewrite_mistral_tool_call_ids
+        messages = rewrite_mistral_tool_call_ids(
+            messages, provider=provider, model=kwargs.get("model"), base_url=kwargs.get("base_url"),
+        )
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
         native_type = getattr(profile, "native_reasoning_details_type", None) or None
         carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))

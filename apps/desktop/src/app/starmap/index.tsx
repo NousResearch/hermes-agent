@@ -27,7 +27,11 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
   const [imported, setImported] = useState<StarmapGraph | null>(null)
 
   useEffect(() => {
-    void loadStarmapGraph()
+    // Always refetch on open: the store cache only resets on a profile switch,
+    // so without a force the panel would show skills/memories as of its first
+    // open for the whole renderer lifetime. `inflight` still collapses
+    // concurrent opens into a single scan.
+    void loadStarmapGraph(true)
   }, [])
 
   // Drop a stale import when the underlying profile graph changes out from under it.

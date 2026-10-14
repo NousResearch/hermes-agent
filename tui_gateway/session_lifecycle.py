@@ -180,7 +180,12 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
         _attach_lease(session, lease)
     logger.info("Session %s took over lease for %s from detached runtime %s", sid, key, other_sid)
     try:
-        _interrupt_session_turn(other_sid, other, request_id=f"lease-takeover-{sid}")
+        _interrupt_session_turn(
+            other_sid, other,
+            request_id=f"lease-takeover-{sid}",
+            tool_reason=_TOOL_REASON_LEASE_TAKEOVER,
+            hook_reason="lease_takeover",
+        )
     except Exception:
         logger.exception("lease-takeover interrupt failed sid=%s", other_sid)
     return True
@@ -599,7 +604,11 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
     if not session.get("_compute_host_turn_id") or not _session_uses_compute_host(session):
         return
     with contextlib.suppress(Exception):
-        _interrupt_session_turn(_lifecycle_own_sid(session), session)
+        _interrupt_session_turn(
+            _lifecycle_own_sid(session), session,
+            tool_reason=_TOOL_REASON_SESSION_ENDING,
+            hook_reason="session_ending",
+        )
     deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
     while session.get("_compute_host_turn_id") and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -684,15 +693,38 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
+# Trusted tool_reason values for non-user stops through ``_interrupt_session_turn``. Must NOT be in
+# USER_INTERRUPT_REASONS — otherwise the turn is booked as interrupted_by_user and the UI lies with
+# "Operation interrupted: explicit stop requested." when the user never pressed Stop.
+_TOOL_REASON_CLIENT_GONE = "client disconnected"
+_TOOL_REASON_LEASE_TAKEOVER = "session lease taken over"
+_TOOL_REASON_SESSION_ENDING = "session ending"
+
+
 def _interrupt_session_turn(
-    sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+    sid: str,
+    session: dict,
+    *,
+    request_id: str | None = None,
+    orphan: bool = False,
+    tool_reason: str | None = None,
+    hook_reason: str = "user_stop",
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
 
     ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
+
+    ``tool_reason`` is the trusted interrupt category exposed to the model and user-visible interrupt line.
+    Leave it ``None`` only for a real user Stop (session.interrupt RPC / Esc) so the default stays
+    ``explicit stop requested``. System callers (client-gone, lease takeover, session teardown) MUST pass a
+    distinct reason — otherwise every automatic cancel is mislabeled as the user pressing Stop.
     """
+    if orphan and tool_reason is None:
+        tool_reason = _TOOL_REASON_CLIENT_GONE
+        if hook_reason == "user_stop":
+            hook_reason = "client_gone"
     use_compute_host = _session_uses_compute_host(session)
     # A manual compaction holds `running` with no run thread and its own finally releases it: Stop must not
     # abort it nor clear `running` under it, or the next submit is admitted idle and loses its reply (#133504).
@@ -703,7 +735,12 @@ def _interrupt_session_turn(
         # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
         # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
         if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
+            interrupt_kwargs: dict = {"request_id": request_id}
+            if tool_reason is not None:
+                interrupt_kwargs["tool_reason"] = tool_reason
+            if hook_reason != "user_stop":
+                interrupt_kwargs["hook_reason"] = hook_reason
+            _get_compute_host_supervisor().interrupt(sid, **interrupt_kwargs)
     else:
         run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
@@ -712,9 +749,10 @@ def _interrupt_session_turn(
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     if should_interrupt:
-        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
-        # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
-        # resources. Observer-only; dispatch failures never break the interrupt.
+        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: stopping a live TUI/desktop
+        # turn is the same "loop is gone" event for plugins holding per-turn external resources.
+        # Observer-only; dispatch failures never break the interrupt. hook_reason stays "user_stop" for
+        # the RPC path; system callers pass client_gone / lease_takeover / session_ending.
         # Every caller (session.interrupt RPC, orphan/idle reapers, lease takeover) is off-turn, so bind the
         # SESSION's profile as _finalize_session does or an observer's get_hermes_home() names the launch
         # profile (#125063). hydrate_secrets=False: observer-only, /stop must stay fast.
@@ -723,21 +761,26 @@ def _interrupt_session_turn(
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
                     "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                    reason="user_stop", invalidation_reason="session_interrupt",
+                    reason=hook_reason, invalidation_reason="session_interrupt",
                 )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            # None tool_reason → hard_interrupt default "explicit stop requested" (user Stop only).
+            logger.info(
+                "session turn interrupt sid=%s request_id=%s tool_reason=%s hook_reason=%s",
+                sid, request_id or "-", tool_reason or "explicit stop requested", hook_reason,
+            )
+            request_hard_interrupt(session.get("agent"), tool_reason=tool_reason)
         # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
         # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
         # interrupted completion with its partial output.
         with contextlib.suppress(Exception):
             from tools.async_delegation import interrupt_for_session
             interrupt_for_session(
-                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
+                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason=hook_reason,
                 parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive and not compressing:
             with session["history_lock"]:

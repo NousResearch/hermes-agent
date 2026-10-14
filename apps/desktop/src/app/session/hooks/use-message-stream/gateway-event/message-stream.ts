@@ -374,7 +374,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)
 
-    const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+    const finalText =
+      coerceGatewayText(payload?.text) ||
+      coerceGatewayText(payload?.rendered) ||
+      // Interrupted completes may put the stop reason only on `error` (host fill path).
+      (payload?.status === 'interrupted' ? coerceGatewayText(payload?.error) : '')
 
     completeAssistantMessage(
       sessionId,

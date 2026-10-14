@@ -196,7 +196,13 @@ class ComputeHost:
                 return
             # In the child the shared helper interrupts the local agent and releases this
             # process's pending clarify Event (the parent only has a metadata mirror).
-            server._interrupt_session_turn(sid, session)
+            # Forward tool_reason/hook_reason so system stops aren't labeled as user Stop.
+            kwargs: dict[str, Any] = {}
+            if frame.get("tool_reason") is not None:
+                kwargs["tool_reason"] = frame["tool_reason"]
+            if frame.get("hook_reason") is not None:
+                kwargs["hook_reason"] = frame["hook_reason"]
+            server._interrupt_session_turn(sid, session, **kwargs)
             self._reply("interrupt.ack", sid, request_id, applied=True, applied_ns=now_ns())
         self._guarded(frame, "interrupt.ack", body, applied=False)
 

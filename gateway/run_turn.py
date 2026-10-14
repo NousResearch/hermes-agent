@@ -3842,9 +3842,19 @@ class GatewayTurnMixin:
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-        # Interrupted: discard the response ("Operation interrupted." is noise).
+        # Interrupted: still deliver a reasoned interrupt notice so surfaces never
+        # show silence or bare "Operation interrupted." Control-follow-up turns
+        # still recurse after delivery.
         if not result.get("interrupted"):
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        else:
+            from agent.interrupt_control import is_bare_interrupt_text
+
+            _interrupt_text = response if isinstance(response, str) else (result.get("final_response") or "")
+            if isinstance(_interrupt_text, str) and _interrupt_text.strip() and not is_bare_interrupt_text(_interrupt_text):
+                await self._run_agent_deliver_first_response(
+                    turn_ctx, adapter, _interrupt_text, result, stream_task,
+                )
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key

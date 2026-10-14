@@ -37,6 +37,7 @@ from hermes_cli.backup_restore import (
     _extract_member_atomically,
     _import_db_member,
     _restore_auth_json,
+    _revive_restored_profiles,
     _safe_restore_db,
     _validate_backup_zip,
 )
@@ -799,6 +800,7 @@ def run_import(args) -> Optional[int]:
         restored = 0
         restored_external = 0
         skipped_runtime: list[str] = []
+        restored_parts: list[tuple[str, ...]] = []
         # (rel, live_counts, imported_counts) for every session database the
         # import replaced with one holding fewer rows. A restore is allowed to
         # do that — it just must not do it silently (issue #100960).
@@ -906,6 +908,7 @@ def run_import(args) -> Optional[int]:
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
+                restored_parts.append(parts)
             except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
                 errors.append(f"  {rel}: {exc}")
 
@@ -956,6 +959,10 @@ def run_import(args) -> Optional[int]:
                 print(f"    {rel}")
             if len(skipped_runtime) > 10:
                 print(f"    ... and {len(skipped_runtime) - 10} more")
+
+        revived = _revive_restored_profiles(hermes_root, restored_parts)
+        if revived:
+            print(f"\n  Restored previously deleted profile(s): {', '.join(revived)}")
 
         # Post-import: restore profile wrapper scripts
         profiles_dir = hermes_root / "profiles"

@@ -1183,6 +1183,8 @@ hermes import <zipfile> [options]
 
 Restore a previously created Hermes backup into your Hermes home directory. All files in the archive overwrite existing files in your Hermes home; `--force` only skips the confirmation prompt that fires when the target already has a Hermes installation.
 
+A named profile you deleted after the backup was taken comes back as a live profile (listed, usable with `-p`); the summary names it under `Restored previously deleted profile(s)`. A profile that was already deleted when the backup was taken stays deleted.
+
 | Option | Description |
 |--------|-------------|
 | `-f`, `--force` | Skip the existing-installation confirmation prompt. |

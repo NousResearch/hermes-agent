@@ -92,6 +92,16 @@ def _existing_profile_homes(profile_homes: list) -> list:
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
 
 
+def _primary_route_adapter_homes(cycle_homes, profile_adapters, default_profile) -> list:
+    """Homes whose cron jobs need a fail-closed view of the primary gateway adapters."""
+    return [
+        home for profile_name, home in cycle_homes
+        if profile_name is not None
+        and profile_name != default_profile
+        and not (profile_adapters or {}).get(profile_name)
+    ]
+
+
 def routed_profile_fire(home=None) -> bool:
     """True when a fire runs for a profile OTHER than the process's own.
 
@@ -541,7 +551,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+            SharedRouteAdapters, _primary_profile_routes_for_homes,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
@@ -555,7 +565,7 @@ class InProcessCronScheduler(CronScheduler):
             " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
-        def tick_adapters_for(profile_name):
+        def tick_adapters_for(profile_name, home, primary_routes):
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
             # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
             # an exact enabled route maps here; else fail closed (delivery skipped this tick).
@@ -563,7 +573,10 @@ class InProcessCronScheduler(CronScheduler):
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
             if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                return SharedRouteAdapters(
+                    adapters,
+                    primary_routes.get(Path(home).expanduser().resolve(strict=False), []),
+                )
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
@@ -616,11 +629,18 @@ class InProcessCronScheduler(CronScheduler):
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
+                    route_homes = (
+                        _primary_route_adapter_homes(cycle_homes, profile_adapters, default_profile)
+                        if adapters else []
+                    )
+                    primary_routes = _primary_profile_routes_for_homes(route_homes) if route_homes else {}
                     for _pname, home in cycle_homes:
                         try:
                             with _profile_cron_scope(home):
                                 cron_tick(
-                                    verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
+                                    verbose=False,
+                                    adapters=tick_adapters_for(_pname, home, primary_routes),
+                                    loop=loop,
                                     sync=False, can_dispatch=can_dispatch,
                                 )
                         except CronTickYielded as e:

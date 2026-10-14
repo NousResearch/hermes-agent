@@ -149,35 +149,52 @@ def _primary_profile_routes_for_current_home() -> list:
     ``duplicate_credential`` fatal).
     """
     try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
-        primary_home = get_default_hermes_root()
-        current_home = _sched.Path(get_hermes_home())
-        if (
-            primary_home.expanduser().resolve(strict=False)
-            == current_home.expanduser().resolve(strict=False)
-        ):
-            return []  # this IS the primary home — nothing to consult
+        from hermes_constants import get_hermes_home
+
+        current_home = _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)
+        return _primary_profile_routes_for_homes([current_home]).get(current_home, [])
+    except Exception:
+        logger.debug("primary-gateway profile-route lookup unavailable", exc_info=True)
+        return []
+
+
+def _primary_profile_routes_for_homes(homes) -> dict:
+    """Resolve primary routes once and select the enabled routes for each satellite home."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        primary_home = _sched.Path(get_default_hermes_root()).expanduser().resolve(strict=False)
+        profile_homes = {
+            _sched.Path(home).expanduser().resolve(strict=False) for home in homes
+        }
+        satellite_homes = profile_homes - {primary_home}
+        if not satellite_homes:
+            return {home: [] for home in profile_homes}
 
         # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
         # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
         # false-blocked and routed delivery failed closed on centrally-managed installs.
         from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
+        layered = read_yaml_layers(primary_home)
         routes_raw = layered.get("profile_routes")
         if routes_raw is None and isinstance(layered.get("gateway"), dict):
             routes_raw = layered["gateway"].get("profile_routes")
         if not isinstance(routes_raw, list):
-            return []
+            return {home: [] for home in profile_homes}
 
         from gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
-        return [
-            route for route in parse_profile_routes(routes_raw)
-            if route.enabled and profile_matches_home(route.profile)
-        ]
+        routes = parse_profile_routes(routes_raw)
+        return {
+            home: [
+                route for route in routes
+                if route.enabled and profile_matches_home(route.profile, home)
+            ]
+            for home in profile_homes
+        }
     except Exception:
         logger.debug("primary-gateway profile-route lookup unavailable", exc_info=True)
-        return []
+        return {}
 
 
 def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:

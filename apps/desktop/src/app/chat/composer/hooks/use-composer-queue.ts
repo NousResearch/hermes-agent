@@ -16,7 +16,7 @@ import {
   isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
-  promoteQueuedPrompt,
+  parkQueuedPrompts,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,

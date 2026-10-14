@@ -342,17 +342,30 @@ def _permanent_set() -> set:
     """
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        return _permanent_approved
-    home_key = hermes_home_key()
-    approved = _permanent_approved_by_home.get(home_key)
-    if approved is None:
-        try:
-            approved = _read_permanent_allowlist()
-        except Exception as e:
-            logger.warning("Failed to load permanent allowlist: %s", e)
-            approved = set()
-        _permanent_approved_by_home[home_key] = approved
+        approved, key = _permanent_approved, ""
+    else:
+        key = hermes_home_key()
+        approved = _permanent_approved_by_home.setdefault(key, set())
+    _sync_permanent_from_disk(approved, key)
     return approved
+
+
+def _sync_permanent_from_disk(approved: set, key: str) -> None:
+    """Apply hand edits to ``command_allowlist`` made since the last sync. The gateway daemon
+    outlives any one session, so an entry the operator removed must stop being honoured now, not
+    at restart. Only the on-disk delta is applied: approvals this process made but could not save
+    survive. The config read is cached on the file signature. Callers hold ``_lock``."""
+    try:
+        on_disk = _read_permanent_allowlist()
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e, exc_info=True)
+        return
+    baseline = _permanent_baseline_by_home.get(key, set())
+    if on_disk == baseline:
+        return
+    approved.difference_update(baseline - on_disk)
+    approved.update(on_disk - baseline)
+    _permanent_baseline_by_home[key] = on_disk
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -461,7 +474,7 @@ def save_permanent_allowlist(patterns: set):
     resurrected the ones removed. The result written is ``what is on disk now``
     plus ``what this process approved since its own baseline``; revoked entries are
     also dropped from the governing permanent set so ``is_approved()`` stops
-    honouring them. Nothing re-reads the file on the approval hot path.
+    honouring them (``_sync_permanent_from_disk`` does the same on every check).
 
     ``patterns`` may only ADD: an entry left out of it is not removed, because the
     on-disk list wins for anything this process did not approve itself. Remove

@@ -65,7 +65,7 @@ def edge_block(exc: BaseException) -> str | None:
     else:
         return None
     return (f"{host or 'the server'}'s CDN firewall ({cdn}) refused this network. Your install is fine; "
-            "retry from another network, or with your VPN or proxy turned off")
+            "retry from another network")
 
 
 def _delay(exc: Exception, attempt: int) -> float:

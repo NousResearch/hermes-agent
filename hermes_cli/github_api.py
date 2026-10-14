@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 GITHUB_TOKEN_ENV_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
 _GH_CLI_TIMEOUT_SECONDS = 3
+# Classic tokens are ghp_/gho_/ghu_/ghs_/ghr_ + >=20 alphanumerics; fine-grained
+# ones are github_pat_ + >=22 alphanumerics/underscores. Anything else in the gh
+# CLI capture is wrapper output, not a credential.
+_GITHUB_TOKEN_SHAPE = re.compile(r"^(?:gh[a-z]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})$")
 _gh_cli_cache: Optional[str] = None
 _gh_cli_probed = False
 
@@ -54,7 +59,20 @@ def _gh_cli_token() -> Optional[str]:
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("gh CLI token lookup unavailable: %s", exc)
         return None
-    token = result.stdout.strip() if result.returncode == 0 else ""
+    token = ""
+    if result.returncode == 0:
+        # A PATH wrapper around gh (mise/asdf shims, corporate hooks) may print
+        # its own status lines to stdout ahead of the token; the capture then
+        # holds both and its embedded newline makes the Authorization header
+        # invalid before the request is ever sent (#138444). The token is the
+        # last non-empty line, and only when it is shaped like a GitHub token —
+        # otherwise there is no token, and the ladder continues to anonymous.
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        candidate = lines[-1] if lines else ""
+        if candidate and not _GITHUB_TOKEN_SHAPE.match(candidate):
+            logger.debug("gh CLI capture did not end in a GitHub-shaped token; ignoring it")
+            candidate = ""
+        token = candidate
     _gh_cli_cache = token or None
     return _gh_cli_cache
 

@@ -241,6 +241,17 @@ hermes gateway uninstall   # Removes schtasks entry, Startup shortcut, pid file
 
 Login auto-start is only ever installed on an explicit answer: `hermes gateway install`, a `Y` on a real terminal, or `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=1`. A scripted or piped `hermes gateway start` (no TTY, or `HERMES_NONINTERACTIVE=1`) starts the gateway without touching the Scheduled Task or the Startup folder; set `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=0` to skip the question on a terminal too.
 
+### Operator-managed Scheduled Tasks
+
+`hermes gateway start` and `hermes update` reconcile the Scheduled Task against the current template, so template hardening (`RestartOnFailure`, the logon `Delay`) reaches existing installs. If you deliberately registered the task in your own shape — a boot trigger instead of the logon trigger, a service-account principal, a different launcher — that reconcile would silently revert it on every update. Tell Hermes the registration is yours, in the owning profile's `config.yaml`:
+
+```yaml
+gateway:
+  windows_task_reconcile: false
+```
+
+Automatic reconciliation then leaves the task registration alone, and `hermes gateway status` prints a neutral opt-out note instead of recommending a repair. An explicit `hermes gateway install` still rewrites the task on demand, and updates keep refreshing the Hermes-generated launcher scripts themselves — the opt-out protects the registered task definition (trigger, principal, action) only. With it, you are responsible for folding future template hardening into the task yourself.
+
 ### Why not a Windows Service?
 
 Services require admin rights to install and tie the gateway's lifecycle to machine boot, not user login. The typical Hermes user wants: log in → gateway available, log out → gateway gone. Scheduled Tasks do exactly that without elevation. If you genuinely want a service, use `nssm` or `sc create` manually — but you probably don't. If you do, name it `Hermes*` or point its binary path inside the Hermes install (`venv\Scripts\hermes.exe`, the checkout, or `gateway-service\`): `hermes update` stops and restarts only services it can positively identify as Hermes-owned through the Service Control Manager, and pauses a Scheduled-Task-launched gateway by PID (Task Scheduler itself is never touched).

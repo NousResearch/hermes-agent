@@ -104,10 +104,21 @@ class TestPreUpdateBackupIntegrityGuard:
         conn.close()
         monkeypatch.setenv("HERMES_HOME", str(root))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        for mod in list(sys.modules.keys()):
+        affected = {
+            mod: sys.modules[mod]
+            for mod in list(sys.modules)
+            if mod.startswith("hermes_cli.config") or mod == "hermes_constants"
+        }
+        for mod in list(sys.modules):
             if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
                 del sys.modules[mod]
-        return root
+        try:
+            yield root
+        finally:
+            for mod in list(sys.modules):
+                if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
+                    del sys.modules[mod]
+            sys.modules.update(affected)
 
     def test_healthy_db_stays_quiet(self, hermes_home, capsys):
         from argparse import Namespace

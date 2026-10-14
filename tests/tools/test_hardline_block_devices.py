@@ -174,6 +174,10 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     'cat x > "../dev/disk0"',
     "sudo wipefs -a ../dev/sda",
     "nice blkdiscard /tmp/../dev/sda",
+    # a partition suffix is still the node; only a dot ends the name, and a mapper name may hold one
+    "cat x > ../dev/nvme0n1p2",
+    "dd if=/dev/zero of=../dev/disk0s2",
+    "cat x > /dev/mapper/vg.data-root",
     # the kernel collapses empty and `.` segments
     "wipefs -a /dev//sda",
     "blkdiscard /dev/./nvme0n1",
@@ -385,6 +389,17 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "mkswap ../dev/sdk/swap.img",
     "shred -u /dev/sda-notes",
     "blkdiscard -v /dev/sdk/token.json",
+    # No node name carries a dot, so a file with an extension under some `dev/` is a file, however
+    # `..` reaches it: `../dev/sdk.ts` collapses to `/dev/sdk.ts`, which is not `/dev/sdk`.
+    "cat x > ../dev/sdk.ts",
+    "cat x > ../dev/loopback.py",
+    "cat x > ../dev/disk2.img",
+    "cat x > /tmp/../dev/sda.bak",
+    "cat x > /dev/sda.bak",
+    "shred -u ../dev/sdk.env",
+    "wipefs -a ../dev/disk2.img",
+    "mkswap ../dev/loop0.img",
+    "dd if=build.img of=../dev/disk0.img",
     # `..` climbs only above where the path STARTS: under the working directory it is a directory,
     # and a file that merely sits under some `dev/` elsewhere is a file (review F3 on #122771)
     "shred -u build/../dev/sda",
@@ -473,6 +488,8 @@ def test_lookalike_commands_stay_runnable(command):
     "echo payload > /dev/shm/cache",
     "echo hi > /dev/fd/1",
     "cat file | tee /dev/tty",
+    "cp base.yaml ../dev/sdk.yaml",
+    "mv notes.txt ../dev/sda.txt",
     ]],
 ])
 def test_dangerous_tier_block_device_writes(command, needs_approval):

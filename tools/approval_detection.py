@@ -59,9 +59,11 @@ _BLOCK_DEVICE_PATH = (
     # A device node is the LAST path component: ``sda`` is a disk, while ``sda-notes`` and
     # ``sdk/token.json`` are files under some directory called ``dev`` (``../dev/sdk/token.json``
     # reaches here as ``/dev/sdk/token.json``). ``mapper``, ``md`` and ``disk/by-*`` are the
-    # directories that hold device links, so those take a name.
-    r'(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*(?![\w/-])'
-    r'|r?disk[0-9]+[a-z0-9]*(?![\w/-])'
+    # directories that hold device links, so those take a name. No node name carries a dot, so
+    # ``sdk.ts``, ``loopback.py`` and ``disk2.img`` are files too (``../dev/sdk.ts`` reaches here
+    # as ``/dev/sdk.ts``).
+    r'(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*(?![\w./-])'
+    r'|r?disk[0-9]+[a-z0-9]*(?![\w./-])'
     r'|(?:mapper|md)/[^\s;&|<>()"\']+'
     r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
 )

@@ -446,13 +446,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 log(f"Desktop channel head is now {record['version']}")
             else:
                 log(f"{record['version']} skipped bundles: no desktop channel to advance")
-            log(f"Moving Docker stable/latest aliases onto {record['claim_tag']} "
+            log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
                 f"({record['docker_manifest_digest']})")
-            # The stable/latest aliases move onto the attempt's image here, in
+            # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
             # the publication pass with the feed pointer, never in the green
             # build that pushed the image under the attempt ref. A release
             # that skipped bundles moves only these aliases.
-            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
+            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
             log("Docker aliases moved")
             if not record["skip_bundles"]:
                 log("Checking the Microsoft Store submission")

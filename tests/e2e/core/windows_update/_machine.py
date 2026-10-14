@@ -624,6 +624,9 @@ def one_shot_turn(machine: Machine, srv: Any, label: str) -> Turn:
     from tests.fakes.fake_llm_provider import Text
 
     prompt_id, reply_id = f"PROMPT-{uuid.uuid4().hex[:8]}", f"REPLY-{uuid.uuid4().hex[:8]}"
+    # A reply an earlier refused launch never consumed would answer THIS prompt (the script is
+    # FIFO) and fail every later cell of the shared machine with another cell's reply id.
+    srv.drop_unconsumed()
     before = len(srv.main_requests())
     srv.push(Text(f"The answer is {reply_id}."))
     res = machine.hermes("chat", "-q", f"Say the code {prompt_id}", "-Q", label=label)

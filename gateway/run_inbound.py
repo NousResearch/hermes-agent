@@ -1596,12 +1596,17 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
         try:
             from agent.context_references import preprocess_context_references_async
+            from gateway.session_policy import policy_for_source
 
             try:
                 from tools.terminal_scope import terminal_env as _ts_env
             except ImportError:
                 _ts_env = os.environ.get
             _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
+            # A local session's references resolve in ITS workspace: this runs before the turn binds
+            # the policy scope, so TERMINAL_CWD is still the daemon's own.
+            if (_policy := policy_for_source(self, source)) is not None:
+                _msg_cwd = _policy.cwd
             _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
             _ctx_result = await preprocess_context_references_async(
                 message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd

@@ -1797,6 +1797,48 @@ class GatewayTurnMixin:
             response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
         return response, session_entry
 
+    def _hmwa_stage_compression_exhaustion_replay(
+        self, event, session_key, agent_result, prepared_message_text, native_image_paths,
+    ) -> bool:
+        """Queue one safe retry after reset; the adapter drains it after this turn unwinds."""
+        if (
+            not agent_result.get("compression_exhausted")
+            or agent_result.get("compression_deferred")
+            or event.internal
+            or getattr(event, "_gateway_compression_replay_attempted", False)
+            or agent_result.get("already_sent")
+        ):
+            return False
+        messages = agent_result.get("messages", [])
+        offset = agent_result.get("history_offset", 0)
+        if not isinstance(messages, list) or not isinstance(offset, int) or not 0 <= offset <= len(messages):
+            return False
+        turn_messages = messages[offset:]
+        if any(
+            not isinstance(message, dict)
+            or message.get("role") in {"tool", "function"}
+            or (message.get("role") == "assistant" and message.get("tool_calls"))
+            for message in turn_messages
+        ):
+            return False
+        adapter = self._delivery_adapter_for(event.source)
+        pending = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if not isinstance(pending, dict):
+            return False
+        existing = pending.get(session_key)
+        if existing is not None:
+            state = self._peek_session_state(session_key)
+            if state is None:
+                return False
+            state.conversation.queued_events.insert(0, existing)
+        event._gateway_compression_replay_attempted = True
+        event._gateway_compression_replay_message_text = prepared_message_text
+        event._gateway_compression_replay_native_image_paths = list(native_image_paths)
+        pending[session_key] = event
+        event._gateway_accepted = True
+        logger.info("Re-queued inbound event for one fresh-session retry after compression exhaustion.")
+        return True
+
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
         """Transcript row for the inbound user turn (clean text + event time when captured)."""
@@ -2109,10 +2151,19 @@ class GatewayTurnMixin:
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
 
-        # Auto-analyze user images so the model gets a description plus the local path.
-        message_text = await self._prepare_profile_scoped_inbound_message_text(
-            event=event, source=source, history=history, session_key=session_key,
-        )
+        # A compression-exhaustion replay reuses the already-prepared input: STT and image
+        # enrichment may have external effects, while native images must be reattached on the new turn.
+        replay_message = getattr(event, "_gateway_compression_replay_message_text", None)
+        if replay_message is not None:
+            self._session_state(session_key).persistent.native_image_paths = list(
+                getattr(event, "_gateway_compression_replay_native_image_paths", [])
+            )
+            message_text = replay_message
+        else:
+            # Auto-analyze user images so the model gets a description plus the local path.
+            message_text = await self._prepare_profile_scoped_inbound_message_text(
+                event=event, source=source, history=history, session_key=session_key,
+            )
         if message_text is None:
             return None, _session_env_tokens
 
@@ -2194,6 +2245,9 @@ class GatewayTurnMixin:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
+            _replay_native_image_paths = list(
+                self._peek_session_state(session_key).persistent.native_image_paths or []
+            )
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -2253,6 +2307,10 @@ class GatewayTurnMixin:
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
+            if self._hmwa_stage_compression_exhaustion_replay(
+                event, session_key, agent_result, message_text, _replay_native_image_paths,
+            ):
+                response = None
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,

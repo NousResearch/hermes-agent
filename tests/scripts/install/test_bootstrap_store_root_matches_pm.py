@@ -38,6 +38,7 @@ paired with executing those bytes — never just matching their text.
 """
 from __future__ import annotations
 
+import base64
 import os
 from pathlib import Path
 import re
@@ -1605,78 +1606,198 @@ def test_resolvers_fold_a_case_variant_of_the_default_home(
         )
 
 
+_TILDE_ESCAPE_CASES = [
+    # plain tilde and the HOME rung (ntpath never consults HOME)
+    ("~/x", {}),
+    ("~", {}),
+    ("~/x", {"HOME": r"C:\probe"}),
+    # presence, not truthiness, at each rung
+    ("~/x", {"USERPROFILE": ""}),
+    ("~/x", {"USERPROFILE": r"C:\Users\probe"}),
+    ("~/x", {"USERPROFILE": "C:\\Users\\probe\\"}),
+    ("~/x", {"HOMEDRIVE": "C:", "HOMEPATH": ""}),
+    ("~/x", {"HOMEDRIVE": "C:", "HOMEPATH": "/x"}),
+    ("~/x", {"HOMEDRIVE": "", "HOMEPATH": "/x"}),
+    ("~/x", {"HOMEPATH": "/x"}),
+    ("~/x", {"HOMEDRIVE": "C:\\", "HOMEPATH": "\\x"}),
+    ("~/x", {"HOMEDRIVE": "C:\\", "HOMEPATH": "x"}),
+    # ~user: ntpath compares the account name CASE-SENSITIVELY
+    ("~probe/x", {"USERPROFILE": r"C:\Users\probe", "USERNAME": "probe"}),
+    ("~Probe/x", {"USERPROFILE": r"C:\Users\probe", "USERNAME": "probe"}),
+    ("~other/x", {"USERPROFILE": r"C:\Users\probe", "USERNAME": "probe"}),
+    ("~probe/x", {"USERPROFILE": r"C:\Users\probe"}),
+    ("~me/sub", {"USERPROFILE": r"C:\Users\me", "USERNAME": "me"}),
+    ("~Probe/x", {"USERPROFILE": "C:\\Users\\probe\\", "USERNAME": "probe"}),
+    ("~//x", {"USERPROFILE": r"C:\Users\probe"}),
+    ("~\\x", {"USERPROFILE": r"C:\Users\probe"}),
+    # expandvars: %VAR%, $VAR, the %% / $$ escapes, quoted spans
+    ("%PROBE_A%/x", {"PROBE_A": "V"}),
+    ("%%PROBE_A%%/x", {"PROBE_A": "V"}),
+    ("%%%PROBE_A%%%/x", {"PROBE_A": "V"}),
+    ("100%%", {"PROBE_A": "V"}),
+    ("%NOPE%/x", {"PROBE_A": "V"}),
+    ("a%NOPE/x", {"PROBE_A": "V"}),
+    ("%PROBE_A%", {"PROBE_A": "V"}),
+    ("$PROBE_A/x", {"PROBE_A": "V"}),
+    ("${PROBE_A}/x", {"PROBE_A": "V"}),
+    ("$NOPE/x", {"PROBE_A": "V"}),
+    ("${NOPE/x", {"PROBE_A": "V"}),
+    ("$$PROBE_A/x", {"PROBE_A": "V"}),
+    ("$$$PROBE_A/x", {"PROBE_A": "V"}),
+    ("$$", {"PROBE_A": "V"}),
+    ("'$PROBE_A'/x", {"PROBE_A": "V"}),
+    ("'%PROBE_A%'/x", {"PROBE_A": "V"}),
+    ("''$PROBE_A/x", {"PROBE_A": "V"}),
+    ("it's $PROBE_A/x", {"PROBE_A": "V"}),
+    ("'a'b$PROBE_A", {"PROBE_A": "V"}),
+]
+_TILDE_ENV_KEYS = ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "USERNAME", "PROBE_A")
+
+
+def _ntpath_expand(env: dict[str, str], value: str) -> str:
+    """The oracle: ntpath.expanduser(ntpath.expandvars(value)) under *env*.
+
+    ntpath is pure Python, so it answers the same on every host; the Windows
+    ladder is therefore pinnable from the POSIX lane too, which is where the
+    hand-written expectations this replaces went wrong."""
+    import ntpath
+
+    saved = {k: os.environ.pop(k, None) for k in _TILDE_ENV_KEYS}
+    os.environ.update(env)
+    try:
+        return ntpath.expanduser(ntpath.expandvars(value))
+    finally:
+        for key in _TILDE_ENV_KEYS:
+            os.environ.pop(key, None)
+        for key, val in saved.items():
+            if val is not None:
+                os.environ[key] = val
+
+
+def _probe_env(env: dict[str, str]) -> dict[str, str]:
+    child = {k: v for k, v in os.environ.items() if k not in _TILDE_ENV_KEYS}
+    child.update(env)
+    return child
+
+
+def _decode_lines(stdout: str) -> list[str]:
+    return [base64.b64decode(line).decode() for line in stdout.splitlines() if line]
+
+
+def _case_groups() -> list[dict]:
+    """The matrix grouped by environment, so one child per env runs every value.
+
+    Present-but-empty variables cannot be created with .NET's
+    ``SetEnvironmentVariable`` on Unix (an empty value removes the name), so the
+    environment must arrive through the child's own environment block — one
+    process per distinct env keeps that faithful without spawning per row."""
+    groups: dict[tuple, dict] = {}
+    for value, env in _TILDE_ESCAPE_CASES:
+        groups.setdefault(tuple(sorted(env.items())), {"env": dict(env), "values": []})
+        groups[tuple(sorted(env.items()))]["values"].append(value)
+    return list(groups.values())
+
+
+def _b64_items(values: list[str], indent: int = 4) -> str:
+    pad = " " * indent
+    return (",\n" + pad).join(f"'{base64.b64encode(v.encode()).decode()}'" for v in values)
+
+
+_PS1_MATRIX_DRIVER = """{body}
+$ErrorActionPreference = 'Stop'
+$values = @(
+    {values}
+)
+foreach ($b in $values) {{
+    $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b))
+    $out = Expand-HermesHomeValue $v '\\'
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($out))
+}}
+"""
+
+
 @pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell resolver needs pwsh or powershell")
-@pytest.mark.platforms("windows")
-def test_powershell_tilde_expansion_binds_an_empty_homepath_pair() -> None:
-    """A present-but-empty HOMEPATH still takes the pair rung.
+@pytest.mark.platforms("any")
+def test_powershell_resolver_matches_ntpath(tmp_path: Path) -> None:
+    """``Expand-HermesHomeValue`` must answer ntpath's value, byte for byte.
 
-    The reviewer-proved ``$env:`` semantics (PR #124313, comment 4237645076):
-    PowerShell's provider reports a variable set to the empty string as
-    ``$null``, so ``$null -ne $env:HOMEPATH`` reads a present-and-empty
-    HOMEPATH as absent and drops to the ``$HOME`` rung — while ntpath's
-    ladder tests ``'HOMEPATH' in os.environ``, stays on the pair rung, and
-    answers ``join(os.environ.get('HOMEDRIVE', ''), '')`` = HOMEDRIVE alone
-    (empty drive folds to ''). Presence is read from the environment
-    dictionary for HOMEPATH exactly as it already is for USERPROFILE, and
-    the pair binds the dictionary values, so an empty-but-present HOMEDRIVE
-    joins the same answer a missing drive would.
+    The Windows ladder is selected explicitly (``$Sep`` = backslash), so the
+    regression is caught on every host rather than only on a Windows runner —
+    the hand-written expectations this replaces silently pinned a wrong answer
+    for an empty HOMEPATH. The account name stays case-sensitive, because
+    ntpath compares ``os.environ['USERNAME']`` with ``!=``, and ``%%``/``$$``
+    fold exactly as ntpath's ``_varpattern`` does.
     """
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME")}
-    env["HOMEDRIVE"] = "C:"
-    env["HOMEPATH"] = ""
+    for group in _case_groups():
+        env, values = group["env"], group["values"]
+        expected = [_ntpath_expand(env, value) for value in values]
+        for name, (path, mirror) in PS1_PAIR.items():
+            driver = tmp_path / f"matrix-{path.stem}.ps1"
+            driver.write_text(
+                _PS1_MATRIX_DRIVER.format(
+                    body=_resolver_source(path, mirror), values=_b64_items(values)
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [_POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                 "-File", str(driver)],
+                env=_probe_env(env), capture_output=True, text=True, errors="replace",
+                timeout=180, check=False,
+            )
+            assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
+            got = _decode_lines(result.stdout)
+            assert got == expected, _matrix_diffs(name, values, env, got, expected)
 
-    for name, (path, mirror) in PS1_PAIR.items():
-        result = subprocess.run(
-            [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
-             "$ErrorActionPreference='Stop'\n" + _resolver_source(path, mirror) + "\n"
-             "'RESULT=' + (Expand-HermesHomeValue '~/x')"],
-            env=env, capture_output=True, text=True, errors="replace", timeout=120,
-            check=False,
-        )
-        assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
-        assert result.stdout.strip() == "RESULT=C:", (
-            f"{name}: Expand-HermesHomeValue '~/x' -> {result.stdout.strip()!r}, want 'RESULT=C:'"
-        )
+
+_SH_MATRIX_DRIVER = """{body}
+_hermes_os() {{ printf win32; }}
+while IFS= read -r _b; do
+    _v="$(printf '%s' "$_b" | base64 -d)"
+    _hermes_expand "$_v" | base64 -w0
+    printf '\\n'
+done <<'HERMES_EOF'
+{values}
+HERMES_EOF
+"""
 
 
-@pytest.mark.skipif(_POWERSHELL is None, reason="running the PowerShell resolver needs pwsh or powershell")
-@pytest.mark.platforms("windows")
-@pytest.mark.parametrize(("homedrive", "expected"), [
-    (None, "RESULT=\\Users\\probe/x"),
-    ("C:", "RESULT=C:\\Users\\probe/x"),
-])
-def test_powershell_tilde_expansion_skips_a_lone_homepath(
-    homedrive: str | None, expected: str
-) -> None:
-    """A lone HOMEPATH still takes the pair rung, joined with an empty drive.
+@pytest.mark.platforms("any")
+def test_sh_resolver_matches_ntpath_on_win32(tmp_path: Path) -> None:
+    """The sh twin answers ntpath's value under msys, where pm runs win32.
 
-    ``Expand-HermesHomeValue`` follows ntpath's ladder — USERPROFILE, else the
-    HOMEDRIVE+HOMEPATH pair, else the ``$HOME`` rung — under the twins'
-    ``$ErrorActionPreference = 'Stop'``. With HOMEPATH set but HOMEDRIVE
-    missing, the old ``Join-Path $env:HOMEDRIVE $env:HOMEPATH`` bound ``$null``
-    and terminated the expansion, killing the bootstrap on an explicit ``~``.
-    ntpath's answer for that machine is ``join('', HOMEPATH)`` — an EMPTY-drive
-    join, not a skip to the ``$HOME`` rung — so the twin binds the same
-    ``<HOMEPATH>`` home instead of passing ``~...`` through untouched. The
-    ``C:`` row keeps the pair itself honest.
+    ``setup-hermes.sh`` sources this file on Git Bash/Cygwin, so the Windows
+    ladder is live production code there. ``_hermes_os`` is overridden to
+    ``win32`` (its only input is ``uname``), which lets the row run on any lane.
     """
-    env = {k: v for k, v in os.environ.items() if k != "USERPROFILE"}
-    if homedrive is None:
-        env.pop("HOMEDRIVE", None)
-    else:
-        env["HOMEDRIVE"] = homedrive
-    env["HOMEPATH"] = "\\Users\\probe"
+    bash = shutil.which("bash")
+    assert bash, "the shell bootstraps require bash"
+    for group in _case_groups():
+        env, values = group["env"], group["values"]
+        expected = [_ntpath_expand(env, value) for value in values]
+        for name, (path, mirror) in SH_PAIR.items():
+            driver = tmp_path / f"matrix-{path.stem}.sh"
+            driver.write_text(
+                _SH_MATRIX_DRIVER.format(
+                    body=_resolver_source(path, mirror),
+                    values="\n".join(base64.b64encode(v.encode()).decode() for v in values),
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [bash, driver.as_posix()], env=_probe_env(env),
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+            assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
+            got = _decode_lines(result.stdout)
+            assert got == expected, _matrix_diffs(name, values, env, got, expected)
 
-    for name, (path, mirror) in PS1_PAIR.items():
-        result = subprocess.run(
-            [_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
-             "$ErrorActionPreference='Stop'\n" + _resolver_source(path, mirror) + "\n"
-             "'RESULT=' + (Expand-HermesHomeValue '~/x')"],
-            env=env, capture_output=True, text=True, errors="replace", timeout=120,
-            check=False,
-        )
-        assert result.returncode == 0, f"{name}: {result.stderr}{result.stdout}"
-        assert result.stdout.strip() == expected, (
-            f"{name}: Expand-HermesHomeValue '~/x' -> {result.stdout.strip()!r}, want {expected!r}"
-        )
+
+def _matrix_diffs(
+    name: str, values: list[str], env: dict[str, str], got: list[str], expected: list[str]
+) -> str:
+    lines = [f"{name}: {len(got)} answers vs {len(expected)} expectations, env={env}"]
+    for value, want, have in zip(values, expected, got):
+        if want != have:
+            lines.append(f"  {value!r}: got {have!r}, ntpath answers {want!r}")
+    return "\n".join(lines)

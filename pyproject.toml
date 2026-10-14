@@ -660,6 +660,8 @@ include = [
   "hermes_platform.*",
   "pm",
   "pm.*",
+  "hermes_durability",
+  "hermes_durability.*",
   "tools",
   "tools.*",
 ]

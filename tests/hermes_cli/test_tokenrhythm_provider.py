@@ -112,18 +112,80 @@ def test_model_capabilities_reach_consumers(model, context, vision):
     assert get_model_context_length(model, base_url=BASE_URL, api_key="sk", provider="tokenrhythm") == context
 
 
-def test_wire_has_no_reasoning_knobs(profile):
-    """No documented effort vocabulary: nothing reasoning-shaped goes on the wire."""
+def _wire(profile, model, reasoning_config):
     from agent.transports.chat_completions import ChatCompletionsTransport
 
-    kwargs = ChatCompletionsTransport().build_kwargs(
-        model="deepseek-v4-pro-0813", messages=[{"role": "user", "content": "ping"}], tools=None,
-        provider_profile=profile, reasoning_config={"enabled": True, "effort": "high"},
-        base_url=BASE_URL, provider_name="tokenrhythm",
+    return ChatCompletionsTransport().build_kwargs(
+        model=model, messages=[{"role": "user", "content": "ping"}], tools=None, provider_profile=profile,
+        reasoning_config=reasoning_config, base_url=BASE_URL, provider_name="tokenrhythm",
     )
-    assert kwargs["model"] == "deepseek-v4-pro-0813"
+
+
+_OFF = {"enabled": False}
+_EFFORT_OFF = {"enabled": True, "effort": "none"}
+
+
+@pytest.mark.parametrize(
+    ("reasoning_config", "thinking", "effort"),
+    [({"enabled": True, "effort": "low"}, "enabled", "low"),
+     ({"enabled": True, "effort": "medium"}, "enabled", "high"),
+     ({"enabled": True, "effort": "xhigh"}, "enabled", "max"),
+     ({"enabled": True, "effort": "ultra"}, "enabled", "max"),
+     (_OFF, "disabled", None), (_EFFORT_OFF, "disabled", None)],
+)
+def test_deepseek_toggles_thinking_and_grades_effort(profile, reasoning_config, thinking, effort):
+    kwargs = _wire(profile, "deepseek-v4-pro-0813", reasoning_config)
+    assert kwargs["extra_body"] == {"thinking": {"type": thinking}}
+    assert kwargs.get("reasoning_effort") == effort
+
+
+def test_deepseek_main_loop_default_turns_thinking_on(profile):
+    """deepseek-v4-* do not think when the toggle is omitted; Hermes' unset effort means medium."""
+    default = profile.default_reasoning_config("deepseek-v4-flash-0731")
+    kwargs = _wire(profile, "deepseek-v4-flash-0731", default)
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert kwargs["reasoning_effort"] == "high"
+
+
+def test_unset_aux_call_sends_no_reasoning_fields(profile):
+    kwargs = _wire(profile, "deepseek-v4-flash-0731", None)
+    assert "extra_body" not in kwargs
     assert "reasoning_effort" not in kwargs
-    assert "reasoning" not in kwargs.get("extra_body", {})
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-max", "seed-2.1-pro"])
+def test_qwen_seed_toggle_only_never_send_effort(profile, model):
+    assert profile.default_reasoning_config(model) is None
+    for config in (_OFF, _EFFORT_OFF):
+        kwargs = _wire(profile, model, config)
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
+    kwargs = _wire(profile, model, {"enabled": True, "effort": "high"})
+    assert "extra_body" not in kwargs
+    assert "reasoning_effort" not in kwargs
+
+
+@pytest.mark.parametrize("model", ["glm-5.3", "kimi-k2.7-code", "glm-5.1", "mimo-v2.5-pro", "some-new-model"])
+@pytest.mark.parametrize("reasoning_config", [_OFF, _EFFORT_OFF, {"enabled": True, "effort": "max"}, None])
+def test_always_on_models_never_receive_a_disable_or_effort(profile, model, reasoning_config):
+    """GLM-5.3 / kimi-k2.7-code / longcat / minimax 400 on any disable ("当前模型必须开启深度思考");
+    unknown live-only ids are treated the same way."""
+    assert profile.default_reasoning_config(model) is None
+    kwargs = _wire(profile, model, reasoning_config)
+    assert "extra_body" not in kwargs
+    assert "reasoning_effort" not in kwargs
+    assert "thinking" not in kwargs and "enable_thinking" not in kwargs
+
+
+def test_reasoning_content_is_read_from_the_response():
+    from types import SimpleNamespace
+
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    msg = SimpleNamespace(content="hi", tool_calls=None, reasoning_content="thinking...", reasoning=None)
+    response = SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")], usage=None)
+    normalized = ChatCompletionsTransport().normalize_response(response)
+    assert normalized.provider_data["reasoning_content"] == "thinking..."
 
 
 def test_copied_provider_prefix_is_stripped():

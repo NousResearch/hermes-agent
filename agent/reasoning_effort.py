@@ -81,6 +81,10 @@ GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: DeepSeek behind TokenRhythm: low/high/max (live-verified, max reasons more than low).
+#: ``medium`` folds into ``high``, DeepSeek's own default level; ``xhigh`` requests the top tier.
+TOKENRHYTHM_DEEPSEEK_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+TOKENRHYTHM_DEEPSEEK_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 
 #: Ollama Cloud /v1/chat/completions: rejects ``minimal`` with HTTP 400.
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")

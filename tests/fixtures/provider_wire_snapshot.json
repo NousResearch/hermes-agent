@@ -11283,6 +11283,11 @@
   "api_mode": "chat_completions",
   "base_url": "https://tokenrhythm.studio/v1",
   "high": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11318,6 +11323,7 @@
     }
    ],
    "model": "deepseek-v4-pro-0813",
+   "reasoning_effort": "high",
    "timeout": 1800.0,
    "tools": [
     {
@@ -11342,6 +11348,11 @@
   },
   "model": "deepseek-v4-pro-0813",
   "off": {
+   "extra_body": {
+    "thinking": {
+     "type": "disabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11400,6 +11411,11 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11435,6 +11451,7 @@
     }
    ],
    "model": "deepseek-v4-pro-0813",
+   "reasoning_effort": "high",
    "timeout": 1800.0,
    "tools": [
     {

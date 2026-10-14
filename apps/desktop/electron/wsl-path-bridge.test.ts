@@ -103,7 +103,7 @@ test('setWslBridgeActive(false) → local reads normalize drive aliases without 
   assert.equal(resolveLocalReadPath(''), '')
 })
 
-test('setWslBridgeActive(true) restores picker bridging while preserving native drive reads', () => {
+test('setWslBridgeActive(true) restores picker bridging', () => {
   setWslBridgeActive(false)
   assert.equal(resolvePickerDefaultPath('/home/alex'), '/home/alex')
 

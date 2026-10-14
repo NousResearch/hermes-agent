@@ -6,6 +6,7 @@ import {
   useHasSelection,
   useSelection,
   useStdout,
+  useTerminalNotification,
   useTerminalTitle
 } from '@hermes/ink'
 import type { SessionControlSnapshot } from '@hermes/shared/gateway-events'
@@ -59,6 +60,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { notificationTerminalForEnv } from './notificationTerminal.js'
 import { $overlayState, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -230,6 +232,21 @@ export function useMainApp(gw: GatewayClient) {
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
   const [bellOnPrompt, setBellOnPrompt] = useState(false)
+  const { notifyBell, notifyGhostty, notifyITerm2, notifyKitty } = useTerminalNotification()
+
+  const notifyOnComplete = useCallback(() => {
+    const terminal = notificationTerminalForEnv(process.env)
+
+    notifyBell()
+
+    if (terminal === 'ghostty') {
+      notifyGhostty({ message: 'Response complete', title: 'Hermes' })
+    } else if (terminal === 'kitty') {
+      notifyKitty({ id: 1, message: 'Response complete', title: 'Hermes' })
+    } else if (terminal === 'iterm2') {
+      notifyITerm2({ message: 'Response complete', title: 'Hermes' })
+    }
+  }, [notifyBell, notifyGhostty, notifyITerm2, notifyKitty])
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -910,7 +927,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, bellOnPrompt, stdout, sys },
+        system: { bellOnComplete, bellOnPrompt, notifyOnComplete, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -923,6 +940,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       bellOnPrompt,
+      notifyOnComplete,
       composerActions.setInput,
       gateway,
       panel,

@@ -394,6 +394,13 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
+    # These helpers live in split modules and are underscore-prefixed, so bind_module's skip=("_",) never
+    # publishes them here: a bare reference raised NameError at the tuple below — BEFORE the loop, so the
+    # suppress never ran and the whole shutdown (turn stop + session close) silently never happened.
+    # Resolve them at call time (the split modules never import server, so there is no cycle).
+    from tui_gateway.methods_voice import _release_gateway_wake_owner
+    from tui_gateway.session_reaper import _flush_sessions_before_exit, _stop_turns_before_exit
+
     for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
         with contextlib.suppress(Exception):
             step()
@@ -415,6 +422,12 @@ _INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, env_float("HERMES_TUI_SESSION_FLUSH_INT
 
 
 def _start_idle_reaper() -> None:
+    # _reap_idle_sessions is underscore-prefixed, so bind_module's skip=("_",) never publishes it
+    # here: the bare reference raised NameError inside the thread every scan, silently swallowed by
+    # the suppress — the server-level idle reaper (TTL reap, orphan-lease reclaim, WS re-arm) has
+    # been a no-op thread since the split. Resolve at call time (no import cycle).
+    from tui_gateway.session_reaper import _reap_idle_sessions
+
     def _loop():
         while True:
             time.sleep(_REAPER_SCAN_S)

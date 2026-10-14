@@ -28,6 +28,8 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from gateway.platforms import api_server_workspace as _workspace
+
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
 _PROFILE_REJECTED = object()
@@ -1248,6 +1250,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
+        self._workspace_services = {}
 # Shared broker; this adapter maps HTTP registration + controller WS onto it.
         self._browser_control_broker = get_browser_control_broker()
         # One-shot artifact transport: lazy per-profile stores + limiter (tests inject).
@@ -1268,12 +1271,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
         (task-based, since ``_active_run_agents`` has a queued-before-agent gap)."""
+        workspace_work = _workspace.active_count(self)
         try:
-            return (int(getattr(self, "_pending_agent_requests", 0))
+            return (workspace_work + int(getattr(self, "_pending_agent_requests", 0))
                     + int(self._inflight_agent_runs)
                     + sum(not task.done() for task in self._active_run_tasks.values()))
         except Exception:
-            return 0
+            return workspace_work
 
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
@@ -1286,7 +1290,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())
             if agent is not None}
-        interrupted = 0
+        interrupted = _workspace.interrupt(self, reason)
         for agent in agents.values():
             try:
                 if request_hard_interrupt(agent, reason, tool_reason="gateway shutdown"):
@@ -1326,7 +1330,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
-        active_api_runs = self._active_structured_run_count()
+        active_api_runs = self._active_structured_run_count() + self._pending_agent_requests
         process_depth = 0
         active_delegations = 0
         with suppress(Exception):
@@ -1340,7 +1344,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _active_structured_run_count(self) -> int:
         """Count structured runs that still have executable work."""
         # "stopping" is not terminal: executor work continues until the agent notices.
-        return sum(
+        return _workspace.active_count(self) + sum(
             1
             for status in self._run_statuses.values()
             if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
@@ -1415,7 +1419,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return {
             "host": self._host,
             "port": self._port,
-            "active_runs": self._active_structured_run_count() + self._inflight_agent_runs,
+            "active_runs": self._active_structured_run_count() + self._inflight_agent_runs + self._pending_agent_requests,
             "stored_runs": len(self._run_statuses),
             "last_request_at": self._iso_timestamp(self._metrics_last_request_at),
             "last_heartbeat": self._iso_timestamp(heartbeat),
@@ -1760,6 +1764,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.extend(_workspace.http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -2510,44 +2515,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
-        """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
-        return web.json_response({
-            "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
-            "model": self._model_name,
-            "auth": {"type": "bearer", "required": bool(self._api_key)},
-            "runtime": {
-                "mode": "server_agent", "tool_execution": "server", "split_runtime": False,
-                "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
-                    "tools execute on the API-server host unless a future "
-                    "explicit split-runtime mode is enabled.")},
-            "features": {
-                "chat_completions": True, "chat_completions_streaming": True,
-                "responses_api": True, "responses_streaming": True, "run_submission": True,
-                "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-                **_STATIC_FEATURE_FLAGS,
-                "cors": bool(self._cors_origins),
-                # Always advertised for feature-detection; enabled follows config.
-                "browser_extension_control": {
-                    "enabled": self._browser_control_enabled(),
-                    "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                    "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
-                    "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
-                    "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
-                    "developer_mode": self._browser_control_developer_mode(),
-                    "artifact_transport": {
-                        "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
-                        "download": {
-                            "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
-                        "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
-                        "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
-                    "real_browser_actions": True,
-                    "transports": {
-                        "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
-            "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
-        })
+        from gateway.platforms.api_server_capabilities import response
+        return response(self)
 
     # -- Browser-extension control (authenticated local/VPS API) ----------------------
 
@@ -4584,6 +4553,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        await _workspace.close(self)
         # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
         routed = getattr(self, "_response_stores", {})
         stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]

@@ -2229,10 +2229,10 @@ DEFAULT_CONFIG = {
         # Recency window in seconds; 600 covers a multi-tool turn. Bridged to
         # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
-        "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
-            # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
-            # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
-            # exhaustion from a request flood. 0 = no cap.
+        "api_server": {  # Native HTTP API; workspace I/O is opt-in.
+            "workspace": {"enabled": False},
+            # Concurrent chat/responses/runs above this cap receive HTTP 429 + Retry-After.
+            # Bounds CPU, memory and model quota consumption; 0 disables the cap.
             "max_concurrent_runs": 10,
             # Cap (chars) on each tool output and tool-call argument string in the stored
             # /v1/responses conversation history used for previous_response_id chaining. The

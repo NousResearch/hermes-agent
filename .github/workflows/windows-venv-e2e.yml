@@ -18,6 +18,10 @@ on:
       - 'wine2e/**'
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run. Unused by the jobs; the caller passes it for a uniform callable surface.'
         required: false
@@ -46,7 +50,7 @@ jobs:
         with:
           # The stable caller dispatches on the candidate tag; github.sha is
           # the exact candidate commit there and the head SHA everywhere else.
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm

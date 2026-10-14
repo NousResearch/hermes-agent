@@ -1,7 +1,7 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: b9aa23e8b6c174f65dc14400d5f2a2f05dfc85f1
+sha: 9cd020105ac76409af164262195f8de77eace8a0
 description: 'Claude Code-style plan mode on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
   through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
   explores, asks clarifying questions and writes a plan. The agent submits the plan with plan_mode(submit) and you
@@ -29,12 +29,12 @@ tier: community
 category: tools
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.4.1"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/b9aa23e8b6c174f65dc14400d5f2a2f05dfc85f1/docs/media/banner.png
+version: "0.4.4"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/b9aa23e8b6c174f65dc14400d5f2a2f05dfc85f1/docs/media/cli-approval.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/b9aa23e8b6c174f65dc14400d5f2a2f05dfc85f1/docs/media/cli-deny-clarify.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/b9aa23e8b6c174f65dc14400d5f2a2f05dfc85f1/docs/media/cli-approve-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-approval.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-deny-clarify.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-approve-implement.png
 platforms: []
 capabilities:
   provides_tools:

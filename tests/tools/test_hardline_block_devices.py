@@ -239,19 +239,19 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     # anything can carry `bash -c` as an argument, so nothing but a lone printer is a single parse
     "env -S bash -c 'eval echo hello \\> /dev/sda'",
     "xargs bash -c 'eval echo hello \\> /dev/sda'",
-    "find . -exec bash -c 'eval echo hello \\> /dev/sda' \;",
+    "find . -exec bash -c 'eval echo hello \\> /dev/sda' \\;",
     # a shell reached THROUGH another command parses its -c payload like one at command position
     "xargs bash -c 'cat x > /dev/sda'",
-    "find . -exec sh -c 'wipefs -a /dev/sda' \;",
+    "find . -exec sh -c 'wipefs -a /dev/sda' \\;",
     "env -S bash -c 'dd if=/dev/zero of=/dev/sda'",
     "xargs -I{} /bin/bash -c 'cat {} > /dev/disk0'",
-    'find . -exec "bash" -c "cat x > /dev/nvme0n1" \;',
+    'find . -exec "bash" -c "cat x > /dev/nvme0n1" \\;',
     # a variable whose value IS the shell names a shell (review F6 on #122771)
     "xargs $SHELL -c 'eval echo hello \\> /dev/sda'",
     "$SHELL -c 'cat x > /dev/sda'",
     "${SHELL} -c 'wipefs -a /dev/sda'",
     '"$SHELL" -c "cat x > /dev/disk0"',
-    "find . -exec $SHELL -c 'wipefs -a /dev/sda' \;",
+    "find . -exec $SHELL -c 'wipefs -a /dev/sda' \\;",
     "xargs $BASH -c 'dd if=/dev/zero of=/dev/sda'",
     # a printer's argument piped into a shell is code again
     "echo bash -c 'cat x > /dev/sda' | sh",
@@ -414,7 +414,7 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "e\\cho hello \\> /dev/disk0",
     # a dispatched shell with a harmless payload, and a dispatched shell as quoted prose
     "xargs bash -c 'ls'",
-    "find . -name '*.log' -exec sh -c 'echo {}' \;",
+    "find . -name '*.log' -exec sh -c 'echo {}' \\;",
     "echo \"xargs bash -c 'cat x > /dev/sda'\"",
     "grep -c bash /etc/passwd",
     # a printer's arguments are data it prints, never a command it runs (review F7 on #122771)

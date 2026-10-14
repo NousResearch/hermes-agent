@@ -493,6 +493,24 @@
       }
     },
     {
+      "name": "complete.suggest",
+      "summary": "Ghost-text reply suggestions for an empty composer after a completed turn.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CompleteSuggestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CompleteSuggestResult"
+        }
+      }
+    },
+    {
       "name": "config.get",
       "summary": "Read one normalised config value (or the whole effective config) the way the UIs render it.",
       "params": [
@@ -8594,6 +8612,45 @@
           }
         },
         "title": "CompleteSlashResult",
+        "type": "object"
+      },
+      "CompleteSuggestParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "CompleteSuggestParams",
+        "type": "object"
+      },
+      "CompleteSuggestResult": {
+        "additionalProperties": false,
+        "description": "``history_version`` is the session history the candidates were computed from.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "history_version": {
+            "default": 0,
+            "title": "History Version",
+            "type": "integer"
+          }
+        },
+        "title": "CompleteSuggestResult",
         "type": "object"
       },
       "CompletionItem": {
@@ -37015,6 +37072,26 @@
           "session_id"
         ],
         "title": "SudoRequestParams",
+        "type": "object"
+      },
+      "SuggestCandidate": {
+        "additionalProperties": false,
+        "description": "``kind``: ``path`` | ``option`` | ``confirm`` (deterministic) or ``prediction`` (aux model).",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "kind"
+        ],
+        "title": "SuggestCandidate",
         "type": "object"
       },
       "SystemBatteryParams": {

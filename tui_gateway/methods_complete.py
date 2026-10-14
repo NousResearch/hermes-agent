@@ -275,6 +275,40 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"items": items})
 
 
+@method("complete.suggest")
+def _(rid, params: dict) -> dict:
+    """Ghost-text replies for an empty composer: the free deterministic extractor first, then (opt-in
+    ``display.composer_predictions``) one aux-model prediction of the user's next message."""
+    empty = {"candidates": [], "history_version": 0}
+    session = _sessions.get(params.get("session_id") or "")
+    display = _load_cfg().get("display") or {}
+    if session is None or not bool(display.get("composer_suggestions", True)):
+        return _ok(rid, empty)
+
+    def snapshot() -> tuple[list, int]:
+        lock = session.get("history_lock")
+        if lock is None:
+            return list(session.get("history", [])), int(session.get("history_version", 0))
+        with lock:
+            return list(session.get("history", [])), int(session.get("history_version", 0))
+
+    history, version = snapshot()
+    assistant_text = next(
+        (_coerce_message_text(m.get("content")) or "" for m in reversed(history) if m.get("role") == "assistant"), "")
+    from tui_gateway.suggest import extract_suggestions
+
+    candidates = [{"text": c.text, "kind": c.kind} for c in extract_suggestions(assistant_text)]
+    if not candidates and bool(display.get("composer_predictions", False)):
+        from tui_gateway.suggest_predict import predict_next_message
+
+        prediction = predict_next_message(
+            history, _coerce_message_text, main_runtime=_main_runtime_from_agent(session.get("agent")))
+        # A turn that started while the model was predicting makes the guess stale.
+        if prediction and snapshot()[1] == version:
+            candidates = [{"text": prediction, "kind": "prediction"}]
+    return _ok(rid, {"candidates": candidates, "history_version": version})
+
+
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: dict) -> dict:

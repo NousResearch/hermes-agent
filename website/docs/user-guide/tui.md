@@ -225,6 +225,35 @@ The status line also shows:
 - **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
+## Reply suggestions
+
+When a turn ends and the composer is empty, the TUI (and the [Desktop](desktop.md) composer) may show
+a likely reply as dim ghost text in place of the placeholder. **`Tab`** puts it into the input so you
+can edit it; nothing is ever sent until you press Enter. **`Esc`** dismisses it until the next turn,
+and typing replaces it.
+
+Suggestions come from two sources, in order:
+
+1. **Deterministic (free, on by default).** If the agent's last message ends in a question, Hermes
+   offers the file path it asked about, the first option of a trailing numbered list, or
+   `Yes, go ahead` for a yes/no confirmation ("Want me to push?"). Questions that ask for a choice
+   ("Which file should I keep?") never get a bare yes. No model is called.
+2. **Model prediction (opt-in).** With `display.composer_predictions: true`, when nothing
+   deterministic fits, Hermes asks the `auxiliary.composer_predictions` model to guess your next
+   message from the last few turns. That costs one small request per completed turn, so point the
+   task at a cheap model. A prediction that arrives after a new turn has started is discarded.
+
+```yaml
+display:
+  composer_suggestions: true    # false turns all ghost suggestions off
+  composer_predictions: false   # true adds the model-predicted next message
+auxiliary:
+  composer_predictions:
+    provider: auto              # auto = the session's model; pick a cheap one here
+    model: ""
+    timeout: 15
+```
+
 ## Configuration
 
 The TUI respects all standard Hermes config: `~/.hermes/config.yaml`, profiles, personalities, skins, quick commands, credential pools, memory providers, tool/skill enablement. No TUI-specific config file exists.

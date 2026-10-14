@@ -48,6 +48,7 @@ export const $uiState = atom<UiState>(buildUiState())
 
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
+export const $uiBusy = computed($uiState, state => state.busy)
 
 export const getUiState = () => $uiState.get()
 

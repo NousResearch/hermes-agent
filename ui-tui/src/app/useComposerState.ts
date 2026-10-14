@@ -11,6 +11,7 @@ import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
+import { useGhostSuggestion } from '../hooks/useGhostSuggestion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
@@ -28,7 +29,7 @@ import type {
   UseComposerStateResult
 } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
-import { getUiState } from './uiStore.js'
+import { $uiBusy, getUiState } from './uiStore.js'
 
 const TOKEN_MAX_COUNT = 32
 const TOKEN_MAX_TOTAL_BYTES = 4 * 1024 * 1024
@@ -143,6 +144,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const getGhostSid = useCallback(() => getUiState().sid, [])
+  // The ghost fires on the agent turn's busy -> idle edge; `$isBlocked` is overlay state, whose
+  // edge never coincides with a finished turn.
+  const turnBusy = useStore($uiBusy)
+  const { acceptGhost, dismissGhost, ghost } = useGhostSuggestion(input, turnBusy, gw, getGhostSid)
 
   const clearIn = useCallback(() => {
     setInput('')
@@ -422,10 +428,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const actions = useMemo(
     () => ({
+      acceptGhost,
       attachClipboardImage,
       attachImagePath,
       clearIn,
       dequeue,
+      dismissGhost,
       enqueue,
       handleTextPaste,
       openEditor,
@@ -442,10 +450,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       syncTokens
     }),
     [
+      acceptGhost,
       attachClipboardImage,
       attachImagePath,
       clearIn,
       dequeue,
+      dismissGhost,
       enqueue,
       handleTextPaste,
       openEditor,
@@ -479,6 +489,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       compIdx,
       compReplace,
       completions,
+      ghost,
       historyIdx,
       input,
       inputBuf,
@@ -486,7 +497,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       queuedDisplay,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, ghost, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

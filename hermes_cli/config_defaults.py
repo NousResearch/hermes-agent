@@ -793,9 +793,9 @@ DEFAULT_CONFIG = {
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
+        "composer_predictions": _aux(15),  # display.composer_predictions; a cheap model is fine
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
-        # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
-        # of skills); route cheaper via `hermes model` → auxiliary → Curator.
+        # Curator review can take minutes on reasoning models; route cheaper via `hermes model`.
         "curator": _aux(600),
         "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
@@ -824,12 +824,12 @@ DEFAULT_CONFIG = {
         "resume_max_user_chars": 300,      # truncate user message text
         "resume_max_assistant_chars": 200, # truncate non-last assistant text
         "resume_max_assistant_lines": 3,   # truncate non-last assistant lines
-        # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
-        # calls: ...]` lines; False shows them inline.
+        # Skip tool-call-only assistant entries in the recap; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
+        "composer_suggestions": True,   # Desktop/TUI ghost-text replies after a turn (complete.suggest)
+        "composer_predictions": False,  # opt-in aux-model next-message guess: +1 request per turn
+        # steer mode: false hides only the "Steered into current run" bubble (steering still happens).
         "busy_steer_ack_enabled": True,
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for

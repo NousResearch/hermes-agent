@@ -1968,6 +1968,19 @@ export interface CompleteSlashResult {
   items?: CompletionItem[]
   replace_from?: number | null
 }
+export interface CompleteSuggestParams {
+  session_id?: string | null
+}
+/** ``history_version`` is the session history the candidates were computed from. */
+export interface CompleteSuggestResult {
+  candidates?: SuggestCandidate[]
+  history_version?: number
+}
+/** ``kind``: ``path`` | ``option`` | ``confirm`` (deterministic) or ``prediction`` (aux model). */
+export interface SuggestCandidate {
+  text: string
+  kind: string
+}
 export interface PasteCollapseParams {
   text?: string | null
 }
@@ -5173,6 +5186,8 @@ export interface RpcMethods {
   'complete.path': { params: CompletePathParams; result: CompletionItemsResult }
   /** Ranked slash-command / skill completions for a ``/`` token. */
   'complete.slash': { params: CompleteSlashParams; result: CompleteSlashResult }
+  /** Ghost-text reply suggestions for an empty composer after a completed turn. */
+  'complete.suggest': { params: CompleteSuggestParams; result: CompleteSuggestResult }
   /** Read one normalised config value (or the whole effective config) the way the UIs render it. */
   'config.get': { params: ConfigGetParams; result: ConfigGetResult }
   /** Change one config key (persisted or session-scoped) and read back the normalised value. */
@@ -5663,6 +5678,7 @@ export const RPC_METHODS = [
   'commands.catalog',
   'complete.path',
   'complete.slash',
+  'complete.suggest',
   'config.get',
   'config.set',
   'config.show',

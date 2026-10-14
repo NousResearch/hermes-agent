@@ -67,6 +67,28 @@ method("complete.slash", params=CompleteSlashParams, result=CompleteSlashResult,
        doc="Ranked slash-command / skill completions for a ``/`` token.")
 
 
+class CompleteSuggestParams(Params):
+    session_id: str | None = None
+
+
+class SuggestCandidate(Result):
+    """``kind``: ``path`` | ``option`` | ``confirm`` (deterministic) or ``prediction`` (aux model)."""
+
+    text: str
+    kind: str
+
+
+class CompleteSuggestResult(Result):
+    """``history_version`` is the session history the candidates were computed from."""
+
+    candidates: list[SuggestCandidate] = Field(default_factory=list)
+    history_version: int = 0
+
+
+method("complete.suggest", params=CompleteSuggestParams, result=CompleteSuggestResult,
+       doc="Ghost-text reply suggestions for an empty composer after a completed turn.")
+
+
 class PasteCollapseParams(Params):
     text: str | None = None
 

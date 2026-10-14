@@ -66,6 +66,7 @@ import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
+import { useComposerGhost } from './hooks/use-composer-ghost'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
@@ -114,6 +115,8 @@ import {
   selectionLinkLabel
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
+
+const PAGE_KEYS = new Set(['PageDown', 'PageUp'])
 
 export function ChatBar({
   busy,
@@ -168,10 +171,8 @@ export function ChatBar({
 
   const autoSpeak = useStore($autoSpeakReplies)
   const textDirection = useForcedTextDirection()
-  // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
-  // not interrupt it — there's nothing actively running to stop, and stopping
-  // would discard a question the user may want to come back to. The blocking
-  // prompt owns its own dismissal (Skip, Reject, dialog close).
+  // Turn parked on the user (clarify/approval/sudo/secret): Esc must not interrupt it, since nothing is
+  // running and stopping would discard the question; the prompt owns its dismissal (Skip, Reject, close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
@@ -359,14 +360,10 @@ export function ChatBar({
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
-  // Halt vs. reach-the-queue: every interrupt lands on onCancel, but only the
-  // gestures that MEAN "stop working" (Stop button, Esc) go through this
-  // wrapper, which parks the queue first — an explicit halt must not roll
-  // straight into the next queued prompt (that read as Stop not working; the
-  // queued text also seemed to vanish, since the collapsed panel row was its
-  // only trace). Interrupts that exist to advance the queue (send-now-while-
-  // busy) call the raw onCancel and keep draining on settle. Parked entries
-  // stay in the panel until resumed, sent, edited, or deleted.
+  // Stop/Esc mean "stop working": park the queue before onCancel so a halt never rolls into the next
+  // queued prompt (that read as Stop not working, and the queued text seemed to vanish). Interrupts
+  // that advance the queue (send-now-while-busy) call the raw onCancel and keep draining on settle;
+  // parked entries stay in the panel until resumed, sent, edited, or deleted.
   const haltRun = useCallback(() => {
     parkQueuedPrompts(activeQueueSessionKeyRef.current)
 
@@ -384,11 +381,9 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const { canSubmit, cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  // Compaction does not: the gateway holds the correction until it finishes.
+  // Steer: mid-turn, text-only (images can't ride a tool result), never a slash command (inline), and
+  // never under a blocking prompt (the batch is parked on the user, so text queues). Compaction is
+  // fine: the gateway holds the correction until it finishes.
   const canSteer = busy && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
@@ -455,15 +450,22 @@ export function ChatBar({
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
-  // Pull the live contentEditable text into draftRef + the AUI composer state
-  // (which drives `hasComposerPayload` → the send button). Shared by the input
-  // and compositionend paths so committed IME text reaches state through either.
-  // A pending coalesced flush (rAF id). `composerPlainText` serializes the whole
-  // editor (O(n)), so running it on every event during a burst — holding a key,
-  // or holding Cmd+V into a growing editor — is O(n²) across the burst. The
-  // contentEditable DOM is the source of truth (submit + the compositionend /
-  // keydown paths re-read it synchronously), so collapsing the input/paste
-  // flushes to one per paint is lossless.
+  // After a turn, a likely reply rides the placeholder as dim ghost text (`complete.suggest`).
+  const ghost = useComposerGhost({
+    busy,
+    gateway,
+    hasText,
+    placeholder,
+    requestMainFocus,
+    sessionId,
+    setComposerText,
+    trigger
+  })
+
+  // Pull the live contentEditable text into draftRef + the AUI composer state (drives the send
+  // button), from both the input and compositionend paths. Flushes coalesce to one per paint (rAF):
+  // `composerPlainText` is O(n), so per-event flushes go O(n²) over a held key or paste burst, and
+  // the DOM stays the source of truth (submit/compositionend/keydown re-read it), so it is lossless.
   const flushRafRef = useRef<number | undefined>(undefined)
 
   const flushEditorToDraft = (editor: HTMLDivElement) => {
@@ -666,14 +668,10 @@ export function ChatBar({
       return
     }
 
-    // PageUp/PageDown: the composer is a single-line contentEditable — these
-    // keys have no text-editing purpose, and letting their default bubble to
-    // the browser's scroll-the-nearest-scrollable-ancestor behavior breaks the
-    // chat layout in the desktop pane tree (large blank area, sidebar pushed
-    // off-screen — #49978). Swallow the default here; the global
-    // conversation.scrollPageUp/Down keybind turns the intent into an
-    // explicit, focused-transcript page instead.
-    if (event.key === 'PageUp' || event.key === 'PageDown') {
+    // PageUp/PageDown have no editing purpose here, and their default scroll of the nearest
+    // ancestor breaks the pane layout (#49978); the conversation.scrollPageUp/Down keybind
+    // pages the focused transcript instead.
+    if (PAGE_KEYS.has(event.key)) {
       event.preventDefault()
 
       return
@@ -702,6 +700,10 @@ export function ChatBar({
       event.preventDefault()
       redo()
 
+      return
+    }
+
+    if (ghost.handleGhostKeyDown(event)) {
       return
     }
 
@@ -1156,7 +1158,7 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
-        data-placeholder={placeholder}
+        data-placeholder={ghost.placeholder}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}

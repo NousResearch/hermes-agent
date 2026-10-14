@@ -15,6 +15,8 @@ import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 import { $agentDockCollapsed } from './agentRoster.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
+  type ComposerActions,
+  type ComposerState,
   type GatewayRpc,
   type InputHandlerActions,
   type InputHandlerContext,
@@ -201,6 +203,40 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
   return historyIdx !== null && value !== history[historyIdx]
+}
+
+/** Esc dismisses / Tab accepts the ghost reply (only shown in an idle, empty composer), and Tab
+ *  takes the highlighted slash/path completion row. True when the key was consumed. */
+export function handleComposerAcceptKey(
+  key: { escape: boolean; shift: boolean; tab: boolean },
+  cState: ComposerState,
+  cActions: ComposerActions
+): boolean {
+  if (key.escape) {
+    return Boolean(cState.ghost) && cActions.dismissGhost()
+  }
+
+  if (key.tab && !key.shift && !cState.input && cState.ghost) {
+    const accepted = cActions.acceptGhost()
+
+    if (accepted) {
+      cActions.setInput(accepted)
+    }
+
+    return true
+  }
+
+  if (!key.tab || !cState.completions.length) {
+    return false
+  }
+
+  const row = cState.completions[cState.compIdx]
+
+  if (row?.text) {
+    cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
+  }
+
+  return true
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -655,6 +691,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
+    // Below queue-edit/selection (explicit contexts win); Shift+Tab without completions falls
+    // through to the yolo toggle.
+    if (handleComposerAcceptKey(key, cState, cActions)) {
+      return
+    }
+
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
@@ -826,16 +868,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           actions.sys(t('session.input.yoloToggleFailed'))
         }
       })
-    }
-
-    if (key.tab && cState.completions.length) {
-      const row = cState.completions[cState.compIdx]
-
-      if (row?.text) {
-        cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
-      }
-
-      return
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {

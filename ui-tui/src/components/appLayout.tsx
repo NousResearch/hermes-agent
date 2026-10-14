@@ -46,8 +46,10 @@ import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './t
 
 /** Blank-input hint: live STT text while dictating (stt.streaming) always wins; else a rotating
  *  placeholder on a fresh transcript, or the busy hint. */
-const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string) =>
-  voicePartial || (freshTranscript ? placeholder() : busyHint)
+// `ghost` is non-empty only while the input is empty and idle (useGhostSuggestion), and it must
+// win after a turn, when the transcript is no longer fresh.
+const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string, ghost = '') =>
+  voicePartial || ghost || (freshTranscript ? placeholder() : busyHint)
 
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
 const PET_PAD_LEFT = 2
@@ -470,7 +472,15 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
+                  // Ghost suggestion borrows the placeholder slot: when the gateway proposed a likely
+                  // reply (complete.suggest), it replaces the idle hint until accepted (Tab),
+                  // dismissed (Esc), or the user types.
+                  placeholder={composerHint(
+                    voicePartial,
+                    composer.empty,
+                    ui.busy ? T.composer.interruptHint : '',
+                    composer.ghost
+                  )}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent

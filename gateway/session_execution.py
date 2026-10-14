@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
+from gateway.run_agent_cache import refresh_cached_agent_credential_pool
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.session_api_turn import api_runtime_locked
@@ -215,6 +216,7 @@ class GatewaySessionAgentMixin:
                 cache.pop(ctx.session_key, None)
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
+            refresh_cached_agent_credential_pool(agent, turn_route["runtime"])
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:

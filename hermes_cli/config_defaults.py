@@ -2004,14 +2004,13 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model may request via `limit` (per query). Range 1..50.
             "max_search_limit": 25,
-            # Catalog listing embedded in the bridge description (name + first sentence ≤60 chars,
-            # grouped by server/toolset). "auto" = include when it fits (falls back to names-only,
-            # then bare tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the
-            # bare bridge.
+            # Catalog listing in bridge description: auto/on fit the budget, off omits it.
             "listing": "auto",
-            # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
-            # Range 200..60000.
+            # Absolute listing cap in tokens (chars/4). Range 200..60000.
             "listing_max_tokens": 4000,
+            # Exact tool names whose full schemas stay visible even when their toolset is
+            # normally deferred (for example frequently used MCP tools).
+            "never_defer": [],
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.

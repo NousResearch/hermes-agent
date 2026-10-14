@@ -64,6 +64,15 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(True)
         assert cfg.enabled == "auto"
 
+    def test_never_defer_requires_a_list(self, caplog):
+        from tools.tool_search import ToolSearchConfig
+
+        assert ToolSearchConfig.from_raw({"never_defer": ["mcp__qmd__query"]}).never_defer_tools == {
+            "mcp__qmd__query"}
+        with caplog.at_level("WARNING", logger="tools.tool_search"):
+            assert not ToolSearchConfig.from_raw({"never_defer": "mcp__qmd__query"}).never_defer_tools
+        assert any("never_defer" in record.message for record in caplog.records)
+
 
     def test_search_limits_clamped(self):
         from tools.tool_search import ToolSearchConfig
@@ -81,6 +90,32 @@ class TestConfigParsing:
 
 
 class TestClassification:
+    def test_selected_mcp_tools_are_eager_and_others_stay_deferred(self, monkeypatch):
+        from tools.registry import registry
+        from tools.tool_search import (
+            ToolSearchConfig, assemble_tool_defs, resolve_underlying_call, scoped_deferrable_names)
+        from tools import tool_search
+
+        qmd_name = "mcp__qmd__query"
+        other_name = "mcp__other__search"
+        for name, toolset in ((qmd_name, "mcp-qmd"), (other_name, "mcp-other")):
+            registry.register(name=name, handler=lambda args: "{}", schema=_td(name)["function"],
+                              toolset=toolset)
+        try:
+            config = ToolSearchConfig.from_raw({"enabled": "on", "never_defer": [qmd_name]})
+            monkeypatch.setattr(tool_search, "load_config_readonly", lambda: config)
+            defs = [_td(qmd_name), _td(other_name)]
+            assembled = assemble_tool_defs(defs, config=config)
+            visible = {td["function"]["name"] for td in assembled.tool_defs}
+            assert qmd_name in visible and other_name not in visible
+            assert "tool_search" in visible and assembled.deferred_count == 1
+            assert scoped_deferrable_names(defs) == {other_name}
+            _, _, error = resolve_underlying_call({"calls": [{"name": qmd_name, "arguments": {}}]})
+            assert error and "call it directly" in error.lower()
+        finally:
+            registry.deregister(qmd_name)
+            registry.deregister(other_name)
+
     def test_core_tools_never_defer(self):
         """The critical invariant from the OpenClaw report."""
         from tools.tool_search import is_deferrable_tool_name

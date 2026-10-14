@@ -407,6 +407,21 @@ describe('round lifecycle', () => {
     expect(posted.length).toBeLessThanOrEqual(room.chat.GROUP_CHAT_MAX_MESSAGES)
   })
 
+  it('uses the room-specific reply limit for the next send', async () => {
+    const room = await loadRoom({ turn: ({ n }) => `message ${n} — @everyone keep going` })
+
+    room.chat.updateGroupChat('Focused', current => ({
+      ...current,
+      limits: { maxContinuations: 2, maxMessages: 2, maxRounds: 5 }
+    }))
+    room.rounds.sendToGroupChat('Focused', MEMBERS, 'keep this short')
+    await settle(room, 'Focused')
+
+    const posted = log(room, 'Focused').filter(entry => entry.from.kind === 'member')
+
+    expect(posted).toHaveLength(2)
+  })
+
   it('does not retry ambiguous member admission in later rounds or continuations', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {

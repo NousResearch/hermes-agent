@@ -1,6 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
 // PL_PLURAL: (count, one, few, many) — polskie formy liczby mnogiej
 // count może być number lub string (część etykiet en.ts przekazuje stringi)
@@ -11,7 +11,7 @@ const PL_PLURAL = (count: number | string, one: string, few: string, many: strin
   return c === 1 ? one : c % 10 >= 2 && c % 10 <= 4 && (c < 12 || c > 14) ? few : many
 }
 
-export const pl = defineLocale({
+export const plOverrides = {
   sessionImport: {
     title: 'Kontynuuj z innej aplikacji',
     subtitle: 'Przenieś rozmowę do Hermes i wróć do miejsca, w którym skończono.',
@@ -322,8 +322,7 @@ export const pl = defineLocale({
       'nav.commandCenter': 'Otwórz centrum poleceń',
       'nav.settings': 'Otwórz ustawienia',
       'nav.profiles': 'Otwórz profile',
-      'nav.skills': 'Otwórz umiejętności',
-      'nav.messaging': 'Otwórz wiadomości',
+            'nav.messaging': 'Otwórz wiadomości',
       'nav.artifacts': 'Otwórz artefakty',
       'nav.cron': 'Otwórz zaplanowane zadania',
       'nav.agents': 'Otwórz agentów',
@@ -451,21 +450,12 @@ export const pl = defineLocale({
     },
     plugins: {
       title: 'Wtyczki desktopowe',
-      blurb:
-        'Rozszerzają tę aplikację, a nie agenta — instalowane raz dla całej aplikacji, niezależnie od profilu, bramy czy maszyny, z którą się łączysz. Dołączone w zestawie lub umieszczone w folderze desktop-plugins; przełączniki działają natychmiast.',
-      count: n => (n === 1 ? `${n} zainstalowana` : n >= 2 && n <= 4 ? `${n} zainstalowane` : `${n} zainstalowanych`),
-      openFolder: 'Otwórz folder wtyczek',
+                  openFolder: 'Otwórz folder wtyczek',
       rescan: 'Skanuj ponownie',
       reveal: 'Pokaż w menedżerze plików',
-      enable: 'Włącz',
-      disable: 'Wyłącz',
-      failed: 'nieudane',
-      empty: 'Nie zainstalowano jeszcze żadnych wtyczek desktopowych.',
-      kinds: { bundled: 'w zestawie', disk: 'na dysku', runtime: 'runtime' },
-      agentHalfMissing: 'brakuje tutaj części agentowej',
-      agentHalfMissingTip:
-        'To desktopowa część wtyczki dołączonej w zestawie, ale jej część agentowa nie jest zainstalowana na aktualnie połączonym backendzie/profilu. Zainstaluj ją w sekcji Możliwości → Wtyczki.',
-      installModal: {
+                  failed: 'nieudane',
+            kinds: { bundled: 'w zestawie', disk: 'na dysku', runtime: 'runtime' },
+                  installModal: {
         installFromGit: 'Zainstaluj z Gita',
         reviewRepository: 'Przejrzyj repozytorium',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -477,25 +467,18 @@ export const pl = defineLocale({
         desktopLabel: 'Interfejs pulpitu',
         agentTargetLocal: (profile, dir) => `Instaluje się w backendzie ${profile} (${dir})`,
         agentTargetRemote: profile => `Instaluje się w połączonym backendzie ${profile}`,
-        catalogPinned: (name, sha) =>
-          `Wpis katalogu Hermes "${name}" — komponent agenta instaluje się z recenzowanego przypiętego commita${sha ? ` ${sha}` : ''}, a nie z czubka gałęzi.`,
-        reviewedHeading: 'Recenzowany wpis katalogu',
-        reviewedIntro:
-          'Ten wpis został zrecenzowany przez człowieka w przypiętym commicie. Poniżej nadal możesz przejrzeć dokładny kod.',
-        missingEnvAction: 'Skonfiguruj ją',
+                        missingEnvAction: 'Skonfiguruj ją',
         alreadyInstalled: (name: string) => `${name} jest już zainstalowany.`,
         desktopTarget: "Instaluje się w lokalnym folderze desktop-plugins tej aplikacji",
         desktopTargetFromPackage: 'Ładowana do tej aplikacji z powyższego pakietu — tak samo dla każdego profilu',
         desktopOnlyNote: 'Pakiety przeznaczone tylko dla pulpitu nie instalują wtyczki agenta backendu.',
         insecureWarning: 'Ten adres URL używa niezabezpieczonego lub lokalnego schematu. W instalacjach produkcyjnych preferuj https:// lub git@.',
-        securityHeading: 'Przed instalacją',
-        securityIntro:
+                securityIntro:
           'Instaluj tylko ze źródeł, którym ufasz — przejrzyj poniższe repozytorium, jeśli chcesz zobaczyć, co zostanie dodane.',
         sourceHeading: 'Kod źródłowy',
         viewRepository: 'Pokaż repozytorium',
         viewPluginFiles: 'Pokaż pliki wtyczki',
-        gitCloneLabel: 'Adres URL klonowania Git',
-        enableAgent: 'Włącz wtyczkę agenta po instalacji',
+                enableAgent: 'Włącz wtyczkę agenta po instalacji',
         forceReinstall: 'Wymuś ponowną instalację (zamień, jeśli już zainstalowano)',
         pinToCommit: 'Przypnij do commita (opcjonalnie)',
         pinToCommitPlaceholder: 'Pełny 40-znakowy SHA commita',
@@ -641,8 +624,7 @@ export const pl = defineLocale({
       appearance: 'Wygląd',
       workspace: 'Przestrzeń robocza',
       safety: 'Bezpieczeństwo',
-      browser: 'Przeglądarka',
-      memory: 'Pamięć i kontekst',
+            memory: 'Pamięć i kontekst',
       voice: 'Głos',
       advanced: 'Zaawansowane'
     },
@@ -1485,8 +1467,7 @@ export const pl = defineLocale({
       updating: 'Aktualizowanie silnika…',
       upToDateTitle: 'Silnik jest aktualny',
       upToDateDetail: (tag, backend) => `Uruchomiono llama.cpp ${tag} (${backend}) — najnowszą wersję dostarczaną przez Hermes.`,
-      updateToast: next => `Dostępna nowsza wersja lokalnego silnika (${next}). Zaktualizuj w Ustawienia → Modele lokalne.`,
-      activeDetail: 'Nowe czaty używają tego modelu — zostanie wczytany po wysłaniu pierwszej wiadomości',
+            activeDetail: 'Nowe czaty używają tego modelu — zostanie wczytany po wysłaniu pierwszej wiadomości',
       activeNotLoaded: 'Wczyta się przy pierwszej wiadomości',
       loadedPill: 'W pamięci',
       placementResident: 'całość na GPU',
@@ -2706,8 +2687,7 @@ export const pl = defineLocale({
     },
     nav: {
       'new-session': 'Nowa sesja',
-      skills: 'Umiejętności',
-      messaging: 'Wiadomości',
+            messaging: 'Wiadomości',
       artifacts: 'Artefakty',
       cron: 'Zaplanowane zadania'
     },
@@ -3506,10 +3486,7 @@ export const pl = defineLocale({
     copyAuthCode: 'Skopiuj kod autoryzacji i wklej go poniżej.',
     pasteAuthCode: 'Wklej kod autoryzacji',
     reopenAuthPage: 'Otwórz ponownie stronę autoryzacji',
-    autoBrowser: provider =>
-      `Otwarto ${provider} w Twojej przeglądarce. Autoryzuj tam aplikację Hermes, a połączenie nastąpi automatycznie — bez kopiowania i wklejania.`,
-    reopenSignInPage: 'Otwórz ponownie stronę logowania',
-    waitingAuthorize: 'Oczekiwanie na autoryzację...',
+        waitingAuthorize: 'Oczekiwanie na autoryzację...',
     externalPending: provider =>
       `${provider} obsługuje logowanie przez własny CLI. Uruchom to polecenie w terminalu, a następnie wróć i wybierz „Zalogowano":`,
     signedIn: "Zalogowano",
@@ -4318,10 +4295,10 @@ export const pl = defineLocale({
         title: 'Załączaj i dowodź',
         text: 'Wpisz @, aby dodać plik do rozmowy, / aby uruchomić polecenie.'
       },
-      'local-setup': {
-        title: 'Ten komputer może uruchamiać modele lokalnie',
-        text: 'Twój sprzęt obsłuży model lokalny. Rozmowy pozostają na Twoim komputerze i nic nie kosztują.',
-        action: 'Skonfiguruj'
+      'local-runtime-update': {
+        title: 'Dostępna jest aktualizacja silnika lokalnego',
+        text: 'Zaktualizuj silnik uruchamiający Twoje modele lokalne. Aktywne lokalne zapytania mogą zostać przerwane.',
+        action: 'Aktualizuj teraz'
       },
       'right-pane': {
         title: 'Panel roboczy',
@@ -4355,4 +4332,6 @@ export const pl = defineLocale({
       toggle: open => `${open ? 'Pokaż' : 'Ukryj'} panel boczny`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const pl = defineLocale(plOverrides)

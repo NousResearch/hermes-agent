@@ -199,5 +199,27 @@ export const CANONICAL_GROUP_LOCALES = {
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
     uploadFailed: 'Error al subir'
+  },
+  pl: {
+    refreshGroups: 'Odśwież grupy bramy',
+    loadingGroup: 'Wczytywanie grupy…',
+    loadingGroups: 'Wczytywanie grup bramy…',
+    emptyGroups: 'Nie znaleziono grup bramy.',
+    driverUnavailable:
+      'Sterownik grup niedostępny. Zaktualizuj lub połącz ponownie właściwą bramę.',
+    invalidLogCursor: 'Nieprawidłowy kursor logu pokoju',
+    allowOnce: 'Zezwól raz',
+    deny: 'Odmów',
+    discardUnknown: 'Odrzuć pracę o nieznanym wyniku',
+    discardWarning: 'Skutki uboczne mogły już nastąpić. Odrzucenie ich nie cofa.',
+    confirmDiscard: 'Potwierdź odrzucenie',
+    unconfirmedSend:
+      'Poprzednia wysyłka jest niepotwierdzona. Powtórz jej oryginalny tekst, zanim wyślesz kolejną wiadomość.',
+    restoredPendingSend:
+      'Przywrócono niepotwierdzoną wysyłkę. Powtórz ją przed wysłaniem kolejnej wiadomości.',
+    groupMessage: 'Wiadomość grupy',
+    attachFiles: 'Załącz pliki',
+    removeAttachment: 'Usuń załącznik',
+    uploadFailed: 'Wysyłanie nie powiodło się'
   }
 } satisfies Record<string, CanonicalGroupMessages>

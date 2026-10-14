@@ -12,6 +12,7 @@ import { esOverrides } from './es'
 import { frOverrides } from './fr'
 import { jaOverrides } from './ja'
 import knownGaps from './overlay-gaps.json'
+import { plOverrides } from './pl'
 import { ruOverrides } from './ru'
 import type { BundledLocale } from './types'
 import { zhOverrides } from './zh'
@@ -29,6 +30,7 @@ const OVERLAYS = {
   es: esOverrides,
   fr: frOverrides,
   ja: jaOverrides,
+  pl: plOverrides,
   ru: ruOverrides,
   zh: zhOverrides,
   'zh-hant': zhHantOverrides

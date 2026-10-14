@@ -32,12 +32,32 @@ def locked_dir(tmp_path):
     locked.chmod(0o700)
 
 
+@pytest.fixture
+def locked_file(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    locked = tmp_path / "secret.txt"
+    locked.write_text("secret\n")
+    locked.chmod(0o000)
+    yield locked
+    locked.chmod(0o600)
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("op", READ_OPS)
 def test_unsearchable_parent_is_permission_denied(file_ops, locked_dir, op):
     result = getattr(file_ops, op)(str(locked_dir / "notes.txt"))
     assert result.error and "Permission denied" in result.error
     assert not result.not_found
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("op", READ_OPS)
+def test_unreadable_file_is_permission_denied(file_ops, locked_file, op):
+    result = getattr(file_ops, op)(str(locked_file))
+    assert result.error and "Permission denied" in result.error
+    assert not result.not_found
+    assert not result.content
 
 
 @pytest.mark.platforms("posix")

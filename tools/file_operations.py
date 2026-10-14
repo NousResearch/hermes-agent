@@ -147,9 +147,9 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
 
-# Echoed when ``[ -e ]`` fails but ``ls`` reports EACCES/EPERM: the path may exist,
-# this process just cannot stat it (no search permission on a parent, a sandbox that
-# denies metadata reads). That is not "missing".
+# Echoed when a path is present but unreadable (``[ -f ]`` true, ``[ -r ]`` false) or
+# ``[ -e ]`` fails and ``ls`` reports EACCES/EPERM (no search permission on a parent, a
+# sandbox that denies metadata reads). Neither is "missing".
 DENIED_SENTINEL = "__hermes_denied__"
 
 _PROBE_SENTINEL_STATUS = {
@@ -159,11 +159,13 @@ _PROBE_SENTINEL_STATUS = {
 }
 
 
-def _not_a_regular_file_branches(arg: str) -> str:
-    """Tail of every read probe, after its ``if [ -f ARG ]; then ...`` arm: classify a
-    path that is not a regular file. ``ls`` is only asked when ``[ -e ]`` already failed,
+def _read_probe_branches(arg: str, body: str) -> str:
+    """Every read probe: run ``body`` on a readable regular file, else classify the path
+    (denied, not regular, missing). ``ls`` is only asked when ``[ -e ]`` already failed,
     and ``LC_ALL=C`` pins the strerror text the ``case`` matches."""
     return (
+        f"if [ -f {arg} ] && [ -r {arg} ]; then {body}; "
+        f"elif [ -f {arg} ]; then echo {DENIED_SENTINEL}; "
         f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
         f"else case \"$(LC_ALL=C ls -d -- {arg} 2>&1)\" in "
         f"*'Permission denied'|*'Operation not permitted') echo {DENIED_SENTINEL};; "
@@ -678,9 +680,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # A missing path ECHOES its sentinel: a non-zero exit with no sentinel means the shell itself did
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
-        stat_result = self._exec(
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
-            + _not_a_regular_file_branches(arg))
+        stat_result = self._exec(_read_probe_branches(arg, f"wc -c < {arg} 2>/dev/null"))
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
         if stat_output in _PROBE_SENTINEL_STATUS:
             return 0, _PROBE_SENTINEL_STATUS[stat_output]
@@ -1047,22 +1047,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         newline, then the base64 and page pipeline statuses. Probes run only inside
         ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
         reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` (a compound
-        command only reports its last status), an inaccessible one ``DENIED_SENTINEL``.
+        command only reports its last status), an unreadable one ``DENIED_SENTINEL``.
         Every stage silences stderr: the local backend merges stderr into stdout and a
         stray diagnostic would land inside a segment. The byte clamp is
         ``4 * max_line_length + 1``; see ``_read_file_sequential``."""
         arg = self._escape_shell_arg(path)
         mark = f"echo {sentinel}"
-        return (
-            f"if [ -f {arg} ]; then "
+        return _read_probe_branches(
+            arg,
             f"wc -c < {arg} 2>/dev/null; {mark}; "
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
             f" | cut -b1-{line_clamp_bytes} 2>/dev/null; __hr=$?; {mark}; "
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
-            f'echo "$__hs $__hr"; '
-            + _not_a_regular_file_branches(arg))
+            f'echo "$__hs $__hr"')
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
         """Not-found recovery shared by every read path. Unicode-equivalent spellings

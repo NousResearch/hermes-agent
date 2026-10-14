@@ -144,6 +144,27 @@ def decide_image_input_mode(
 # it fires, which is cheaper than permanent quality loss.
 
 
+def _sniff_mime(raw: bytes) -> Optional[str]:
+    """Detect image MIME type from magic bytes — more reliable than filename extension.
+
+    Discord (and other platforms) sometimes report an incorrect content-type
+    header (e.g. image/webp) for files whose actual bytes are a different
+    format (e.g. PNG). Anthropic's API rejects mismatches with HTTP 400.
+    This sniff takes priority over the extension-based guess.
+    """
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:3] in (b"\xff\xd8\xff",):
+        return "image/jpeg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:2] in (b"BM",):
+        return "image/bmp"
+    return None
+
+
 def _guess_mime(path: Path) -> str:
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
@@ -178,7 +199,7 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-    mime = _guess_mime(path)
+    mime = _sniff_mime(raw) or _guess_mime(path)
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

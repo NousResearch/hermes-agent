@@ -1602,24 +1602,60 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def _try_codex_proxy() -> Tuple[Optional[Any], Optional[str]]:
+    """Try the local openai-oauth proxy (http://127.0.0.1:10531/v1) as OpenAI fallback.
+
+    This is the Brad-configured fallback that routes ChatGPT OAuth credentials
+    through a local OpenAI-compatible proxy, bypassing Cloudflare.  The proxy
+    exposes gpt-5.6-sol and other GPT-5 family models.
+
+    Only activates when the proxy is reachable (port 10531 bound).
+    """
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", 10531), timeout=0.5):
+            pass
+    except OSError:
+        return None, None
+
+    # Use the codex pool entry (now pointed at the local proxy) if available.
+    pool_present, entry = _select_pool_entry("openai-codex")
+    codex_token = None
+    if pool_present and entry:
+        codex_token = _pool_runtime_api_key(entry)
+    if not codex_token:
+        codex_token = _read_codex_access_token()
+    if not codex_token:
+        return None, None
+
+    proxy_model = "gpt-5.6-sol"
+    logger.debug("Auxiliary client: openai-codex proxy at :10531 (%s)", proxy_model)
+    client = OpenAI(api_key=codex_token, base_url="http://127.0.0.1:10531/v1")
+    return client, proxy_model
+
+
 def _get_provider_chain() -> List[tuple]:
     """Return the ordered provider detection chain.
 
     Built at call time (not module level) so that test patches
     on the ``_try_*`` functions are picked up correctly.
 
-    NOTE: ``openai-codex`` is deliberately NOT in this chain.  The
-    ChatGPT-account Codex endpoint only accepts a shifting, undocumented
-    allow-list of model IDs, so falling back to it with a guessed model
-    fails more often than not.  Codex is used only when the user's main
-    provider *is* openai-codex (see Step 1 of ``_resolve_auto``) or when
-    a caller explicitly requests it with a model.
+    Chain order (Brad's preference): anthropic → openai (codex proxy) → local/custom.
+    OpenRouter and Nous are moved to last-resort and only activate if their
+    credentials are explicitly configured — they are never the intended fallback.
+
+    NOTE: ``openai-codex`` via _build_codex_client() is deliberately NOT in
+    this chain — the raw ChatGPT endpoint accepts only an undocumented drifting
+    model allow-list.  _try_codex_proxy() uses the local openai-oauth proxy
+    instead, which is OpenAI-compat and accepts gpt-5.6-sol reliably.
     """
     return [
-        ("openrouter", _try_openrouter),
-        ("nous", _try_nous),
+        ("anthropic", _try_anthropic),
+        ("openai-codex-proxy", _try_codex_proxy),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
+        ("openrouter", _try_openrouter),   # last resort — only if OPENROUTER_API_KEY set
+        ("nous", _try_nous),               # last resort — only if Nous auth present
     ]
 
 
@@ -1709,6 +1745,10 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        # claude-fable-5 (2026-06) phrases rejection as
+        # "`temperature` is deprecated for this model."
+        "is deprecated",
+        "deprecated for this model",
     ))
 
 
@@ -2557,8 +2597,9 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 
 
 _VISION_AUTO_PROVIDER_ORDER = (
-    "openrouter",
-    "nous",
+    "anthropic",
+    "openrouter",   # last resort — only if OPENROUTER_API_KEY set
+    "nous",         # last resort — only if Nous auth present
 )
 
 

@@ -118,7 +118,26 @@ class ResponsesApiTransport(ProviderTransport):
 
         request_overrides = params.get("request_overrides")
         if request_overrides:
-            kwargs.update(request_overrides)
+            # ``request_overrides`` can be carried across runtime/provider
+            # switches. Keep only Responses API kwargs here so Anthropic-only
+            # flags like ``speed`` do not leak into Codex/OpenAI requests and
+            # trip the stricter adapter validation.
+            allowed_override_keys = {
+                "service_tier",
+                "extra_headers",
+                "temperature",
+                "max_output_tokens",
+                "tool_choice",
+                "parallel_tool_calls",
+                "prompt_cache_key",
+            }
+            kwargs.update(
+                {
+                    key: value
+                    for key, value in request_overrides.items()
+                    if key in allowed_override_keys
+                }
+            )
 
         if is_codex_backend:
             prompt_cache_key = kwargs.get("prompt_cache_key")

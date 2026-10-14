@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from model_tools import handle_function_call
+from tools.budget_config import BudgetConfig, get_runtime_budget_config
 from tools.terminal_tool import get_active_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 
@@ -159,9 +160,8 @@ class HermesAgentLoop:
                         e.g. {"provider": {"ignore": ["DeepInfra"]}}
             budget_config: Tool result persistence budget. Controls per-tool
                         thresholds, per-turn aggregate budget, and preview size.
-                        If None, uses DEFAULT_BUDGET (current hardcoded values).
+                        If None, resolves ``tool_output`` from config.yaml.
         """
-        from tools.budget_config import DEFAULT_BUDGET
         self.server = server
         self.tool_schemas = tool_schemas
         self.valid_tool_names = valid_tool_names
@@ -170,7 +170,7 @@ class HermesAgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra_body = extra_body
-        self.budget_config = budget_config or DEFAULT_BUDGET
+        self.budget_config = budget_config or get_runtime_budget_config()
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """

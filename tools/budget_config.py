@@ -50,3 +50,49 @@ class BudgetConfig:
 
 # Default config -- matches current hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()
+
+
+def _positive_int(value, default: int) -> int:
+    """Return a positive integer or *default* for malformed config values."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def get_runtime_budget_config() -> BudgetConfig:
+    """Resolve tool-result budgets from ``tool_output`` in config.yaml.
+
+    Existing installations retain the historical defaults until they opt in.
+    Invalid values are ignored rather than disabling output safeguards.
+    """
+    try:
+        from hermes_cli.config import load_config
+        root = load_config()
+    except Exception:
+        root = {}
+    raw = root.get("tool_output", {}) if isinstance(root, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    overrides = {}
+    raw_overrides = raw.get("tool_overrides", {})
+    if isinstance(raw_overrides, dict):
+        for name, value in raw_overrides.items():
+            parsed = _positive_int(value, 0)
+            if parsed > 0:
+                overrides[str(name)] = parsed
+
+    return BudgetConfig(
+        default_result_size=_positive_int(
+            raw.get("result_budget_chars"), DEFAULT_RESULT_SIZE_CHARS
+        ),
+        turn_budget=_positive_int(
+            raw.get("turn_budget_chars"), DEFAULT_TURN_BUDGET_CHARS
+        ),
+        preview_size=_positive_int(
+            raw.get("preview_chars"), DEFAULT_PREVIEW_SIZE_CHARS
+        ),
+        tool_overrides=overrides,
+    )

@@ -417,9 +417,17 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["extra_body"] = extra_body
 
         # Request overrides last (service_tier etc.)
+        # Only forward known-safe override keys; unknown fields like "speed",
+        # "context_management", "thinking" cause 400s on OpenAI/Codex backends.
+        _ALLOWED_OVERRIDES = {
+            "service_tier", "max_tokens", "temperature", "top_p",
+            "frequency_penalty", "presence_penalty", "seed", "stop",
+            "logprobs", "top_logprobs", "n", "user",
+        }
         overrides = params.get("request_overrides")
         if overrides:
-            api_kwargs.update(overrides)
+            safe = {k: v for k, v in overrides.items() if k in _ALLOWED_OVERRIDES}
+            api_kwargs.update(safe)
 
         return api_kwargs
 

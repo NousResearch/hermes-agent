@@ -451,18 +451,24 @@ def classify_api_error(
             should_compress=True,
         )
 
-    # Anthropic OAuth subscription rejects the 1M-context beta header.
-    # Observed error body: "The long context beta is not yet available for
-    # this subscription." Returned as HTTP 400 from native Anthropic when
-    # the subscription doesn't include 1M context, even though the request
-    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
-    # in run_agent.py rebuilds the Anthropic client with the beta stripped
-    # and retries once. Pattern is narrow enough that it won't collide with
-    # the 429 tier-gate pattern above (different status, different phrase).
+    # Anthropic OAuth subscription/auth style rejects the 1M-context beta header.
+    # Observed error bodies include:
+    # - "The long context beta is not yet available for this subscription."
+    # - "This authentication style is incompatible with the long context beta header."
+    # Returned as HTTP 400 from native Anthropic when the request carries
+    # ``anthropic-beta: context-1m-2025-08-07`` on an incompatible account/auth
+    # path. The recovery path in run_agent.py rebuilds the Anthropic client
+    # with the beta stripped and retries once. Pattern is narrow enough that it
+    # won't collide with the 429 tier-gate pattern above (different status,
+    # different phrase).
     if (
         status_code == 400
         and "long context beta" in error_msg
-        and "not yet available" in error_msg
+        and (
+            "not yet available" in error_msg
+            or "authentication style" in error_msg
+            or "incompatible" in error_msg
+        )
     ):
         return _result(
             FailoverReason.oauth_long_context_beta_forbidden,

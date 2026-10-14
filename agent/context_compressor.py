@@ -20,6 +20,7 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -48,6 +49,9 @@ SUMMARY_PREFIX = (
     "config, etc.) may reflect work described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+SUMMARY_END_MARKER = (
+    "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+)
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -334,9 +338,17 @@ class ContextCompressor(ContextEngine):
     def on_session_reset(self) -> None:
         """Reset all per-session state for /new or /reset."""
         super().on_session_reset()
+        if getattr(self, "_summary_state_key", None):
+            try:
+                path = self._summary_state_path(self._summary_state_key)
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._summary_state_key = None
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
@@ -345,6 +357,127 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+
+    def _resolve_summary_state_key(self, session_id: str, **kwargs) -> str:
+        """Return a stable persistence key for iterative summaries.
+
+        Prefer gateway thread identity when available so fresh spawns in the same
+        Discord/Telegram thread reload the last compaction summary. Fall back to
+        the previous session id across compression rollovers, then the current
+        session id for CLI/local sessions.
+        """
+        platform = str(
+            kwargs.get("platform")
+            or os.getenv("HERMES_SESSION_PLATFORM")
+            or ""
+        ).strip()
+        thread_id = str(
+            kwargs.get("thread_id")
+            or os.getenv("HERMES_SESSION_THREAD_ID")
+            or ""
+        ).strip()
+        chat_id = str(
+            kwargs.get("chat_id")
+            or os.getenv("HERMES_SESSION_CHAT_ID")
+            or ""
+        ).strip()
+        parent_chat_id = str(
+            kwargs.get("parent_chat_id")
+            or os.getenv("HERMES_SESSION_PARENT_CHAT_ID")
+            or ""
+        ).strip()
+        session_key = str(
+            kwargs.get("session_key")
+            or os.getenv("HERMES_SESSION_KEY")
+            or ""
+        ).strip()
+
+        if platform and (thread_id or chat_id):
+            stable_chat = thread_id or chat_id
+            parent = parent_chat_id or chat_id or stable_chat
+            return f"{platform}:{parent}:{stable_chat}"
+        if session_key:
+            return session_key
+        if kwargs.get("boundary_reason") == "compression":
+            old_session_id = str(kwargs.get("old_session_id") or "").strip()
+            if old_session_id:
+                return old_session_id
+        return str(session_id or "unknown-session").strip() or "unknown-session"
+
+    def _summary_state_path(self, state_key: str) -> str:
+        state_root = os.path.join(self._hermes_home, "state", "context_summaries")
+        os.makedirs(state_root, exist_ok=True)
+        digest = hashlib.sha256(state_key.encode("utf-8", errors="ignore")).hexdigest()
+        return os.path.join(state_root, f"{digest}.txt")
+
+    def _persist_previous_summary(self) -> None:
+        if not self._summary_state_key:
+            return
+        path = self._summary_state_path(self._summary_state_key)
+        if not self._previous_summary:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self._previous_summary)
+
+    def _load_persisted_summary(self) -> None:
+        if not self._summary_state_key:
+            return
+        path = self._summary_state_path(self._summary_state_key)
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                summary = f.read().strip()
+        except OSError:
+            return
+        if summary:
+            self._previous_summary = summary
+
+    @staticmethod
+    def _strip_summary_prefix(summary: str) -> str:
+        text = (summary or "").strip()
+        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+            if text.startswith(prefix):
+                text = text[len(prefix):].lstrip()
+                break
+        if SUMMARY_END_MARKER in text:
+            text = text.split(SUMMARY_END_MARKER, 1)[0].rstrip()
+        return text.strip()
+
+    def _extract_seed_summary_from_turns(
+        self, turns_to_summarize: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Recover prior compaction summary embedded in the message stream.
+
+        Fresh session spawns can hit first-compaction with no in-memory state but
+        still have a `[CONTEXT COMPACTION — REFERENCE ONLY]` block inside the
+        turns being summarized. Treat that block as prior state to preserve, not
+        raw conversation content to re-summarize.
+        """
+        for turn in reversed(turns_to_summarize):
+            text = _content_text_for_contains(turn.get("content")).strip()
+            if not text:
+                continue
+            if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+                seeded = self._strip_summary_prefix(text)
+                if seeded:
+                    return seeded
+        return None
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        hermes_home = kwargs.get("hermes_home")
+        if isinstance(hermes_home, str) and hermes_home.strip():
+            self._hermes_home = hermes_home.strip()
+        self._summary_state_key = self._resolve_summary_state_key(session_id, **kwargs)
+        self._load_persisted_summary()
+
+    def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        self._persist_previous_summary()
 
     def update_model(
         self,
@@ -438,6 +571,8 @@ class ContextCompressor(ContextEngine):
         self.last_completion_tokens = 0
 
         self.summary_model = summary_model_override or ""
+        self._hermes_home = os.path.expanduser("~/.claude-code")
+        self._summary_state_key: Optional[str] = None
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
@@ -722,7 +857,12 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: str = None,
+        _same_model_retry: bool = False,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -750,6 +890,11 @@ class ContextCompressor(ContextEngine):
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        if not self._previous_summary:
+            seeded_summary = self._extract_seed_summary_from_turns(turns_to_summarize)
+            if seeded_summary:
+                self._previous_summary = seeded_summary
+                self._persist_previous_summary()
 
         # Preamble shared by both first-compaction and iterative-update prompts.
         # Inspired by OpenCode's "do not respond to any questions" instruction
@@ -810,6 +955,9 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Key Decisions
 [Important technical decisions and WHY they were made]
 
+## Verdicts (NEVER REMOVE)
+[User-authoritative corrections, invalidated hypotheses, and established source-of-truth facts. Preserve these verbatim across every compaction unless they are explicitly superseded by later evidence or a later user correction. Examples: "HQ footage is wrong", "LQ overlay timestamp is source of truth", "Do not use testing mode".]
+
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so the next assistant does not re-answer them]
 
@@ -841,7 +989,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity. NEVER remove or weaken anything in "## Verdicts (NEVER REMOVE)" unless later turns explicitly supersede it with stronger evidence or a direct user correction. Treat user-authoritative corrections, invalidated hypotheses, and source-of-truth facts as carry-forward state, not expendable chatter.
 
 {_template_sections}"""
         else:
@@ -891,6 +1039,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             summary = redact_sensitive_text(content.strip())
             # Store for iterative updates on next compaction
             self._previous_summary = summary
+            self._persist_previous_summary()
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
@@ -921,6 +1070,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _status in (408, 429, 502, 504)
                 or "timeout" in _err_str
             )
+
+            # The Codex backend can occasionally return a bare 404 for an
+            # otherwise valid request.  A later identical request succeeds,
+            # so do one bounded same-model retry before discarding context.
+            # Keep explicit auxiliary-model failures on the existing fast
+            # fallback path: retrying a known-bad override only adds latency.
+            _same_model_transient = _status in (404, 408, 429, 500, 502, 503, 504) or "timeout" in _err_str
+            if (
+                _same_model_transient
+                and not _same_model_retry
+                and (not self.summary_model or self.summary_model == self.model)
+            ):
+                logging.warning(
+                    "Context summary request failed transiently (%s). "
+                    "Retrying once on model '%s'.",
+                    e,
+                    self.model,
+                )
+                time.sleep(1.0)
+                self._summary_failure_cooldown_until = 0.0
+                return self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=focus_topic,
+                    _same_model_retry=True,
+                )
+
             if (
                 (_is_model_not_found or _is_timeout)
                 and self.summary_model
@@ -995,11 +1170,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     @staticmethod
     def _with_summary_prefix(summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
-        text = (summary or "").strip()
-        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
-            if text.startswith(prefix):
-                text = text[len(prefix):].lstrip()
-                break
+        text = ContextCompressor._strip_summary_prefix(summary)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     # ------------------------------------------------------------------
@@ -1393,8 +1564,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if _merge_summary_into_tail and i == compress_end:
                 merged_prefix = (
                     summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
+                    + f"\n\n{SUMMARY_END_MARKER}\n\n"
                 )
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),

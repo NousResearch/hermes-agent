@@ -601,6 +601,16 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
  * session with nothing queued — parking exists to hold back queued turns, and
  * a park with no queue would only linger as a stale gate.
  */
+// A later park gesture invalidates an in-flight resume or one-shot send,
+// including when the queue was already parked. Scoped by stored session key.
+const queueParkRevisions = new Map<string, number>()
+
+export const getQueueParkRevision = (key: string | null | undefined): number => {
+  const sid = sidOf(key)
+
+  return sid ? (queueParkRevisions.get(sid) ?? 0) : 0
+}
+
 export const parkQueuedPrompts = (key: string | null | undefined): boolean => {
   const sid = sidOf(key)
 
@@ -608,6 +618,7 @@ export const parkQueuedPrompts = (key: string | null | undefined): boolean => {
     return false
   }
 
+  queueParkRevisions.set(sid, getQueueParkRevision(sid) + 1)
   setParked(sid, true)
 
   return true

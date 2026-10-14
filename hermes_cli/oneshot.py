@@ -388,7 +388,13 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     model_cfg = cfg.get("model") or {}
     env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     explicit_model = (model or "").strip() or env_model
-    choice = _ModelChoice(explicit_model or _configured_model(model_cfg), (provider or "").strip() or None)
+    from hermes_cli.opusplan import ROLE_PLAN, resolve_model_in_config
+    # ``opusplan`` (flag, env or config) is the provider's plan model; a bare ``--model opusplan`` must not
+    # reach auto-detection as a literal model name.
+    configured = _configured_model(model_cfg)
+    explicit_model = resolve_model_in_config(explicit_model, ROLE_PLAN, cfg, provider)
+    choice = _ModelChoice(explicit_model or resolve_model_in_config(configured, ROLE_PLAN, cfg, provider),
+                          (provider or "").strip() or None)
     if choice.provider is not None or not explicit_model:
         return choice
 

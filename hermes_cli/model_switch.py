@@ -458,6 +458,7 @@ class ModelSwitchResult:
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    opusplan: bool = False  # the typed model was ``opusplan``; ``new_model`` is the provider's plan model
 
 
 @dataclass(frozen=True)
@@ -1189,6 +1190,7 @@ class _Switch:
     validation_headers: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
     validation: dict = field(default_factory=dict)
+    opusplan: bool = False
 
     def fail(self, message: str, **fields) -> ModelSwitchResult:
         return ModelSwitchResult(success=False, is_global=self.is_global, error_message=message, **fields)
@@ -1734,7 +1736,28 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
-        model_info=model_info, is_global=st.is_global)
+        model_info=model_info, is_global=st.is_global, opusplan=st.opusplan)
+
+
+def _route_opusplan(st: _Switch) -> Optional[ModelSwitchResult]:
+    """``opusplan``: swap the typed keyword for the target provider's plan model (``--provider`` or the
+    current one) so the rest of the pipeline sees an ordinary model id; the result remembers it."""
+    from hermes_cli.opusplan import OPUSPLAN, ROLE_PLAN, OpusplanError, is_opusplan, resolve_opusplan_model
+    if not is_opusplan(st.new_model):
+        return None
+    provider = st.explicit_provider or st.current_provider
+    pdef = resolve_provider_full(provider, st.user_providers, st.custom_providers) if provider else None
+    try:
+        # Only the target provider's identities: an explicit --provider must never fall back to the current pair.
+        plan = resolve_opusplan_model(
+            ROLE_PLAN, [provider, pdef.id if pdef else ""],
+            base_url="" if st.explicit_provider else st.current_base_url, user_providers=st.user_providers)
+    except OpusplanError as err:
+        return st.fail(str(err))
+    st.new_model, st.opusplan = plan, True
+    st.raw_input = plan
+    logger.debug("%s resolved to plan model %s on %s", OPUSPLAN, plan, provider)
+    return None
 
 
 def switch_model(
@@ -1753,7 +1776,7 @@ def switch_model(
         explicit_provider=explicit_provider, user_providers=user_providers, custom_providers=custom_providers,
         new_model=raw_input.strip(), target_provider=current_provider)
     route = _route_explicit_provider if explicit_provider else _route_from_model_input
-    for step in (route, _resolve_switch_credentials, _validate_switch):
+    for step in (_route_opusplan, route, _resolve_switch_credentials, _validate_switch):
         fail = step(st)
         if fail is not None:
             return fail
@@ -1780,7 +1803,8 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
-        "default": result.new_model, "provider": result.target_provider,
+        # ``opusplan`` is persisted as the keyword so the plan/exec split survives restarts.
+        "default": "opusplan" if result.opusplan else result.new_model, "provider": result.target_provider,
         "base_url": result.base_url or None, "api_mode": result.api_mode or None,
     }
     if "context_length" in model_cfg:

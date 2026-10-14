@@ -199,6 +199,7 @@ class GatewayModelCommandsMixin:
                 api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
                 capabilities=getattr(result, "runtime_capabilities", None),
             )
+            cached_agent.opusplan_active = bool(getattr(result, "opusplan", False))
         except Exception as exc:
             logger.warning(
                 "%s model switch failed for cached agent: %s", "Picker" if picker else "In-place", exc
@@ -251,6 +252,7 @@ class GatewayModelCommandsMixin:
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
+            "opusplan": bool(getattr(result, "opusplan", False)),
         }
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later

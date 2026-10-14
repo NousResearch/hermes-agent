@@ -21,6 +21,11 @@ from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 logger = logging.getLogger("cli")
 
 
+def _startup_route_provider(*candidates) -> str:
+    """First concrete provider name among the startup candidates (empty / ``auto`` skipped)."""
+    return next((str(c) for c in candidates if c and str(c).strip().lower() != "auto"), "")
+
+
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
 
@@ -134,6 +139,13 @@ class CLIInitMixin:
                 _startup_provider_override = _startup_route.provider
                 _startup_base_url_override = _startup_route.base_url
                 _startup_api_key_override = _startup_route.api_key
+        # ``opusplan`` (config default or --model) runs the main session on the provider's plan model.
+        # Provider-qualified inputs (``custom:x:opusplan``) were split above, so ``self.model`` is bare here.
+        from hermes_cli.opusplan import ROLE_PLAN, resolve_startup_model
+        self.model, self._opusplan_active = resolve_startup_model(
+            self.model, ROLE_PLAN, provider or _startup_route_provider(_startup_provider_override, _nested_provider, _cfg_provider),
+            base_url=base_url or _startup_base_url_override or str(_model_config.get("base_url") or ""),
+            cfg=CLI_CONFIG)
         # ``moa:<preset>`` selects the MoA virtual provider before provider resolution so the
         # real provider never sees the unknown model; the prefix wins over --provider.
         # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with

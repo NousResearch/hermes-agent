@@ -28,6 +28,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
+from hermes_cli.opusplan import apply_session_override
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -1155,9 +1156,8 @@ class TurnRunner:
         msg_count = self._current_message_count()
         found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)
         agent = found.agent
-        # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock
-        # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
-        # configured after caching must reach the next turn; per-session serialization keeps it safe.
+        # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock (disk I/O under
+        # it stalls the idle-sweep watcher and Discord heartbeats); per-session serialization keeps this safe.
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
         if found.evicted is not None:
@@ -1168,11 +1168,11 @@ class TurnRunner:
             )
             if cache_lock and cache is not None:
                 with cache_lock:
-                    # Record the snapshot's session_id with message_count so the cross-process guard
-                    # can skip the meaningless count comparison if the active session_id switches.
+                    # Record session_id with message_count so the cross-process guard can skip the count comparison on a switch.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+        apply_session_override(agent, runner._session_model_override(ctx.session_key))  # /model opusplan pick
         return agent, found.reused
 
     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────

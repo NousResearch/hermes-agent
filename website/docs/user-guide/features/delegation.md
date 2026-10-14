@@ -291,6 +291,26 @@ Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then
 
 Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
 
+### `opusplan`: plan on the big model, delegate to the cheap one
+
+Instead of hardcoding `delegation.model`, set the main model to `opusplan` (`model.default: opusplan`, `/model opusplan`, or `--model opusplan`). The main conversation then runs on the active provider's **plan** model and delegated children run on its **exec** model, resolved through the same `delegation.*` logic described above: same provider and credentials unless you pin `delegation.provider` or `delegation.base_url`, only the model differs.
+
+The plan/exec pair comes from `providers.<name>.opusplan` in `config.yaml`, else from the provider plugin's own `opus` and `sonnet` aliases, else delegation fails with an error naming the provider. It is not Anthropic-specific; a local provider works like any other:
+
+```yaml
+model:
+  default: opusplan
+  provider: ecc-router
+providers:
+  ecc-router:                       # internal LiteLLM router
+    base_url: http://192.168.10.13:4000/v1
+    opusplan:
+      plan: GLM-5.3-Flash-850K      # parent conversation
+      exec: Qwen3.8FlashNext        # every delegate_task child
+```
+
+Precedence for a child's model: an explicit `delegation.model` id, then (under opusplan) the exec model, then the parent's model. `delegation.model: opusplan` selects the exec model explicitly, and `delegation.provider` picks which provider's pair is used. Independent cron jobs and kanban tasks are not delegated children and keep their own route. This is an orchestration preset, not an automatic Claude Code Plan-mode transition; a local pair is not Claude Opus/Sonnet. See [Configuring models](../configuring-models.md#opusplan-plan-on-the-big-model-delegate-to-the-cheap-one) for the full resolution order.
+
 ## The `/review` Command
 
 `/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.

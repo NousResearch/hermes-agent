@@ -513,6 +513,8 @@ class SessionManager:
             default_model, config_provider = str(model_cfg.get("default") or ""), model_cfg.get("provider")
         elif isinstance(model_cfg, str):
             default_model = model_cfg.strip()
+        from hermes_cli.opusplan import ROLE_PLAN, resolve_model_in_config
+        default_model = str(resolve_model_in_config(default_model, ROLE_PLAN, config, config_provider))
 
         if enabled_toolsets is None:
             # The same per-platform resolver as the gateway/cron/api_server: platform_toolsets.acp wins, else

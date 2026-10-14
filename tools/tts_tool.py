@@ -16,7 +16,7 @@ Built-in TTS providers:
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
-  under ``tts.providers.<name>`` in ``~/.hermes/config.yaml``. Hermes
+  under ``tts.providers.<name>`` in ``~/.claude-code/config.yaml``. the agent
   writes the input text to a temp file and runs the configured shell
   command, which must produce the audio file at the expected path.
   See the Local Command section of ``website/docs/user-guide/features/tts.md``.
@@ -25,7 +25,7 @@ Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
 - MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
 
-Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
+Configuration is loaded from ~/.claude-code/config.yaml under the 'tts:' key.
 The user chooses the provider and voice; the model just sends text.
 
 Usage:
@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -161,6 +162,92 @@ def _get_default_output_dir() -> str:
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 
 # ---------------------------------------------------------------------------
+# TTS Cache — avoid regenerating identical audio.
+# Cache key = sha256(text + provider + voice + volume).
+# Entries older than TTS_CACHE_MAX_AGE_SECONDS are pruned on each call.
+# ---------------------------------------------------------------------------
+TTS_CACHE_MAX_AGE_SECONDS = 14 * 24 * 3600  # 2 weeks
+
+
+def _tts_cache_key(text: str, provider: str, voice: str) -> str:
+    """Return a hex digest uniquely identifying this TTS request."""
+    raw = f"{text}|{provider}|{voice}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _tts_cache_lookup(cache_dir: str, cache_hash: str) -> Optional[str]:
+    """Return the cached file path if a valid (non-expired) entry exists.
+
+    When multiple formats exist (e.g. .mp3 + .ogg from opus conversion),
+    prefer .ogg for voice-bubble compatibility.
+    """
+    cache_path = Path(cache_dir)
+    if not cache_path.is_dir():
+        return None
+    candidates: list[Path] = []
+    for f in cache_path.iterdir():
+        if f.stem == cache_hash and f.is_file() and f.stat().st_size > 0:
+            age = datetime.datetime.now().timestamp() - f.stat().st_mtime
+            if age < TTS_CACHE_MAX_AGE_SECONDS:
+                candidates.append(f)
+            else:
+                logger.info("TTS cache expired: %s (age %.0fs), regenerating", f.name, age)
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+    if not candidates:
+        return None
+    # Prefer .ogg (opus) for Telegram voice compatibility
+    candidates.sort(key=lambda p: (p.suffix != ".ogg", p.suffix))
+    hit = candidates[0]
+    logger.info("TTS cache hit: %s (age %.0fs)", hit.name,
+                datetime.datetime.now().timestamp() - hit.stat().st_mtime)
+    return str(hit)
+
+
+def _tts_cache_prune(cache_dir: str) -> None:
+    """Remove cache entries older than TTS_CACHE_MAX_AGE_SECONDS."""
+    cache_path = Path(cache_dir)
+    if not cache_path.is_dir():
+        return
+    now = datetime.datetime.now().timestamp()
+    for f in cache_path.iterdir():
+        if f.is_file():
+            try:
+                age = now - f.stat().st_mtime
+                if age > TTS_CACHE_MAX_AGE_SECONDS:
+                    f.unlink()
+                    logger.debug("TTS cache pruned: %s", f.name)
+            except OSError:
+                pass
+
+
+def _resolve_tts_voice(provider: str, tts_config: Dict[str, Any]) -> str:
+    """Extract the voice identifier for cache keying."""
+    prov_cfg = tts_config.get(provider, {}) if isinstance(tts_config.get(provider), dict) else {}
+    if provider == "edge":
+        return prov_cfg.get("voice", DEFAULT_EDGE_VOICE)
+    elif provider == "elevenlabs":
+        return prov_cfg.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
+    elif provider == "openai":
+        return f"{prov_cfg.get('model', DEFAULT_OPENAI_MODEL)}:{prov_cfg.get('voice', DEFAULT_OPENAI_VOICE)}"
+    elif provider == "xai":
+        return prov_cfg.get("voice_id", DEFAULT_XAI_VOICE_ID)
+    elif provider == "minimax":
+        return prov_cfg.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    elif provider == "mistral":
+        return f"{prov_cfg.get('model', DEFAULT_MISTRAL_TTS_MODEL)}:{prov_cfg.get('voice_id', DEFAULT_MISTRAL_TTS_VOICE_ID)}"
+    elif provider == "gemini":
+        return f"{prov_cfg.get('model', DEFAULT_GEMINI_TTS_MODEL)}:{prov_cfg.get('voice', DEFAULT_GEMINI_TTS_VOICE)}"
+    elif provider == "piper":
+        return prov_cfg.get("voice", DEFAULT_PIPER_VOICE)
+    elif provider == "kittentts":
+        return prov_cfg.get("voice", DEFAULT_KITTENTTS_VOICE)
+    return provider
+
+
+# ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
 # ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini caps at ~8k
@@ -256,11 +343,11 @@ def _resolve_max_text_length(
 
 
 # ===========================================================================
-# Config loader -- reads tts: section from ~/.hermes/config.yaml
+# Config loader -- reads tts: section from ~/.claude-code/config.yaml
 # ===========================================================================
 def _load_tts_config() -> Dict[str, Any]:
     """
-    Load TTS configuration from ~/.hermes/config.yaml.
+    Load TTS configuration from ~/.claude-code/config.yaml.
 
     Returns a dict with provider settings. Falls back to defaults
     for any missing fields.
@@ -726,6 +813,42 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     except Exception as e:
         logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
     return None
+
+
+def _apply_volume_filter(file_path: str, volume: float) -> str:
+    """Apply a volume adjustment to an audio file using ffmpeg.
+
+    Modifies the file in-place via a temp file.  Returns the original
+    *file_path* on success, or unchanged on failure (graceful degradation).
+    A *volume* of 1.0 is a no-op.
+    """
+    if volume == 1.0 or not _has_ffmpeg():
+        return file_path
+    tmp_path = file_path + ".vol_tmp" + Path(file_path).suffix
+    try:
+        cmd = [
+            "ffmpeg", "-i", file_path,
+            "-af", f"volume={volume:.2f}",
+            "-y", "-loglevel", "error",
+            tmp_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            os.replace(tmp_path, file_path)
+            logger.info("Applied volume %.2f to %s", volume, file_path)
+        else:
+            logger.warning("ffmpeg volume filter failed (rc=%d): %s",
+                          result.returncode, result.stderr.decode("utf-8", errors="ignore")[:200])
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    except Exception as e:
+        logger.warning("Volume filter failed: %s", e)
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return file_path
 
 
 # ===========================================================================
@@ -1325,7 +1448,7 @@ def _check_piper_available() -> bool:
 def _get_piper_voices_dir() -> Path:
     """Return the directory where Hermes caches Piper voice models.
 
-    Resolves to ``~/.hermes/cache/piper-voices/`` under the active
+    Resolves to ``~/.claude-code/cache/piper-voices/`` under the active
     HERMES_HOME so voice downloads follow profile boundaries.
     """
     from hermes_constants import get_hermes_dir
@@ -1537,7 +1660,7 @@ def text_to_speech_tool(
     """
     Convert text to speech audio.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
+    Reads provider/voice config from ~/.claude-code/config.yaml (tts: section).
     The model sends text; the user configures voice and provider.
 
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
@@ -1581,6 +1704,33 @@ def text_to_speech_tool(
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
+    # --- TTS Cache: check for existing cached audio ---
+    cache_dir = DEFAULT_OUTPUT_DIR
+    voice_key = _resolve_tts_voice(provider, tts_config)
+    cache_hash = _tts_cache_key(text, provider, voice_key)
+
+    # Prune expired entries (lightweight — only scans cache dir)
+    _tts_cache_prune(cache_dir)
+
+    # Check cache (skip when caller specified a custom output_path)
+    if not output_path:
+        cached = _tts_cache_lookup(cache_dir, cache_hash)
+        if cached:
+            file_str = cached
+            voice_compatible = file_str.endswith(".ogg")
+            file_size = os.path.getsize(file_str)
+            media_tag = f"MEDIA:{file_str}"
+            if voice_compatible:
+                media_tag = f"[[audio_as_voice]]\n{media_tag}"
+            return json.dumps({
+                "success": True,
+                "file_path": file_str,
+                "media_tag": media_tag,
+                "provider": provider,
+                "voice_compatible": voice_compatible,
+                "cached": True,
+            }, ensure_ascii=False)
+
     # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
@@ -1592,18 +1742,17 @@ def text_to_speech_tool(
                 file_path, command_provider_config
             )
     else:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
-            file_path = out_dir / f"tts_{timestamp}.{fmt}"
+            file_path = out_dir / f"{cache_hash}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
-            file_path = out_dir / f"tts_{timestamp}.ogg"
+            file_path = out_dir / f"{cache_hash}.ogg"
         else:
-            file_path = out_dir / f"tts_{timestamp}.mp3"
+            file_path = out_dir / f"{cache_hash}.mp3"
 
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1656,7 +1805,7 @@ def text_to_speech_tool(
                 return json.dumps({
                     "success": False,
                     "error": "Mistral provider selected but 'mistralai' package not installed. "
-                             "Run: pip install 'hermes-agent[mistral]'"
+                             "Run: pip install 'agent[mistral]'"
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)

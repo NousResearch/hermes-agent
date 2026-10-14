@@ -82,7 +82,7 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 
-# All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
+# All skills live in ~/.claude-code/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
 HERMES_HOME = get_hermes_home()
@@ -447,7 +447,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     Extract category from skill path based on directory structure.
 
-    For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
+    For paths like: ~/.claude-code/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
@@ -547,7 +547,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
-    """Recursively find all skills in ~/.hermes/skills/ and external dirs.
+    """Recursively find all skills in ~/.claude-code/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
@@ -759,7 +759,7 @@ def _serve_plugin_skill(
                 "success": False,
                 "error": (
                     f"Plugin '{namespace}' is disabled. "
-                    f"Re-enable with: hermes plugins enable {namespace}"
+                    f"Re-enable with: agent plugins enable {namespace}"
                 ),
             },
             ensure_ascii=False,
@@ -1034,7 +1034,7 @@ def skill_view(
         if _outside_skills_dir or _injection_detected:
             _warnings = []
             if _outside_skills_dir:
-                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
+                _warnings.append(f"skill file is outside the trusted skills directory (~/.claude-code/skills/): {skill_md}")
             if _injection_detected:
                 _warnings.append("skill content contains patterns that may indicate prompt injection")
             logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
@@ -1063,7 +1063,7 @@ def skill_view(
                     "success": False,
                     "error": (
                         f"Skill '{resolved_name}' is disabled. "
-                        "Enable it with `hermes skills` or inspect the files directly on disk."
+                        "Enable it with 'agent skills' or inspect the files directly on disk."
                     ),
                 },
                 ensure_ascii=False,

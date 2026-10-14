@@ -9,7 +9,7 @@ This is NOT a tool — the LLM never sees it.  It's transparent infrastructure
 controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
 
 Architecture:
-    ~/.hermes/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
+    ~/.claude-code/checkpoints/{sha256(abs_dir)[:16]}/   — shadow git repo
         HEAD, refs/, objects/                        — standard git internals
         HERMES_WORKDIR                               — original dir path
         info/exclude                                 — default excludes

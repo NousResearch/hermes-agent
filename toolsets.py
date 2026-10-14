@@ -213,6 +213,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "jev": {
+        "description": (
+            "TypeSafe AI Jev - Type 1 fast decision classifier (System One model). "
+            "Non-autoregressive bidirectional encoder for noul/choice/score questions. "
+            "~0.4s latency, calibrated probabilities. "
+            "jev_check=yes/no, jev_route=pick one, jev_score=rubric rating, jev_evaluate=mixed batch. "
+            "Use for spam detection, urgency triage, intent classification, fuzzy match, severity scoring."
+        ),
+        "tools": ["jev_evaluate", "jev_check", "jev_route", "jev_score"],
+        "includes": [],
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

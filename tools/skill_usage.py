@@ -1,6 +1,6 @@
 """Skill usage telemetry + provenance tracking for the Curator feature.
 
-Tracks per-skill usage metadata in a sidecar JSON file (~/.hermes/skills/.usage.json)
+Tracks per-skill usage metadata in a sidecar JSON file (~/.claude-code/skills/.usage.json)
 keyed by skill name. Counters are bumped by the existing skill tools (skill_view,
 skill_manage); the curator orchestrator reads the derived activity timestamp to
 decide lifecycle transitions.
@@ -110,7 +110,7 @@ def activity_count(record: Dict[str, Any]) -> int:
 def _read_bundled_manifest_names() -> Set[str]:
     """Return the set of skill names that were seeded from the bundled repo.
 
-    Reads ~/.hermes/skills/.bundled_manifest (format: "name:hash" per line).
+    Reads ~/.claude-code/skills/.bundled_manifest (format: "name:hash" per line).
     Returns empty set if the file is missing or unreadable.
     """
     manifest = _skills_dir() / ".bundled_manifest"
@@ -133,7 +133,7 @@ def _read_bundled_manifest_names() -> Set[str]:
 def _read_hub_installed_names() -> Set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
-    Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
+    Reads ~/.claude-code/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
     """
     lock_path = _skills_dir() / ".hub" / "lock.json"
     if not lock_path.exists():
@@ -398,7 +398,7 @@ def forget(skill_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move an agent-created skill directory to ~/.hermes/skills/.archive/.
+    """Move an agent-created skill directory to ~/.claude-code/skills/.archive/.
 
     Returns (ok, message). Never archives bundled or hub skills — callers are
     responsible for checking provenance, but we double-check here as a safety net.
@@ -437,7 +437,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
+    """Move an archived skill back to ~/.claude-code/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.
 
     Refuses to restore under a name that now collides with a bundled or
@@ -488,8 +488,8 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
-    Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    Handles both flat (~/.claude-code/skills/<skill>/SKILL.md) and category-nested
+    (~/.claude-code/skills/<category>/<skill>/SKILL.md) layouts.
     """
     base = _skills_dir()
     if not base.exists():

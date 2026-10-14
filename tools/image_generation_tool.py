@@ -459,7 +459,7 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
                 f"(HTTP {status}). This model may not yet be enabled on "
                 f"the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
-                f"  • Pick a different model via `hermes tools` → Image Generation."
+                f"  • Pick a different model via `agent tools` → Image Generation."
             ) from exc
         raise
 
@@ -943,7 +943,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
             "image": None,
             "error": (
                 f"image_gen.provider='{configured}' is set but no plugin "
-                f"registered that name. Run `hermes plugins list` to see "
+                f"registered that name. Run `agent plugins list` to see "
                 f"available image gen backends."
             ),
             "error_type": "provider_not_registered",

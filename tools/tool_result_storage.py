@@ -30,7 +30,7 @@ import uuid
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
-    DEFAULT_BUDGET,
+    get_runtime_budget_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ def maybe_persist_tool_result(
     tool_name: str,
     tool_use_id: str,
     env=None,
-    config: BudgetConfig = DEFAULT_BUDGET,
+    config: BudgetConfig | None = None,
     threshold: int | float | None = None,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
@@ -138,6 +138,7 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
+    config = config or get_runtime_budget_config()
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
     if effective_threshold == float("inf"):
@@ -175,7 +176,7 @@ def maybe_persist_tool_result(
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
-    config: BudgetConfig = DEFAULT_BUDGET,
+    config: BudgetConfig | None = None,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
@@ -185,6 +186,7 @@ def enforce_turn_budget(
 
     Mutates the list in-place and returns it.
     """
+    config = config or get_runtime_budget_config()
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):

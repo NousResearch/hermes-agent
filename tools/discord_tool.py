@@ -79,7 +79,7 @@ def _discord_request(
         headers={
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
-            "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)",
+            "User-Agent": "Agent (https://github.com/NousResearch/hermes-agent)",
         },
     )
 
@@ -441,9 +441,29 @@ def _create_thread(
             "type": 11,  # PUBLIC_THREAD
         }
     thread = _discord_request("POST", path, token, body=body)
+    thread_id = thread["id"]
+
+    # Auto-register with gateway's ThreadParticipationTracker so the bot
+    # responds in this thread without @mention (fixes threads created via
+    # REST/tool not being tracked).
+    try:
+        from pathlib import Path
+        from hermes_constants import get_hermes_home
+        tracker_path = get_hermes_home() / "discord_threads.json"
+        existing: list = []
+        if tracker_path.exists():
+            existing = json.loads(tracker_path.read_text(encoding="utf-8"))
+        if thread_id not in existing:
+            existing.append(thread_id)
+            if len(existing) > 500:
+                existing = existing[-500:]
+            tracker_path.write_text(json.dumps(existing), encoding="utf-8")
+    except Exception:
+        pass  # best-effort — never fail thread creation over tracking
+
     return json.dumps({
         "success": True,
-        "thread_id": thread["id"],
+        "thread_id": thread_id,
         "name": thread.get("name"),
     })
 

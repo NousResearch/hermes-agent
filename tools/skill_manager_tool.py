@@ -4,7 +4,7 @@ Skill Manager Tool -- Agent-Managed Skill Creation & Editing
 
 Allows the agent to create, update, and delete skills, turning successful
 approaches into reusable procedural knowledge. New skills are created in
-~/.hermes/skills/. Existing skills (bundled, hub-installed, or user-created)
+~/.claude-code/skills/. Existing skills (bundled, hub-installed, or user-created)
 can be modified or deleted wherever they live.
 
 Skills are the agent's procedural memory: they capture *how to do a specific
@@ -20,7 +20,7 @@ Actions:
   remove_file-- Remove a supporting file from a user skill
 
 Directory layout for user skills:
-    ~/.hermes/skills/
+    ~/.claude-code/skills/
     ├── my-skill/
     │   ├── SKILL.md
     │   ├── references/
@@ -104,7 +104,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
+# All skills live in ~/.claude-code/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
@@ -279,7 +279,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
 
-    Searches the local skills dir (~/.hermes/skills/) first, then any
+    Searches the local skills dir (~/.claude-code/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """

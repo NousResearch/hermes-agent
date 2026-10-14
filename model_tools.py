@@ -702,6 +702,30 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # ── Anthropic OAuth proxy compatibility ─────────────────────────────────
+    # When Hermes runs behind the local Anthropic OAuth proxy, tool names get
+    # an ``mcp_`` prefix on the request (so OAuth scope ``user:mcp_servers``
+    # accepts them) and the response-side strip regex undoes it. SSE chunk
+    # boundaries occasionally split a ``"name":"mcp_Foo"`` token across
+    # frames, defeating the strip and letting ``mcp_Foo`` reach Hermes
+    # verbatim. On the next turn the proxy re-prefixes it (``mcp_Mcp_Foo``),
+    # and the prefix grows each round. The fix lives here, on the Hermes
+    # side: strip any number of leading ``mcp_`` / ``Mcp_`` segments before
+    # registry lookup so the dispatcher always sees the canonical tool name.
+    # This is purely additive — it does not change the wire format Hermes
+    # sends to Anthropic, so the Claude Code disguise is preserved.
+    if function_name and isinstance(function_name, str):
+        _stripped = function_name
+        while True:
+            _lower = _stripped.lower()
+            if _lower.startswith("mcp_") and len(_stripped) > 4:
+                # Lowercase the new first letter so ``mcp_Todo`` → ``todo``
+                _rest = _stripped[4:]
+                _stripped = _rest[0].lower() + _rest[1:]
+            else:
+                break
+        function_name = _stripped
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 

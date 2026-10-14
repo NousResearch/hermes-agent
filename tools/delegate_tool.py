@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
+from tools.approval import get_current_session_key, set_current_session_key
 from utils import base_url_hostname, is_truthy_value
 
 
@@ -1133,7 +1134,7 @@ def _dump_subagent_timeout_diagnostic(
 
     See issue #14726: users hit "subagent timed out after 300s with no response"
     with zero API calls and no way to inspect what happened. This helper
-    writes a dedicated log under ``~/.hermes/logs/subagent-<sid>-<ts>.log``
+    writes a dedicated log under ``~/.claude-code/logs/subagent-<sid>-<ts>.log``
     capturing the child's config, system-prompt / tool-schema sizes, activity
     tracker snapshot, and the worker thread's Python stack at timeout.
 
@@ -1447,8 +1448,20 @@ def _run_single_child(
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
 
+        # Freeze the parent's approval session key so the subagent thread
+        # routes approval dialogs to the correct Discord thread.  Without
+        # this, the subagent's ThreadPoolExecutor thread has no contextvar
+        # and falls back to os.environ["HERMES_SESSION_KEY"] which is
+        # process-global and racy — approval dialogs end up in whichever
+        # thread last wrote to the env var.
+        _parent_session_key = get_current_session_key(default="")
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
+            # Propagate the parent's session key into this thread's
+            # contextvar so approval routing targets the correct thread.
+            if _parent_session_key:
+                set_current_session_key(_parent_session_key)
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,

@@ -999,7 +999,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
     except (ValueError, json.JSONDecodeError):
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check ~/.hermes/.env or environment variables."
+            f"Check ~/.claude-code/.env or environment variables."
         )
 
 
@@ -1897,12 +1897,39 @@ def terminal_tool(
             effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
+                    # Inject the current session's context vars into the subprocess
+                    # environment so scripts like graceful_restart.sh can auto-detect
+                    # their invoker without relying on process-global os.environ (which
+                    # races when concurrent gateway turns overwrite each other's values).
+                    from gateway.session_context import get_session_env as _gse_spawn
+                    _session_env_inject: dict = {}
+                    for _k in (
+                        "HERMES_SESSION_PLATFORM",
+                        "HERMES_SESSION_CHAT_ID",
+                        "HERMES_SESSION_THREAD_ID",
+                        "HERMES_SESSION_PARENT_CHAT_ID",
+                        "HERMES_SESSION_USER_ID",
+                        "HERMES_SESSION_USER_NAME",
+                        "HERMES_SESSION_KEY",
+                        "HERMES_SESSION_GUILD_ID",
+                    ):
+                        _v = _gse_spawn(_k, "")
+                        if _v:
+                            _session_env_inject[_k] = _v
+                    # Merge with any caller-supplied env_vars (caller wins on conflict)
+                    if _session_env_inject:
+                        _merged_env = {**_session_env_inject, **(env.env if hasattr(env, "env") and env.env else {})}
+                        if env_vars:
+                            _merged_env.update(env_vars)
+                        _spawn_env_vars = _merged_env
+                    else:
+                        _spawn_env_vars = env_vars
                     proc_session = process_registry.spawn_local(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
+                        env_vars=_spawn_env_vars,
                         use_pty=effective_pty,
                     )
                 else:

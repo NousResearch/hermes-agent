@@ -257,13 +257,13 @@ DANGEROUS_PATTERNS = [
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
     # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart agent gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart agent-gateway')"),
+    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart agent-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
-    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill agent/gateway process (self-termination)"),
     # Self-termination via kill + command substitution (pgrep/pidof).
     # The name-based pattern above catches `pkill hermes` but not
     # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
@@ -890,28 +890,48 @@ def check_dangerous_command(command: str, env_type: str,
 def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
 
-    Includes severity, title, and description for each finding so users
-    can make an informed approval decision.
+    Deduplicates findings by (severity, title) so repeated warnings
+    (e.g. same rule firing per-URL) don't flood the approval message.
     """
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
         return f"Security scan: {summary}"
 
-    parts = []
+    # Deduplicate by (severity, title) — count occurrences
+    from collections import OrderedDict
+    seen: OrderedDict[tuple, dict] = OrderedDict()
     for f in findings:
         severity = f.get("severity", "")
         title = f.get("title", "")
         desc = f.get("description", "")
-        if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
-        elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+        key = (severity, title)
+        if key not in seen:
+            seen[key] = {"severity": severity, "title": title, "desc": desc, "count": 1}
+        else:
+            seen[key]["count"] += 1
+
+    parts = []
+    for info in seen.values():
+        sev, title, desc, count = info["severity"], info["title"], info["desc"], info["count"]
+        if not title:
+            continue
+        label = f"[{sev}] {title}" if sev else title
+        if desc:
+            label += f": {desc}"
+        if count > 1:
+            label += f" (×{count})"
+        parts.append(label)
+
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
         return f"Security scan: {summary}"
 
-    return "Security scan — " + "; ".join(parts)
+    result = "Security scan — " + "; ".join(parts)
+    # Cap length to avoid massive Discord embeds
+    if len(result) > 1000:
+        result = result[:997] + "…"
+    return result
 
 
 def check_all_command_guards(command: str, env_type: str,

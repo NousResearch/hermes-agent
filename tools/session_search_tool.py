@@ -25,8 +25,8 @@ import re
 from typing import Dict, Any, List, Optional, Union
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
-MAX_SESSION_CHARS = 100_000
-MAX_SUMMARY_TOKENS = 10000
+MAX_SESSION_CHARS = 30_000   # ~7.5k tokens -- keeps below Anthropic long-context credits gate (~32k tok)
+MAX_SUMMARY_TOKENS = 2000
 
 
 def _get_session_search_max_concurrency(default: int = 3) -> int:

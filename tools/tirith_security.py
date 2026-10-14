@@ -608,7 +608,7 @@ def ensure_installed(*, log_failures: bool = True):
 # Main API
 # ---------------------------------------------------------------------------
 
-_MAX_FINDINGS = 50
+_MAX_FINDINGS = 10
 _MAX_SUMMARY_LEN = 500
 
 

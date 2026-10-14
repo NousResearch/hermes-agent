@@ -19,9 +19,11 @@ from hermes_cli import mcp_startup
 def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
+    saved_no_config_logged = mcp_startup._mcp_discovery_no_config_logged
     try:
         mcp_startup._mcp_discovery_started = set()
         mcp_startup._mcp_discovery_thread = {}
+        mcp_startup._mcp_discovery_no_config_logged = set()
         yield
     finally:
         thread = mcp_startup._current_home_thread()
@@ -29,6 +31,7 @@ def _reset_mcp_startup_state():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
         mcp_startup._mcp_discovery_thread = saved_thread
+        mcp_startup._mcp_discovery_no_config_logged = saved_no_config_logged
 
 
 def _agent_args(**overrides) -> Namespace:
@@ -518,3 +521,87 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
     build_agent()
     assert len(runs) == 2
+
+
+# --- zero-config gate visibility (#138622) ----------------------------------
+
+
+def _zero_config_stubs(monkeypatch, messages: dict):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=dict),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+    monkeypatch.setattr(
+        mcp_startup,
+        "_discover_mcp_tools_without_interactive_oauth",
+        lambda: messages.__setitem__("runs", messages.get("runs", 0) + 1),
+    )
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        info=lambda *a, **_k: messages.setdefault("info", []).append(a),
+        warning=lambda *a, **_k: messages.setdefault("warning", []).append(a),
+    )
+
+
+def test_zero_config_profile_logs_once_and_is_not_marked_started(monkeypatch, tmp_path):
+    """#138622: a profile with no ``mcp_servers`` of its own used to bare-return from the config
+    gate with no log line, and left the home in ``_mcp_discovery_started`` so a later build
+    logged a bogus "retrying discovery thread". It must log once and stay unmarked, so a later
+    ``hermes mcp add`` starts discovery through the normal path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages: dict = {}
+    logger = _zero_config_stubs(monkeypatch, messages)
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # next agent build
+
+    assert len(messages["info"]) == 1  # once per home, not per build
+    assert "warning" not in messages  # single-profile home: skipping is a normal state
+    assert messages.get("runs", 0) == 0  # no discovery pass, no thread
+    assert not mcp_startup._mcp_discovery_started
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            get_mcp_status=lambda: [{"name": "demo", "connected": True, "status": "connected"}],
+        ),
+    )
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+    assert messages["runs"] == 1  # hermes mcp add: discovery starts normally afterwards
+    assert mcp_startup._mcp_discovery_started == {mcp_startup.hermes_home_key()}
+
+
+def test_multiplexed_zero_config_profile_warns_about_invisible_shared_servers(monkeypatch, tmp_path):
+    """#138622: in a multiplexed Desktop backend the served profile sees zero MCP tools while the
+    launch home's servers are live in-process. The gate must warn in that profile's own log and
+    point at the invisible shared servers instead of staying silent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    messages: dict = {}
+    logger = _zero_config_stubs(monkeypatch, messages)
+    mcp_startup._mcp_discovery_started.add("launch-home")  # the launch profile already discovered
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+
+    assert len(messages["warning"]) == 1
+    assert "not visible" in messages["warning"][0][0]
+    assert messages.get("runs", 0) == 0
+    assert mcp_startup._mcp_discovery_started == {"launch-home"}  # own home stays unmarked

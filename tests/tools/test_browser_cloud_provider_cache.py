@@ -223,25 +223,15 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {}},
         )
-
-        bu_unconfigured = Mock()
-        bu_unconfigured.is_available.return_value = False
-        bb_unconfigured = Mock()
-        bb_unconfigured.is_available.return_value = False
-        monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: bu_unconfigured
-        )
-        monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserbaseBrowserProvider", lambda: bb_unconfigured
-        )
+        monkeypatch.setattr("tools.browser_tool_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("agent.browser_registry._resolve", lambda configured: None)
 
         assert bt_cloud._get_cloud_provider() is None
         assert browser_tool._cloud_provider_resolved is False
 
         # Credentials self-heal — next call must retry and pick up the provider.
         healed = Mock(name="healed-provider")
-        healed.is_available.return_value = True
-        monkeypatch.setattr("tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: healed)
+        monkeypatch.setattr("agent.browser_registry._resolve", lambda configured: healed)
 
         assert bt_cloud._get_cloud_provider() is healed
         assert browser_tool._cloud_provider_resolved is True

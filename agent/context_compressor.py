@@ -35,6 +35,21 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.tool_rejection import (
+    CANCELLED_STATUS,
+    EMPTY_TOOL_NAME_PREFIX,
+    ERROR_EXECUTING_TOOL_PREFIX,
+    INVALID_JSON_ARGS_PREFIX,
+    LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX,
+    ORPHAN_RECOVERY_PREFIX,
+    REJECTED_STATUS,
+    SKIPPED_SIBLING_INVALID_JSON_PREFIX,
+    TIMEOUT_STATUS,
+    TOOL_EXECUTION_CANCELLED_PREFIX,
+    TOOL_EXECUTION_SKIPPED_PREFIX,
+    UNKNOWN_STATUS,
+    UNKNOWN_TOOL_NAME_TEMPLATE,
+)
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -1665,6 +1680,9 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 def _sum_terminal(name, args, content, content_len, line_count):
     cmd = _str_arg(args, "command")
     cmd = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+    # A failed/never-run call must not read as "ran" — report the outcome, not the verb.
+    if failed := _result_failure_suffix(content):
+        return f"[terminal] `{cmd}`{failed}"
     exit_code = m.group(1) if (m := re.search(r'"exit_code"\s*:\s*(-?\d+)', content)) else "?"
     return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
 
@@ -1679,10 +1697,14 @@ def _sum_write_file(name, args, content, content_len, line_count):
 
 
 def _sum_search_files(name, args, content, content_len, line_count):
+    pattern = args.get("pattern", "?")
+    # A failed search must not read as a completed search with "? matches".
+    if failed := _result_failure_suffix(content):
+        return f"[search_files] '{pattern}'{failed}"
     count = m.group(1) if (m := re.search(r'"total_count"\s*:\s*(\d+)', content)) else "?"
     return (
         f"[search_files] {args.get('target', 'content')} search for "
-        f"'{args.get('pattern', '?')}' in {args.get('path', '.')} -> {count} matches"
+        f"'{pattern}' in {args.get('path', '.')} -> {count} matches"
     )
 
 
@@ -1715,11 +1737,17 @@ def _sum_delegate_task(name, args, content, content_len, line_count):
 def _sum_execute_code(name, args, content, content_len, line_count):
     code_str = _str_arg(args, "code")
     code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
+    # A failed run must not read as "N lines output" — report the outcome.
+    if failed := _result_failure_suffix(content):
+        return f"[execute_code] `{code_preview}`{failed}"
     return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
 
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
+    # A failed load must not read as "(N chars)" of instructions.
+    if failed := _result_failure_suffix(content):
+        return f"[skill_view] name={skill}{failed}"
     # Ghost-skill defense: canonical marker says instructions are gone and how to reload.
     marker = " " + _skill_pruned_marker(str(skill)) if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS else ""
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
@@ -1983,11 +2011,70 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# Pre-execution rejection shapes and their wordings live in agent.tool_rejection; the
+# prose matcher is built from those constants so a rewording cannot silently decouple
+# the producers from the compressor (each side's tests alone would stay green). Live
+# producers wrap their wordings in rejected_result()'s ``status: rejected`` payload,
+# which _summarize_refused_tool_result reads structurally; this matcher remains for
+# transcripts recorded before the structured status existed.
+_unknown_name = UNKNOWN_TOOL_NAME_TEMPLATE.split("{name}")
+_REJECTED_TOOL_CALL_RE = re.compile(
+    "^" + re.escape(_unknown_name[0]) + r"\S+" + re.escape(_unknown_name[1])
+)
+
+
+def _rejected_tool_call_outcome(content: str) -> str | None:
+    """Outcome for a call the dispatch loop rejected before execution: empty/unknown tool
+    name, invalid JSON arguments, or a valid call skipped because a sibling in the batch
+    was invalid. The generic summarizer renders those rows as ``[…] (N chars result)`` —
+    indistinguishable from a completed action in the compaction anchors, which invites
+    reporting the call as done; the summary must compress them into "not run" so the
+    post-compaction agent re-issues."""
+    stripped = (content or "").lstrip()
+    if stripped.startswith(EMPTY_TOOL_NAME_PREFIX):
+        return "rejected, not run — do not report it as done; re-issue the call"
+    if stripped.startswith(SKIPPED_SIBLING_INVALID_JSON_PREFIX):
+        return "skipped, not run — do not report it as done; re-issue the call"
+    if stripped.startswith(INVALID_JSON_ARGS_PREFIX):
+        return "rejected before execution (invalid JSON arguments), not run — do not report it as done; re-issue with valid JSON"
+    if stripped.startswith(LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX):
+        return "skipped, not run — re-issue the call"
+    if _REJECTED_TOOL_CALL_RE.match(stripped):
+        return "rejected, not run — do not report it as done; re-issue with a valid tool name"
+    return None
+
+
+# Outcome lines for execution-layer non-completions (agent.tool_rejection statuses).
+_CANCELLED_OUTCOME = "cancelled, not run — do not report it as done; re-issue the call if still needed"
+_TIMEOUT_OUTCOME = "timed out, no result — outcome unknown; do not report it as done; check for side effects before re-running"
+_UNKNOWN_OUTCOME = "no result recorded — outcome unknown; do not report it as done; verify effects before re-running"
+
+
+def _never_completed_tool_call_outcome(content: str) -> str | None:
+    """Outcome for a call the execution layer never completed — interrupt skip,
+    timeout, a worker that vanished, or an orphan recovered on resume. The
+    per-tool summarizers render those rows as completed actions ("ran ...",
+    "wrote to ..."), which invites reporting the call as done; the summary must
+    state what did NOT happen. Matches only the stable template prefixes from
+    agent.tool_rejection — for transcripts recorded before the structured
+    statuses existed (live producers wrap their wordings in outcome_result())."""
+    stripped = (content or "").lstrip()
+    if stripped.startswith(TOOL_EXECUTION_CANCELLED_PREFIX) or stripped.startswith(TOOL_EXECUTION_SKIPPED_PREFIX):
+        return _CANCELLED_OUTCOME
+    if stripped.startswith(ERROR_EXECUTING_TOOL_PREFIX) or stripped.startswith(ORPHAN_RECOVERY_PREFIX):
+        return _UNKNOWN_OUTCOME
+    return None
+
+
 def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> str | None:
     """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
-    ``blocked``/``pending_approval``), else None. The per-tool summarizers describe the call as done
-    ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
-    drop the "do not retry" instruction. Strictly below _PRUNE_MIN_CHARS, like the clarify summary,
+    ``blocked``/``pending_approval``), one the dispatch loop rejected before execution
+    (``status: rejected`` from agent.tool_rejection.producers; bare rejection prose for
+    pre-structure transcripts), or one the execution layer never completed (``status``
+    ``cancelled``/``timeout``/``unknown``; bare skip/timeout/orphan prose for pre-structure
+    transcripts), else None. The per-tool summarizers describe the call as done
+    ("ran ...", "wrote to ..."), which would turn a user's denial or an interrupt into
+    a record of the action. Strictly below _PRUNE_MIN_CHARS, like the clarify summary,
     so later prune passes keep it."""
     payload = _json_dict(content)
     status = payload.get("status")
@@ -1996,6 +2083,25 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
         error = content.strip()
     if status == "pending_approval":
         outcome = "awaiting the user's approval, not run"
+    elif status == REJECTED_STATUS:
+        # Structured rejection (live producers wrap their wording in rejected_result()).
+        # Recover the kind-specific outcome from the error prose via the same matcher —
+        # the prose remains the wording of record; the status is the reliable marker.
+        outcome = _rejected_tool_call_outcome(error or "") or (
+            "rejected, not run — do not report it as done; re-issue the call"
+        )
+    elif status == CANCELLED_STATUS:
+        # Includes _ToolCallRef.emit_cancelled, whose {"error": …, "status": "cancelled"}
+        # payload predates this branch (interrupted mid-tool, effect recorded by the hook).
+        outcome = _CANCELLED_OUTCOME
+    elif status == TIMEOUT_STATUS:
+        outcome = _TIMEOUT_OUTCOME
+    elif status == UNKNOWN_STATUS:
+        outcome = _UNKNOWN_OUTCOME
+    elif (rejected := _rejected_tool_call_outcome(content)) is not None:
+        outcome = rejected  # legacy transcripts: bare rejection prose, no status field
+    elif (never_completed := _never_completed_tool_call_outcome(content)) is not None:
+        outcome = never_completed  # legacy transcripts: bare skip/timeout/orphan prose
     elif error and (status == "blocked" or error.lstrip().startswith("BLOCKED")):
         outcome = "BLOCKED, not run"
         if "NOT consented" in error:

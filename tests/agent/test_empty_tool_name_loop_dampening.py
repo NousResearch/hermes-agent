@@ -198,6 +198,48 @@ def test_empty_tool_name_gets_terse_error_no_catalog(agent_env, blank):
     assert "Available tools:" not in joined
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_empty_tool_name_error_states_not_executed(agent_env, blank):
+    """A rejection must say the call did NOT run and forbid reporting its effect as done.
+
+    Without this, the turn after a rejected call narrates the intended action as
+    completed (observed live: merge reports with invented SHAs in the turns right
+    after empty-name rejections — the calls never executed, no tool ever ran).
+    """
+    agent, handler = agent_env
+    handler.response_queue.append(_tc_resp(blank, "{}"))
+    handler.response_queue.append(_text_resp("Recovered in plain text."))
+
+    agent.run_conversation("read ./payload and report", conversation_history=[], task_id="t")
+
+    joined = " ".join(_tool_results(handler))
+    assert "Nothing was executed" in joined
+    assert "did not run" in joined
+    assert "do not report its effect as done" in joined
+    # Structural marker: the rejection carries status "rejected" so the context
+    # compressor reads the outcome without matching prose.
+    assert '"status": "rejected"' in joined
+    # The anti-priming contract from the test above still holds.
+    assert "Available tools:" not in joined
+
+
+def test_wrong_tool_name_error_states_not_executed(agent_env):
+    """A wrong-but-nonempty name keeps the catalog (self-correction) AND states
+    the call did not run — a typo must not be reported as a completed action."""
+    agent, handler = agent_env
+    handler.response_queue.append(_tc_resp("frobnicate_xyz", "{}"))
+    handler.response_queue.append(_text_resp("Recovered in plain text."))
+
+    agent.run_conversation("do the thing", conversation_history=[], task_id="t")
+
+    joined = " ".join(_tool_results(handler))
+    assert "does not exist" in joined
+    assert "Nothing was executed" in joined
+    assert "do not report its effect as done" in joined
+    assert '"status": "rejected"' in joined  # structural marker for the compressor
+    assert "Available tools:" in joined  # real typo still self-corrects via the catalog
+
+
 
 
 # ── Mixed batches: valid calls execute, invalid calls get error results ──

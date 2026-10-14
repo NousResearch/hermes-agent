@@ -142,13 +142,12 @@ def validate_tool_calls(
 
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
         # See _invalid_tool_name_error_content for the blank-name anti-priming rationale (#47967).
+        # This branch only runs when NO call in the batch is valid (mixed batches are handled
+        # above and error their invalid calls at execution time), so every call here gets the
+        # rejection content — there is no valid sibling to "skip".
         _append_tool_error_results(
             messages, tool_calls,
-            lambda tc: (
-                _invalid_tool_name_error_content(tc.function.name, valid_names)
-                if tc.function.name not in valid_names
-                else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
-            ),
+            lambda tc: _invalid_tool_name_error_content(tc.function.name, valid_names),
         )
         return _verdict("continue")
     # Reset retry counter on successful tool call validation
@@ -219,13 +218,24 @@ def validate_tool_calls(
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
 
         def _json_error_result(tc) -> str:
+            # Wordings come from agent.tool_rejection, wrapped in its structured
+            # ``status: rejected`` payload, so the context compressor reads the outcome
+            # structurally (prose fallback covers pre-structure transcripts).
+            from agent.tool_rejection import (
+                INVALID_JSON_ARGS_PREFIX,
+                SKIPPED_SIBLING_INVALID_JSON_PREFIX,
+                rejected_result,
+            )
             if tc.function.name not in invalid_names:
-                return "Skipped: other tool call in this response had invalid JSON."
+                return rejected_result(
+                    f"{SKIPPED_SIBLING_INVALID_JSON_PREFIX} Nothing was executed for this "
+                    "call — do not report its effect as done; re-issue it."
+                )
             err = next(e for n, e in invalid_json_args if n == tc.function.name)
-            return (
-                f"Error: Invalid JSON arguments. {err}. "
-                f"For tools with no required parameters, use an empty object: {{}}. "
-                f"Please retry with valid JSON."
+            return rejected_result(
+                f"{INVALID_JSON_ARGS_PREFIX} {err}. Nothing was executed — the call did not "
+                "run, so do not report its effect as done. For tools with no required "
+                "parameters, use an empty object: {}. Please retry with valid JSON."
             )
 
         _append_tool_error_results(messages, tool_calls, _json_error_result)

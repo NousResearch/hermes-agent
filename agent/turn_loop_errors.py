@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from agent.message_metadata import append_message
+from agent.tool_rejection import error_result
 from agent.turn_failure_copy import short_detail, site_copy
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -137,7 +138,9 @@ def handle_outer_loop_error(
                         "role": "tool",
                         "name": _ra().AIAgent._get_tool_call_name_static(tc),
                         "tool_call_id": tc["id"],
-                        "content": f"Error executing tool: {error_msg}",
+                        # Never-executed call: wrap it as an execution error so the compressor's
+                        # failure suffix reads the effect as unknown, not as a completed action.
+                        "content": error_result(f"Error executing tool: {error_msg}"),
                     })
         break
 

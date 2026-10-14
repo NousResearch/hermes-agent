@@ -119,17 +119,23 @@ def test_answering_socket_still_attaches(monkeypatch):
 
 
 def test_decide_starts_instead_of_refusing_forever(monkeypatch):
-    """The user-visible outcome: decide() returns START (takeover), not the REFUSE loop."""
+    """The user-visible outcome: decide() returns START (takeover), not the REFUSE loop.
+
+    The recorded pid must be a live process OTHER than this one: decide() starts outright when the
+    record names the caller itself, which would make this pass on the unfixed code too.
+    """
+    from pathlib import Path
+
     from gateway.host_attach import START, decide
 
-    record = _unprovable_record(age_s=HOST_RECORD_BOOT_GRACE_S * 100)
+    record = _unprovable_record(age_s=HOST_RECORD_BOOT_GRACE_S * 100, pid=os.getppid())
     import gateway.host_rendezvous as hr
 
     monkeypatch.setattr(hr, "read_record", lambda role: record)
     monkeypatch.setattr(host_attach, "_identify", lambda home: None)
     host_attach.invalidate_host_gateway_cache()
     try:
-        decision = decide(home := __import__("pathlib").Path("/fake/home"))
+        decision = decide(Path("/fake/home"))
     finally:
         host_attach.invalidate_host_gateway_cache()
     assert decision.outcome == START

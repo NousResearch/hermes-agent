@@ -8,12 +8,18 @@ import type {
   GatewayFileSaveDeps,
   GatewayFileSaveResult
 } from './gateway-file-download'
-import { finalizeGatewayDownload } from './gateway-file-download'
+import { destroyStalledBody, finalizeGatewayDownload, type StallWatchableBody } from './gateway-file-download'
 import { DEFAULT_FETCH_TIMEOUT_MS, resolveTimeoutMs } from './hardening'
 
 export interface GatewayDownloadOptions {
   bearer?: string
   timeoutMs?: number
+  /** Idle deadline for a body being read (reset per chunk); defaults to the fetch timeout. */
+  bodyIdleTimeoutMs?: number
+}
+
+function bodyIdleMs(options: GatewayDownloadOptions): number {
+  return resolveTimeoutMs(options.bodyIdleTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 }
 
 function downloadUrl(url: string): URL {
@@ -54,8 +60,10 @@ export function downloadViaTokenToFile(
           : { 'X-Hermes-Session-Token': token ?? '' }
       },
       (response: http.IncomingMessage): void => {
-        // Headers end the connection deadline, not the user's save-dialog time.
+        // Headers end the connection deadline, not the user's save-dialog time;
+        // a body that then stops arriving mid-read is bounded by the idle deadline.
         request.setTimeout(0)
+        destroyStalledBody(response, bodyIdleMs(options))
         void finalizeGatewayDownload(
           response,
           context,
@@ -138,6 +146,12 @@ export function downloadViaOauthSessionToFile<S>(
 
       settled = true
       clearTimeout(timer)
+
+      // Electron net's IncomingMessage is a Readable: bound a stalled body the same way.
+      if (typeof (response as Partial<StallWatchableBody>).destroy === 'function') {
+        destroyStalledBody(response as unknown as StallWatchableBody, bodyIdleMs(options))
+      }
+
       void finalizeGatewayDownload(
         response,
         context,

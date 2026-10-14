@@ -189,7 +189,8 @@ def _resolve_openrouter_runtime(
     if requested_norm != "custom":
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
-    if base_url:
+    # An explicit launch key is the operator's credential for this route and wins over the pool (R2-M1).
+    if base_url and not rp.has_usable_secret(explicit_api_key):
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
         if pool_result:
             return pool_result

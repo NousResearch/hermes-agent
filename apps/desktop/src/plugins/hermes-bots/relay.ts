@@ -83,6 +83,17 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+// Claimed envelopes remain pinned to their sender until terminal reply ACK.
+// The sender's durable claimed directory restores these after renderer restart.
+const pendingRelays = new Map<string, Map<string, RelayEnvelope>>()
+
+function pendingRelaysFor(sender: RelayConnection): Map<string, RelayEnvelope> {
+  const senderKey = JSON.stringify(sender.route)
+  const pending = pendingRelays.get(senderKey) || new Map<string, RelayEnvelope>()
+  pendingRelays.set(senderKey, pending)
+
+  return pending
+}
 
 // Routes whose gateway has signaled `bot_relay.outbox.pending` since the last
 // drain pass. `*` means the event carried no connection id (local/legacy
@@ -205,7 +216,7 @@ function syncRelayRetention(connections: RelayConnection[]) {
     return
   }
 
-  const live = new Set(connections.map(connection => connection.id))
+  const live = new Set(connections.map(connection => JSON.stringify(connection.route)))
 
   for (const [id, release] of [...relayRouteRetentions]) {
     if (!live.has(id)) {
@@ -224,8 +235,8 @@ function syncRelayRetention(connections: RelayConnection[]) {
   }
 
   for (const connection of connections) {
-    if (!relayRouteRetentions.has(connection.id)) {
-      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    if (!relayRouteRetentions.has(JSON.stringify(connection.route))) {
+      relayRouteRetentions.set(JSON.stringify(connection.route), host.retainProfileSocket(connection.route))
     }
   }
 }
@@ -243,7 +254,9 @@ function releaseRelayRetention() {
   relayRouteRetentions.clear()
 }
 
-/** One representative route per reachable connection id. */
+/** Every relay-eligible profile route, once each. The canonical gateway keeps a
+ *  roster and an outbox per profile home, so drain/roster/pins are per ROUTE;
+ *  the peer set (is there anything to relay between?) is per connection id. */
 async function relayConnections(): Promise<RelayConnection[]> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
     return []
@@ -257,18 +270,25 @@ async function relayConnections(): Promise<RelayConnection[]> {
     for (const route of routes) {
       const id = String(route?.connectionId || '')
 
-      if (id && !byConnection.has(id)) {
-        byConnection.set(id, route)
+      const key = JSON.stringify(route)
+
+      if (id && !byConnection.has(key)) {
+        byConnection.set(key, route)
       }
     }
 
-    return [...byConnection.entries()].map(([id, route]) => ({
-      id,
+    return [...byConnection.values()].map(route => ({
+      id: route.connectionId,
       route
     }))
   } catch {
     return []
   }
+}
+
+/** Distinct connections among the relay routes: profiles of one connection are not peers. */
+function peerCount(connections: RelayConnection[]): number {
+  return new Set(connections.map(connection => connection.id)).size
 }
 
 /** Human label per connection id, from the registry — the only place that has one.
@@ -394,14 +414,14 @@ async function syncRelayRosters() {
       return
     }
 
-    if (connections.length < 2) {
+    if (peerCount(connections) < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
       // pushed roster, so a departed machine's agents would stay in every
       // bot's prompt (and as message_agent targets) until a second connection
       // reappears. Push the now-empty roster once per sole connection so it
       // forgets it — a replacement sole connection has never been told. An
       // empty route list (registry not loaded yet) must not spend the clear.
-      if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
+      if (peerCount(connections) === 1 && connections[0].id !== relay.rosterClearedFor) {
         const cleared = await Promise.all(
           connections.map(async connection => {
             if (!isCurrent()) {
@@ -433,8 +453,10 @@ async function syncRelayRosters() {
     relay.rosterClearedFor = null
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
+    // One profiles.list per connection: its routes share a socket and answer one profile set.
+    const firstRoutes = connections.filter((connection, index) => connections.findIndex(other => other.id === connection.id) === index)
     await Promise.all(
-      connections.map(async connection => {
+      firstRoutes.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
 
         if (!isCurrent()) {
@@ -522,9 +544,9 @@ async function drainRelayOutboxes() {
 
     // Retention follows the relay-eligible set: with fewer than two
     // connections there is nothing to relay, so nothing stays pinned.
-    syncRelayRetention(connections.length >= 2 ? connections : [])
+    syncRelayRetention(peerCount(connections) >= 2 ? connections : [])
 
-    if (connections.length < 2) {
+    if (peerCount(connections) < 2) {
       return
     }
 
@@ -558,7 +580,16 @@ async function drainRelayOutboxes() {
           {}
         )
 
+        const pending = pendingRelaysFor(sender)
+
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
+          if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+        }
+
+        // Every claimed-but-unACKed envelope rides again: a delivery that
+        // settled without an exact identity, or whose ACK was lost, retries
+        // from the sender's pin instead of being silently dropped.
+        for (const envelope of pending.values()) {
           queued.push({ envelope, sender })
         }
       } catch {
@@ -617,6 +648,50 @@ function enqueueRelayDelivery(sender: RelayConnection, envelope: RelayEnvelope, 
   })
 }
 
+function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, envelopeId: string) {
+  return {
+    id: envelopeId,
+    profile: String(envelope?.target_profile || ''),
+    message: String(envelope?.message || ''),
+    from_profile: String(envelope?.from_profile || ''),
+    from_handle: String(envelope?.from_handle || ''),
+    from_connection: String(sender.id)
+  }
+}
+
+/** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS
+ *  envelope posts back; anything else stays retained for recovery. */
+async function settleRelayDelivery(
+  res: { status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string },
+  envelopeId: string,
+  attentionKey: string,
+  postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
+) {
+  if (res.delivery_id !== envelopeId || !res.admission_id) {
+    noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+
+    return
+  }
+
+  if (res.status !== 'settled' && res.status !== 'failed') {
+    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+
+    return
+  }
+
+  if (res.status === 'failed') {
+    noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+    await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+
+    return
+  }
+
+  clearBotAttention(attentionKey)
+  await postReply({
+    reply: String(res?.reply || '')
+  })
+}
+
 /** Deliver one claimed envelope on the target connection's own socket and post
  *  the reply (or the error) back to the sender gateway for its waiter. */
 async function deliverRelayEnvelope(
@@ -626,6 +701,13 @@ async function deliverRelayEnvelope(
 ) {
   const envelopeId = String(envelope?.id || '')
   const target = byId.get(String(envelope?.target_connection || ''))
+  const pending = pendingRelaysFor(sender)
+
+  // A later drain re-queues every pinned envelope; the lane serialises them, so
+  // one already ACKed by an earlier delivery in this lane must not ride twice.
+  if (!envelopeId || !pending.has(envelopeId)) {
+    return
+  }
 
   const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
     try {
@@ -633,13 +715,10 @@ async function deliverRelayEnvelope(
         id: envelopeId,
         ...payload
       })
+      pending.delete(envelopeId)
     } catch {
       // Sender gateway unreachable — its waiter times out with guidance.
     }
-  }
-
-  if (!envelopeId) {
-    return
   }
 
   if (!target) {
@@ -655,23 +734,14 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ reply?: string }>(
-      target.route,
+    const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
+      { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
-      {
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || ''),
-        from_profile: String(envelope?.from_profile || ''),
-        from_handle: String(envelope?.from_handle || ''),
-        from_connection: String(sender.id)
-      },
+      relayDeliverParams(sender, envelope, envelopeId),
       RELAY_DELIVER_TIMEOUT_MS
     )
 
-    clearBotAttention(attentionKey)
-    await postReply({
-      reply: String(res?.reply || '')
-    })
+    await settleRelayDelivery(res, envelopeId, attentionKey, postReply)
   } catch (error: any) {
     // #93091: bot_relay.deliver classifies the failed turn and ships the
     // typed code in the JSON-RPC error's `data.reason`; forward it into
@@ -680,6 +750,9 @@ async function deliverRelayEnvelope(
     // classified codes beat free-text re-parsing.
     const reason = String(error?.data?.reason || '').trim()
     noteBotAttention(attentionKey, reason || error?.message || error)
+
+    // A transport exception can follow a committed admission; never settle it as failure.
+    if (!reason || reason === 'runtime_unavailable') {return}
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason

@@ -73,7 +73,7 @@ def opener(bot, *, uid=11, chat=42, user=88, message_id=40800, text="Prova 3", t
     """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to.
 
     ``is_bot=True`` models an opening message from a bot other than the service message's
-    author (the same-sender bot case is covered by ``test_bot_created_topic_opener_is_adopted``).
+    author (a same-sender bot is covered by ``test_bot_created_topic_other_bots_opener_is_not_adopted``).
     ``reply_to_message_id``/``reply_to_user`` model an opener that is a Telegram reply to the
     creation service message — the shape the field captures associate with a labeled opener.
     """
@@ -93,19 +93,6 @@ def opener(bot, *, uid=11, chat=42, user=88, message_id=40800, text="Prova 3", t
                      "is_bot": reply_to_user is not None,
                      "first_name": "Creation"},
         }
-    return Update.de_json({"update_id": uid, "message": message}, bot)
-    """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to.
-
-    ``is_bot=True`` models an opening message from a bot other than the service message's
-    author (the same-sender bot case is covered by ``test_bot_created_topic_opener_is_adopted``)."""
-    message = {
-        "message_id": message_id, "date": 1800000001, "chat": _chat(chat, group, is_forum=group),
-        "from": {"id": user, "is_bot": is_bot, "first_name": "Bot" if is_bot else "Human"}, "text": text,
-    }
-    if thread is not None:
-        message["message_thread_id"] = thread
-    if is_topic is not None:
-        message["is_topic_message"] = is_topic
     return Update.de_json({"update_id": uid, "message": message}, bot)
 
 
@@ -384,13 +371,16 @@ async def test_reply_to_the_creation_does_not_change_routing(monkeypatch, is_rep
     field, but it is a consequence of the client race, not a routing input (#136567).
 
     Both directions are pinned deliberately: a reply must not create a record where there is
-    none, and its absence must not stop one being claimed.
+    none, and its absence must not stop one being claimed. The quoted parent is the creation
+    service message *and a bot*, exercising the fixture's bot-reply branch, so the shape is
+    built for real rather than left unparameterised.
     """
     async with connected(monkeypatch) as (adapter, app, delivered):
         await _deliver(
             app, adapter,
             topic_created(app.bot),
-            opener(app.bot, reply_to_message_id=40799 if is_reply else None),
+            opener(app.bot, reply_to_message_id=40799 if is_reply else None,
+                   reply_to_user=111 if is_reply else None),
         )
 
     assert delivered[0].source.thread_id == "40798", "adjacency governs adoption, not the reply flag"

@@ -1857,11 +1857,11 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
                 # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
                 # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
                 db.deactivate_messages_by_display_kind(target, "model_switch")
-                from agent.message_metadata import stamp_message_uid
+                from agent.message_metadata import MESSAGE_VERSION_UID, mint_uid, stamp_message_uid
                 entry["_row_id"] = db.append_message(
                     session_id=target, role="user", content=marker, display_kind="model_switch",
-                    message_uid=stamp_message_uid(entry))
-                entry[_DB_PERSISTED_MARKER] = True
+                    message_uid=stamp_message_uid(entry), message_version_uid=(version := mint_uid()))
+                entry[_DB_PERSISTED_MARKER], entry[MESSAGE_VERSION_UID] = True, version
     except Exception:
         # warning, not debug: filing the pivot in the LIVE session (#123545) means this write can now hit
         # CompressionSessionClosedError on a closed parent, which the old session_key target could not.

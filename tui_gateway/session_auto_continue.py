@@ -311,6 +311,8 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
     if isinstance(staged, dict) and isinstance(staged.get("_row_id"), int):
         # Merge sync: the envelope text grew; the already-written row must not lag it.
         if staged.get("content") != envelope.get("text"):
+            from agent.message_metadata import MESSAGE_VERSION_UID, mint_uid
+            version = mint_uid()
             with _session_db(session) as db:
                 if db is None:
                     return
@@ -323,7 +325,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                     key = _submit_row_owner_key(staged, session)
                     live_id = db.resolve_active_row_id(key, staged["_row_id"])
                     updated = live_id is not None and bool(
-                        db.set_user_message_content(key, live_id, envelope["text"]))
+                        db.set_user_message_content(key, live_id, envelope["text"], message_version_uid=version))
                 except Exception:
                     logger.debug("queued-prompt row merge update failed", exc_info=True)
                     return
@@ -333,7 +335,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 # the envelope claim a durable row that no longer exists.
                 envelope.pop("_submit_user_row", None)
                 return
-            staged["_row_id"], staged["content"] = live_id, envelope["text"]
+            staged["_row_id"], staged["content"], staged[MESSAGE_VERSION_UID] = live_id, envelope["text"], version
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.

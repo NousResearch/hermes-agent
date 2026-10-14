@@ -217,6 +217,52 @@ What the host guarantees:
   and an insert trigger mints one for any row an older build writes into a
   v31 store afterwards (that build's live dicts still lack it until restored).
 
+### Durable copies and authored versions: `message_version_uid`
+
+`message_uid` names a logical message. `message_version_uid` distinguishes its
+persisted versions without depending on the mutable `active` and `compacted`
+flags. Both fields are persistence metadata and are stripped from provider
+requests and token estimates.
+
+- An ordinary changed write or in-place canonical payload rewrite gets a new
+  version. Presentation metadata and counters do not change it.
+- In-place compaction, rotation, concurrent-tail column copies, and import keep
+  the version carried by an explicit copy, including a restated request whose
+  model-context text or timestamp changed. Unchanged ordinary reissues and
+  replacements keep a matching durable source version. Without a source row
+  address, an ordinary reissue must match the latest stored representation of
+  that version; otherwise it receives a new one.
+- A merge is a new version. `record_absorbed_message` removes the survivor's old
+  version while retaining the existing logical UID and absorption witness.
+- Restore returns the version alongside the logical UID. Failed transactions
+  restore the caller's previous version stamp, just as they restore row IDs.
+
+An engine must preserve the version when copying a message, and remove it when
+it authors a different version instead of a copy. Compression persistence treats
+an explicitly supplied version as a copy declaration. A row without a version
+gets one when inserted.
+
+Consumers can match `(message_uid, message_version_uid)` within their validated
+session lineage to recognize copies after later compactions. Version UIDs are
+opaque, not ordering counters; physical row order still determines chronology.
+Never collapse every row of one logical UID to its oldest row: an edit may share
+that UID and be compacted before the consumer sees it.
+
+`message_versions` records each `(session_id, message_uid, version_uid)` once,
+with a monotonic `id`. That session-scoped cursor survives physical message
+replacement and compaction; an in-place payload edit registers a new version
+and advances it. A version copied into another session gets an arrival cursor
+there. Readers of a validated continuation chain can use the earliest cursor
+for that UID/version within the chain. These cursor IDs belong to this database,
+not to the portable export format, and are not physical message row addresses.
+The ledger is removed when its owning session is deleted.
+
+Legacy rows are backfilled independently in bounded slices. This does not
+reconstruct historical copy lineage. Until backfill reaches a row its version
+can be absent, and readers must treat that as unknown provenance. Older writers
+that omit the field receive fresh versions on insert rather than guessed copy
+identities.
+
 ### When to use these hooks — and when NOT to
 
 - **Implement `select_context()` only when your engine must *replace* the

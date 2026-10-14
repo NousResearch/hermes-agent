@@ -7,6 +7,8 @@ from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
+from hermes_state_versions import MESSAGE_VERSION_UID
+
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
 
@@ -44,7 +46,7 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
     # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
     # backend 400s on any key it does not know.
     {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
-     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
+     MERGED_TURN_PREFIX, MESSAGE_UID, MESSAGE_VERSION_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID,
      # The alternation repair's row counts: an in-place compaction reads them off the live dict.
      MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS}
 ) | REPAIR_BOOKKEEPING_FIELDS
@@ -93,7 +95,7 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     return uid
 
 
-_IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
+_IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (MESSAGE_VERSION_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 
 def copy_identity_fields(src: Mapping[str, Any], dst: MutableMapping[str, Any]) -> None:
@@ -128,9 +130,10 @@ def record_absorbed_message(
     constituent's uid in ``_absorbed_message_uids`` (text order, no repeats). By default the survivor's
     text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
     into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
-    A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
-    leaves the survivor untouched.
+    A dict without a uid contributes no absorption witness. The composite still drops its old version:
+    newly merged content cannot claim the unchanged source version.
     """
+    survivor.pop(MESSAGE_VERSION_UID, None)  # a composite is a new version, even when its logical uid survives
     survivor_uid = message_uid_or_none(survivor)
     dropped_uid = message_uid_or_none(dropped)
     own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))

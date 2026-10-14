@@ -682,7 +682,7 @@ class SessionPortabilityMixin:
         archived: list[dict[str, Any]] = []
         for msg in sanitized_messages:
             (live if self._coerce_or(msg.get("active"), int, 1) else archived).append(msg)
-        self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False)
+        self._insert_message_rows(conn, session_id, sanitized_messages, prune_checkpoints=False, copy_versions=True)
         if archived:
             conn.executemany("UPDATE messages SET active = 0, compacted = ? WHERE id = ?",
                              [(1 if self._coerce_or(msg.get("compacted"), int, 0) else 0, msg["_row_id"])

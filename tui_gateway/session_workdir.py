@@ -685,8 +685,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     if not session.get("session_key") or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
-    staged = stamp_message_timestamp({"role": "user", "content": text})
+    from agent.message_metadata import MESSAGE_VERSION_UID, mint_uid, stamp_message_timestamp, stamp_message_uid
+    staged = stamp_message_timestamp({"role": "user", "content": text, MESSAGE_VERSION_UID: mint_uid()})
     if display_kind:
         staged["display_kind"] = display_kind
     if accept_metadata:
@@ -698,7 +698,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         try:
             staged["_row_id"] = db.append_message(
                 target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
-                message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
+                message_uid=stamp_message_uid(staged), message_version_uid=staged[MESSAGE_VERSION_UID],
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
@@ -736,6 +736,8 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
         return
     if staged["content"] != persist_user_message:
         from agent.session_persistence import _durable_content
+        from agent.message_metadata import MESSAGE_VERSION_UID, mint_uid
+        version = mint_uid()
         with _session_db(session) as db:
             if db is None:
                 return
@@ -743,13 +745,14 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
                 # Address the row where it was actually WRITTEN (``_write_submit_user_row`` recorded it);
                 # a rotated-away ``session_key`` would miss that row's session_id and silently skip the
                 # rewrite, leaving the transcript replaying the raw keystrokes.
-                db.set_user_message_content(
+                if not db.set_user_message_content(
                     _submit_row_owner_key(staged, session), staged["_row_id"],
-                    _durable_content(persist_user_message))
+                    _durable_content(persist_user_message), message_version_uid=version):
+                    return
             except Exception:
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return
-        staged["content"] = persist_user_message
+        staged["content"], staged[MESSAGE_VERSION_UID] = persist_user_message, version
     from agent.session_persistence import _persist_lock
     with _persist_lock(agent):
         agent._pending_cli_user_message = staged

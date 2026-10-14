@@ -16,10 +16,11 @@ import os
 import queue
 import threading
 import time
+import traceback
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
-from contextlib import nullcontext, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
@@ -47,6 +48,61 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+@asynccontextmanager
+async def _preagent_setup_timeout(session_key: str):
+    """Bound session-resolve / turn-prepare / agent:start on the current task.
+
+    The inactivity watchdog starts only inside ``_run_agent``; a hang before
+    that holds ``_AGENT_PENDING_SENTINEL`` forever (#138358). ``delay <= 0``
+    (HERMES_AGENT_TIMEOUT=0) restores the unbounded legacy. Same-task so
+    session ContextVars set during prepare remain visible to ``_run_agent``.
+    """
+    from gateway.run import _dump_wedged_turn_stacks, _float_env
+    delay = _float_env("HERMES_AGENT_TIMEOUT", 1800)
+    if delay <= 0:
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    fired = False
+
+    def _fire() -> None:
+        nonlocal fired
+        fired = True
+        if task is None or task.done():
+            return
+        try:
+            frames = task.get_stack(limit=25)
+            stack = "".join(traceback.format_stack(frames[-1]) if frames else [])
+            logger.error(
+                "Pre-agent setup timed out for %s after %.0fs "
+                "(HERMES_AGENT_TIMEOUT / agent.gateway_timeout); "
+                "cancelling the wedged turn:\n%s",
+                session_key, delay, stack or "<no asyncio stack>",
+            )
+            _dump_wedged_turn_stacks(session_key)
+        except Exception:
+            logger.error(
+                "Pre-agent setup timed out for %s after %.0fs "
+                "(HERMES_AGENT_TIMEOUT / agent.gateway_timeout); stack dump failed",
+                session_key, delay, exc_info=True,
+            )
+        task.cancel()
+
+    handle = loop.call_later(delay, _fire)
+    try:
+        yield
+    except asyncio.CancelledError:
+        if fired:
+            if task is not None:
+                task.uncancel()
+            raise TimeoutError from None
+        raise
+    finally:
+        handle.cancel()
+
 
 _tool_call_logger_lock = threading.Lock()
 
@@ -2153,29 +2209,33 @@ class GatewayTurnMixin:
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
-        resolved = await self._hmwa_resolve_session(event, source)
-        if resolved is None:
-            return
-        source, session_entry, session_key = resolved
-        prepared, _session_env_tokens = await self._hmwa_prepare_turn(
-            event, source, session_entry, session_key, _quick_key, run_generation,
-        )
-        if not isinstance(prepared, self._PreparedTurn):
-            return prepared
-        history, message_text = prepared.history, prepared.message_text
+        try:
+            async with _preagent_setup_timeout(_quick_key):
+                resolved = await self._hmwa_resolve_session(event, source)
+                if resolved is None:
+                    return
+                source, session_entry, session_key = resolved
+                prepared, _session_env_tokens = await self._hmwa_prepare_turn(
+                    event, source, session_entry, session_key, _quick_key, run_generation,
+                )
+                if not isinstance(prepared, self._PreparedTurn):
+                    return prepared
+                history, message_text = prepared.history, prepared.message_text
+
+                hook_ctx = {
+                    "platform": source.platform.value if source.platform else "",
+                    "user_id": source.user_id,
+                    "chat_id": source.chat_id or "",
+                    "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+                    "chat_type": getattr(source, "chat_type", "") or "",
+                    "session_id": session_entry.session_id,
+                    "message": message_text[:500],
+                }
+                await self.hooks.emit("agent:start", hook_ctx)
+        except TimeoutError:
+            return t("gateway.busy.setup_timeout")
 
         try:
-            hook_ctx = {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "chat_id": source.chat_id or "",
-                "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
-                "chat_type": getattr(source, "chat_type", "") or "",
-                "session_id": session_entry.session_id,
-                "message": message_text[:500],
-            }
-            await self.hooks.emit("agent:start", hook_ctx)
-
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
             from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current

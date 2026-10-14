@@ -2647,7 +2647,8 @@ def _reap_gateway_turn_processes(
 
 _TURN_STACK_DUMP_FRAME_MARKERS = (
     "run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle",
-    "finalize_turn", "end_turn", "run_in_session")
+    "finalize_turn", "end_turn", "run_in_session",
+    "_hmwa_resolve_session", "_hmwa_prepare_turn", "_handle_message_with_agent")
 
 
 def _dump_wedged_turn_stacks(task_id: str) -> None:

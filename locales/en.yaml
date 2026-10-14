@@ -735,6 +735,8 @@ gateway:
     reject_loop: "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
     draining_maintenance: "⏳ This agent is draining for a maintenance action and isn't accepting new turns right now. It'll be back in a moment — please resend shortly."
     another_turn_running: "⏳ Another turn is still running on this session. To protect the transcript, this message was not processed. Wait for the active turn to finish, then resend it."
+    setup_timeout: "⏳ Turn setup stalled with no agent activity and was cancelled. Please resend your message."
+    setup_waiting: "⏳ Still starting this turn ({minutes} min, no agent activity yet). Your message is queued. Use /stop if it should be cancelled."
     behavior_queue_short: "queues for next turn"
     behavior_queue_long: "Messages will be queued for the next turn while Hermes is busy."
     behavior_steer_short: "steers into current run (after next tool call)"

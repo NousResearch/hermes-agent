@@ -123,9 +123,9 @@ def _manager_hook_callbacks(manager: Any, hook_name: str) -> tuple[Callable[...,
 
 
 def _registered_callbacks(
-    hook_name: str, manager: Any = None
+    hook_name: str, manager: Any = None, *, allow_discovery: bool = True
 ) -> tuple[Callable[..., Any], ...]:
-    """Snapshot one manager without resolving it again through the global registry."""
+    """Snapshot callbacks, discovering lazily unless a capability probe opts out."""
     lock = None
     if manager is None:
         manager = _active_plugin_manager()
@@ -138,6 +138,8 @@ def _registered_callbacks(
         return ()
     try:
         if not getattr(manager, "_discovered", True):
+            if not allow_discovery:
+                return ()
             discover = getattr(manager, "discover_and_load", None)
             if callable(discover):
                 discover()
@@ -443,11 +445,16 @@ def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
 
 
 def has_stream_observer_hooks() -> bool:
-    return any(_registered_callbacks(name) for name in ("on_stream_start", "on_stream_delta", "on_stream_end"))
+    return any(
+        _registered_callbacks(name, allow_discovery=False)
+        for name in ("on_stream_start", "on_stream_delta", "on_stream_end")
+    )
 
 
 def has_reasoning_stream_observer_hooks() -> bool:
-    return stream_reasoning_deltas_enabled() and bool(_registered_callbacks("on_stream_delta"))
+    return stream_reasoning_deltas_enabled() and bool(
+        _registered_callbacks("on_stream_delta", allow_discovery=False)
+    )
 
 
 def stream_reasoning_deltas_enabled() -> bool:

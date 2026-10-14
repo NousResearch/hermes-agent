@@ -3134,7 +3134,22 @@ class GatewayRunner:
             return False
         if not current:
             return False
-        return current != self._boot_git_sha
+        if current == self._boot_git_sha:
+            return False
+        # HEAD moved since boot.  Before triggering a restart, check whether
+        # we *already* restarted for this exact SHA (the marker written by
+        # _trigger_stale_code_restart).  If HEAD hasn't moved further, the
+        # previous restart was sufficient — don't loop.
+        try:
+            import os as _os
+            _marker = Path(
+                _os.environ.get("HERMES_HOME", Path.home() / ".claude-code")
+            ) / ".stale_restart_sha"
+            if _marker.is_file() and _marker.read_text().strip() == current:
+                return False  # already restarted for this SHA
+        except Exception:
+            pass
+        return True
 
     def _trigger_stale_code_restart(self) -> None:
         """Idempotently kick off a graceful restart after stale-code detection.
@@ -3162,6 +3177,19 @@ class GatewayRunner:
             (self._boot_git_sha or "?")[:12],
             (current_sha or "?")[:12],
         )
+        # Write a marker so the next boot knows which SHA triggered this
+        # restart.  If HEAD hasn't moved further between this restart and
+        # the next boot, the check is suppressed — prevents the loop where
+        # agent commits during a live session cause repeated restart spam.
+        if current_sha:
+            try:
+                import os as _os
+                _marker = Path(
+                    _os.environ.get("HERMES_HOME", Path.home() / ".claude-code")
+                ) / ".stale_restart_sha"
+                _marker.write_text(current_sha)
+            except Exception as _me:
+                logger.debug("Could not write stale-restart marker: %s", _me)
         try:
             self.request_restart(detached=False, via_service=True)
         except Exception as exc:

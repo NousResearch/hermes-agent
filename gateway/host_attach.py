@@ -42,6 +42,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -181,6 +182,37 @@ def invalidate_host_gateway_cache() -> None:
     _cached_probe = None
 
 
+#: How long a host record may claim the host while its control socket has not answered yet. A real
+#: gateway binds its control socket within seconds of publishing its record (the publish happens
+#: before GPU children start), so an unanswered record older than this is a dead owner's leftover —
+#: the record write at claim time is the boot race this grace covers, nothing more.
+HOST_RECORD_BOOT_GRACE_S = 90.0
+
+
+def _incarnation_unprovable(record) -> bool:
+    """True when the record carries no process-incarnation proof at all.
+
+    Records written before the createTime/startTime fields existed prove nothing about the pid:
+    the liveness check degrades to "is this pid number alive", which a RECYCLED pid answers for a
+    process that has nothing to do with Hermes (observed: a dead gateway's pid taken over by an
+    unrelated monitoring daemon pinned a host into a 223-restart supervisor loop, because every
+    new gateway read the record, dialed a socket nobody owned, and refused to start).
+    """
+    return record.create_time is None and record.start_time is None
+
+
+def _record_past_boot_grace(record) -> bool:
+    """True when the record is older than the boot-race grace; an unreadable age counts as stale."""
+    stamp = str(getattr(record, "updated_at", "") or "")
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds() > HOST_RECORD_BOOT_GRACE_S
+
+
 def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     from gateway import host_rendezvous as hr
 
@@ -201,6 +233,20 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
             break
         time.sleep(_CHANNEL_POLL_S)
     # An owner exists and has not answered: the served set is UNKNOWN, never the record's word.
+    # One exception — a record that cannot prove its own incarnation (no createTime AND no
+    # startTime, written by a Hermes from before those fields existed). Its liveness check is
+    # unfalsifiable (_same_incarnation treats a missing create_time as a match), so a recycled pid
+    # reads as a live owner FOREVER. Once the boot-race grace on such a record has expired with the
+    # control socket still silent, the owner is gone — dead with a stale record, or a foreign
+    # process now holding its pid. Vouching for it strands the profile in a supervisor restart
+    # loop; letting the caller take the host over is the recovery the record was supposed to allow.
+    if _incarnation_unprovable(record) and _record_past_boot_grace(record):
+        logger.info(
+            "Host record names pid %s with no process-incarnation proof and its control socket "
+            "has not answered within the %.0fs boot grace; treating the owner as gone.",
+            record.pid, HOST_RECORD_BOOT_GRACE_S,
+        )
+        return None
     return HostGateway(record.pid, home, (), served_known=False)
 
 

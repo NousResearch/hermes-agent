@@ -69,11 +69,23 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 import type { ClientSessionState } from '../../../types'
 
 import {
+  committedFoldsOfLocalTurn,
+  committedTwinCoversLiveResponse,
+  durableFoldCoversLiveResponse,
+  isGatewaySystemMarker,
+  isStrictAnswerTextExtension,
+  toolCallIdsOf
+} from './folded-turn-coverage'
+import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   persistedTurnsEquivalent,
   transcriptRowIds
 } from './pending-turn-identity'
+
+// Re-exported for call sites that already import it from here; the definition
+// lives in the fold sibling to keep the dependency one-directional.
+export { isStrictAnswerTextExtension }
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
@@ -103,22 +115,6 @@ function hasStructuralParts(message: ChatMessage): boolean {
  */
 function isLiveTailRow(message: ChatMessage): boolean {
   return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
-}
-
-/**
- * True when `next` is a pure forward extension of the previous *answer* text.
- * Empty previous answer never accepts a dump as an extension — that is how the
- * mid-turn inflight flat dump used to sandwich structured rows (#76444).
- */
-export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
-  const n = next.trim()
-  const p = previous.trim()
-
-  if (!p || !n) {
-    return false
-  }
-
-  return n.startsWith(p)
 }
 
 /**
@@ -566,8 +562,6 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * row misses its committed copy and is appended a second time at the end of the
  * transcript — the duplicated user bubble of #67603.
  */
-const isGatewaySystemMarker = (message: ChatMessage): boolean =>
-  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
 
 /**
  * Does the row carry anything a viewer would miss — streamed answer text, or
@@ -699,132 +693,75 @@ const settledReplyOverEmptyShell = (local: ChatMessage, authoritative: ChatMessa
 const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessage): ChatMessage =>
   carryRowIdentity({ ...local, pending: authoritative.pending === true }, authoritative)
 
-/** Text of the response that follows a folded tool round, not the commentary before it. */
-function lastFoldedResponseText(message: ChatMessage): string {
-  let afterTool = false
-  let text = ''
-
-  for (const part of message.parts) {
-    if (part.type === 'tool-call') {
-      afterTool = true
-      text = ''
-
-      continue
-    }
-
-    if (afterTool && part.type === 'text') {
-      text = textWithoutReferenceLines(part.text).trim()
-    }
-  }
-
-  return afterTool ? text : ''
-}
-
-const toolCallIdsOf = (message: ChatMessage) =>
-  message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
-
-const textPartsOf = (message: ChatMessage) =>
-  message.parts.flatMap(part => {
-    const text = part.type === 'text' ? textWithoutReferenceLines(part.text).trim() : ''
-
-    return text ? [text] : []
-  })
-
-const isPrompt = (message: ChatMessage) => message.role === 'user' && !isGatewaySystemMarker(message)
-
 /**
- * Committed rows folding the local turn around `index`, for ANY turn, not just
- * the latest: rows sharing a tool call id with that turn, plus the assistant
- * rows after its prompt's durable twin. Only the latest turn may fall back to
- * position (everything after the last stored prompt).
+ * Ordinal pairing missed, yet the authoritative transcript already carries
+ * this same reply under its committed id. Three-way same-turn check against
+ * SETTLED authoritative rows only (a live projection shell must not swallow
+ * the richer local row, see the traces-only replacement test):
+ *  1. identical answer text            -> authoritative already has it
+ *  2. authoritative extends local text -> authoritative is the settled
+ *     final version of the still-streaming local copy
+ *  3. local extends authoritative text -> local is further along; replace
+ *     the committed row with the richer body instead of appending
+ *
+ * Returns true when the local row retires (dropped or replaced) — the caller
+ * keeps the COMMITTED id (not the local stream id): the turn is already in
+ * the authoritative transcript, so the merged row must stay addressable as
+ * that durable row; a stream id would read as a live row again next
+ * reconcile and re-enter this same path.
  */
-function committedFoldsOfLocalTurn(candidates: ChatMessage[], previous: ChatMessage[], index: number): ChatMessage[] {
-  const start = previous.findLastIndex((row, at) => at < index && isPrompt(row))
-  const end = previous.findIndex((row, at) => at > index && isPrompt(row))
+function retiredPendingReply(
+  message: ChatMessage,
+  candidates: ChatMessage[],
+  replacements: Map<string, ChatMessage>
+): boolean {
+  const nextText = textWithoutReferenceLines(chatMessageText(message))
 
-  const turnToolIds = new Set(
-    previous
-      .slice(start + 1, end < 0 ? undefined : end)
-      .flatMap(toolCallIdsOf)
-      .filter(Boolean)
+  const committedMatch = candidates.find(
+    candidate =>
+      candidate.role === 'assistant' &&
+      !isLiveTailRow(candidate) &&
+      (textWithoutReferenceLines(chatMessageText(candidate)) === nextText ||
+        isStrictAnswerTextExtension(textWithoutReferenceLines(chatMessageText(candidate)), nextText))
   )
 
-  const owner = previous[start]
-  const ownerRowIds = owner ? transcriptRowIds(owner) : []
-
-  const anchor = owner
-    ? candidates.findIndex(row => row.id === owner.id || transcriptRowIds(row).some(id => ownerRowIds.includes(id)))
-    : -1
-
-  const from = anchor >= 0 ? anchor : end < 0 ? candidates.findLastIndex(isPrompt) : candidates.length
-  const until = candidates.findIndex((row, at) => at > from && isPrompt(row))
-  const segment = new Set(candidates.slice(from + 1, until < 0 ? undefined : until))
-
-  return candidates.filter(
-    row =>
-      row.role === 'assistant' &&
-      !isLiveTailRow(row) &&
-      (segment.has(row) || toolCallIdsOf(row).some(id => turnToolIds.has(id)))
-  )
-}
-
-const hasWholeLines = (haystack: string, needle: string) => `\n${haystack}\n`.includes(`\n${needle}\n`)
-
-/**
- * A fold carries sealed text verbatim as a text part, or inside Thinking when
- * the provider stored public commentary in `reasoning` (Codex Responses, #119716).
- */
-const foldCarriesText = (fold: ChatMessage, text: string) =>
-  fold.parts.some(part =>
-    part.type === 'text'
-      ? textWithoutReferenceLines(part.text).trim() === text
-      : part.type === 'reasoning' && hasWholeLines(part.text, text)
-  )
-
-/**
- * History folds a tool-heavy turn into one bubble, while the live stream sealed
- * each interim segment and the final answer as bubbles of their own. A sealed
- * live bubble is that same occurrence when its turn's folds hold every tool
- * call it ran (durable identity) and its text, either verbatim (a sealed middle
- * segment, #119540) or as the final answer, equal or extended (#118670). This
- * holds with a partial or missing completion receipt, where full-bubble
- * equality sees neither.
- */
-function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage): boolean {
-  const liveToolIds = toolCallIdsOf(live)
-  const sealed = live.pending !== true || live.interim === true
-
-  if (!folds.length || (liveToolIds.length && (!sealed || liveToolIds.some(id => !id)))) {
-    return false
-  }
-
-  const liveTexts = textPartsOf(live)
-
-  const answer = liveToolIds.length
-    ? lastFoldedResponseText(live)
-    : textWithoutReferenceLines(chatMessageText(live)).trim()
-
-  if (!answer && !liveTexts.length && !liveToolIds.length) {
-    return false
-  }
-
-  const foldedToolIds = new Set(folds.flatMap(toolCallIdsOf))
-
-  if (!liveToolIds.every(id => foldedToolIds.has(id))) {
-    return false
-  }
-
-  if (sealed && liveTexts.every(text => folds.some(fold => foldCarriesText(fold, text)))) {
+  if (committedMatch) {
     return true
   }
 
-  return (
-    Boolean(answer) &&
-    folds.some(fold => {
-      const folded = lastFoldedResponseText(fold)
+  const committedPrefix = candidates.find(
+    candidate =>
+      candidate.role === 'assistant' &&
+      !isLiveTailRow(candidate) &&
+      isStrictAnswerTextExtension(nextText, textWithoutReferenceLines(chatMessageText(candidate)))
+  )
 
-      return folded === answer || isStrictAnswerTextExtension(folded, answer)
+  if (committedPrefix) {
+    replacements.set(committedPrefix.id, {
+      ...withAuthoritativeTurnState(message, committedPrefix),
+      id: committedPrefix.id
     })
+  }
+
+  return Boolean(committedPrefix)
+}
+
+/**
+ * Does the durable window already fold this live reply's turn — either as the
+ * fold-carry of a sealed segment (#119540, #118670), or as the committed twin
+ * arriving under a different id after a reconnect (#131500) — so the stale
+ * live copy must retire instead of appending beside its durable twin?
+ */
+function foldRetiresLiveReply(
+  candidates: ChatMessage[],
+  previousMessages: ChatMessage[],
+  index: number,
+  message: ChatMessage
+): boolean {
+  const folds = committedFoldsOfLocalTurn(candidates, previousMessages, index)
+
+  return (
+    durableFoldCoversLiveResponse(folds, message) || committedTwinCoversLiveResponse(folds, message)
   )
 }
 
@@ -1090,55 +1027,15 @@ export function preserveLocalPendingTurnMessages(
     // (`pending !== true`); a still-pending stream row that slips past
     // pairing falls through to `preserved.push` and renders the answer
     // twice — the reported A B C D E C D tail duplication.
-    //
-    // Three-way same-turn check against SETTLED authoritative rows only
-    // (a live projection shell must not swallow the richer local row, see
-    // the traces-only replacement test):
-    //  1. identical answer text            -> authoritative already has it
-    //  2. authoritative extends local text -> authoritative is the settled
-    //     final version of the still-streaming local copy
-    //  3. local extends authoritative text -> local is further along; replace
-    //     the committed row with the richer body instead of appending
     if (isPendingAssistant) {
-      const nextText = textWithoutReferenceLines(chatMessageText(message))
+      const retired = retiredPendingReply(message, candidates, replacements)
 
-      const committedMatch = candidates.find(
-        candidate =>
-          candidate.role === 'assistant' &&
-          !isLiveTailRow(candidate) &&
-          (textWithoutReferenceLines(chatMessageText(candidate)) === nextText ||
-            isStrictAnswerTextExtension(textWithoutReferenceLines(chatMessageText(candidate)), nextText))
-      )
-
-      if (committedMatch) {
-        continue
-      }
-
-      const committedPrefix = candidates.find(
-        candidate =>
-          candidate.role === 'assistant' &&
-          !isLiveTailRow(candidate) &&
-          isStrictAnswerTextExtension(nextText, textWithoutReferenceLines(chatMessageText(candidate)))
-      )
-
-      if (committedPrefix) {
-        // Keep the COMMITTED id (not the local stream id): the turn is
-        // already in the authoritative transcript, so the merged row must
-        // stay addressable as that durable row — a stream id would read as a
-        // live row again next reconcile and re-enter this same path.
-        replacements.set(committedPrefix.id, {
-          ...withAuthoritativeTurnState(message, committedPrefix),
-          id: committedPrefix.id
-        })
-
+      if (retired) {
         continue
       }
     }
 
-    if (
-      isPendingAssistant &&
-      durableFoldCoversLiveResponse(committedFoldsOfLocalTurn(candidates, previousMessages, index), message)
-    ) {
+    if (isPendingAssistant && foldRetiresLiveReply(candidates, previousMessages, index, message)) {
       continue
     }
 

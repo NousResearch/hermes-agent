@@ -9,9 +9,11 @@ orphaned loop self-terminates instead of leaving the indicator on indefinitely.
 """
 
 import asyncio
+import types
 
 import pytest
 
+import plugins.platforms.discord.adapter as adapter_mod
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -26,6 +28,17 @@ class _FakeHTTP:
 class _FakeClient:
     def __init__(self) -> None:
         self.http = _FakeHTTP()
+
+
+@pytest.fixture(autouse=True)
+def _stub_discord_route(monkeypatch):
+    """The adapter builds its route via ``discord.http.Route``. The test env stubs
+    ``discord``, so provide a harmless ``Route`` — otherwise the loop exits on an
+    error and the bound is never actually exercised (and no POST happens)."""
+    monkeypatch.setattr(
+        adapter_mod, "discord",
+        types.SimpleNamespace(http=types.SimpleNamespace(Route=lambda *a, **k: object())),
+    )
 
 
 def _make_adapter(max_lifetime_secs: float) -> DiscordAdapter:
@@ -47,7 +60,7 @@ async def test_typing_loop_is_bounded_and_cleans_up():
     await asyncio.sleep(0.3)  # well past the 50ms lifetime
 
     assert "chan-bounded" not in adapter._typing_tasks
-    assert adapter._client.http.calls >= 1  # it did POST at least once
+    assert adapter._client.http.calls >= 1  # it POSTed, then bounded itself
 
 
 @pytest.mark.asyncio

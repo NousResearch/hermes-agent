@@ -144,14 +144,25 @@ def mcp_server_enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
-def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
+# Idle stdio servers each hold one child process (~60-70 MB) for as long as the host
+# process lives. Long-lived hosts (gateway, dashboard, desktop backend) therefore grow
+# without bound unless every server sets ``idle_timeout_seconds`` — which almost nobody
+# does. Defaulting idle recycle to 30 minutes keeps the steady-state footprint at one
+# live server per *actively used* entry; a recycled server reconnects transparently on
+# the next tool call, so callers never notice. Explicit ``0`` still disables.
+_DEFAULT_IDLE_TIMEOUT_SECONDS = 1800.0
+
+
+def _get_lifecycle_seconds(config: dict, key: str, default: Optional[float] = None) -> Optional[float]:
     """Optional positive lifecycle timeout from top-level/nested ``lifecycle`` config (``0``
-    disables; negatives and non-numbers are warned about and ignored)."""
+    disables; negatives and non-numbers are warned about and ignored). When the key is
+    absent entirely, ``default`` is returned — the idle-recycle path passes the
+    30-minute backstop so unset servers recycle instead of living forever."""
     raw = config.get(key)
     if raw is None and isinstance(config.get("lifecycle"), dict):
         raw = config["lifecycle"].get(key)
     if raw is None:
-        return None
+        return default
     try:
         seconds = float(raw)
     except (TypeError, ValueError):

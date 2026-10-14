@@ -1,0 +1,25 @@
+{
+  "version": "1.0.1",
+  "integration_state_schema": 1,
+  "installed_integrations": [
+    "claude",
+    "codex",
+    "hermes"
+  ],
+  "integration_settings": {
+    "claude": {
+      "script": "py",
+      "invoke_separator": "-"
+    },
+    "codex": {
+      "script": "py",
+      "invoke_separator": "-"
+    },
+    "hermes": {
+      "script": "py",
+      "invoke_separator": "-"
+    }
+  },
+  "integration": "claude",
+  "default_integration": "claude"
+}

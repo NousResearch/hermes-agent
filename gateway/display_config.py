@@ -32,6 +32,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Prefetch recall indicator ("🧠 Holographic — recalled 1 memory"). Default on so upgrades
+    # keep today's chat line. Per-platform override wins, so a shared Slack channel can set
+    # display.platforms.slack.recall_notifications: off without muting Discord or Telegram.
+    # Not the same knob as memory_notifications (background review writes).
+    "recall_notifications": "on",
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -183,6 +188,16 @@ def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
 
+def _norm_on_off(value: Any) -> str:
+    """``off``/falsy → ``off``; anything else (including YAML 1.1 bare ``on``) → ``on``."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    val = str(value).strip().lower()
+    if val in _FALSY or val == "off":
+        return "off"
+    return "on"
+
+
 def _norm_choice(choices: tuple[str, ...]) -> Any:
     def norm(value: Any) -> str:
         val = str(value).lower()
@@ -209,6 +224,7 @@ _NORMALISERS: dict[str, Any] = {
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
+    "recall_notifications": _norm_on_off,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),

@@ -14,6 +14,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -37,6 +38,8 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
+from tools.process_registry_capture import ProcessByteCapture
+from tools.process_registry_reader import ProcessReaderMixin
 
 logger = logging.getLogger(__name__)
 
@@ -557,6 +560,7 @@ class ProcessSession:
     exit_code: Optional[int] = None             # None while running
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
     termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    byte_capture: Optional[ProcessByteCapture] = None
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
@@ -698,7 +702,7 @@ def _is_wsl_launcher_command(command: str) -> bool:
     return False
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
+class ProcessRegistry(ProcessReaderMixin, ProcessTerminationMixin, ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1129,12 +1133,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return tempfile.gettempdir()
 
-    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> list[str]:
+    def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str,
+                    interactive: bool = True) -> list[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
         gateway and its messaging control plane)."""
-        argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        argv = [_find_shell(), "-lic" if interactive else "-lc", f"set +m; {safe_command}"]
         # This applies to both pipe mode and the PTY path above. See #70716.
         in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         if in_supervised_gateway and _systemd_run_user_scope_available():
@@ -1198,7 +1203,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
     def spawn_local(
         self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, max_output_bytes: int = MAX_OUTPUT_CHARS,
+        shell_interactive: bool = True, cwd_fd: int | None = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
@@ -1209,6 +1215,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
+        if max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
@@ -1228,10 +1236,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
                             "to avoid duplicate command execution"
                         ) from e
                     session.systemd_unit = ""
+        # PTYs deliberately retain their combined terminal stream.
+        if not _IS_WINDOWS:
+            session.byte_capture = ProcessByteCapture(max_output_bytes)
         # Pipe path (non-PTY or PTY fallback).
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local", shell_interactive)
         spawn_env = self._spawn_env(env_vars)
         if session.systemd_unit:
             spawn_env = systemd_user_bus_env(spawn_env)
@@ -1240,9 +1251,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
+        if cwd_fd is not None:
+            # fchdir is required on macOS too: /dev/fd/N is not a directory there.
+            # Exec replaces this prelude with the normal native shell/scope argv.
+            spawn_argv = [sys.executable, "-I", "-S", "-c",
+                          "import os,sys; fd=int(sys.argv[1]); os.fchdir(fd); os.close(fd); "
+                          "os.execvpe(sys.argv[2],sys.argv[2:],os.environ)", str(cwd_fd), *spawn_argv]
+            _popen_kwargs["pass_fds"] = (cwd_fd,)
         proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            spawn_argv, text=True, cwd=None if cwd_fd is not None else session.cwd,
+            env=spawn_env, encoding="utf-8",
+            errors="replace", stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if session.byte_capture else subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True, **_popen_kwargs)
         session.process = proc
         session.pid = proc.pid
@@ -1327,104 +1347,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         return session
 
     # ----- Reader / Poller Threads -----
-
-    def _reader_loop(self, session: ProcessSession):
-        """Background thread: read stdout from a local Popen process.
-        ``buffer.read1(4096)`` not ``TextIOWrapper.read(4096)``: on pipes the latter
-        blocks until EOF, landing "live" output in one burst at exit. Orphaned-pipe
-        guard: a backgrounded grandchild (``node server.js &``) inherits our pipe's write
-        end so EOF never arrives while it lives, which would park this thread and never
-        fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
-        after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
-        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
-        poll()/wait() remains the safety net. See #68915, #8340.
-        """
-        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
-        # reader can wake between them; strip leading noise from every chunk until the
-        # process has produced real output, not just from the first read.
-        head_noise = True
-        # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
-        # incremental decoder holds the partial sequence until the rest arrives.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-
-        # Incremental decoder: raw pipe reads can split a multibyte UTF-8 character across two read1()
-        # chunks. A stateless per-chunk ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
-        # mojibake. The incremental decoder holds the partial sequence until the continuation bytes arrive —
-        # same treatment the foreground path already has in
-        # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
-        def _append_chunk(chunk: str):
-            nonlocal head_noise
-            if head_noise:
-                chunk = self._clean_shell_noise(chunk)
-                head_noise = not chunk.strip()
-            self._ingest_output(session, chunk)
-        try:
-            proc = session.process
-            if proc is None or proc.stdout is None:
-                return
-            stdout = proc.stdout
-            raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
-
-            def _read_once():
-                """One 4 KiB read: decoded text ('' for a partial multibyte tail), None at EOF."""
-                if raw_read is None:  # mocked/alternate streams without a raw buffer: less "live"
-                    return stdout.read(4096) or None
-                raw = raw_read(4096)
-                return decoder.decode(raw) if raw else None
-            # select() needs a real OS fd; mocked streams (tests, adapters) may lack
-            # fileno() and use the blocking read instead.
-            try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
-            except Exception:
-                fd = None
-            if not (isinstance(fd, int) and fd >= 0):
-                fd = None
-            if fd is not None:
-                import select as _select
-                session._reader_selectable = True
-            idle_after_exit = 0
-            drained_after_request = 0
-            while True:
-                if fd is not None:
-                    try:
-                        # Once a finish is requested, read only what is already buffered: the exited
-                        # child's tail, never an orphaned grandchild's future writes.
-                        wait_s = 0 if session._reader_finish_requested.is_set() else 0.2
-                        ready, _, _ = _select.select([fd], [], [], wait_s)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if not ready:
-                        if session._reader_finish_requested.is_set():
-                            break
-                        # Direct child gone and pipe idle ~200ms: a few more cycles for a
-                        # buffered tail, then stop rather than wait forever on an orphaned
-                        # grandchild's pipe.
-                        if proc.poll() is not None:
-                            # See #68915.
-                            idle_after_exit += 1
-                        if idle_after_exit >= 3:
-                            break
-                        continue
-                chunk = _read_once()
-                if chunk is None:
-                    break  # true EOF — all writers closed
-                if chunk:
-                    _append_chunk(chunk)
-                if session._reader_finish_requested.is_set():
-                    # A single chunk is not the tail: the child can exit with a whole pipe buffer
-                    # unread. The cap only stops a grandchild that never lets the pipe go empty.
-                    drained_after_request += len(chunk)
-                    if drained_after_request >= _FINAL_DRAIN_MAX_CHARS:
-                        break
-                idle_after_exit = 0
-        except Exception as e:
-            logger.debug("Process stdout reader ended: %s", e)
-        finally:
-            self._finish_reader(
-                session, decoder, _append_chunk, "Process",
-                session.process.wait, lambda: session.process.returncode)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
@@ -1655,6 +1577,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
         """
+        reader = session._reader_thread
+        if session.byte_capture is not None and reader is not None and reader.is_alive() and reader is not threading.current_thread():
+            session._reader_finish_requested.set()
+            return
         proc = session.process
         if proc is not None:
             for stream in (proc.stdout, proc.stderr, proc.stdin):

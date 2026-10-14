@@ -1,0 +1,446 @@
+{
+  "WorkspaceRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "WorkspaceRequest",
+    "type": "object"
+  },
+  "PathRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "path": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "path"
+    ],
+    "title": "PathRequest",
+    "type": "object"
+  },
+  "ReadRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "path": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      },
+      "max_bytes": {
+        "default": 262144,
+        "maximum": 262144,
+        "minimum": 1,
+        "title": "Max Bytes",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "session_id",
+      "path"
+    ],
+    "title": "ReadRequest",
+    "type": "object"
+  },
+  "WriteRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "path": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      },
+      "data_base64": {
+        "maxLength": 349528,
+        "title": "Data Base64",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "path",
+      "data_base64"
+    ],
+    "title": "WriteRequest",
+    "type": "object"
+  },
+  "RemoveRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "path": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      },
+      "recursive": {
+        "default": false,
+        "title": "Recursive",
+        "type": "boolean"
+      },
+      "force": {
+        "default": false,
+        "title": "Force",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "session_id",
+      "path"
+    ],
+    "title": "RemoveRequest",
+    "type": "object"
+  },
+  "StartRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "command": {
+        "maxLength": 32768,
+        "minLength": 1,
+        "title": "Command",
+        "type": "string"
+      },
+      "cwd": {
+        "default": ".",
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Cwd",
+        "type": "string"
+      },
+      "env": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "maxProperties": 64,
+        "title": "Env",
+        "type": "object"
+      },
+      "timeout_seconds": {
+        "default": 60,
+        "maximum": 300,
+        "minimum": 1,
+        "title": "Timeout Seconds",
+        "type": "integer"
+      },
+      "max_output_bytes": {
+        "default": 131072,
+        "maximum": 131072,
+        "minimum": 1,
+        "title": "Max Output Bytes",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "session_id",
+      "command"
+    ],
+    "title": "StartRequest",
+    "type": "object"
+  },
+  "OutputRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "maxLength": 256,
+        "minLength": 1,
+        "title": "Session Id",
+        "type": "string"
+      },
+      "stdout_cursor": {
+        "default": 0,
+        "maximum": 131072,
+        "minimum": 0,
+        "title": "Stdout Cursor",
+        "type": "integer"
+      },
+      "stderr_cursor": {
+        "default": 0,
+        "maximum": 131072,
+        "minimum": 0,
+        "title": "Stderr Cursor",
+        "type": "integer"
+      },
+      "max_bytes": {
+        "default": 16384,
+        "maximum": 16384,
+        "minimum": 1,
+        "title": "Max Bytes",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "OutputRequest",
+    "type": "object"
+  },
+  "OperationReceipt": {
+    "additionalProperties": false,
+    "properties": {
+      "operation_id": {
+        "title": "Operation Id",
+        "type": "string"
+      },
+      "session_id": {
+        "title": "Session Id",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "write",
+          "remove",
+          "process"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "reserved",
+          "running",
+          "stopping",
+          "completed",
+          "failed",
+          "cancelled",
+          "interrupted"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "process_id": {
+        "default": "",
+        "title": "Process Id",
+        "type": "string"
+      },
+      "exit_code": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Exit Code"
+      },
+      "reason": {
+        "default": "",
+        "title": "Reason",
+        "type": "string"
+      },
+      "termination_confirmed": {
+        "default": true,
+        "title": "Termination Confirmed",
+        "type": "boolean"
+      },
+      "acknowledged": {
+        "default": false,
+        "title": "Acknowledged",
+        "type": "boolean"
+      },
+      "output_available": {
+        "default": false,
+        "title": "Output Available",
+        "type": "boolean"
+      },
+      "stdout_bytes": {
+        "default": 0,
+        "title": "Stdout Bytes",
+        "type": "integer"
+      },
+      "stderr_bytes": {
+        "default": 0,
+        "title": "Stderr Bytes",
+        "type": "integer"
+      },
+      "stdout_truncated": {
+        "default": false,
+        "title": "Stdout Truncated",
+        "type": "boolean"
+      },
+      "stderr_truncated": {
+        "default": false,
+        "title": "Stderr Truncated",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "operation_id",
+      "session_id",
+      "kind",
+      "status"
+    ],
+    "title": "OperationReceipt",
+    "type": "object"
+  },
+  "OutputResponse": {
+    "$defs": {
+      "StreamChunk": {
+        "properties": {
+          "data_base64": {
+            "maxLength": 21848,
+            "title": "Data Base64",
+            "type": "string"
+          },
+          "next_cursor": {
+            "maximum": 131072,
+            "minimum": 0,
+            "title": "Next Cursor",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data_base64",
+          "next_cursor",
+          "truncated"
+        ],
+        "title": "StreamChunk",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "operation_id": {
+        "title": "Operation Id",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "reserved",
+          "running",
+          "stopping",
+          "completed",
+          "failed",
+          "cancelled",
+          "interrupted"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "complete": {
+        "title": "Complete",
+        "type": "boolean"
+      },
+      "partial": {
+        "title": "Partial",
+        "type": "boolean"
+      },
+      "stdout": {
+        "$ref": "#/$defs/StreamChunk"
+      },
+      "stderr": {
+        "$ref": "#/$defs/StreamChunk"
+      }
+    },
+    "required": [
+      "operation_id",
+      "status",
+      "complete",
+      "partial",
+      "stdout",
+      "stderr"
+    ],
+    "title": "OutputResponse",
+    "type": "object"
+  },
+  "FileData": {
+    "properties": {
+      "kind": {
+        "const": "file",
+        "title": "Kind",
+        "type": "string"
+      },
+      "data_base64": {
+        "title": "Data Base64",
+        "type": "string"
+      },
+      "size_bytes": {
+        "title": "Size Bytes",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "kind",
+      "data_base64",
+      "size_bytes"
+    ],
+    "title": "FileData",
+    "type": "object"
+  },
+  "MissingFile": {
+    "properties": {
+      "kind": {
+        "const": "missing",
+        "title": "Kind",
+        "type": "string"
+      }
+    },
+    "required": [
+      "kind"
+    ],
+    "title": "MissingFile",
+    "type": "object"
+  },
+  "ResolvedPath": {
+    "properties": {
+      "path": {
+        "title": "Path",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "ResolvedPath",
+    "type": "object"
+  }
+}

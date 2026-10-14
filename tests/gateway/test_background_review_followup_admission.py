@@ -52,6 +52,7 @@ def _wire_with_adapter(adapter, session_key: str = "session-key", overflow_probe
     )
     holder = types.SimpleNamespace(
         _ctx=ctx,
+        _approval_owner=None,
         _runner=types.SimpleNamespace(
             _service_tier=None,
             _consume_pending_turn_sidecar_notes=lambda key: [],
@@ -512,6 +513,7 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
     adapter._pending_messages = {}
     adapter._text_debounce = {}
     adapter._busy_session_handler = None
+    adapter._message_handler = None
     adapter._busy_text_mode = (
         "queue" if queue_path in {"merge", "debounce"} else "interrupt"
     )

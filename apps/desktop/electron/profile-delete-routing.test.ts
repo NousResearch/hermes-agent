@@ -137,6 +137,7 @@ test('assertLocalProfileCanStart rejects a delayed retry after the profile direc
 
   assert.throws(() => assertLocalProfileCanStart('selena', gate, () => false), /Profile "selena" no longer exists/)
   assert.doesNotThrow(() => assertLocalProfileCanStart('default', gate, () => false))
+  assert.doesNotThrow(() => assertLocalProfileCanStart('conn:local::default', gate, () => false))
   assert.doesNotThrow(() => assertLocalProfileCanStart('selena', gate, profile => profile === 'selena'))
 })
 

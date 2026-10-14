@@ -75,7 +75,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``allow``/None → dispatch. Any ``skip`` beats ``rewrite``/``allow``; else the first wins. Runs BEFORE auth so plugins can handle unauthorized senders."""
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(
@@ -87,17 +87,17 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
             _hook_results = []
 
-        for _result in _hook_results:
-            if not isinstance(_result, dict):
-                continue
-            _action = _result.get("action")
-            if _action == "skip":
+        _dict_results = [_r for _r in _hook_results if isinstance(_r, dict)]
+        for _result in _dict_results:
+            if _result.get("action") == "skip":
                 logger.info(
                     "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
                     _result.get("reason"), source.platform.value if source.platform else "unknown",
                     source.chat_id or "unknown",
                 )
                 return None
+        for _result in _dict_results:
+            _action = _result.get("action")
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):

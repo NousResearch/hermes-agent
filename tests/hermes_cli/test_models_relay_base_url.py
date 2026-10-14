@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.models as models
+from hermes_cli import models
 
 
 class _RecordingProfile:
@@ -45,6 +45,23 @@ def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monk
         catalog = models.provider_model_ids(provider, force_refresh=True)
         assert calls == expected
         assert ("native-catalog-model" in catalog) == bool(expected)
+
+
+def test_registry_endpoint_is_canonical_when_the_profile_leaves_base_url_empty(monkeypatch):
+    """TokenHub's profile leaves ``base_url`` to its auth-registry row. A ``model.base_url`` that
+    ``hermes model`` saved as that endpoint is not a relay: the picker keeps the curated Hy list
+    instead of replacing it with a live probe of the same host."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from providers import get_provider_profile
+
+    assert get_provider_profile("tencent-tokenhub").base_url == ""
+    endpoint = PROVIDER_REGISTRY["tencent-tokenhub"].inference_base_url
+    monkeypatch.setattr(models, "_get_model_config_dict",
+                        lambda: {"provider": "tencent-tokenhub", "base_url": endpoint + "/"})
+    assert models._configured_relay_base_url("tencent-tokenhub") == ""
+    monkeypatch.setattr(models, "_get_model_config_dict",
+                        lambda: {"provider": "tencent-tokenhub", "base_url": endpoint + "/relay"})
+    assert models._configured_relay_base_url("tencent-tokenhub") == endpoint + "/relay"
 
 
 def test_relay_base_url_is_probed_for_configured_provider(monkeypatch):

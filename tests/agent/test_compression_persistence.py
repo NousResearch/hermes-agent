@@ -165,7 +165,7 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "recent answer"},
             ]
             db.archive_and_compact("original-session", compacted)
-            setattr(agent, "_last_compaction_in_place", True)
+            agent._last_compaction_in_place = True
             agent._last_flushed_db_idx = 0
 
             # Same agent turn continues after compaction. The compacted dicts

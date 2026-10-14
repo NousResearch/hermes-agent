@@ -155,12 +155,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           ''
         );
 
-        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.pem/.asc)
+        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.asc)
         # next to these archives. `nix flake check` otherwise only evaluates
         # the pm derivations, so a sidecar leaking into srcs ("do not know
-        # how to unpack") stayed green; build the two sidecar-bearing pins.
+        # how to unpack") stayed green; build the sidecar-bearing pin.
         pm-packages-unpack = pkgs.runCommand "hermes-pm-packages-unpack" { } ''
-          test -x ${self'.packages.pm-tirith}/tirith
           test -x ${self'.packages.pm-iron-proxy}/iron-proxy
           mkdir -p $out
           echo "ok" > $out/result

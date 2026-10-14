@@ -4,13 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reasoningEffortPending } from '@/app/chat/session-view'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesModule from '@/hermes'
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $notifications } from '@/store/notifications'
 import { $cronRunReadOnlyVerdicts, recordCronRunVerdict } from '@/store/read-only-transcript'
-import { setSessionOwnerHint, setSessions } from '@/store/session'
+import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
+
+import {
+  clearSingleFlightSessionResumeState
+} from '../../session/hooks/use-prompt-actions/single-flight-resume'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -72,11 +77,13 @@ function renderTile(
 
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
     vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
   })
 
@@ -201,6 +208,68 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(runtimeId).toBe('runtime-a')
     expect(requestGateway).not.toHaveBeenCalled()
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('forces an owner-routed message snapshot into a warm tile without touching foreground state', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text', text: 'local pending prompt' }],
+      pending: true,
+      role: 'user'
+    }
+
+    const warm = { busy: false, messages: [pending], storedSessionId: 'stored-tile' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', warm]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    $activeSessionId.set('runtime-foreground')
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    stashSessionDraft('stored-tile', 'unsent tile draft', [])
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+      info: { model: 'snapshot-model' },
+      message_count: 2,
+      messages: [
+        { content: 'new prompt', role: 'user', timestamp: 1 },
+        { content: 'new answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      running: true,
+      session_id: 'runtime-tile'
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-tile', { authoritativeSnapshot: true })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('remote-tile', 'tile-profile', 'session.resume', {
+      cols: 96,
+      omit_messages: false,
+      profile: 'backend-tile',
+      session_id: 'stored-tile'
+    })
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model' })
+    expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
+    expect($activeSessionId.get()).toBe('runtime-foreground')
+    expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
+
+    clearSessionDraft('stored-tile')
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
   })
 
   it('merges persisted messages into a warm tile on explicit reopen (#96183)', async () => {
@@ -696,7 +765,7 @@ describe('useSessionTileDelegate interruptSession', () => {
   })
 })
 
-describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
+describe('useSessionTileDelegate send from a tile behind the stored transcript', () => {
   const storedId = 'stored-tile-peer'
   const runtimeId = 'rt-tile-peer'
 
@@ -712,7 +781,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     $notifications.set([])
   })
 
-  it('refuses submitToSession when a peer window advanced the transcript', async () => {
+  it('submits without a pre-send transcript read or a warning when a peer window advanced the chat (#65047)', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -724,99 +793,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       ]
     })
 
-    const stale = createClientSessionState(storedId, [
-      { id: 'u1', role: 'user', parts: [textPart('a')] },
-      { id: 'a1', role: 'assistant', parts: [textPart('b')] }
-    ])
-
-    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
-    const seeds: unknown[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    renderTile(requestGateway, {
-      runtimeIdByStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      updateSessionState: vi.fn((id, updater, stored) => {
-        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
-        const next = updater(prev)
-        sessionStateByRuntimeIdRef.current.set(id, next)
-        seeds.push(next)
-
-        return next
-      })
-    })
-
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'stale tile send')
-
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
-      'work-vps',
-      'prompt.submit',
-      expect.anything(),
-      expect.anything(),
-      expect.anything()
-    )
-    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
-    expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
-  })
-
-  it('grafts same-window residue and still submits the Quick Entry prompt', async () => {
-    setSessions([row({ id: storedId, profile: 'work-vps' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: storedId,
-      messages: [
-        { content: 'a', id: 1, role: 'user', timestamp: 1 },
-        { content: 'server-side turn residue', id: 2, role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const stale = createClientSessionState(storedId, [{ id: 'u1', role: 'user', rowId: 1, parts: [textPart('a')] }])
-
-    const sessionStateByRuntimeIdRef = { current: new Map([[runtimeId, stale]]) }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([[storedId, runtimeId]]) }
-    const seeds: unknown[] = []
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    renderTile(requestGateway, {
-      runtimeIdByStoredSessionIdRef,
-      sessionStateByRuntimeIdRef,
-      updateSessionState: vi.fn((id, updater, stored) => {
-        const prev = sessionStateByRuntimeIdRef.current.get(id) ?? createClientSessionState(stored)
-        const next = updater(prev)
-        sessionStateByRuntimeIdRef.current.set(id, next)
-        seeds.push(next)
-
-        return next
-      })
-    })
-
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'follow up')
-
-    expect(requestGatewayForProfile).toHaveBeenCalledWith(
-      'work-vps',
-      'prompt.submit',
-      { session_id: runtimeId, text: 'follow up' },
-      1_800_000,
-      undefined
-    )
-    expect((seeds.at(-1) as { messages: ChatMessage[] }).messages.map(message => message.rowId)).toEqual([1, 2])
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
-  })
-
-  it('allows submitToSession when the authoritative transcript is not ahead', async () => {
-    setSessions([row({ id: storedId, profile: 'work-vps' })])
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      session_id: storedId,
-      messages: [
-        { content: 'a', role: 'user', timestamp: 1 },
-        { content: 'b', role: 'assistant', timestamp: 2 }
-      ]
-    })
-
-    const fresh = createClientSessionState(storedId, [
+    const behind = createClientSessionState(storedId, [
       { id: 'u1', role: 'user', parts: [textPart('a')] },
       { id: 'a1', role: 'assistant', parts: [textPart('b')] }
     ])
@@ -825,18 +802,19 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
 
     renderTile(requestGateway, {
       runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
-      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, fresh]]) }
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, behind]]) }
     })
 
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'fresh tile send')
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'tile send from behind')
 
     expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'work-vps',
       'prompt.submit',
-      { session_id: runtimeId, text: 'fresh tile send' },
+      { session_id: runtimeId, text: 'tile send from behind' },
       1_800_000,
       undefined
     )
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 })

@@ -97,6 +97,54 @@ Configurable via `config.yaml` under `browser.dialog_policy`:
 
 Policy is per-task; no per-dialog overrides.
 
+## Trusted plugin CDP access
+
+In-process plugin code can send raw CDP commands over a task's supervisor
+connection through one public call, instead of writing the supervisor's private
+call table or socket:
+
+```python
+from tools.browser_supervisor import SUPERVISOR_REGISTRY
+from tools.browser_supervisor_capture import CapturedCDPInvalid
+
+cdp = SUPERVISOR_REGISTRY.capture(task_id)  # raises CapturedCDPInvalid if no attached supervisor
+reply = cdp.call("Runtime.evaluate", {"expression": "document.title", "returnByValue": True},
+                 session_id=cdp.page_session_id, timeout=5)
+title = reply["result"]["result"]["value"]
+```
+
+- `SUPERVISOR_REGISTRY.capture(task_id, *, timeout=10.0) -> CapturedCDP` pins the
+  supervisor's current WebSocket and the default page session attached on it. It
+  never starts, reconnects or refocuses a supervisor.
+- `CapturedCDP.call(method, params=None, *, session_id=None, timeout=10.0, before_send=None) -> dict`
+  returns the raw CDP reply (`{"id", "result"}`). `session_id=None` addresses the
+  browser endpoint (`Target.*`); pass `page_session_id` or a session you attached
+  yourself for page domains. A CDP error reply raises `RuntimeError`; no reply
+  within a finite `timeout` raises `TimeoutError`. Finite timeouts fence queue
+  admission with a monotonic deadline. `timeout=None` retains the reply until
+  response or connection closure; acquisition owners can keep late attach IDs
+  for cleanup beyond their own outer deadline. The call blocks its thread, so call it
+  from a worker thread, never from the supervisor's own event loop.
+- `CapturedCDP.is_valid()` stays true until the supervisor reconnects, stops, or
+  is replaced in the registry. After that every `call` raises
+  `CapturedCDPInvalid`, including a call already in flight when the socket
+  drops. A handle never follows the supervisor to a new connection: capture
+  again and re-check whatever state you depend on.
+- `page_session_id` is the default page session at capture time. A later
+  `focus_page` on the supervisor does not change it.
+- Sessions you attach (`Target.attachToTarget`) are yours to detach. A reply
+  that arrives after `timeout` is dropped, so a timed-out attach can leave a
+  session attached until the connection closes. Use `timeout=None` with a retained
+  acquisition worker to own and detach late replies, rather than guessing a large timeout.
+- `before_send` is a trusted synchronous, nonblocking validator on the supervisor
+  loop immediately before dispatch. Return `None`, or raise to refuse; do not call
+  capture/CDP APIs from it. It does not revoke commands already dispatched.
+
+This is a trusted, in-process seam. It grants nothing in-process Python could
+not already reach, and it enforces no origin, consent or target-ownership
+policy: a plugin that acts on pages must enforce its own. It is not exposed as a
+model tool and has no config switch.
+
 ## Agent surface
 
 ### `browser_dialog` tool
@@ -179,6 +227,7 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 ## File layout
 
 - `tools/browser_supervisor.py` — `CDPSupervisor`, `SupervisorRegistry`, `PendingDialog`, `FrameInfo`
+- `tools/browser_supervisor_capture.py` — `CapturedCDP` / `CapturedCDPInvalid`, the trusted-plugin CDP seam behind `SUPERVISOR_REGISTRY.capture`
 - `tools/browser_dialog_tool.py` — `browser_dialog` tool handler
 - `tools/browser_tool.py` — `browser_navigate` start-hook, `browser_snapshot` merge, `/browser connect` reattach, `_cleanup_browser_session` teardown
 - `toolsets.py` — registers `browser_dialog` in `browser`, `hermes-acp`, `hermes-api-server`, and core toolsets (gated on CDP reachability)

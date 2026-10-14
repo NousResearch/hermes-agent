@@ -141,6 +141,9 @@ class Row:
         out[p + "/models"] = "listing"
         if self.dialect == "anthropic":
             out[p + "/v1/models"] = "listing"
+        if self.name == "lmstudio":
+            # LM Studio validates and lists through its NATIVE ``/api/v1/models`` at the server root.
+            out[f"/{self.name}/api/v1/models"] = "listing"
         return out
 
     def listing_routes(self) -> set[str]:
@@ -174,7 +177,7 @@ def discover_catalog() -> list[Row]:
             env = {k: v for k, v in os.environ.items() if k in _PASSTHROUGH}
             env.update(HOME=d, HERMES_HOME=str(Path(d) / ".hermes"), PYTHONPATH=str(REPO_ROOT))
             proc = subprocess.run([sys.executable, "-c", _DISCOVER], env=env, capture_output=True,
-                                  text=True, timeout=120, cwd=str(REPO_ROOT))
+                                  text=True, timeout=120, cwd=str(REPO_ROOT), check=False)
         line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("CATALOG=")), None)
         assert line, f"provider discovery failed: {proc.stderr[-2000:]}"
         _CATALOG = sorted((Row(**{**r, "aliases": tuple(r["aliases"])}) for r in json.loads(line[8:])),

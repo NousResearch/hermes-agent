@@ -106,7 +106,7 @@ def _run(req: dict) -> dict:
 
 
 def _spawn(req: dict) -> dict:
-    log = open(req["log"], "ab")  # noqa: SIM115 - handed to the child
+    log = open(req["log"], "ab")
     try:
         proc = subprocess.Popen(req["argv"], env=req["env"], cwd=req["cwd"], stdin=subprocess.DEVNULL,
                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

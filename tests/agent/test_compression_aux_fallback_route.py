@@ -116,3 +116,38 @@ def test_auth_failure_on_fallen_back_route_clears_latch():
     assert result is None
     assert compressor._summary_model_fallen_back is False
     assert compressor._last_summary_auth_failure is True
+
+
+def test_fallen_back_route_strips_snapshot_from_main_runtime():
+    """#138469 review: the nested main_runtime snapshot must not survive as the session credential."""
+    compressor = _compressor()
+    compressor.api_key = "sk-revoked-oauth-snapshot"
+    compressor._fallback_to_main_for_compression(_auth_revoked_error(), "failed")
+    runtime = {"model": "main-model", "provider": "main-provider", "api_key": "sk-revoked-oauth-snapshot"}
+    call_kwargs = {"task": "compression", "main_runtime": runtime}
+    compressor._apply_summary_route(call_kwargs)
+    assert "api_key" not in call_kwargs["main_runtime"]
+    assert call_kwargs["main_runtime"]["provider"] == "main-provider"
+    assert runtime["api_key"] == "sk-revoked-oauth-snapshot"  # caller's dict untouched
+
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="summary " * 20), finish_reason="stop")])
+
+    with patch("agent.context_compressor.call_llm", side_effect=_capture):
+        compressor._call_summary_llm("prompt", 0.0)
+    assert "sk-revoked-oauth-snapshot" not in repr(captured)
+
+
+def test_fallen_back_custom_endpoint_keeps_main_runtime_key():
+    """Custom endpoints cannot pool-resolve, so their main_runtime key is the only credential."""
+    compressor = _compressor()
+    compressor.provider = "custom:my-gateway"
+    compressor._fallback_to_main_for_compression(_access_error(), "failed")
+    call_kwargs = {"task": "compression", "main_runtime": {"provider": "custom:my-gateway", "api_key": "sk-custom"}}
+    compressor._apply_summary_route(call_kwargs)
+    assert "api_key" not in call_kwargs
+    assert call_kwargs["main_runtime"]["api_key"] == "sk-custom"

@@ -33,7 +33,7 @@ def _material(tmp_path):
     """RSA key plus a one-day self-signed cert. Returns (key_path, cert_path, sha1, sha256)."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "teams-test")])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name).issuer_name(name).public_key(key.public_key())

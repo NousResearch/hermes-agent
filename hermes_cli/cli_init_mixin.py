@@ -292,7 +292,10 @@ class CLIInitMixin:
             except (TypeError, ValueError):
                 pass
 
-        self._fallback_model = get_fallback_chain(CLI_CONFIG)
+        self._fallback_model = (
+            [] if os.environ.get("HERMES_KANBAN_PINNED_RUNTIME") == "1"
+            else get_fallback_chain(CLI_CONFIG)
+        )
 
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""

@@ -29,6 +29,10 @@ on:
         default: ''
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run: force every applicability lane and make the aggregate gate strict (skipped required lanes fail).'
         required: false
@@ -111,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           # PR merge checkout includes both event SHA parents at depth two.
           fetch-depth: 2
       # These guards are unconditional. Share detect's checkout in the fork
@@ -180,6 +185,7 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs).tests }}
     uses: ./.github/workflows/tests.yml
     with:
+      commit: ${{ inputs.commit }}
       upgrade: ${{ github.repository != 'mekenthompson/hermes-agent' && needs.detect.outputs.upgrade == 'true' }}
       upgrade_partition: ${{ github.repository == 'mekenthompson/hermes-agent' && inputs.release != true && 'runtime' || 'all' }}
       e2e: ${{ github.repository != 'mekenthompson/hermes-agent' && needs.detect.outputs.e2e == 'true' }}
@@ -211,6 +217,7 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['tests-os'] }}
     uses: ./.github/workflows/tests-os.yml
     with:
+      commit: ${{ inputs.commit }}
       # The Windows lane spawns the real desktop-update hand-off script
       # (tests/test_desktop_update_windows_*.py) only when that surface
       # changed; unit-level platforms("windows") tests always run.
@@ -225,6 +232,7 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs).lint }}
     uses: ./.github/workflows/lint.yml
     with:
+      commit: ${{ inputs.commit }}
       event_name: ${{ needs.detect.outputs.event_name }}
       python: ${{ needs.detect.outputs.python == 'true' }}
 
@@ -233,6 +241,8 @@ jobs:
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['js-tests'] }}
     uses: ./.github/workflows/js-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   installer-tests:
     name: Installer tests
@@ -248,6 +258,8 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['rust-tests'] }}
     uses: ./.github/workflows/rust-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   remote-backends:
     name: Remote terminal backends
@@ -258,6 +270,8 @@ jobs:
     # the other lanes and is required whenever detect selects it.
     if: needs.detect.outputs.remote_backends == 'true'
     uses: ./.github/workflows/remote-backends.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   bootstrap-installer:
     name: Bootstrap installer
@@ -267,6 +281,8 @@ jobs:
     # are platforms("windows") pytest files and run in tests-os.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['bootstrap-installer'] }}
     uses: ./.github/workflows/bootstrap-installer.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop:
     name: Desktop E2E
@@ -285,6 +301,8 @@ jobs:
     #   if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
     if: false
     uses: ./.github/workflows/e2e-desktop.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop-core:
     name: Desktop core E2E
@@ -293,6 +311,8 @@ jobs:
     # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['e2e-desktop-core'] }}
     uses: ./.github/workflows/e2e-desktop-core.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   e2e-desktop-update:
     name: Desktop update E2E
@@ -304,6 +324,8 @@ jobs:
     # upstream e2e_desktop_update output.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['e2e-desktop-update'] }}
     uses: ./.github/workflows/e2e-desktop-update.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   docs-site:
     name: Docs Site
@@ -312,12 +334,16 @@ jobs:
     # docs site and a Docusaurus build validates nothing it ships.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['docs-site'] }}
     uses: ./.github/workflows/docs-site-checks.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   history-check:
     name: Deny unrelated histories
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['history-check'] }}
     uses: ./.github/workflows/history-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   contributor-check:
     name: Check contributors
@@ -326,6 +352,8 @@ jobs:
     # range is empty and the job checks nothing.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['contributor-check'] }}
     uses: ./.github/workflows/contributor-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   uv-lockfile:
     name: Check uv.lock
@@ -337,6 +365,8 @@ jobs:
     # `.github/` change still forces it on via the classifier's fail-open.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['uv-lockfile'] }}
     uses: ./.github/workflows/uv-lockfile-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   # Both tree checks reject files by extension; the fork runs them only when
   # the diff carries such a file (classifier ``binary_artifacts``).
@@ -345,41 +375,55 @@ jobs:
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['infographic-check'] }}
     uses: ./.github/workflows/infographic-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   profile-artifact-check:
     name: Profile artifact check
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['profile-artifact-check'] }}
     uses: ./.github/workflows/profile-artifact-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   icons-freshness-check:
     name: Icon assets freshness
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['icons-freshness-check'] }}
     uses: ./.github/workflows/icons-freshness-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   case-collision-check:
     name: Check no case-colliding filenames
     needs: detect
     if: github.repository != 'mekenthompson/hermes-agent'
     uses: ./.github/workflows/case-collision-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   blob-size-check:
     name: Check no large binaries
     needs: detect
     uses: ./.github/workflows/blob-size-check.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
     if: github.repository != 'mekenthompson/hermes-agent'
     uses: ./.github/workflows/lazy-deps-guard.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['lockfile-diff'] }}
     uses: ./.github/workflows/lockfile-diff.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   # Advisory summary of the committed prompt-surface snapshot's diff. A stdlib-only job over two
   # committed directories: cheap enough to run on every Python PR, and silent when nothing moved.
@@ -388,12 +432,16 @@ jobs:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/prompt-surface-diff.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   docker-lint:
     name: Lint Docker scripts
     needs: detect
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['docker-lint'] }}
     uses: ./.github/workflows/docker-lint.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   supply-chain:
     name: Supply-chain scan
@@ -401,6 +449,7 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['supply-chain'] }}
     uses: ./.github/workflows/supply-chain-audit.yml
     with:
+      commit: ${{ inputs.commit }}
       event_name: ${{ needs.detect.outputs.event_name }}
       scan: ${{ needs.detect.outputs.scan == 'true' }}
       deps: ${{ needs.detect.outputs.deps == 'true' }}
@@ -493,7 +542,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
       - name: Evaluate job results
         id: evaluate
         # Shared with the stable orchestrator (scripts/ci/required_results.py
@@ -568,6 +617,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'

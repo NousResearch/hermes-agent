@@ -456,6 +456,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| [`background_review_prompt`](#background_review_prompt) | Transform | Once per background memory/skill review, before the review fork starts; the first `{"prompt": str}` with non-blank text replaces the review request, and `/refine` focus text is still appended. Bounded by `plugins.hook_callback_timeout`; a timed-out callback leaves the default request. | `prompt`, `review_memory`, `review_skills`, `explicit`, `session_id` | The replacement is sent to the review model together with the conversation. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -1729,6 +1730,43 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+### `background_review_prompt`
+
+Fires **once per background review**, after a turn that triggers the memory/skill review or when the user runs `/refine`, and **before** the review fork starts. Lets a plugin replace the review request the fork receives, for example to change what a review saves or where it saves it. Only that request changes: the fork's conversation snapshot, its tools and the parent session's cached prompt stay the same.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    prompt: str,
+    review_memory: bool,
+    review_skills: bool,
+    explicit: bool,
+    session_id: str,
+    **kwargs,
+) -> dict | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prompt` | `str` | The review request Hermes would send: the built-in memory, skill or combined prompt, or a per-agent override. |
+| `review_memory` | `bool` | The review covers memory. |
+| `review_skills` | `bool` | The review covers skills. |
+| `explicit` | `bool` | `True` when the user asked for the review (`/refine`), `False` for an automatic review. |
+| `session_id` | `str` | Session ID of the reviewed conversation (may be empty). |
+
+**Return value:** `{"prompt": "..."}` with non-blank text replaces the review request; anything else leaves it unchanged. **First valid result wins** when multiple plugins register. Focus text from `/refine <focus>` is appended to the replacement. The hook is bounded by `plugins.hook_callback_timeout`; a callback that times out or raises leaves the default request.
+
+```python
+def review_prompt(prompt, review_skills=False, **kwargs):
+    if not review_skills:
+        return None
+    return {"prompt": prompt + "\n\nSave new skills under the `team` category only."}
+
+def register(ctx):
+    ctx.register_hook("background_review_prompt", review_prompt)
+```
 
 ### API-request observer hooks
 

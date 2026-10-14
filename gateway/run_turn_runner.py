@@ -312,7 +312,7 @@ class TurnRunner:
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(f"{msg}\n(×{ctx.repeat_count[0] + 1})")  # own line — never on a closing fence (#138148)
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
@@ -649,7 +649,7 @@ class TurnRunner:
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = f"{base_msg}\n(×{count + 1})"  # own line — never on a closing fence (#138148)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw

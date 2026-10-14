@@ -22,6 +22,7 @@ from telegram import Update
 from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.event import MessageType
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -54,22 +55,28 @@ def _chat(chat, group, *, is_forum=False):
     return payload
 
 
-def topic_created(bot, *, uid=10, chat=42, user=88, thread=40798, message_id=40799, name="Prova 3", group=False):
-    """``forum_topic_created`` service message: carries the NEW topic's thread id, never text."""
+def topic_created(bot, *, uid=10, chat=42, user=88, thread=40798, message_id=40799, name="Prova 3", group=False, is_bot=False):
+    """``forum_topic_created`` service message: carries the NEW topic's thread id, never text.
+
+    ``is_bot=True`` models a topic Hermes itself created via ``createForumTopic`` (the service
+    message is attributed to the bot), as opposed to a topic the chat user created."""
     return Update.de_json({"update_id": uid, "message": {
         "message_id": message_id, "date": 1800000000, "chat": _chat(chat, group, is_forum=group),
-        "from": {"id": user, "is_bot": False, "first_name": "Human"},
+        "from": {"id": user, "is_bot": is_bot, "first_name": "Bot" if is_bot else "Human"},
         "message_thread_id": thread, "is_topic_message": True,
         "forum_topic_created": {"name": name, "icon_color": 7322096},
     }}, bot)
 
 
 def opener(bot, *, uid=11, chat=42, user=88, message_id=40800, text="Prova 3", thread=None,
-           is_topic=None, group=False):
-    """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to."""
+           is_topic=None, group=False, is_bot=False):
+    """The topic's opening user message. ``thread=None`` is the shape Telegram regressed to.
+
+    ``is_bot=True`` models an opening message from a bot other than the service message's
+    author (the same-sender bot case is covered by ``test_bot_created_topic_opener_is_adopted``)."""
     message = {
         "message_id": message_id, "date": 1800000001, "chat": _chat(chat, group, is_forum=group),
-        "from": {"id": user, "is_bot": False, "first_name": "Human"}, "text": text,
+        "from": {"id": user, "is_bot": is_bot, "first_name": "Bot" if is_bot else "Human"}, "text": text,
     }
     if thread is not None:
         message["message_thread_id"] = thread
@@ -186,6 +193,62 @@ async def test_explicit_thread_on_the_opener_wins(monkeypatch):
         await _deliver(app, adapter, topic_created(app.bot), opener(app.bot, thread=40798, is_topic=True))
 
     assert delivered[0].source.thread_id == "40798"
+
+
+@pytest.mark.asyncio
+async def test_captured_updates_through_build_message_event(monkeypatch):
+    """The reviewer's captured shape, driven at the event-building seam (Refs #136567).
+
+    Service message with ``forum_topic_created`` followed by an adjacent thread-less opener:
+    the event the runner sees must carry the created topic as its thread id.
+    """
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await adapter._handle_forum_topic_created(topic_created(app.bot), None)
+        event = adapter._build_message_event(opener(app.bot).message, MessageType.TEXT, update_id=11)
+
+    assert event.source.thread_id == "40798"
+
+
+@pytest.mark.asyncio
+async def test_different_sender_opener_is_not_adopted(monkeypatch):
+    """A creation recorded for one sender must not claim another sender's thread-less message."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88,99")
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot, message_id=40799, user=88),
+            opener(app.bot, message_id=40800, user=99),
+        )
+
+    assert delivered[0].source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_bot_created_topic_opener_is_not_adopted(monkeypatch):
+    """A topic Hermes itself created (service message attributed to the bot) is recorded under
+    the bot's sender key, so the human's thread-less opener is a different key: routing unchanged."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot, is_bot=True, user=111),
+            opener(app.bot),
+        )
+
+    assert delivered[0].source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_bot_created_topic_other_bots_opener_is_not_adopted(monkeypatch):
+    """A second bot's thread-less message must not claim a topic Hermes created."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111,222")
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot, is_bot=True, user=111),
+            opener(app.bot, user=222, is_bot=True),
+        )
+
+    assert delivered[0].source.thread_id is None
 
 
 @pytest.mark.asyncio

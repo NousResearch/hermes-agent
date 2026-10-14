@@ -316,3 +316,17 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     # Bound only for the handler call, not leaked past dispatch
     assert get_session_env("HERMES_SESSION_KEY") == ""
 
+
+
+def test_set_session_env_binds_the_turn_session_id(monkeypatch):
+    """A cached agent sets HERMES_SESSION_ID only on the turn that built it. Every later turn's
+    task context must still carry the session id, or a command yielded to the background
+    records no parent session and its completion is refused by the owner (admission_conflict)."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.LOCAL, chat_id="local-abc", chat_type="dm", user_id="uid:1")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={},
+                             session_key="agent:main:local:dm:local-abc", session_id="20261006_x")
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-process-env")
+    tokens = runner._set_session_env(context)
+    assert get_session_env("HERMES_SESSION_ID") == "20261006_x"
+    runner._clear_session_env(tokens)

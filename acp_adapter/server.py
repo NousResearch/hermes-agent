@@ -649,19 +649,43 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         with state.runtime_lock:
             if state.is_running and state.current_prompt_text:
                 state.interrupted_prompt_text = state.current_prompt_text
-            # Cancel + hard-stop under the lock so no other prompt mistakes this turn for
-            # redirectable work.
-            state.cancel_event.set()
-            try:
-                if state.agent:
-                    request_hard_interrupt(state.agent)
-                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
-                    from tools.async_delegation import interrupt_for_session
-                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
-                                          reason="acp_cancel")
-            except Exception:
-                logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
+            self._interrupt_turn(state)
         logger.info("Cancelled session %s", session_id)
+
+    @staticmethod
+    def _interrupt_turn(state: SessionState) -> None:
+        """Cancel + hard-stop the session's turn; the caller holds ``runtime_lock`` so no other
+        prompt mistakes this turn for redirectable work."""
+        state.cancel_event.set()
+        try:
+            if state.agent:
+                request_hard_interrupt(state.agent)
+                # Background delegations are detached from the turn's fan-out; they end with the cancel.
+                from tools.async_delegation import interrupt_for_session
+                interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
+                                      reason="acp_cancel")
+        except Exception:
+            logger.debug("Failed to interrupt ACP session %s", state.session_id, exc_info=True)
+
+    def cancel_running_turns(self) -> int:
+        """Cancel every turn still running once the client is gone (stdio EOF); returns how many.
+
+        Nothing can receive such a turn's updates or answer its approvals, yet its executor thread
+        keeps the process alive: the foreground command runs to completion and the model is called
+        again for each remaining step, writing to a session the editor may already have reopened in
+        a new adapter process."""
+        with self.session_manager._lock:
+            states = list(self.session_manager._sessions.values())
+        cancelled = 0
+        for state in states:
+            with state.runtime_lock:
+                if not (state.is_running and state.cancel_event):
+                    continue
+                self._interrupt_turn(state)
+                cancelled += 1
+        if cancelled:
+            logger.info("Cancelled %d running ACP turn(s): the client disconnected", cancelled)
+        return cancelled
 
     async def fork_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any

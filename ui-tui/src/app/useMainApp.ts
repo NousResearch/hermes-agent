@@ -64,6 +64,7 @@ import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
+import { createSessionExit } from './sessionExit.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -550,26 +551,23 @@ export function useMainApp(gw: GatewayClient) {
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
-  const die = useCallback(() => {
-    gw.kill('app.die')
-    exit()
-    // Ink's exit() calls unmount() which resets terminal modes but does NOT
-    // call process.exit().  Without an explicit exit the Node process stays
-    // alive (stdin listener keeps the event loop open), so the process.on('exit')
-    // handler in entry.tsx — which sends the final resetTerminalModes() — never
-    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
-    // in the parent shell.  See issue #19194.
-    process.exit(0)
-  }, [exit, gw])
-
-  const dieWithCode = useCallback(
-    (code: number) => {
-      gw.kill(`app.dieWithCode:${code}`)
-      exit()
-      process.exit(code)
-    },
+  const dieWithCode = useMemo(
+    () =>
+      createSessionExit({
+        closeSession: sessionId => gw.request('session.close', { session_id: sessionId }),
+        exit: code => {
+          gw.kill(code === 0 ? 'app.die' : `app.dieWithCode:${code}`)
+          exit()
+          // Ink restores terminal modes but leaves stdin alive; run the final
+          // terminal reset in entry.tsx through an explicit process exit (#19194).
+          process.exit(code)
+        },
+        getSessionId: () => getUiState().sid
+      }),
     [exit, gw]
   )
+
+  const die = useCallback(() => void dieWithCode(0), [dieWithCode])
 
   const session = useSessionLifecycle({
     colsRef,

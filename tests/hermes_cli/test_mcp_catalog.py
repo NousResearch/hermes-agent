@@ -119,9 +119,40 @@ class TestManifestParsing:
         assert e.transport.command == "npx"
         assert e.transport.args == ["-y", "demo-mcp"]
         assert e.auth.type == "none"
+        assert e.trust is None
         assert e.install is None
         assert e.suggest is None
         assert e.connector_slug is None
+
+    def test_trust_tier_reaches_server_config_and_catalog_payload(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _build_server_config, _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        body = _basic_manifest(trust="untrusted")
+        body["manifest_version"] = 2
+        path = _write_manifest(catalog_dir, "demo", body)
+        entry = _parse_manifest(path)
+
+        assert entry.trust == "untrusted"
+        assert _build_server_config(entry, None)["trust"] == "untrusted"
+        assert _catalog_entry_json(entry, False, False)["trust"] == "untrusted"
+
+    def test_trust_requires_manifest_v2(self, catalog_dir):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(trust="untrusted"))
+        with pytest.raises(CatalogError, match="requires manifest_version 2"):
+            _parse_manifest(path)
+
+    @pytest.mark.parametrize("trust", ["prompt", "", None, True, 1, [], {}])
+    def test_invalid_trust_tier_rejected(self, catalog_dir, trust):
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        body = _basic_manifest(trust=trust)
+        body["manifest_version"] = 2
+        path = _write_manifest(catalog_dir, "demo", body)
+        with pytest.raises(CatalogError, match="trust must be"):
+            _parse_manifest(path)
 
     def test_connector_slug_metadata_reaches_the_catalog_payload(self, catalog_dir):
         from hermes_cli.mcp_catalog import _parse_manifest
@@ -329,6 +360,21 @@ class TestInstall:
         assert servers["demo"]["command"] == "npx"
         assert servers["demo"]["args"] == ["-y", "demo-mcp"]
         assert servers["demo"]["enabled"] is True
+
+    def test_install_untrusted_manifest_persists_approval_tier(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"},
+            auth={"type": "oauth"},
+            trust="untrusted",
+        )
+        body["manifest_version"] = 2
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        assert load_config()["mcp_servers"]["demo"]["trust"] == "untrusted"
 
     def test_install_default_excluded_writes_exclude_without_probe(
         self, catalog_dir, monkeypatch

@@ -56,7 +56,7 @@ The warning lists the exact page ranges and the recovery paths:
    pdftoppm -jpeg -r 150 -f 92 -l 94 document.pdf $TMPDIR/page
    ```
    Then inspect each image with `vision_analyze`. Zero extra dependencies (poppler is required for the detection itself).
-2. **Many pages — OCR.** The `ocr-and-documents` skill covers bulk OCR with marker-pdf (90+ languages, handles equations and tables; ~3-5 GB install).
+2. **Many pages — OCR.** The `pdf` skill covers bulk OCR with marker-pdf (90+ languages, handles equations and tables; ~3-5 GB install).
 
 Detection uses poppler's `pdftotext` for per-page text counts. If poppler is not installed, extraction still works — the coverage check is silently skipped.
 

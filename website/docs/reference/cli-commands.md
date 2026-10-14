@@ -1474,9 +1474,8 @@ Examples:
 
 ```bash
 hermes bundles create backend-dev \
-  --skill github-code-review \
+  --skill github \
   --skill test-driven-development \
-  --skill github-pr-workflow \
   -d "Backend feature work"
 
 hermes bundles list

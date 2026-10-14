@@ -1,6 +1,6 @@
 name: blackbox
 repo: https://github.com/umanitek/agent-blackbox
-sha: fe56ecf4f5af3a2dbbe85d3915b61fe38779114e
+sha: cfe788d212383113929e2f10011816966f6cc0b2
 subdir: plugins/blackbox
 title: Agent Blackbox
 description: 'Security for agents: checks every tool call and model request before it runs against a
@@ -14,7 +14,12 @@ tier: community
 category: tools
 version: "1.0.0"
 requires_hermes: ">=0.21.7"
-docs_url: https://github.com/umanitek/agent-blackbox/tree/fe56ecf4f5af3a2dbbe85d3915b61fe38779114e/plugins/blackbox
+docs_url: https://github.com/umanitek/agent-blackbox/tree/cfe788d212383113929e2f10011816966f6cc0b2/plugins/blackbox
+image: https://raw.githubusercontent.com/umanitek/agent-blackbox/cfe788d212383113929e2f10011816966f6cc0b2/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/cfe788d212383113929e2f10011816966f6cc0b2/docs/catalog/dashboard.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/cfe788d212383113929e2f10011816966f6cc0b2/docs/catalog/trader-shield.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/cfe788d212383113929e2f10011816966f6cc0b2/docs/catalog/threat-tiers.png
 readme: true
 platforms: []
 known_issues:

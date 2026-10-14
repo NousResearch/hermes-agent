@@ -168,7 +168,8 @@ export function useBackgroundQueueDrain({
       void withQueueDrainClaim(sessionKey, async queue => {
         const liveEntry = queue.find(candidate => candidate.id === entry.id)
 
-        if (!liveEntry) {
+        // Server-owned rows are already admitted to the gateway FIFO.
+        if (!liveEntry || liveEntry.serverStatus) {
           return true
         }
 
@@ -192,12 +193,13 @@ export function useBackgroundQueueDrain({
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
             fromQueue: true,
+            submission_id: liveEntry.id,
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })
         )
 
-        if (accepted === false) {
+        if (accepted !== true) {
           return false
         }
 
@@ -253,7 +255,7 @@ export function useBackgroundQueueDrain({
         continue
       }
 
-      const entry = entries[0]
+      const entry = entries.find(candidate => !candidate.serverStatus)
 
       if (!entry || (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue

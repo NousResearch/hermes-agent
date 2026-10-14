@@ -63,7 +63,7 @@ def test_lifespan_warmup_is_synchronous(monkeypatch):
 
 
 def test_lifespan_enters_and_exits_as_an_async_context_manager(monkeypatch):
-    """FastAPI gets ``_lifespan`` as an async context manager, never a bare async generator
+    """FastAPI gets ``app_lifespan`` as an async context manager, never a bare async generator
     (Starlette's deprecated path), and entering it runs the desktop's first-install check."""
     from hermes_cli import anon_auth, install_state
 
@@ -74,7 +74,7 @@ def test_lifespan_enters_and_exits_as_an_async_context_manager(monkeypatch):
     monkeypatch.setattr(install_state, "probe", lambda: probed.append(True))
 
     async def _run() -> None:
-        async with web_server_mod._lifespan(web_server_mod.app):
+        async with web_server_mod.app_lifespan(web_server_mod.app):
             assert probed == [True]
 
     asyncio.run(_run())

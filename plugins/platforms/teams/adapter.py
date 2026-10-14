@@ -3,8 +3,9 @@ webhook server for inbound, ``App.send()`` for proactive sends.
 
 Requires the ``teams`` extra (auto-installed by the gateway on first start, or
 ``<hermes-venv>/bin/pip install microsoft-teams-apps aiohttp``) and credentials via env
-(TEAMS_CLIENT_ID / TEAMS_CLIENT_SECRET / TEAMS_TENANT_ID, optional TEAMS_PORT) or
-``platforms.teams.extra`` in config.yaml (``client_id`` / ``client_secret`` / ``tenant_id`` / ``port``).
+(TEAMS_CLIENT_ID / TEAMS_TENANT_ID, plus TEAMS_CLIENT_SECRET or a certificate, optional
+TEAMS_PORT) or ``platforms.teams.extra`` in config.yaml (``client_id`` / ``client_secret`` /
+``tenant_id`` / ``client_cert_path`` / ``client_key_path`` / ``client_cert_thumbprint`` / ``port``).
 """
 
 from __future__ import annotations
@@ -65,6 +66,10 @@ from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env as _seed_extra_from_env, send_error
 )
+from plugins.platforms.teams.cert_auth import (
+    certificate_configured as _certificate_configured, client_assertion_fields as _client_assertion_fields,
+    prepare_certificate as _prepare_certificate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +90,36 @@ _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
 
 
-def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
-    """(token URL, client-credentials form) for a Bot Framework bearer token."""
-    return (
-        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-        {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret, "scope": _BF_TOKEN_SCOPE},
-    )
+# Neither a secret nor certificate material. Shown at connect and on standalone send.
+_MISSING_TEAMS_AUTH = (
+    "TEAMS_CLIENT_ID and TEAMS_TENANT_ID are required, plus either TEAMS_CLIENT_SECRET "
+    "or a certificate (TEAMS_CLIENT_KEY_PATH with TEAMS_CLIENT_CERT_PATH or TEAMS_CLIENT_CERT_THUMBPRINT)")
+_CERT_ENV_KEYS = ("TEAMS_CLIENT_CERT_PATH", "TEAMS_CLIENT_KEY_PATH", "TEAMS_CLIENT_CERT_THUMBPRINT")
+
+
+def _bf_token_request(
+    tenant_id: str, client_id: str, client_secret: str, *,
+    cert_path: str = "", key_path: str = "", thumbprint: str = "", scope: str = _BF_TOKEN_SCOPE,
+) -> tuple[str, dict]:
+    """(token URL, client-credentials form) for a bearer token.
+
+    A configured certificate replaces the secret with a ``client_assertion`` (the secret form
+    is unchanged when no certificate setting is set). ``scope`` is the Bot Framework scope for
+    attachment and cron sends; the SDK token callback passes the scope it needs.
+    """
+    url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    if _certificate_configured(cert_path, key_path, thumbprint):
+        fields = _client_assertion_fields(
+            cert_path, key_path, thumbprint, tenant_id=tenant_id, client_id=client_id)
+        return url, {"grant_type": "client_credentials", "client_id": client_id, **fields, "scope": scope}
+    return url, {
+        "grant_type": "client_credentials", "client_id": client_id,
+        "client_secret": client_secret, "scope": scope,
+    }
+
+
+def _auth_configured(client_id: str, client_secret: str, tenant_id: str, cert: tuple[str, str, str]) -> bool:
+    return bool(client_id and tenant_id and (client_secret or _certificate_configured(*cert)))
 
 
 def _is_allowed_https_host(url: str, *, check_port: bool = False) -> bool:
@@ -149,6 +178,11 @@ def check_requirements() -> bool:
     return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
 
 
+def _text_setting(extra: dict, key: str, env: str) -> str:
+    raw = extra.get(key) or _get_scoped_secret(env, "")
+    return str(raw).strip() if raw else ""
+
+
 def _credentials(config) -> tuple[str, str, str]:
     """(client_id, client_secret, tenant_id): ``config.extra`` first, then the profile-scoped env.
 
@@ -164,8 +198,18 @@ def _credentials(config) -> tuple[str, str, str]:
         extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID", ""))
 
 
+def _cert_settings(config) -> tuple[str, str, str]:
+    """(cert PEM path, key PEM path, thumbprint). Same extra-then-scoped-env precedence as ``_credentials``."""
+    extra = getattr(config, "extra", {}) or {}
+    return (
+        _text_setting(extra, "client_cert_path", "TEAMS_CLIENT_CERT_PATH"),
+        _text_setting(extra, "client_key_path", "TEAMS_CLIENT_KEY_PATH"),
+        _text_setting(extra, "client_cert_thumbprint", "TEAMS_CLIENT_CERT_THUMBPRINT"))
+
+
 def validate_config(config) -> bool:
-    return bool(all(_credentials(config)))
+    client_id, client_secret, tenant_id = _credentials(config)
+    return _auth_configured(client_id, client_secret, tenant_id, _cert_settings(config))
 
 
 def is_connected(config) -> bool:
@@ -179,9 +223,16 @@ def _env_enablement() -> dict | None:
     cron home conversation), so a secondary is never seeded with the default profile's Teams app."""
     seed = _seed_extra_from_env((
         ("TEAMS_CLIENT_ID", "client_id", None), ("TEAMS_CLIENT_SECRET", "client_secret", None),
-        ("TEAMS_TENANT_ID", "tenant_id", None), ("TEAMS_PORT", "port", int), ("TEAMS_SERVICE_URL", "service_url", None),
+        ("TEAMS_TENANT_ID", "tenant_id", None),
+        ("TEAMS_CLIENT_CERT_PATH", "client_cert_path", None),
+        ("TEAMS_CLIENT_KEY_PATH", "client_key_path", None),
+        ("TEAMS_CLIENT_CERT_THUMBPRINT", "client_cert_thumbprint", None),
+        ("TEAMS_PORT", "port", int), ("TEAMS_SERVICE_URL", "service_url", None),
     ), home_env="TEAMS_HOME_CHANNEL")
-    if not all(seed.get(k) for k in ("client_id", "client_secret", "tenant_id")):
+    has_cert = _certificate_configured(
+        str(seed.get("client_cert_path") or ""), str(seed.get("client_key_path") or ""),
+        str(seed.get("client_cert_thumbprint") or ""))
+    if not (seed.get("client_id") and seed.get("tenant_id") and (seed.get("client_secret") or has_cert)):
         return None
     return seed
 
@@ -197,8 +248,9 @@ async def _standalone_send(
     (SSRF/path traversal). ``media_files`` / ``force_document`` are signature parity only — text-only."""
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
-    if not (client_id and client_secret and tenant_id):
-        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+    cert_path, key_path, thumbprint = _cert_settings(pconfig)
+    if not _auth_configured(client_id, client_secret, tenant_id, (cert_path, key_path, thumbprint)):
+        return send_error(f"Teams standalone send: {_MISSING_TEAMS_AUTH}")
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -210,7 +262,11 @@ async def _standalone_send(
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
             return send_error(f"Teams standalone send: {error}")
-    token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
+    try:
+        token_url, token_form = _bf_token_request(
+            tenant_id, client_id, client_secret, cert_path=cert_path, key_path=key_path, thumbprint=thumbprint)
+    except ValueError as exc:
+        return send_error(f"Teams standalone send: {exc}")
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
         import aiohttp as _aiohttp
@@ -360,9 +416,11 @@ class TeamsAdapter(BasePlatformAdapter):
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
         self._extra: dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
-        # (token, expiry monotonic ts) for connector attachment auth; refreshed under
-        # _bf_token_lock so concurrent attachments can't stampede the STS.
-        self._bf_token_cache: Optional[tuple] = None
+        self._cert_path, self._key_path, self._cert_thumbprint = _cert_settings(config)
+        self._uses_cert = _certificate_configured(self._cert_path, self._key_path, self._cert_thumbprint)
+        # (tenant, scope) → (token, expiry monotonic ts) for connector attachment auth and the
+        # SDK token callback; refreshed under _bf_token_lock so concurrent callers can't stampede the STS.
+        self._bf_token_cache: dict[tuple[str, str], tuple] = {}
         self._bf_token_lock: Optional[asyncio.Lock] = None
         self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
         _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
@@ -395,11 +453,17 @@ class TeamsAdapter(BasePlatformAdapter):
             (App is None or ClientOptions is None, "MISSING_SDK",
              f"microsoft-teams-apps could not be installed. Run: {pip} microsoft-teams-apps"),
             (not AIOHTTP_AVAILABLE, "MISSING_SDK", f"aiohttp not installed. Run: {pip} aiohttp"),
-            (not self._client_id or not self._client_secret or not self._tenant_id, "MISSING_CREDENTIALS",
-             "TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")):
+            (not _auth_configured(
+                self._client_id, self._client_secret, self._tenant_id,
+                (self._cert_path, self._key_path, self._cert_thumbprint)),
+             "MISSING_CREDENTIALS", _MISSING_TEAMS_AUTH)):
             if failed:
                 self._set_fatal_error(code, message, retryable=False)
                 return False
+        cert_error = self._certificate_preflight()
+        if cert_error:
+            self._set_fatal_error("MISSING_CREDENTIALS", cert_error, retryable=False)
+            return False
         try:
             # aiohttp app first — the bridge adapter wires SDK routes into it.
             # Set up aiohttp app first — the bridge adapter wires SDK routes into it. client_max_size: Bot
@@ -408,10 +472,18 @@ class TeamsAdapter(BasePlatformAdapter):
             # webhook.py / raft, #58536/#58902).
             aiohttp_app = web.Application(client_max_size=_MAX_BODY_BYTES)
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
-            self._app = App(
-                client_id=self._client_id, client_secret=self._client_secret, tenant_id=self._tenant_id,
-                http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
-                client=ClientOptions(headers={"User-Agent": "Hermes"}))
+            # Certificate auth must not pass client_secret: the SDK prefers a secret whenever
+            # one is given and would ignore the token callback.
+            app_kwargs = {
+                "client_id": self._client_id, "tenant_id": self._tenant_id,
+                "http_server_adapter": _AiohttpBridgeAdapter(aiohttp_app),
+                "client": ClientOptions(headers={"User-Agent": "Hermes"}),
+            }
+            if self._uses_cert:
+                app_kwargs["token"] = self._sdk_token
+            else:
+                app_kwargs["client_secret"] = self._client_secret
+            self._app = App(**app_kwargs)
             # Handlers (ours, then plugin on_* decorators) must be wired before initialize(),
             # which registers POST /api/messages on aiohttp_app via the bridge's register_route().
             @self._app.on_message
@@ -449,28 +521,55 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    def _certificate_preflight(self) -> Optional[str]:
+        """``None`` when certificate material (if configured) can sign an assertion."""
+        if not self._uses_cert:
+            return None
+        try:
+            _prepare_certificate(self._cert_path, self._key_path, self._cert_thumbprint)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    async def _sdk_token(self, scope, tenant_id=None) -> str:
+        """SDK ``token`` callback (``scope``, optional tenant). Returns the access token string."""
+        if isinstance(scope, (list, tuple)):
+            scope = " ".join(str(item) for item in scope if item)
+        return await self._acquire_token(str(scope or _BF_TOKEN_SCOPE), tenant_id or self._tenant_id)
+
     async def _get_botframework_token(self) -> str:
-        """Bot Framework bearer token (client credentials), cached until ~5 min before expiry; connector
-        attachments are NOT pre-authenticated, unlike SharePoint downloadUrls. The lock is created lazily
+        """Bot Framework bearer token for connector attachments (not pre-authenticated, unlike
+        SharePoint downloadUrls)."""
+        return await self._acquire_token(_BF_TOKEN_SCOPE, self._tenant_id)
+
+    async def _acquire_token(self, scope: str, tenant_id: str) -> str:
+        """Client-credentials token cached until ~5 min before expiry. The lock is created lazily
         because ``asyncio.Lock()`` in __init__ may bind the wrong loop."""
         import time
         import httpx
         if self._bf_token_lock is None:
             self._bf_token_lock = asyncio.Lock()
+        cache_key = (tenant_id, scope)
         async with self._bf_token_lock:
-            cached = self._bf_token_cache
+            cached = self._bf_token_cache.get(cache_key)
             if cached and cached[1] > time.monotonic() + 300:
                 return cached[0]
-            if not (self._client_id and self._client_secret and self._tenant_id):
-                raise ValueError("Missing TEAMS_CLIENT_ID/SECRET/TENANT_ID for attachment auth")
-            token_url, token_form = _bf_token_request(self._tenant_id, self._client_id, self._client_secret)
+            if not _auth_configured(
+                self._client_id, self._client_secret, tenant_id,
+                (self._cert_path, self._key_path, self._cert_thumbprint)):
+                raise ValueError(f"Missing credentials for Teams token auth: {_MISSING_TEAMS_AUTH}")
+            token_url, token_form = _bf_token_request(
+                tenant_id, self._client_id, self._client_secret,
+                cert_path=self._cert_path, key_path=self._key_path, thumbprint=self._cert_thumbprint,
+                scope=scope)
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(token_url, data=token_form)
                 resp.raise_for_status()
                 payload = resp.json()
             expires_in = float(payload.get("expires_in", 3600) or 3600)
-            self._bf_token_cache = (payload["access_token"], time.monotonic() + expires_in)
-            return self._bf_token_cache[0]
+            access_token = payload["access_token"]
+            self._bf_token_cache[cache_key] = (access_token, time.monotonic() + expires_in)
+            return access_token
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
@@ -788,15 +887,69 @@ class TeamsAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
 
 
-_SETUP_CREDENTIALS = (
-    ("Client ID", "TEAMS_CLIENT_ID", {}),
-    ("Client secret", "TEAMS_CLIENT_SECRET", {"password": True}),
-    ("Tenant ID", "TEAMS_TENANT_ID", {}))
 _SETUP_INTRO = (  # "" → blank line
     "You'll need the Teams CLI. If you haven't already:", "  npm install -g @microsoft/teams.cli@preview",
     "  teams login", "", "Then expose port 3978 publicly (devtunnel / ngrok / cloudflared),", "and create your bot:",
     '  teams app create --name "Hermes" --endpoint "https://<tunnel>/api/messages"', "",
-    "The CLI will print CLIENT_ID, CLIENT_SECRET, and TENANT_ID. Paste them below.", "")
+    "The CLI prints CLIENT_ID, CLIENT_SECRET, and TENANT_ID.",
+    "Paste the secret below, or choose certificate auth if the app uses a certificate instead.", "")
+
+
+def _prompt_saved(label: str, env_key: str, *, required: bool = True, **prompt_kwargs) -> Optional[str]:
+    """Prompt and persist. ``None`` aborts setup (a required field was left empty); ``""`` clears the var."""
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.cli_output import print_warning, prompt
+    value = (prompt(label, default=get_env_value(env_key) or "", **prompt_kwargs) or "").strip()
+    if required and not value:
+        print_warning(f"{label} is required — skipping Teams setup")
+        return None
+    if value:
+        save_env_value(env_key, value)
+    else:
+        remove_env_value(env_key)
+    return value
+
+
+def _clear_env(*keys: str) -> None:
+    from hermes_cli.config import remove_env_value
+    for key in keys:
+        remove_env_value(key)
+
+
+def _prompt_raw(label: str, env_key: str) -> str:
+    from hermes_cli.config import get_env_value
+    from hermes_cli.cli_output import prompt
+    return (prompt(label, default=get_env_value(env_key) or "") or "").strip()
+
+
+def _store_or_clear(env_key: str, value: str) -> None:
+    from hermes_cli.config import remove_env_value, save_env_value
+    if value:
+        save_env_value(env_key, value)
+    else:
+        remove_env_value(env_key)
+
+
+def _prompt_certificate() -> bool:
+    """Persist certificate settings and drop a leftover client secret. False aborts setup.
+
+    Nothing is written until the combination can sign: a certificate PEM (key inline or beside
+    it) or a private key plus thumbprint. An abandoned prompt must not leave a half-set
+    certificate that would override a working client secret.
+    """
+    from hermes_cli.cli_output import print_warning
+    cert = _prompt_raw("Certificate PEM path", "TEAMS_CLIENT_CERT_PATH")
+    key = _prompt_raw("Private key PEM path (empty if the certificate file contains it)", "TEAMS_CLIENT_KEY_PATH")
+    thumb = _prompt_raw("Certificate thumbprint (empty to derive it from the certificate)", "TEAMS_CLIENT_CERT_THUMBPRINT")
+    if not (cert or (key and thumb)):
+        print_warning(
+            "A certificate PEM, or a private key plus thumbprint, is required — skipping Teams setup")
+        return False
+    _store_or_clear("TEAMS_CLIENT_CERT_PATH", cert)
+    _store_or_clear("TEAMS_CLIENT_KEY_PATH", key)
+    _store_or_clear("TEAMS_CLIENT_CERT_THUMBPRINT", thumb)
+    _clear_env("TEAMS_CLIENT_SECRET")
+    return True
 
 
 def interactive_setup() -> None:
@@ -807,12 +960,17 @@ def interactive_setup() -> None:
         return
     for line in _SETUP_INTRO:
         print_info(line) if line else print()
-    for label, env_key, prompt_kwargs in _SETUP_CREDENTIALS:
-        value = prompt(label, default=get_env_value(env_key) or "", **prompt_kwargs)
-        if not value:
-            print_warning(f"{label} is required — skipping Teams setup")
+    if _prompt_saved("Client ID", "TEAMS_CLIENT_ID") is None:
+        return
+    if prompt_yes_no("Authenticate with a certificate instead of a client secret?", False):
+        if not _prompt_certificate():
             return
-        save_env_value(env_key, value.strip())
+    elif _prompt_saved("Client secret", "TEAMS_CLIENT_SECRET", password=True) is None:
+        return
+    else:
+        _clear_env(*_CERT_ENV_KEYS)
+    if _prompt_saved("Tenant ID", "TEAMS_TENANT_ID") is None:
+        return
     print()
     print_info("To find your AAD object ID for the allowlist: teams status --verbose")
     if prompt_yes_no("Restrict access to specific users? (recommended)", True):

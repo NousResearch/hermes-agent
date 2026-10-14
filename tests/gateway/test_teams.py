@@ -300,7 +300,10 @@ class TestTeamsInteractiveSetup:
 
         answers = iter(["client-id", "client-secret", "tenant-id", "aad-1, aad-2"])
         monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(answers))
-        monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: True)
+        # Certificate question defaults to no; the allowlist question still accepts.
+        monkeypatch.setattr(
+            cli_output_mod, "prompt_yes_no",
+            lambda question, *_a, **_kw: "certificate" not in str(question).lower())
         monkeypatch.setattr(cli_output_mod, "print_info", lambda *_a, **_kw: None)
         monkeypatch.setattr(cli_output_mod, "print_success", lambda *_a, **_kw: None)
         monkeypatch.setattr(cli_output_mod, "print_warning", lambda *_a, **_kw: None)

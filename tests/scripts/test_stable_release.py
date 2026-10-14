@@ -362,12 +362,52 @@ def test_manifest_origin_checks_with_real_https(https_origin):
     assert server.requests == []
 
 
+# Stable runs from the default branch. GITHUB_SHA is main's tip, never the claim commit.
+CONTROLLER_ENV = {
+    "GITHUB_REPOSITORY": "example/hermes-agent",
+    "GITHUB_EVENT_NAME": "workflow_dispatch",
+    "GITHUB_REF": "refs/heads/main",
+    "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main",
+    "GITHUB_SHA": "e" * 40,
+}
+
+
+def test_a_claim_run_is_found_by_its_run_name_on_main_or_by_its_tag_branch():
+    from scripts.releases.stable import claim_run_title, is_claim_run
+
+    tag, commit = "rc.1-v1.2.3", "a" * 40
+    assert claim_run_title(tag) == "Stable release rc.1-v1.2.3"
+
+    def match(**row):
+        return is_claim_run(**{"title": None, "head_branch": "main", "head_sha": "e" * 40, **row},
+                            claim_tag=tag, commit=commit)
+
+    assert match(title="Stable release rc.1-v1.2.3")
+    # Runs started before the controller moved sat on the tag at the claim commit.
+    assert match(head_branch=tag, head_sha=commit)
+    assert not match(title="Stable release rc.2-v1.2.3")
+    assert not match(head_branch=tag, head_sha="e" * 40)
+    assert not match()
+
+
+def test_claim_must_run_from_the_default_branch_controller():
+    base = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": "rc.1-v1.2.3"}
+    for wrong in (
+        {"GITHUB_REF": "refs/tags/rc.1-v1.2.3"},
+        {"GITHUB_REF": "refs/heads/feature"},
+        {"GITHUB_EVENT_NAME": "workflow_run"},
+        {"GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/other.yml@refs/heads/main"},
+        {"GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/rc.1-v1.2.3"},
+    ):
+        with pytest.raises(ValueError, match="default-branch controller"):
+            check_claim({**base, **wrong}, lambda argv: pytest.fail("no git before the controller check"))
+
+
 def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkeypatch):
     commit = "a" * 40
     claim_object = "b" * 40
     ref = "refs/tags/rc.1-v1.2.3"
-    env = {"RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object,
-           "GITHUB_SHA": commit, "GITHUB_REF": ref}
+    env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object}
     message = {"schema": 1, "version": "1.2.3", "attempt": 1, "commit": commit,
                "autopublish": False, "skipBundles": False, "skipTests": False,
                "claimEpoch": 1_790_000_000}
@@ -397,7 +437,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
         with pytest.raises(ValueError, match="metadata is invalid"):
             check_claim(env, lambda argv, wrong=wrong: json.dumps(wrong) if argv[1] == "tag" else git(argv))
-    with pytest.raises(ValueError, match="moved"):
+    with pytest.raises(ValueError, match="tag moved"):
         check_claim(env, lambda argv: f"{'c' * 40}\t{ref}\n{commit}\t{ref}^{{}}"
                     if argv[1] == "ls-remote" else git(argv))
     with pytest.raises(ValueError, match="annotated"):
@@ -426,7 +466,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         env={**os.environ, "GIT_COMMITTER_DATE": "@1790000000 +0000"},
     )
     subprocess.run(["git", "push", "origin", "main", "rc.1-v1.2.3"], check=True, capture_output=True)
-    env.update({"GITHUB_SHA": actual, "RELEASE_CLAIM_OBJECT": subprocess.check_output(
+    env.update({"RELEASE_CLAIM_OBJECT": subprocess.check_output(
         ["git", "rev-parse", ref], text=True, encoding="utf-8").strip()})
     claim = check_claim(env)
     assert claim["commit"] == actual
@@ -581,7 +621,7 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
     monkeypatch.chdir(tmp_path / "repo")
     stable.complete({
         "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": tag_object,
-        "GITHUB_SHA": commit, "GITHUB_REF": "refs/tags/rc.1-v1.2.3",
+        **CONTROLLER_ENV,
         "RELEASE_TAG": "v1.2.3", "CANDIDATE_MANIFEST_SHA256": "c" * 64,
         "CLOUDFLARE_R2_PUBLIC_URL": BASE,
     })

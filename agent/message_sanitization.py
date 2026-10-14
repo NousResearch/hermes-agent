@@ -460,40 +460,17 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE",
-    "_escape_invalid_chars_in_json_strings",
-    "_repair_tool_call_arguments",
-    "_sanitize_messages_non_ascii",
-    "_sanitize_messages_surrogates",
-    "_sanitize_structure_non_ascii",
-    "_sanitize_structure_surrogates",
-    "_sanitize_surrogates",
-    "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages",
-    "_strip_non_ascii",
-    "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence",
-    "coalesce_tool_call_id",
-    "coerce_tool_name",
-    "deterministic_call_id",
-    "matches_reasoning_echo_family",
-    "mistral_compliant_tool_id",
-    "needs_reasoning_echo",
-    "normalize_provider_tool_call_ids",
-    "reapply_reasoning_echo",
-    "reasoning_echo_family",
-    "reasoning_replay_route",
-    "record_reasoning_field_rejection",
-    "rejected_reasoning_carriers",
-    "rewrite_mistral_tool_call_ids",
-    "route_reasoning_carriers",
-    "route_requires_mistral_tool_ids",
-    "sanitize_outbound_kwargs",
-    "stale_thinking_reaches_wire",
-    "strip_images_for_rejecting_model",
-    "tool_call_id_variants",
-    "tool_result_id_variants",
-    "uniquify_tool_call_ids",
+    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
+    "deterministic_call_id", "matches_reasoning_echo_family", "mistral_compliant_tool_id", "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
+    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "route_reasoning_carriers", "route_requires_mistral_tool_ids",
+    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
+    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
 ]
 
 
@@ -530,20 +507,23 @@ def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return f"call_{hashlib.sha256(seed.encode('utf-8', errors='replace')).hexdigest()[:12]}"
 
 
-# Mistral's validator accepts only ``^[A-Za-z0-9]{9}$``. A split tool_call batch
-# stores ``call_`` + 12 hex, and replaying that id is HTTP 400 ("Unexpected tool
-# call id"). Map on the wire copy only: stored history stays byte-stable, and the
-# same source id always becomes the same 9 characters so the prefix does not drift.
+# Mistral's validator accepts only ``^[A-Za-z0-9]{9}$`` ("Tool call id was ... but must be a-z,
+# A-Z, 0-9, with a length of 9"); ``call_`` + 12 hex from a split tool_call batch or any other
+# provider's id is rejected on replay. ChatCompletionsTransport maps ids on the wire copy only:
+# stored history stays byte-stable, and one source id always becomes the same 9 characters so
+# the prompt-cache prefix does not drift.
 _MISTRAL_TOOL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
 _MISTRAL_ID_ALPHABET = string.digits + string.ascii_uppercase + string.ascii_lowercase
-_MISTRAL_MODEL_MARKERS = ("mistral", "devstral", "codestral", "ministral", "pixtral")
+_MISTRAL_MODEL_MARKERS = (
+    "mistral", "magistral", "mixtral", "devstral", "codestral", "ministral", "pixtral", "voxtral",
+)
 
 
 def route_requires_mistral_tool_ids(provider: Any, model: Any, base_url: Any) -> bool:
     """True when this chat-completions route enforces Mistral's 9-character tool ids."""
     from utils import base_url_host_matches
 
-    if (provider or "").strip().lower() == "mistral" or base_url_host_matches(str(base_url or ""), "api.mistral.ai"):
+    if (provider or "").strip().lower() == "mistral" or base_url_host_matches(str(base_url or ""), "mistral.ai"):
         return True
     model_lower = (model or "").lower()
     return any(marker in model_lower for marker in _MISTRAL_MODEL_MARKERS)
@@ -560,55 +540,6 @@ def mistral_compliant_tool_id(raw: Any) -> str:
         number, rem = divmod(number, 62)
         chars.append(_MISTRAL_ID_ALPHABET[rem])
     return "".join(chars)
-
-
-def _rewrite_mistral_tool_call(tool_call: dict) -> dict:
-    updates = {}
-    for key in ("id", "call_id"):
-        current = tool_call.get(key)
-        if not isinstance(current, str):
-            continue
-        updated = mistral_compliant_tool_id(current)
-        if updated != current:
-            updates[key] = updated
-    return {**tool_call, **updates} if updates else tool_call
-
-
-def _rewrite_mistral_tool_ids_message(message: Any) -> Any:
-    if not isinstance(message, dict):
-        return message
-    role = message.get("role")
-    if role == "tool":
-        current = message.get("tool_call_id")
-        if not isinstance(current, str):
-            return message
-        updated = mistral_compliant_tool_id(current)
-        return {**message, "tool_call_id": updated} if updated != current else message
-    if role != "assistant":
-        return message
-    calls = message.get("tool_calls")
-    if not isinstance(calls, list):
-        return message
-    copied = None
-    for index, tool_call in enumerate(calls):
-        if not isinstance(tool_call, dict):
-            continue
-        rewritten = _rewrite_mistral_tool_call(tool_call)
-        if rewritten is not tool_call:
-            if copied is None:
-                copied = list(calls)
-            copied[index] = rewritten
-    return {**message, "tool_calls": copied} if copied is not None else message
-
-
-def rewrite_mistral_tool_call_ids(
-    messages: list, *, provider: Any = None, model: Any = None, base_url: Any = None,
-) -> list:
-    """Wire copy whose tool ids satisfy Mistral. Other routes and already-valid ids pass through."""
-    if not messages or not route_requires_mistral_tool_ids(provider, model, base_url):
-        return messages
-    rewritten = [_rewrite_mistral_tool_ids_message(message) for message in messages]
-    return messages if all(new is old for new, old in zip(rewritten, messages)) else rewritten
 
 
 def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:

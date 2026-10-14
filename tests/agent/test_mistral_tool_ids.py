@@ -12,11 +12,7 @@ import re
 
 import pytest
 
-from agent.message_sanitization import (
-    mistral_compliant_tool_id,
-    rewrite_mistral_tool_call_ids,
-    route_requires_mistral_tool_ids,
-)
+from agent.message_sanitization import mistral_compliant_tool_id, route_requires_mistral_tool_ids
 from agent.transports.chat_completions import ChatCompletionsTransport
 
 _BAD_ID = "call_04c3699a572b"
@@ -33,17 +29,28 @@ def _pair():
                 {"id": _NATIVE_ID, "type": "function", "function": {"name": "tool_call", "arguments": "{}"}},
                 {"id": _BAD_ID, "call_id": _BAD_ID, "type": "function",
                  "function": {"name": "tool_call", "arguments": "{}"}},
+                # Composite Responses-bridge id (uniquify_tool_call_ids writes these); its result
+                # carries only the call half (tool_dispatch_helpers._normalize_tool_call_id).
+                {"id": "call_abc|fc_123", "call_id": "call_abc", "type": "function",
+                 "function": {"name": "tool_call", "arguments": "{}"}},
             ],
         },
         {"role": "tool", "tool_call_id": _NATIVE_ID, "content": "windows"},
         {"role": "tool", "tool_call_id": _BAD_ID, "content": "capture"},
+        {"role": "tool", "tool_call_id": "call_abc", "content": "bridge"},
     ]
 
 
-def test_split_id_maps_to_one_stable_mistral_id():
-    assert mistral_compliant_tool_id(_BAD_ID) == "uzvbkiH61"
-    assert mistral_compliant_tool_id(_NATIVE_ID) == _NATIVE_ID
-    assert mistral_compliant_tool_id(_BAD_ID) == mistral_compliant_tool_id(_BAD_ID)
+def _wire(model, base_url="https://ollama.com/v1"):
+    import model_tools  # registers provider profiles
+    import providers
+
+    messages = _pair()
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        model=model, messages=messages, tools=None,
+        provider_profile=providers.get_provider_profile("ollama-cloud"), base_url=base_url,
+    )
+    return messages, kwargs["messages"]
 
 
 @pytest.mark.parametrize(
@@ -52,7 +59,10 @@ def test_split_id_maps_to_one_stable_mistral_id():
         ("ollama-cloud", "mistral-large-4", "https://ollama.com/v1", True),
         ("ollama-cloud", "devstral-2", "https://ollama.com/v1", True),
         ("mistral", "codestral-latest", "https://api.mistral.ai/v1", True),
+        ("custom", "anything", "https://codestral.mistral.ai/v1", True),
         ("custom", "pixtral-large", "https://example.invalid/v1", True),
+        ("custom", "magistral-small", "http://localhost:8000/v1", True),
+        ("custom", "mixtral-8x22b", "http://localhost:8000/v1", True),
         ("ollama-cloud", "glm-5.3-flash", "https://ollama.com/v1", False),
         ("openrouter", "anthropic/claude-sonnet-4", "https://openrouter.ai/api/v1", False),
     ],
@@ -61,46 +71,24 @@ def test_route_gate(provider, model, base_url, required):
     assert route_requires_mistral_tool_ids(provider, model, base_url) is required
 
 
-def test_rewrite_pairs_both_sides_and_leaves_history():
-    messages = _pair()
-    rewritten = rewrite_mistral_tool_call_ids(
-        messages, provider="ollama-cloud", model="mistral-large-4", base_url="https://ollama.com/v1",
-    )
-    assistant_ids = [tc["id"] for tc in rewritten[0]["tool_calls"]]
-    result_ids = [rewritten[1]["tool_call_id"], rewritten[2]["tool_call_id"]]
+def test_mistral_wire_pairs_every_call_with_its_result_and_leaves_history():
+    assert mistral_compliant_tool_id(_NATIVE_ID) == _NATIVE_ID
+    assert mistral_compliant_tool_id(_BAD_ID) == "uzvbkiH61"
 
-    assert assistant_ids[0] == _NATIVE_ID
-    assert _MISTRAL_ID.fullmatch(assistant_ids[1])
-    assert assistant_ids[1] == "uzvbkiH61"
-    assert rewritten[0]["tool_calls"][1]["call_id"] == assistant_ids[1]
-    assert result_ids == assistant_ids
+    messages, sent = _wire("mistral-large-4")
+    call_ids = [tc["id"] for tc in sent[0]["tool_calls"]]
+    result_ids = [m["tool_call_id"] for m in sent[1:]]
+
+    assert call_ids[:2] == [_NATIVE_ID, "uzvbkiH61"]
+    assert all(_MISTRAL_ID.fullmatch(i) for i in call_ids)
+    assert result_ids == call_ids
+    assert all("call_id" not in tc for tc in sent[0]["tool_calls"])
     assert messages[0]["tool_calls"][1]["id"] == _BAD_ID
+    assert messages[0]["tool_calls"][2]["id"] == "call_abc|fc_123"
     assert messages[2]["tool_call_id"] == _BAD_ID
 
 
-def test_non_mistral_route_is_unchanged():
-    messages = _pair()
-    rewritten = rewrite_mistral_tool_call_ids(
-        messages, provider="ollama-cloud", model="glm-5.3-flash", base_url="https://ollama.com/v1",
-    )
-    assert rewritten is messages
-
-
-def test_ollama_cloud_profile_sends_the_rewritten_id():
-    import model_tools  # registers provider profiles
-    import providers
-
-    profile = providers.get_provider_profile("ollama-cloud")
-    messages = _pair()
-    kwargs = ChatCompletionsTransport().build_kwargs(
-        model="mistral-large-4",
-        messages=messages,
-        tools=None,
-        provider_profile=profile,
-        base_url="https://ollama.com/v1",
-    )
-    sent_ids = [tc["id"] for tc in kwargs["messages"][0]["tool_calls"]]
-    assert sent_ids[1] == "uzvbkiH61"
-    assert "call_id" not in kwargs["messages"][0]["tool_calls"][1]
-    assert kwargs["messages"][2]["tool_call_id"] == sent_ids[1]
-    assert messages[2]["tool_call_id"] == _BAD_ID
+def test_non_mistral_route_keeps_ids():
+    _, sent = _wire("glm-5.3-flash")
+    assert [tc["id"] for tc in sent[0]["tool_calls"]] == [_NATIVE_ID, _BAD_ID, "call_abc|fc_123"]
+    assert [m["tool_call_id"] for m in sent[1:]] == [_NATIVE_ID, _BAD_ID, "call_abc"]

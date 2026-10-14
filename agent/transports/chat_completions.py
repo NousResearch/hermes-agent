@@ -5,7 +5,7 @@ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body)
 """
 
 import json
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
@@ -13,7 +13,12 @@ from agent.reasoning_effort import (
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import MESSAGE_UID
-from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
+from agent.message_sanitization import (
+    coalesce_tool_call_id,
+    mistral_compliant_tool_id,
+    normalize_finish_reason as _normalize_finish_reason,
+    route_requires_mistral_tool_ids,
+)
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -401,7 +406,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
 
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
-    native_reasoning_details_type: str | None = None,
+    native_reasoning_details_type: str | None = None, map_tool_id: Callable[[str], str] | None = None,
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
@@ -414,6 +419,8 @@ def _sanitize_message(
     On a route that reads ``reasoning_details``, private ``<provider>.native_assistant`` carriers still go only to the
     profile that declared that exact type: another provider's signed replay is meaningless (or
     rejected) elsewhere, and stored history keeps it for a return to the original provider.
+    ``map_tool_id`` (Mistral routes) rewrites the pairing id on both sides of a call/result pair
+    from the same key, ``coalesce_tool_call_id``, so a composite ``call|item`` id stays paired.
     """
     if not isinstance(msg, dict):
         return None
@@ -435,6 +442,13 @@ def _sanitize_message(
     if msg.get("role") == "tool" and "name" in msg:
         strip_keys.append("name")
     out_msg = {k: v for k, v in msg.items() if k not in strip_keys}
+    mapped_result_id = False
+    result_key = coalesce_tool_call_id({"id": msg.get("tool_call_id")}) if map_tool_id and msg.get("role") == "tool" else ""
+    if result_key:
+        mapped = map_tool_id(result_key)
+        if mapped != msg["tool_call_id"]:
+            out_msg["tool_call_id"] = mapped
+            mapped_result_id = True
     if kept_details:
         out_msg["reasoning_details"] = kept_details
     tool_calls = msg.get("tool_calls")
@@ -451,13 +465,17 @@ def _sanitize_message(
                 strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
             ):
                 keys.append("extra_content")
-            if keys:
+            key = coalesce_tool_call_id(tc) if map_tool_id else ""
+            mapped = map_tool_id(key) if key else None
+            if keys or (mapped is not None and mapped != tc.get("id")):
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
                 copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
+                if mapped is not None:
+                    copied_tool_calls[tc_idx]["id"] = mapped
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
-    return out_msg if strip_keys or copied_tool_calls is not None else None
+    return out_msg if strip_keys or mapped_result_id or copied_tool_calls is not None else None
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -478,10 +496,6 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         profile = kwargs.get("provider_profile")
         provider = getattr(profile, "name", None) or kwargs.get("provider")
-        from agent.message_sanitization import rewrite_mistral_tool_call_ids
-        messages = rewrite_mistral_tool_call_ids(
-            messages, provider=provider, model=kwargs.get("model"), base_url=kwargs.get("base_url"),
-        )
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
         native_type = getattr(profile, "native_reasoning_details_type", None) or None
         carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))
@@ -489,7 +503,10 @@ class ChatCompletionsTransport(ProviderTransport):
             # A profile declaring a native carrier type consumes replayed details by contract.
             carriers = carriers | {"reasoning_details"}
         strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type))
+        map_tool_id = (mistral_compliant_tool_id
+                       if route_requires_mistral_tool_ids(provider, kwargs.get("model"), kwargs.get("base_url"))
+                       else None)
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type, map_tool_id))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages

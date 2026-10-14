@@ -99,6 +99,7 @@ def test_launch_budget_counts_own_server_as_free(monkeypatch):
 def test_launch_budget_skips_unified_memory_and_failed_probes(monkeypatch):
     uma = replace(CARD_CAPACITY, uma=True)
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: pytest.fail("UMA must not probe"))
+    monkeypatch.setattr(hardware, "_windows_memory_status", lambda: None)  # Windows narrows by commit
     assert hardware.launch_budget(uma) is None
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
     assert hardware.launch_budget(CARD_CAPACITY) is None

@@ -136,6 +136,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
+    from hermes_cli.local_runtime.hardware import prompt_cache_bytes
+    cache = prompt_cache_bytes(budget, live, footprint_bytes(plan.profile, decision.window,
+                                                             overhead_bytes=plan.overhead_bytes))
+    if cache is not None:
+        keys["cache-ram"] = str(cache >> 20)  # MiB; 0 turns the cache off
     if profile.lazy_bytes:
         # The price above leaves these tensors on disk; llama.cpp's own default loads them on
         # integrated GPUs.

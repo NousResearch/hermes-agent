@@ -335,6 +335,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { createKeepAwakeController } from './keep-awake-controller'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -450,13 +451,6 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
-import {
-  createKeepAwake,
-  type KeepAwakeMode,
-  keepAwakeWanted,
-  parseKeepAwakeMode,
-  readKeepAwakeMode
-} from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
@@ -6624,6 +6618,8 @@ function registerPowerResumeListeners() {
     // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
+    powerMonitor.on('suspend', () => keepAwake.noteSuspend(powerMonitor.getSystemIdleTime()))
+    powerMonitor.on('resume', () => keepAwake.noteResume())
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
@@ -18248,43 +18244,29 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 // merged active-work picture that already drives stream throttling, so it is
 // held exactly while a turn is in flight and released at idle. See
 // store/keep-awake + power-save.ts.
-const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
-const keepAwake = createKeepAwake(powerSaveBlocker)
-let keepAwakeMode: KeepAwakeMode = 'off'
+const keepAwake = createKeepAwakeController({
+  blocker: powerSaveBlocker,
+  configPath: path.join(app.getPath('userData'), 'keep-awake.json'),
+  isWorking: () => isAnyTurnInFlight(),
+  log: rememberLog,
+  // The main chat window only: Quick Entry and the HUD have no toast surface.
+  offer: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return false
+    }
 
-function readPersistedKeepAwakeMode(): KeepAwakeMode {
-  try {
-    return readKeepAwakeMode(JSON.parse(fs.readFileSync(KEEP_AWAKE_CONFIG_PATH, 'utf8')))
-  } catch {
-    return 'off'
-  }
-}
+    mainWindow.webContents.send('hermes:keep-awake-offer')
 
-// Reconcile the blocker with the mode and the live turn picture. Called from
-// every mode change and every active-work report — both happen after app
-// ready, when `keepAwake` and `keepAwakeMode` above are initialised.
-function applyKeepAwake(working = isAnyTurnInFlight()) {
-  keepAwake.set(keepAwakeWanted(keepAwakeMode, working))
-}
-
-ipcMain.on('hermes:keep-awake', (_event, value) => {
-  // Accepts the mode string, or the boolean the pre-mode toggle sent.
-  const mode = parseKeepAwakeMode(value)
-
-  if (mode === null) {
-    return
-  }
-
-  keepAwakeMode = mode
-  applyKeepAwake()
-
-  try {
-    fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ mode }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[keep-awake] write failed: ${error.message}`)
+    return true
   }
 })
+
+// Called from every mode change and every active-work report, after app ready.
+function applyKeepAwake(working = isAnyTurnInFlight()) {
+  keepAwake.apply(working)
+}
+
+ipcMain.on('hermes:keep-awake', (_event, value) => keepAwake.setMode(value))
 
 // Quick Entry: the renderer reads the live registration state on settings mount
 // and writes the preference back. Main is authoritative — it owns the OS
@@ -19367,8 +19349,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
-  keepAwakeMode = readPersistedKeepAwakeMode()
-  applyKeepAwake()
+  keepAwake.restore()
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()

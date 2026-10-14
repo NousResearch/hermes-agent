@@ -1,6 +1,6 @@
 import type { TranslationOverrides } from './define-locale'
 
-// Shell notices (remote-display toast, butterbar), spread into fr.ts.
+// Shell notices (remote-display toast, butterbar, keep-awake offer), spread into fr.ts.
 export const frNotices = {
   remoteDisplayBanner: {
     message: reason =>
@@ -15,5 +15,11 @@ export const frNotices = {
       privacy: 'Politique de confidentialité',
       after: '.'
     }
+  },
+  keepAwakeOffer: {
+    title: 'Votre ordinateur s’est mis en veille pendant que Hermes travaillait',
+    message:
+      'Hermes peut empêcher la mise en veille pendant qu’une tâche s’exécute. L’écran s’éteint toujours, et sur batterie l’ordinateur peut quand même se mettre en veille.',
+    action: 'Empêcher la veille pendant le travail'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'keepAwakeOffer'>

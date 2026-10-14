@@ -26,6 +26,8 @@ from scripts.releases.versioning import (
 WORKFLOW = "stable-release.yml"
 # A fetch refspec may hold one ``*``; the parsers filter what the globs over-match.
 _ATTEMPT_GLOBS = ("rc.*", "abandoned-rc.*")
+# Local namespace for the remote's release-line branches, kept apart from the user's own remotes.
+_RELEASE_LINE_PREFIX = "hermes-release"
 
 
 class ReleaseRefused(RuntimeError):
@@ -60,21 +62,16 @@ def _claim_commit(repo: Path, tag: str) -> str:
 
 
 def _refresh_claims(repo: Path, remote: str) -> None:
-    _git(
-        repo, "fetch", remote,
-        "+refs/heads/main:refs/remotes/hermes-release/main",
-        *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS),
-    )
+    # Pruned, so a deleted release/* branch stops admitting commits. Tags are
+    # fetched separately: pruning there would delete local-only claim tags.
+    _git(repo, "fetch", "--prune", remote, *stable.release_line_refspecs(_RELEASE_LINE_PREFIX))
+    _git(repo, "fetch", remote, *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS))
 
 
-def _require_remote_main(repo: Path, commit: str) -> None:
-    result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/hermes-release/main"],
-        cwd=repo, capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ReleaseRefused(f"{commit} is not on origin/main")
+def _require_release_line(repo: Path, commit: str) -> None:
+    """The commit must be on the remote's ``main`` or a ``release/*`` branch."""
+    if not _git(repo, *stable.release_line_contains(commit, _RELEASE_LINE_PREFIX)[1:]):
+        raise ReleaseRefused(f"{commit} is not on the remote's main or a release/* branch")
 
 
 def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> ReleaseRefused:
@@ -243,7 +240,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     and the cut goes on; no confirmer, or a no, is the refusal.
     """
     _refresh_claims(repo, remote)
-    _require_remote_main(repo, commit)
+    _require_release_line(repo, commit)
     outstanding = _outstanding_attempt(repo, remote)
     refusal = None
     if outstanding is not None:

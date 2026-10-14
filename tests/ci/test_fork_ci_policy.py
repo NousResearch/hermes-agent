@@ -52,6 +52,15 @@ def test_standard_python_runner_has_bounded_workers() -> None:
     assert "timeout-minutes: 60" in workflow
 
 
+def test_standard_windows_update_runner_has_room_for_a_cold_cache() -> None:
+    # Two workers on windows-latest take ~58 min warm and ~69 min cold; upstream keeps 60.
+    workflow = yaml.safe_load(_read(".github/workflows/windows-install-update-e2e.yml"))
+    job = workflow["jobs"]["install-update"]
+    assert "|| 'windows-latest' }}" in job["runs-on"]
+    assert job["timeout-minutes"] == (
+        "${{ github.repository == 'NousResearch/hermes-agent' && 60 || 90 }}")
+
+
 def test_standard_nix_runner_has_bounded_parallelism() -> None:
     workflow = _read(".github/workflows/nix.yml")
     assert "runs-on: ubuntu-latest" in workflow

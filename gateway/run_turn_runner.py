@@ -23,7 +23,6 @@ from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
@@ -1732,37 +1731,8 @@ class TurnRunner:
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
-        ctx = self._ctx
-        # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
-        # the streaming finalizer and the non-streaming delivery path see the same response.
-        if isinstance(result, dict) and isinstance(result.get("final_response"), str):
-            result["final_response"] = repair_explicit_computer_use_media_paths(
-                result["final_response"], result.get("messages", []), history_offset=len(agent_history),
-            )
-        ctx.result_holder[0] = result
-        if stream_consumer is None:
-            return
-        # Pass final_response as the authoritative finalize payload: it includes post-stream
-        # augmentation (verifier footer, explainer) the accumulator never saw. Adopt ONLY a genuinely
-        # completed final: interrupt paths return {interrupted: True, completed: False} with a
-        # DIAGNOSTIC final_response — adopting it would seal the partial answer over with the
-        # diagnostic AND suppress the gateway's own error delivery.
-        _final_for_stream = None
-        if (
-            isinstance(result, dict) and not result.get("failed") and not result.get("interrupted")
-            and result.get("completed") is not False
-        ):
-            fr = result.get("final_response")
-            if isinstance(fr, str) and fr.strip() and fr != "(empty)":
-                _final_for_stream = fr
-        if _final_for_stream is None:
-            stream_consumer.finish()
-            return
-        # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
-        try:
-            stream_consumer.finish(_final_for_stream)
-        except TypeError:
-            stream_consumer.finish()
+        from gateway.run_turn_stream_final import finish_stream_consumer
+        finish_stream_consumer(self._runner, self._ctx, result, agent_history, stream_consumer)
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
         """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered
@@ -1974,6 +1944,7 @@ class TurnRunner:
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
+            "_gateway_reasoning_rendered": result.get("_gateway_reasoning_rendered", False),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],

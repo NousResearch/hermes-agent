@@ -23,15 +23,15 @@ auth:
   # discovered scope automatically, so no provider-specific override is needed.
 
 # Enable the four composable retrieval tools so Hermes can search, fetch, and
-# inspect source material directly. The higher-level spacefrontiers_research
+# inspect source material directly. The higher-level machinelibrary_research
 # agent remains available through `hermes mcp configure machine_library`, but
 # is intentionally not enabled by default.
 tools:
   default_enabled:
-    - spacefrontiers_search_documents
-    - spacefrontiers_search_social
-    - spacefrontiers_fetch_document
-    - spacefrontiers_search_in_document
+    - machinelibrary_search_documents
+    - machinelibrary_search_social
+    - machinelibrary_fetch_document
+    - machinelibrary_search_in_document
 
 # Composer-suggestion triggers (desktop brand pills). Deliberately avoid the
 # generic phrase "deep research" so ordinary research prompts do not advertise
@@ -61,6 +61,6 @@ post_install: |
   cite the underlying material directly. Usage consumes prepaid API credits;
   create or fund an account at https://machinelibrary.ai.
 
-  The higher-level `spacefrontiers_research` agent is not enabled by default.
+  The higher-level `machinelibrary_research` agent is not enabled by default.
   Enable it or otherwise customize the tool selection any time with:
     hermes mcp configure machine_library

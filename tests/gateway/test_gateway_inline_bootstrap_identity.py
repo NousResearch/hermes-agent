@@ -58,3 +58,16 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     watcher = _JOINS[join]([PY, "-c", "import os, sys, time\npid = int(sys.argv[1]); cmd = sys.argv[2:]\n", "1234", *store])
     assert not looks_like_gateway_command_line(chat) and _hermes_holder_subcommand(chat) == "chat"
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
+
+
+@pytest.mark.parametrize("join", _JOINS)
+def test_inline_bootstrap_command_line_is_not_bait_for_a_dev_server_grep(join: str) -> None:
+    # `ps aux | grep "[n]ext" | xargs -r kill` — a routine Next.js dev-server cleanup —
+    # killed a live gateway 16 times in one day because the repair source embedded in the
+    # launcher's ``-c`` argument spelled a certain iterator builtin's call (#135517). The
+    # base64 .cmd forms are exempt: their payload is not greppable plaintext.
+    for name, argv in _forms(["gateway", "run", "--replace"]).items():
+        if name in ("cmd-launcher", "venv-reentry-cmd-launcher"):
+            continue
+        command_line = _JOINS[join]([str(t) for t in argv])
+        assert "next" not in command_line, name

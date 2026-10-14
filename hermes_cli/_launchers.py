@@ -347,8 +347,19 @@ def _hermes_closure_repair():
         exe = fields.get('git', '').strip()
         if not (os.path.isabs(exe) and os.path.isfile(exe)):
             names = ('git.exe',) if os.name == 'nt' else ('git',)
-            exe = next((os.path.join(d, n) for d in os.environ.get('PATH', '').split(os.pathsep) if os.path.isabs(d)
-                        for n in names if os.path.isfile(os.path.join(d, n))), '')
+            # A bare loop on purpose: this source rides the launcher's ``-c`` command
+            # line, where the skipped builtin's name would match host-side dev-server
+            # cleanup greps that kill every match (#135517).
+            exe = ''
+            for d in os.environ.get('PATH', '').split(os.pathsep):
+                if not os.path.isabs(d):
+                    continue
+                for n in names:
+                    if os.path.isfile(os.path.join(d, n)):
+                        exe = os.path.join(d, n)
+                        break
+                if exe:
+                    break
         if not exe:
             return
 

@@ -8,11 +8,16 @@ operator has to notice.
 """
 import json
 import subprocess
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 
+from scripts.releases import lanes as lane_set
 from scripts.releases.versioning import tag_record
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def git(repo, *args):
@@ -94,7 +99,8 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
             return "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd\n"
         return ""
 
-    result = _release(source, commit, execute=execute, autopublish=True, skip_bundles=True)
+    result = _release(source, commit, execute=execute, autopublish=True,
+                     lanes=lane_set.select(only=["docker", "ci"], with_=["windows"]))
 
     assert result["version"] == "0.21.5"
     assert result["tag"] == "rc.1-v0.21.5"
@@ -105,19 +111,16 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
     claim = tag_record(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
     assert isinstance(claim.pop("claimEpoch"), int)
-    # The claim is the one record of the attempt's policy, flags included.
+    # The claim is the one record of the attempt's policy: the sorted lane set.
     assert claim == {
         "attempt": 1,
         "autopublish": True,
         "commit": commit,
         "schema": 1,
-        "skipBundles": True,
-        "skipTests": False,
-        # macOS Intel and Termux are opt-in, and off unless asked for.
-        "includeMacosIntel": False,
-        "includeTermux": False,
+        "lanes": ["ci", "docker", "windows"],
         "version": "0.21.5",
     }
+    assert result["lanes"] == frozenset({"ci", "docker", "windows"})
     create = calls[0]
     assert create[:4] == ["gh", "release", "create", "rc.1-v0.21.5"]
     assert "--verify-tag" in create and "--draft" in create
@@ -144,7 +147,7 @@ def test_release_output_names_the_ci_run_and_the_publish_step():
     from scripts.releases.entrypoint import next_steps
 
     result = {"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
-              "skip_bundles": False, "skip_tests": False, "repository": "example/hermes-agent",
+              "lanes": lane_set.DEFAULT, "repository": "example/hermes-agent",
               "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
               "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"}
     text = next_steps(result)
@@ -153,24 +156,29 @@ def test_release_output_names_the_ci_run_and_the_publish_step():
     assert "Draft release: " + result["url"] in text
     # The publish command sits on its own line so it can be copied whole.
     assert "\n    python scripts/release.py publish --version 0.21.5 --remote origin" in text
-    assert "skipped" not in text
+    # The default set names what it leaves out, and warns about no test lane.
+    assert "Not built: macos-intel, termux." in text
+    assert "Not tested" not in text
 
     automatic = next_steps({**result, "autopublish": True})
     assert "Autopublish is on" in automatic
     assert "publish --version" not in automatic
 
-    skipped = next_steps({**result, "skip_bundles": True, "skip_tests": True})
-    assert "Bundles are skipped." in skipped
-    assert "Tests are skipped, since you passed --skip-tests" in skipped
-    assert "\033[" not in skipped
-    assert "\033[1mTests are skipped" in next_steps({**result, "skip_tests": True}, bold=True)
+    # --only windows,docker: no tests, no macOS, and a partial desktop set never moves the channel.
+    windows = next_steps({**result, "lanes": lane_set.select(only=["windows", "docker"])})
+    assert "Not built: macos-arm64, macos-intel, termux." in windows
+    assert "Not tested: ci, nix, docker-tests, pm-bundle, windows-live, install-e2e, bootstrap-version, smoke, upgrade" in windows
+    assert "partial desktop release" in windows
+    assert "\033[" not in windows
+    assert "\033[1mNot tested" in next_steps({**result, "lanes": lane_set.select(without=["ci"])}, bold=True)
+    assert "partial desktop release" not in text
 
 
 def test_an_unlisted_run_points_at_the_workflow_page():
     from scripts.releases.entrypoint import next_steps
 
     text = next_steps({"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
-                       "skip_bundles": False, "skip_tests": False,
+                       "lanes": lane_set.DEFAULT,
                        "repository": "example/hermes-agent", "run_url": "",
                        "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"})
     assert "the run is not listed yet" in text
@@ -1034,3 +1042,18 @@ def test_a_concurrent_cut_of_another_version_is_stopped_before_dispatch(
     with pytest.raises(entrypoint.ReleaseRefused, match="more than one outstanding attempt"):
         _release(left, commit, execute=lambda command: pytest.fail(f"must not run {command}"))
     assert {"rc.1-v0.21.5", "rc.1-v0.22.0"} <= set(git(left, "tag", "--list", "rc.*").splitlines())
+
+
+def test_release_refuses_an_unknown_lane_before_touching_git(tmp_path):
+    ran = subprocess.run(
+        [sys.executable, "scripts/release.py", "release", "--commit", "HEAD", "--with", "macos-intell"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert ran.returncode != 0
+    assert "unknown lane macos-intell" in ran.stderr and "macos-intel" in ran.stderr
+    both = subprocess.run(
+        [sys.executable, "scripts/release.py", "release", "--commit", "HEAD", "--with", "ci", "--without", "ci"],
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False)
+    assert "--with and --without both name ci" in both.stderr
+    helped = subprocess.run([sys.executable, "scripts/release.py", "release", "--help"], cwd=ROOT,
+                            capture_output=True, text=True, encoding="utf-8", check=False)
+    assert "macos-intel (off)" in helped.stdout and "docker-tests" in helped.stdout

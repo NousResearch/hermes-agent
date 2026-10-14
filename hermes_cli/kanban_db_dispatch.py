@@ -87,6 +87,12 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# PR state caching: refresh PR state at most once per TTL seconds.
+_RESPAWN_GUARD_PR_STATE_TTL = 300  # 5 minutes: stale pr_state is re-checked
+# GitHub token cache: fetched once per process, 10 min TTL.
+_GITHUB_TOKEN_TTL = 600  # 10 minutes
+_github_token_cache: tuple[Optional[str], float] = (None, 0.0)
+
 
 @dataclass
 class DispatchResult:
@@ -1638,10 +1644,21 @@ def check_respawn_guard(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')",
             (task_id, int(c["created_at"] or 0)),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        # PR'nin durumu biliniyorsa onu da sor: merged/closed -> aktif is yok,
+        # guard gerekcesiz (#29458). Acik PR ya da bilinmeyen (pr_state yok /
+        # 300 saniyeden eski) durumda guard KALSIN -> fail-closed.
+        _known = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'pr_state' AND created_at >= ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (task_id, now - _RESPAWN_GUARD_PR_STATE_TTL),
+        ).fetchone()
+        if _known is not None and _kb._json_or(_known["payload"], {}).get("closed") is True:
             return None
         return "active_pr"
 
@@ -1662,6 +1679,130 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
         return False
     to = data.get("assignee")
     return bool(to) and "from" in data and data["from"] != to
+
+
+def _github_token() -> Optional[str]:
+    """GitHub token'i `gh auth token` ile al, 10 dakika bellekler.
+
+    Donen deger ASLA loglanmaz; yalnizca Authorization basligina girer. gh yoksa,
+    dogallanmamis/expired ise None doner ve cagiran taraf fail-closed davranir.
+    """
+    global _github_token_cache
+    token, at = _github_token_cache
+    if token and (time.time() - at) < _GITHUB_TOKEN_TTL:
+        return token
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        fresh = proc.stdout.strip() if proc.returncode == 0 else ""
+    except Exception:
+        fresh = ""
+    _github_token_cache = (fresh or None, time.time())
+    return fresh or None
+
+
+def _pr_state_ok(pr_url: str) -> bool:
+    """PR'nin merged ya da kapali (aktif is kalmadi) oldugunu dogrula.
+
+    True gormenin TEK yolu: API 200 + ``merged`` True ya da ``state == "closed"``.
+    Ag/token hatasi (404, private depo, 5xx, timeout, token yok) ASLA True
+    donmez -- erisilemeyen PR'da guard'in kalkmamasi icin fail-closed.
+    """
+    m = re.search(r"github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)", pr_url or "")
+    if not m:
+        return False
+    token = _github_token()
+    if not token:
+        return False
+    owner, repo, number = m.group(1), m.group(2), m.group(3)
+    try:
+        import json
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "hermes-kanban-respawn-guard",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return False  # fail-closed
+    if not isinstance(data, dict):
+        return False
+    if data.get("merged") is True:
+        return True
+    return str(data.get("state") or "").strip().lower() == "closed"
+
+
+def _probe_pr_state(conn: sqlite3.Connection, *, now: Optional[int] = None) -> bool:
+    """Tick basina EN FAZLA bir kartin PR durumunu tazele; sonucu task_events'e yaz.
+
+    Aday secimi en uzun suredir guard'da kalan kart olur (ORDER BY ilk_guard ASC)
+    -- starvation olmaz. Yalnizca 300 saniyeden eski 'respawn_guarded active_pr'
+    kaydi olan, 'pr_state' kaydi taze olmayan kart secilir.
+
+    Donus: True -> bir kart sorgulandi ve 'pr_state' olayi yazildi. Yazma
+    basarisiz OLURSA kart sonsuza dek fail-closed kalabildigi icin bu HATA
+    sessizce yutulmaz, log uyarisi verilir.
+    """
+    if now is None:
+        now = int(time.time())
+    cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    adaylar = conn.execute(
+        "SELECT e.task_id AS task_id, MIN(e.created_at) AS ilk_guard "
+        "FROM task_events e "
+        "WHERE e.kind = 'respawn_guarded' AND e.created_at >= ? "
+        "AND e.payload LIKE '%active_pr%' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_events p WHERE p.task_id = e.task_id "
+        "  AND p.kind = 'pr_state' AND p.created_at >= ?"
+        ") "
+        "GROUP BY e.task_id ORDER BY ilk_guard ASC LIMIT 5",
+        (cutoff, now - _RESPAWN_GUARD_PR_STATE_TTL),
+    ).fetchall()
+    for a in adaylar:
+        task_id = a["task_id"]
+        pr_url = None
+        for c in conn.execute(
+            "SELECT body FROM task_comments "
+            "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
+            (task_id, cutoff),
+        ).fetchall():
+            body = _kb._lossy_text(c["body"])
+            if body:
+                mm = _RESPAWN_GUARD_PR_URL_RE.search(body)
+                if mm:
+                    pr_url = mm.group(0)
+                    break
+        if not pr_url:
+            continue
+        closed = _pr_state_ok(pr_url)
+        payload = {
+            "url": pr_url,
+            "closed": bool(closed),
+            "checked_at": now,
+        }
+        try:
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "pr_state", payload)
+        except Exception as exc:
+            _kb._log.warning(
+                "kanban: pr_state yazilamadi (task=%s pr=%s) -- kart fail-closed kalir: %s",
+                task_id, pr_url, exc,
+            )
+            return False
+        _kb._log.info(
+            "kanban: pr_state tazelendi (task=%s pr=%s closed=%s)",
+            task_id, pr_url, closed,
+        )
+        return True
+    return False
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -2350,6 +2491,19 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+
+    # PR durumu tazeleme: tick basina EN FAZLA BIR ag cagrisi (yalnizca 300 saniyeden
+    # eski aktiv guard'lu kart icin). Ag yoksa / token yoksa / 404 ise pr_state
+    # 'closed': false yazilir ve guard yerinde kalir (fail-closed). Yazma hatasi
+    # sessizce yutulmaz: loglanir. dry_run'da hicbir sey yazilmaz.
+    if not dry_run:
+        try:
+            _probe_pr_state(conn)
+        except Exception as exc:
+            _kb._log.warning(
+                "kanban: PR durumu tazelemesi basarisiz (fail-closed, guard yerinde kalir): %s", exc,
+            )
+
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

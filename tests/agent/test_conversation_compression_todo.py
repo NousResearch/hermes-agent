@@ -202,6 +202,37 @@ def test_legacy_unprefixed_snapshot_keeps_later_user_turn():
     assert _strip_stale_todo_snapshot(content) == f"first request\n\n{SECOND}"
 
 
+# Old writer emitted raw multiline content; a content line may end in a status-looking suffix
+# (review comment 6179098126). The item must run to the last matching suffix, not the first.
+LEGACY_STATUS_IN_CONTENT = "- [ ] t1. step one\nlog says (pending)\nstep three (pending)"
+
+
+def test_legacy_status_looking_content_line_does_not_truncate_item():
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n{LEGACY_STATUS_IN_CONTENT}"
+    stripped = _strip_stale_todo_snapshot(content)
+    assert stripped == "first request"
+    assert "step three" not in stripped
+
+
+def test_legacy_status_looking_content_line_keeps_later_user_turn():
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n{LEGACY_STATUS_IN_CONTENT}\n\n{SECOND}"
+    stripped = _strip_stale_todo_snapshot(content)
+    assert stripped == f"first request\n\n{SECOND}"
+    assert "step three" not in stripped and "log says" not in stripped
+
+
+def test_legacy_status_looking_content_line_with_next_item_and_notice():
+    tasks = f"{LEGACY_STATUS_IN_CONTENT}\n- [>] t2. other (in_progress)"
+    content = f"first request\n\n{TODO_INJECTION_HEADER}\n{tasks}\n\n{NOTICE}\n\n{SECOND}"
+    assert _strip_stale_todo_snapshot(content) == f"first request\n\n{SECOND}"
+
+
+def test_legacy_stacked_snapshots_keep_turn_between_them():
+    block = f"{TODO_INJECTION_HEADER}\n{LEGACY_STATUS_IN_CONTENT}"
+    content = f"a\n\n{block}\n\nb\n\n{block}\n\nc"
+    assert _strip_stale_todo_snapshot(content) == "a\n\nb\n\nc"
+
+
 def test_legacy_synthetic_only_row_clears_when_store_completed():
     agent = _agent({"id": "t1", "content": "old task", "status": "completed"})
     rows = [{

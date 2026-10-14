@@ -78,22 +78,39 @@ def _consume_length_prefixed_todo_tasks(text: str) -> str | None:
 def _consume_legacy_todo_tasks(text: str) -> str:
     """Consume pre-length-prefix task items: ``- <marker> <id>. <content> (<status>)``.
 
-    Content may span lines (including blanks); an item runs from its marker line to the first
-    line ending in the status suffix that matches its marker. Lines that open like a task but
-    never close with a status suffix (abbreviated fixtures / residue) are also consumed so they
-    are not promoted to human intent after the header is removed.
+    The old writer emitted raw (possibly multiline) content, so a content line may itself end in a
+    status-looking suffix such as ``log says (pending)``. Each item therefore spans from its marker line
+    to the LAST line ending in the matching status suffix before the next boundary: the next legacy
+    task opener, a repeated ``TODO_INJECTION_HEADER``, or the pruned-skill reload notice (or end of
+    text). The old format is inherently ambiguous; preferring the last suffix consumes snapshot
+    scaffolding rather than promoting its remainder to user intent. Lines that open like a task but
+    never close with a status suffix (abbreviated fixtures / residue) are also consumed so they are
+    not promoted to human intent after the header is removed.
     """
-    from tools.todo_tool import _STATUS_MARKERS
+    from tools.todo_tool import TODO_INJECTION_HEADER, _STATUS_MARKERS
+
+    def _item_status(line: str) -> str | None:
+        match = _LEGACY_TASK_LINE_RE.match(line)
+        if not match:
+            return None
+        return next((s for s, m in _STATUS_MARKERS.items() if m == match.group(1)), None)
+
+    def _is_boundary(line: str) -> bool:
+        return (
+            _item_status(line) is not None
+            or line.startswith(TODO_INJECTION_HEADER)
+            or line.startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
+        )
 
     lines = text.split("\n") if text else []
     count = 0
     while count < len(lines):
-        match = _LEGACY_TASK_LINE_RE.match(lines[count])
-        status = next((s for s, m in _STATUS_MARKERS.items() if m == match.group(1)), None) if match else None
+        status = _item_status(lines[count])
         if status is None:
             break
         suffix = f" ({status})"
-        last = next((i for i in range(count, len(lines)) if lines[i].endswith(suffix)), None)
+        end = next((i for i in range(count + 1, len(lines)) if _is_boundary(lines[i])), len(lines))
+        last = next((i for i in range(end - 1, count - 1, -1) if lines[i].endswith(suffix)), None)
         if last is None:
             # Opener without a closing status suffix: still scaffolding, not human text.
             count += 1

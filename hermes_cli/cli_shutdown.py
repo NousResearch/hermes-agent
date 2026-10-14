@@ -148,10 +148,11 @@ def _shutdown_cached_aux_clients() -> None:
 
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
+# Async delegations and MCP servers live in the gateway, which owns their lifetime: a CLI exit
+# neither interrupts the delegations nor tears down MCP servers.
 _CLEANUP_STEPS = (
     ("_stop_cli_wake_word", Exception), ("_cleanup_all_terminals", Exception),
-    ("_interrupt_async_delegations", Exception), ("_cleanup_all_browsers", Exception),
-    ("_shutdown_mcp_servers", BaseException), ("_shutdown_cached_aux_clients", Exception),
+    ("_cleanup_all_browsers", Exception), ("_shutdown_cached_aux_clients", Exception),
 )
 
 

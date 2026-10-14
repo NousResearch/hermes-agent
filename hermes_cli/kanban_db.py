@@ -497,7 +497,8 @@ def set_current_board(slug: str) -> Path:
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
     _assert_not_delegated_child_mutation()
-    with contextlib.suppress(FileNotFoundError):        current_board_path().unlink()
+    with contextlib.suppress(FileNotFoundError):
+        current_board_path().unlink()
 
 
 def board_dir(board: Optional[str] = None) -> Path:
@@ -996,7 +997,8 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
-CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
 
@@ -1495,7 +1497,8 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         # a no-op re-assign or an unassign, which must not lift ``active_pr``.
         _append_event(
             conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
-        )    # Observer fires AFTER commit so subscribers see durable state.
+        )
+    # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
     return True
 
@@ -1994,7 +1997,8 @@ def _synthesize_ended_run(
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
     block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit    protocol-violation budget or a systemic same-error wave. Those trip on a
+    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
+    protocol-violation budget or a systemic same-error wave. Those trip on a
     policy independent of ``consecutive_failures``, so ``recompute_ready``'s
     counter check cannot see them — without this the trip is promoted back to
     ``ready`` in the same tick and the card respawns forever. A plain
@@ -2493,7 +2497,8 @@ def reclaim_task(
     ).fetchone()
     if not row:
         return False
-    if row["status"] != "running" and row["claim_lock"] is None:        # Nothing to reclaim — already ready / blocked / done.
+    if row["status"] != "running" and row["claim_lock"] is None:
+        # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
@@ -2993,7 +2998,8 @@ def _persist_scratch_completion_artifacts(
             _discard_copies()
             if isinstance(exc, ArtifactPreservationError):
                 raise
-            raise ArtifactPreservationError(                f"could not preserve declared scratch artifact {artifact}: {exc}"
+            raise ArtifactPreservationError(
+                f"could not preserve declared scratch artifact {artifact}: {exc}"
             ) from exc
         used_destinations.add(dest)
         persisted.append(str(dest.resolve()))
@@ -3494,7 +3500,8 @@ def request_changes(
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
-) -> tuple[bool, Optional[str]]:    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
+) -> tuple[bool, Optional[str]]:
+    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
     Refused while a parent is unfinished; ``dry_run`` only validates.
     Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
@@ -3994,6 +4001,7 @@ def _to_epoch(val) -> Optional[int]:
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
+
 
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""

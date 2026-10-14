@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+_LIST_SESSIONS_DB_PAGE_SIZE = 1000
 
 
 def _translate_acp_cwd(cwd: str) -> str:
@@ -213,8 +214,17 @@ class SessionManager:
         db = self._get_db()
         persisted_rows: dict[str, dict[str, Any]] = {}
         try:
-            for row in (db.list_sessions_rich(source="acp", limit=1000) if db is not None else ()):
-                persisted_rows[str(row["id"])] = dict(row)
+            if db is not None:
+                offset = 0
+                while True:
+                    page = db.list_sessions_rich(
+                        source="acp", limit=_LIST_SESSIONS_DB_PAGE_SIZE, offset=offset
+                    )
+                    for row in page:
+                        persisted_rows[str(row["id"])] = dict(row)
+                    if len(page) < _LIST_SESSIONS_DB_PAGE_SIZE:
+                        break
+                    offset += len(page)
         except Exception:
             logger.debug("Failed to load ACP sessions from DB", exc_info=True)
 

@@ -216,3 +216,62 @@ describe("PtyResumeSanitizer — bounded erase suppression", () => {
     expect(drain(s, [spinner])).toBe(spinner);
   });
 });
+
+describe("PtyResumeSanitizer — cooked-mode CRCRLF wire form (live capture)", () => {
+  // Captured from a real dashboard resume (2026-09-29): the burst reaches the
+  // browser as `\r\r\n` units — the renderer's own CRLF line ends plus the
+  // line discipline's ONLCR rewrite of the LF — 7,258 units in one resume
+  // replay, and the one-CR-at-most pattern matched none of them. These
+  // fixtures pin the form the pipeline actually emits; a CRLF-only fixture
+  // passes while production does nothing (see the header note).
+  const CRCRLF = "\r\r\n";
+
+  it("collapses a CRCRLF burst contained in a single frame", () => {
+    expect(applyPtyFilters("a" + CRCRLF.repeat(1000) + "b")).toBe("a\r\n\r\nb");
+  });
+
+  it("leaves short CRCRLF runs untouched", () => {
+    const short = `a${CRCRLF}${CRCRLF}${CRCRLF}b`;
+    expect(applyPtyFilters(short)).toBe(short);
+  });
+
+  it("collapses a CRCRLF burst split across frames", () => {
+    const burst = "START" + CRCRLF.repeat(3000) + "END";
+    const s = new PtyResumeSanitizer();
+    expect(drain(s, frames(burst, 4096))).toBe("START\r\n\r\nEND");
+  });
+
+  it("collapses a burst split between the two CRs of a unit", () => {
+    const s = new PtyResumeSanitizer();
+    const out = drain(s, [
+      "S" + CRCRLF.repeat(400) + "\r\r",
+      "\n" + CRCRLF.repeat(800) + "E",
+    ]);
+    expect(out).toBe("S\r\n\r\nE");
+  });
+
+  it("collapses a burst split between the second CR and the LF", () => {
+    const s = new PtyResumeSanitizer();
+    const out = drain(s, [
+      "S" + CRCRLF.repeat(400) + "\r",
+      "\r\n" + CRCRLF.repeat(800) + "E",
+    ]);
+    expect(out).toBe("S\r\n\r\nE");
+  });
+
+  it("collapses CRCRLF fragments that sum past the threshold", () => {
+    const s = new PtyResumeSanitizer();
+    expect(drain(s, [CRCRLF.repeat(49), CRCRLF.repeat(49)])).toBe("\r\n\r\n");
+  });
+
+  it("does not merge CRCRLF runs separated by escape sequences", () => {
+    const s = new PtyResumeSanitizer();
+    const out = drain(s, [
+      "\x1b[1C" + CRCRLF.repeat(40),
+      "\x1b[31m" + CRCRLF.repeat(40) + "done",
+    ]);
+    expect(out).toBe(
+      "\x1b[1C" + CRCRLF.repeat(40) + "\x1b[31m" + CRCRLF.repeat(40) + "done",
+    );
+  });
+});

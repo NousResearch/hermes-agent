@@ -6,15 +6,20 @@
  *
  * 1. **The PTY is in cooked mode (ONLCR).** `hermes_cli/pty_bridge.py` spawns
  *    via `ptyprocess.PtyProcess.spawn()` and never calls `setraw()`, so the
- *    line discipline rewrites every LF the child writes as CRLF. A burst
- *    therefore arrives as `\r\n\r\n\r\n…`, never as bare `\n\n\n…`, and any
- *    filter matching `\n{50,}` would never fire in production.
+ *    line discipline rewrites every LF the child writes as CRLF. Combined with
+ *    the `\r` line ends the renderer emits itself, one blank row on the wire
+ *    is therefore `\r\r\n` — measured on live captures (2026-09-29): 7,258
+ *    units in a single resume replay. A matcher allowing at most one CR per LF
+ *    (`\r?\n`) matches NONE of that traffic, so blank-row bursts must be
+ *    matched with a few CRs allowed before each LF.
  *
  * 2. **Reads are chunked, not message-framed.** `bridge.read()` does
  *    `os.read(fd, 65536)` per drain tick and `pty_session.py` forwards each
  *    read as its own binary WebSocket frame. A CSI escape, a UTF-8 code
  *    point, *and* a long blank-line run can each straddle a frame boundary,
- *    so all three need trailing-state buffering to survive reassembly.
+ *    so all three need trailing-state buffering to survive reassembly — the
+ *    blank-row hold-back must also cover a frame split inside one `\r\r\n`
+ *    unit (between the CRs, or between the second CR and the LF).
  *
  * 3. **Erase codes are only pathological during the resume replay.** Once the
  *    replay has settled, `ESC[K` / `ESC[X` are exactly how a TUI clears stale
@@ -23,8 +28,8 @@
  *    a short window after connect (see PTY_RESUME_SANITIZE_WINDOW_MS).
  */
 
-/** A blank-line run: CRLF (real PTY, cooked mode) or bare LF (raw-mode PTY). */
-const BLANK_LINE_BURST = /(?:\r?\n){50,}/g;
+/** A blank-line run: CRCRLF (real PTY, cooked mode), CRLF, or bare LF. */
+const BLANK_LINE_BURST = /(?:\r{0,4}\n){50,}/g;
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
 const ERASE_LINE = /\x1b\[\d*K/g;
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
@@ -37,13 +42,14 @@ const PARTIAL_ESC = /^\x1b(?:\[\d*)?$/;
 /**
  * A trailing run of newlines that may continue into the next frame. Held back
  * so a burst split across frames still meets the collapse threshold instead of
- * slipping through as sub-threshold fragments. A lone trailing `\r` is
- * included: a frame boundary can fall between the CR and LF of a CRLF pair,
- * and emitting the CR early would break one run into two shorter ones.
+ * slipping through as sub-threshold fragments. Trailing CRs are included too:
+ * a frame boundary can fall between the CRs and the LF of a `\r\r\n` unit (the
+ * real frames split at arbitrary byte offsets), and emitting those CRs early
+ * would break one run into two shorter ones.
  *
  * Always matches (possibly empty, at end of input).
  */
-const TRAILING_NEWLINES = /(?:\r?\n)*\r?$/;
+const TRAILING_NEWLINES = /(?:\r{0,4}\n)*\r{0,4}$/;
 
 /** Collapsed form of a pathological burst: one blank row, CRLF for xterm. */
 const COLLAPSED_BURST = "\r\n\r\n";

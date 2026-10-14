@@ -2209,7 +2209,10 @@ class GatewayTurnMixin:
                     "gateway_input_owner": prepared.persistence_owner,
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
-                scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                scheduled_heartbeat=bool(
+                    getattr(event, "_heartbeat_session_id", None)
+                    or getattr(event, "_quiet_plugin_injection", False)
+                ),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 

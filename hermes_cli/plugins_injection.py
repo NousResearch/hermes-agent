@@ -11,7 +11,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 def inject_plugin_message(
     ctx: Any, content: str, role: str, *, session_key: Optional[str],
-    origin: Optional[Mapping[str, Any]],
+    origin: Optional[Mapping[str, Any]], quiet: bool,
 ) -> bool:
     manager = ctx._manager
     msg = content if role == "user" else f"[{role}] {content}"
@@ -56,6 +56,8 @@ def inject_plugin_message(
         # there or nowhere (never the ambient HERMES_HOME of whatever thread called us).
         target = {"origin": dict(origin), "plugin_home": manager.home_path}
     try:
+        if quiet:
+            target["quiet"] = True
         return bool(manager.inject_gateway_message(**target, content=msg, plugin_id=ctx.plugin_id))
     except Exception:
         logger.warning("inject_message: gateway scheduling failed for plugin %s", ctx.plugin_id, exc_info=True)

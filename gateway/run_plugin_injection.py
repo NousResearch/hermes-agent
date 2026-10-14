@@ -38,6 +38,7 @@ class GatewayPluginInjectionMixin:
     def _schedule_plugin_message_injection(
         self, *, content: str, plugin_id: str, session_key: Optional[str] = None,
         origin: Optional[Mapping[str, Any]] = None, plugin_home: Optional[Path] = None,
+        quiet: bool = False,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe).
 
@@ -53,11 +54,13 @@ class GatewayPluginInjectionMixin:
             if source is None:
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
-            coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
+            coro = self._dispatch_plugin_origin_injection(
+                source=source, content=content, plugin_id=plugin_id, quiet=quiet,
+            )
         else:
             target = f"session={session_key}"
             coro = self._dispatch_plugin_message_injection(
-                session_key=session_key, content=content, plugin_id=plugin_id,
+                session_key=session_key, content=content, plugin_id=plugin_id, quiet=quiet,
             )
         try:
             current_loop = asyncio.get_running_loop()
@@ -124,7 +127,7 @@ class GatewayPluginInjectionMixin:
         return authorized
 
     async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str, quiet: bool = False,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         if not self._plugin_injection_accepting():
@@ -143,7 +146,7 @@ class GatewayPluginInjectionMixin:
             return False
 
         async with self._plugin_injection_scope(source):
-            await adapter.handle_message(MessageEvent(
+            event = MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
                 metadata={
@@ -151,7 +154,9 @@ class GatewayPluginInjectionMixin:
                     "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                     "gateway_session_strict": True,
                 },
-            ))
+            )
+            event._quiet_plugin_injection = bool(quiet)
+            await adapter.handle_message(event)
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
             plugin_id, session_key, entry.session_id,
@@ -216,7 +221,7 @@ class GatewayPluginInjectionMixin:
         return source
 
     async def _dispatch_plugin_origin_injection(
-        self, *, source: SessionSource, content: str, plugin_id: str
+        self, *, source: SessionSource, content: str, plugin_id: str, quiet: bool = False,
     ) -> bool:
         """Start (or continue) the session at a plugin-supplied origin through the adapter's normal
         message path: ``get_or_create_session`` creates it, the reply goes back to that chat."""
@@ -231,7 +236,7 @@ class GatewayPluginInjectionMixin:
             return False
         session_key = self._session_key_for_source(source)
         async with self._plugin_injection_scope(source):
-            await adapter.handle_message(MessageEvent(
+            event = MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
                 # Non-strict: the key is pinned against topic recovery, the session may not exist yet.
@@ -239,6 +244,8 @@ class GatewayPluginInjectionMixin:
                     "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
                     "gateway_session_key": session_key,
                 },
-            ))
+            )
+            event._quiet_plugin_injection = bool(quiet)
+            await adapter.handle_message(event)
         logger.info("Plugin message injection dispatched: plugin=%s %s session=%s", plugin_id, target, session_key)
         return True

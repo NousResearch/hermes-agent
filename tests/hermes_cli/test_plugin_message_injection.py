@@ -167,6 +167,30 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     )
 
 
+def test_gateway_injection_passes_quiet_request_to_the_gateway(tmp_path, monkeypatch):
+    _write_plugin_config(
+        tmp_path,
+        monkeypatch,
+        {"allow_gateway_injection": True},
+    )
+    context, manager = _context()
+    injector = MagicMock(return_value=True)
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert context.inject_message(
+        "check the deployment",
+        session_key="agent:main:telegram:dm:42",
+        quiet=True,
+    ) is True
+
+    injector.assert_called_once_with(
+        session_key="agent:main:telegram:dm:42",
+        content="check the deployment",
+        plugin_id="notify-plugin",
+        quiet=True,
+    )
+
+
 def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch):
     _write_plugin_config(
         tmp_path,

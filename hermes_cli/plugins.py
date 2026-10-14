@@ -602,7 +602,7 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
-        origin: Mapping[str, Any] | None = None,
+        origin: Mapping[str, Any] | None = None, quiet: bool = False,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
@@ -614,10 +614,11 @@ class PluginContext:
         chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
         target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
         ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
-        ``True`` means a host accepted the request, not that the turn completed.
+        Set ``quiet=True`` for a gateway turn that should suppress provisional display surfaces
+        until its final reply. ``True`` means a host accepted the request, not that the turn completed.
         """
         from hermes_cli.plugins_injection import inject_plugin_message
-        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin, quiet=quiet)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's

@@ -10,6 +10,7 @@ import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
   type ComposerAttachment,
+  type ComposerTransportPayload,
   freezeComposerTransportPayload,
   isFreshDraftScope
 } from '@/store/composer'
@@ -419,12 +420,18 @@ export function useComposerSubmit({
   // A correction whose RPC rejects (socket dropped, session gone mid-turn)
   // must not vanish with the already-cleared draft. Capture the target scope at
   // dispatch time so a late rejection cannot enqueue into a newly focused chat.
-  const queueRejectedCorrection = (text: string, rejectedScope: string | null) => {
+  const queueRejectedCorrection = (frozen: ComposerTransportPayload, rejectedScope: string | null) => {
     if (rejectedScope) {
-      enqueueQueuedPrompt(rejectedScope, { text, attachments: [] })
+      enqueueQueuedPrompt(rejectedScope, {
+        text: frozen.displayText,
+        attachments: [],
+        ...(frozen.displayText !== frozen.transportText
+          ? { displayText: frozen.displayText, frozenTransport: frozen.transportText }
+          : {})
+      })
     } else {
-      loadIntoComposer(text, [])
-      stashAt(rejectedScope, text, [])
+      loadIntoComposer(frozen.displayText, [])
+      stashAt(rejectedScope, frozen.displayText, [])
     }
   }
 
@@ -487,17 +494,38 @@ export function useComposerSubmit({
       return
     }
 
-    triggerHaptic('submit')
-    clearDraft()
+    // Freeze terminal selections at dispatch, exactly like redirect and queue.
+    // Model-facing transport contains the selection; queue fallback persists
+    // only its display chip and holds the frozen transport in the runtime map.
+    const frozen = freezeComposerTransportPayload(text)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return
+    }
+
     const rejectedScope = activeQueueSessionKeyRef.current
 
-    void Promise.resolve(onSteerHidden(text))
+    triggerHaptic('submit')
+    clearDraft()
+
+    const rejected = () => queueRejectedCorrection(frozen, rejectedScope)
+
+    // A transport callback may throw synchronously as well as reject.
+    // Turning it into a promise keeps either failure on the same recovery path.
+    void Promise.resolve()
+      .then(() => onSteerHidden(frozen.transportText))
       .then(accepted => {
         if (!accepted) {
-          queueRejectedCorrection(text, rejectedScope)
+          rejected()
         }
       })
-      .catch(() => queueRejectedCorrection(text, rejectedScope))
+      .catch(rejected)
   }
 
   const queueDraft = () => {

@@ -10,7 +10,7 @@ import {
   type ComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
-import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { clearQueuedPrompts, getFrozenQueuedTransport, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
 import { $onboardingPhase } from '@/store/onboarding-phase'
@@ -35,6 +35,7 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: BusyInputMode
+  compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -51,6 +52,7 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
+  compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -116,6 +118,7 @@ function renderSubmitHook({
         attachments,
         busy,
         busyInputMode,
+        compacting,
         clearDraft,
         disabled: false,
         draftScopeRef,
@@ -468,6 +471,83 @@ describe('useComposerSubmit busy-turn routing', () => {
       expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['look at @folder:`apps/desktop`'])
     )
     clearQueuedPrompts('stored-session')
+  })
+
+  it('queues rather than redirecting or steering during compaction', () => {
+    const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      compacting: true,
+      text: 'after compaction'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSteerHidden).not.toHaveBeenCalled()
+  })
+
+  it('freezes terminal selections before non-cancelling steer', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(onSteerHidden).toHaveBeenCalledWith('```terminal\\nselected terminal lines\\n```\\n\\nlook at')
+    )
+  })
+
+  it('preserves the frozen selection when a non-cancelling steer is rejected', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'original terminal lines')
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'inspect @terminal:`zsh:23-58`'
+    })
+    onSteerHidden.mockResolvedValue(false)
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session')).toHaveLength(1))
+    const queued = getQueuedPrompts('stored-session')[0]
+    expect(queued.text).toBe('inspect @terminal:`zsh:23-58`')
+    expect(queued.displayText).toBe('inspect @terminal:`zsh:23-58`')
+    expect(getFrozenQueuedTransport(queued.id)).toBe('```terminal\\noriginal terminal lines\\n```\\n\\ninspect')
+  })
+
+  it('refuses to steer an unresolved terminal chip without discarding draft', () => {
+    clearComposerTerminalSelections()
+    const { hook, onSteerHidden, clearDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'inspect @terminal:`unavailable`'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSteerHidden).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+  })
+
+  it('queues a synchronous steer transport throw instead of losing the text', async () => {
+    const { hook, onSteerHidden } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'retry me'
+    })
+    onSteerHidden.mockImplementation(() => {
+      throw new Error('transport unavailable')
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(entry => entry.text)).toEqual(['retry me']))
   })
 
   it('lets queue mode use a one-message steer override', async () => {

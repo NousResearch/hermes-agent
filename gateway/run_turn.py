@@ -2407,6 +2407,30 @@ class GatewayTurnMixin:
         from agent.skill_utils import parse_config_string_list
         enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
+        # Non-admin tool whitelist when allow_admin_from is set (#20744). Admins and
+        # ungated scopes keep the full surface. Stash the iteration clamp for run_sync,
+        # which resolves max_iterations separately from this toolset list.
+        try:
+            from gateway.run import _current_max_iterations
+            from gateway.user_tier import apply_user_tier_to_agent_kwargs
+            plat_cfg = None
+            try:
+                cfg = getattr(self, "config", None)
+                plat_cfg = (cfg.platforms or {}).get(source.platform) if cfg is not None else None
+            except Exception:
+                plat_cfg = None
+            enabled, _tier_iters, decision = apply_user_tier_to_agent_kwargs(
+                source=source,
+                enabled_toolsets=enabled,
+                max_iterations=_current_max_iterations(),
+                user_config=user_config,
+                platform_config=plat_cfg,
+            )
+            if isinstance(user_config, dict):
+                user_config["_hermes_user_tier_max_iterations"] = decision.max_iterations
+                user_config["_hermes_user_tier_is_admin"] = decision.is_admin
+        except Exception as exc:
+            logger.debug("user_tier resolve skipped: %s", exc)
         return enabled, disabled
 
     async def _run_background_task_inner(
@@ -2439,6 +2463,9 @@ class GatewayTurnMixin:
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            _tier_mi = (user_config or {}).get("_hermes_user_tier_max_iterations")
+            if isinstance(_tier_mi, int) and _tier_mi > 0:
+                max_iterations = min(max_iterations, _tier_mi)
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)

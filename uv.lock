@@ -98,7 +98,6 @@ piper-tts = "2026-09-04T16:47:32Z"
 pyasn1 = false
 snowballstemmer = false
 concurrent-log-handler = false
-oauthlib = false
 cryptography = false
 pydantic = false
 agent-client-protocol = false

@@ -42,7 +42,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -205,12 +205,12 @@ def _record_past_boot_grace(record) -> bool:
     """True when the record is older than the boot-race grace; an unreadable age counts as stale."""
     stamp = str(getattr(record, "updated_at", "") or "")
     try:
-        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(stamp)
     except (TypeError, ValueError):
         return True
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - parsed).total_seconds() > HOST_RECORD_BOOT_GRACE_S
+        parsed = parsed.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - parsed).total_seconds() > HOST_RECORD_BOOT_GRACE_S
 
 
 def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:

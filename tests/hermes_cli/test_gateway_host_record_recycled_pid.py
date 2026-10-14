@@ -18,7 +18,7 @@ unprovable record keeps the boot-race verdict (the record lands a moment before 
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -39,7 +39,7 @@ def _unprovable_record(*, age_s: float, pid: int | None = None) -> HostRecord:
         protocol_version=1,
         token_fingerprint="",
         profiles=(),
-        updated_at=(datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat(),
+        updated_at=(datetime.now(UTC) - timedelta(seconds=age_s)).isoformat(),
         home="/fake/home",
     )
 
@@ -100,7 +100,7 @@ def test_record_with_incarnation_proof_keeps_the_old_verdict(monkeypatch):
         protocol_version=1,
         token_fingerprint="",
         profiles=(),
-        updated_at=(datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+        updated_at=(datetime.now(UTC) - timedelta(hours=2)).isoformat(),
         home="/fake/home",
     )
     gateway = _probe(monkeypatch, record)

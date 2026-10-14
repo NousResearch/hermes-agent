@@ -367,6 +367,26 @@ install give the user one with `sudo loginctl enable-linger <user>`.
   scope can be created, or set `KillMode=process` on that unit so its exit
   only kills the dispatcher itself.
 
+Each scope carries a `MemoryMax`, so one runaway worker is OOM-killed inside its
+own cgroup instead of taking down the gateway. By default
+(`terminal.worker_memory_max_mb: auto`) that cap is the smallest of the
+gateway's own cgroup `memory.max`, half of physical RAM, and 4 GiB. On a
+large host where heavy cards (browser journeys, test suites, model loads) hit
+that 4 GiB cap, set an explicit whole number of MiB:
+
+```yaml
+terminal:
+  worker_memory_max_mb: 8192
+```
+
+An explicit value can go above 4 GiB, but it is still clamped by the
+dispatcher's enclosing cgroup `memory.max` and by physical RAM. Fractional or
+invalid values are logged and ignored, which falls back to `auto`. The value is read on
+every spawn from the config of the profile whose gateway runs the
+dispatcher, so the next worker picks up an edit without a restart. Workers
+that are already running keep the cap they were spawned with. The
+`TERMINAL_LOCAL_MEMORY_MAX_MB` guard can still only lower the result.
+
 Running `hermes kanban daemon` as a separate process is **deprecated**;
 use the gateway. If you truly cannot run the gateway (headless host
 policy forbids long-lived services, etc.) a `--force` escape hatch keeps

@@ -1461,15 +1461,54 @@ function persistTiles() {
   writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
 }
 
+/**
+ * The bucket a session tile belongs in: its OWNING backend scope, not whatever
+ * profile happened to be visible when it was last written. `loadTilesByProfile`
+ * already re-homes a profile-only bucket's tiles by `ownerRoute.connectionId` on
+ * read, so the write path has to agree with it. Filing a foreign tile under the
+ * visible scope instead loses it from the pane the moment its own profile is
+ * switched to, and brings it back under a profile that does not own it — the
+ * "random old tabs come back" report. A tile with no recorded owner (a draft, or
+ * a legacy row) has nothing better to go on than the visible scope.
+ */
+function tileBucketKey(tile: StoredTile): string {
+  const owner = tile.ownerRoute?.profile ?? tile.ownerProfile
+
+  return owner ? backendScopeKey(tile.ownerRoute?.connectionId, owner) : tileScopeKey()
+}
+
 function saveTiles(tiles: SessionTile[]) {
   const stored = tiles.map(toStored)
   const sessionTiles = stored.filter(tile => tile.workspaceMode !== 'bots')
   const botTiles = stored.filter(tile => tile.workspaceMode === 'bots')
 
-  if (sessionTiles.length > 0) {
-    tilesByProfile[visibleTileScope] = sessionTiles
-  } else {
-    delete tilesByProfile[visibleTileScope]
+  // Which buckets may this write touch? The owners of the tiles it can SEE: the
+  // new set plus the set that was visible a moment ago. A profile/backend swap
+  // republishes only the newly visible scope's tiles, so buckets of scopes that
+  // are NOT visible must survive untouched — rebuilding all of them from a
+  // visible set that does not contain them would delete the other profiles' tabs
+  // on every switch.
+  //
+  // An empty visible set is NOT "nothing is open anywhere": a scope just
+  // switched to, with nothing persisted in it, is empty while other buckets hold
+  // exactly the persisted-but-invisible tiles this preserves. The VISIBLE scope
+  // is the one exception — it is the scope an empty set is about, so Close All
+  // on it still leaves nothing behind for the next swap to restore.
+  const visibleBefore = $sessionTiles.get().filter(tile => tile.workspaceMode !== 'bots')
+  const touched = new Set([...visibleBefore.map(tileBucketKey), ...sessionTiles.map(tileBucketKey)])
+
+  if (sessionTiles.length === 0) {
+    touched.add(tileScopeKey())
+  }
+
+  for (const key of touched) {
+    const owned = sessionTiles.filter(tile => tileBucketKey(tile) === key)
+
+    if (owned.length > 0) {
+      tilesByProfile[key] = owned
+    } else {
+      delete tilesByProfile[key]
+    }
   }
 
   if (botTiles.length > 0) {

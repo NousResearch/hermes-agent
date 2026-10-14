@@ -81,6 +81,130 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "worker_context" in d
     assert "runs" in d
 
+def test_agent_create_cannot_assign_protected_forge(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import profile_invocation_acl as acl
+    from tools import kanban_tools as kt
+    root = tmp_path / ".hermes"
+    (root / "config.yaml").write_text(
+        "bot_mode:\n  invocation_acl:\n    forge: [forge, forge-worker, forge-reviewer]\n"
+    )
+    monkeypatch.setattr(acl, "install_root", lambda: root)
+    result = json.loads(kt._handle_create({"title": "blocked", "assignee": "forge"}))
+    assert "denied" in result["error"]
+
+
+def test_native_forge_worker_admits_forge_card_without_trusting_creator_label(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as dispatch, profile_invocation_acl as acl, profiles
+    from tools import kanban_tools as kt
+    root = tmp_path / ".hermes"
+    (root / "config.yaml").write_text(
+        "bot_mode:\n  invocation_acl:\n    forge: [forge, forge-worker]\n"
+    )
+    monkeypatch.setattr(acl, "install_root", lambda: root)
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setenv("HERMES_PROFILE", "forge-worker")
+    with kbc.connect() as conn:
+        owner = kb.create_task(conn, title="synthetic worker", assignee="forge-worker")
+        kb.claim_task(conn, owner)
+        run_id = kb._current_run_id(conn, owner)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    created = json.loads(kt._handle_create({"title": "native child", "assignee": "forge"}))
+    assert "error" not in created, created
+    with kbc.connect() as conn:
+        assert acl.admitted_kanban_source(conn, created["task_id"], target="forge", lane="ready") == "forge-worker"
+        decision = dispatch.dispatch_once(conn, dry_run=True)
+        assert created["task_id"] in [tid for tid, *_ in decision.spawned]
+
+
+def test_native_idempotency_never_upgrades_unattested_card(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_cli import profile_invocation_acl as acl
+    from tools import kanban_tools as kt
+    root = tmp_path / ".hermes"
+    (root / "config.yaml").write_text(
+        "bot_mode:\n  invocation_acl:\n    forge: [forge, forge-worker]\n"
+    )
+    monkeypatch.setattr(acl, "install_root", lambda: root)
+    monkeypatch.setenv("HERMES_PROFILE", "forge-worker")
+    with kbc.connect() as conn:
+        owner = kb.create_task(conn, title="synthetic worker", assignee="forge-worker")
+        kb.claim_task(conn, owner)
+        run_id = kb._current_run_id(conn, owner)
+        untrusted = kb.create_task(conn, title="fake CLI", assignee="forge",
+                                   created_by="forge-worker", idempotency_key="same-key")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    created = json.loads(kt._handle_create({"title": "duplicate", "assignee": "forge",
+                                            "idempotency_key": "same-key"}))
+    assert created["task_id"] == untrusted
+    with kbc.connect() as conn:
+        assert acl.admitted_kanban_source(conn, untrusted, target="forge", lane="ready") is None
+
+
+def test_native_review_handoff_admits_exact_reviewer_only(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as dispatch, profile_invocation_acl as acl, profiles
+    from tools import kanban_tools as kt
+    root = tmp_path / ".hermes"
+    (root / "config.yaml").write_text(
+        "bot_mode:\n  invocation_acl:\n    forge-reviewer: [forge-worker]\n"
+    )
+    monkeypatch.setattr(acl, "install_root", lambda: root)
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setattr(dispatch, "review_dispatch_enabled", lambda: True)
+    monkeypatch.setenv("HERMES_PROFILE", "forge-worker")
+    with kbc.connect() as conn:
+        owner = kb.create_task(conn, title="synthetic review implementer", assignee="forge-worker")
+        kb.claim_task(conn, owner)
+        run_id = kb._current_run_id(conn, owner)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    result = json.loads(kt._handle_request_review({"summary": "review ready", "reviewer": "forge-reviewer"}))
+    assert "error" not in result, result
+    with kbc.connect() as conn:
+        assert acl.admitted_kanban_source(conn, owner, target="forge-reviewer", lane="review") == "forge-worker"
+        assert acl.admitted_kanban_source(conn, owner, target="forge", lane="review") is None
+        decision = dispatch.dispatch_once(conn, dry_run=True)
+        assert owner in [tid for tid, *_ in decision.spawned]
+
+
+def test_native_review_admission_failure_rolls_back_transition(monkeypatch, worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_cli import profile_invocation_acl as acl
+    from tools import kanban_tools as kt
+    root = tmp_path / ".hermes"
+    (root / "config.yaml").write_text(
+        "bot_mode:\n  invocation_acl:\n    forge-reviewer: [forge-worker]\n"
+    )
+    monkeypatch.setattr(acl, "install_root", lambda: root)
+    monkeypatch.setenv("HERMES_PROFILE", "forge-worker")
+    with kbc.connect() as conn:
+        owner = kb.create_task(conn, title="rollback review", assignee="forge-worker")
+        kb.claim_task(conn, owner)
+        run_id = kb._current_run_id(conn, owner)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    append = kb._append_event
+
+    def fail_admission(conn, tid, kind, payload, **kwargs):
+        if kind == acl.NATIVE_KANBAN_ADMISSION:
+            raise RuntimeError("injected admission failure")
+        return append(conn, tid, kind, payload, **kwargs)
+
+    monkeypatch.setattr(kb, "_append_event", fail_admission)
+    try:
+        result = json.loads(kt._handle_request_review({"summary": "review ready", "reviewer": "forge-reviewer"}))
+        assert "error" in result
+    finally:
+        monkeypatch.setattr(kb, "_append_event", append)
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, owner).status == "running"
+        count = conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'review_requested'",
+                             (owner,)).fetchone()[0]
+        assert count == 0
+
 
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
     """#91431: chat profiles with the kanban toolset call kanban_show bare to orient

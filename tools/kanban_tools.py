@@ -896,12 +896,33 @@ def _handle_request_review(args: dict, **kw) -> str:
         _check(profile_exists(reviewer),
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
+    from hermes_cli.profile_invocation_acl import permits, install_root
+    # Also check the implicit reviewer selected from durable review provenance.
     with _board(args.get("board")) as (kb, conn):
+        from hermes_cli.profiles import normalize_profile_name
+        from hermes_cli.kanban_db import _prior_reviewer
+        target = reviewer or _prior_reviewer(conn, tid)
+        if isinstance(target, str) and target:
+            _check(permits(_persisted_identity(), normalize_profile_name(target), root=install_root()),
+                   f"agent invocation of profile {target!r} is denied by bot_mode.invocation_acl")
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        from hermes_cli.profile_invocation_acl import NATIVE_KANBAN_ADMISSION
+        source = _persisted_identity()
+
+        def _admit_review(c, task_id, reviewer_profile, review_event_id):
+            admitted_target = reviewer_profile or kb.get_task(c, task_id).assignee
+            _check(permits(source, admitted_target, root=install_root()),
+                   f"agent invocation of profile {admitted_target!r} is denied by bot_mode.invocation_acl")
+            kb._append_event(c, task_id, NATIVE_KANBAN_ADMISSION,
+                             {"origin": "native_kanban_tool", "source_profile": source,
+                              "target_profile": admitted_target, "lane": "review",
+                              "review_event_id": review_event_id})
+
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
-                expected_run_id=_worker_run_id(tid), with_reason=True)
+                expected_run_id=_worker_run_id(tid), with_reason=True,
+                _admit_review=_admit_review)
         except kb.ArtifactPreservationError as artifact_err:
             # Same contract as kanban_complete (#22923): the transition rolled
             # back, the task is untouched and retryable — say so explicitly or
@@ -1099,6 +1120,10 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    from hermes_cli.profiles import normalize_profile_name
+    from hermes_cli.profile_invocation_acl import permits, install_root
+    _check(permits(_persisted_identity(), normalize_profile_name(str(assignee)), root=install_root()),
+           f"agent invocation of profile {assignee!r} is denied by bot_mode.invocation_acl")
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -1130,23 +1155,47 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
-        new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
-            priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
-            # Board-project inheritance must read the board this call opened, not the
-            # session's current board.
-            board=args.get("board"),
-            project_source_task_id=project_source_task_id, triage=triage,
-            creator_task_id=self_tid,
-            idempotency_key=args.get("idempotency_key"),
-            max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
-            model_override=model_override, provider_override=provider_override,
-            goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
-            completion_contract=args.get("completion_contract"),
-            initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+        # Hold one write transaction across creation and admission. A repeated
+        # idempotency key must never upgrade a CLI-created/unattested card.
+        key = args.get("idempotency_key")
+        source = _persisted_identity()
+        from hermes_cli.profile_invocation_acl import NATIVE_KANBAN_ADMISSION, permits, install_root
+        if not permits(None, normalize_profile_name(str(assignee)), root=install_root()):
+            # Protected dispatch from a worker must be tied to its current run,
+            # not merely the process-global HERMES_KANBAN_TASK label.
+            if _is_dispatcher_owned_worker():
+                _check(self_task is not None and self_task.assignee == source
+                       and self_task.status == "running"
+                       and self_task.current_run_id is not None
+                       and self_task.current_run_id == _worker_run_id(self_tid),
+                       "protected Kanban creation requires the owning profile's live worker run")
+        with kb.write_txn(conn):
+            existing = (conn.execute(
+                "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+                "ORDER BY created_at DESC LIMIT 1", (key,),
+            ).fetchone() if key else None)
+            new_tid = kb.create_task(
+                conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+                parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+                priority=_opt_int(args.get("priority"), 0),
+                workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
+                # Board-project inheritance must read the board this call opened, not the
+                # session's current board.
+                board=args.get("board"),
+                project_source_task_id=project_source_task_id, triage=triage,
+                creator_task_id=self_tid,
+                idempotency_key=key,
+                max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+                model_override=model_override, provider_override=provider_override,
+                goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
+                completion_contract=args.get("completion_contract"),
+                initial_status=str(args.get("initial_status") or "running"),
+                created_by=source, session_id=session_id)
+            if existing is None:
+                persisted = kb.get_task(conn, new_tid)
+                kb._append_event(conn, new_tid, NATIVE_KANBAN_ADMISSION,
+                                 {"origin": "native_kanban_tool", "source_profile": source,
+                                  "target_profile": persisted.assignee, "lane": "ready"})
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}

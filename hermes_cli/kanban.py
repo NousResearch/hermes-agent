@@ -734,6 +734,14 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
+        existing = kb.get_task(conn, args.task_id)
+        if existing is not None and existing.assignee:
+            from hermes_cli.profile_invocation_acl import permits, install_root
+            # Manual CLI claims have no authenticated source-profile identity.
+            # The dispatcher, not this generic entry point, admits native
+            # Forge-to-Forge cards against their recorded creation provenance.
+            if not permits(None, existing.assignee, root=install_root()):
+                return _err(f"manual claim of protected profile {existing.assignee!r} is denied")
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:
             existing = kb.get_task(conn, args.task_id)

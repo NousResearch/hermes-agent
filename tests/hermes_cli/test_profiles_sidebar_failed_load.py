@@ -1,8 +1,7 @@
 """A failed profile scan must not look like an empty session list.
 
-A lagged store is healed once. When that read still fails, or the one-shot
-heal is already exhausted and the profile contributed no rows, the sidebar
-slice is a failed load with a retry signal. ``sessions: []`` is reserved for
+Browsing never repairs the owner's store: a read that fails (lagged schema, busy
+store) makes that profile's sidebar slice a failed load with a retry signal. ``sessions: []`` is reserved for
 a successful read of zero rows. A structurally corrupt store keeps its own
 notice and is not offered Retry.
 """
@@ -20,14 +19,6 @@ def _uncached_sidebar(monkeypatch):
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
     profiles_routes._sidebar_profile_cache_clear()
     profiles_routes._profile_read_warned.clear()
-
-
-@pytest.fixture(autouse=True)
-def _fresh_heal_latch(monkeypatch):
-    from hermes_cli import web_server_sessions as sessions_mod
-
-    monkeypatch.setattr(sessions_mod, "_session_db_heal_exhausted", set())
-    monkeypatch.setattr(sessions_mod, "_session_db_heal_warned", set())
 
 
 @pytest.fixture
@@ -110,29 +101,7 @@ class TestSidebarFailedLoad:
             _assert_failed_load(payload[key], "worker")
         assert payload["errors"][0]["profile"] == "worker"
 
-    def test_heal_exhausted_empty_read_is_a_failed_load(
-        self, client, profiles_on_disk, monkeypatch
-    ):
-        home = profiles_on_disk["worker"]
-        _seed_session(home, "worker-chat")
-        from hermes_cli import web_server_sessions as sessions_mod
-
-        sessions_mod._session_db_heal_exhausted.add(str(home / "state.db"))
-        import hermes_state
-
-        monkeypatch.setattr(
-            hermes_state.SessionDB,
-            "list_sessions_rich",
-            lambda self, *args, **kwargs: [],
-        )
-
-        payload = _sidebar(client, "worker")
-
-        for key in ("recents", "cron", "messaging"):
-            _assert_failed_load(payload[key], "worker")
-        assert "heal exhausted" in payload["errors"][0]["error"]
-
-    def test_unfixable_schema_is_healed_once_then_a_failed_load(
+    def test_stale_schema_is_a_failed_load_and_never_opens_a_writer(
         self, client, profiles_on_disk, monkeypatch
     ):
         home = profiles_on_disk["worker"]
@@ -167,40 +136,9 @@ class TestSidebarFailedLoad:
         first = _sidebar(client, "worker")
         second = _sidebar(client, "worker")
 
-        assert len(writable_opens) == 1
-        assert str(home / "state.db") in sessions_mod._session_db_heal_exhausted
+        assert writable_opens == []
         for payload in (first, second):
             _assert_failed_load(payload["recents"], "worker")
-
-    def test_heal_exhausted_with_rows_still_returns_them(self, client, profiles_on_disk):
-        home = profiles_on_disk["worker"]
-        _seed_session(home, "worker-chat")
-        from hermes_cli import web_server_sessions as sessions_mod
-
-        sessions_mod._session_db_heal_exhausted.add(str(home / "state.db"))
-
-        payload = _sidebar(client, "worker")
-
-        assert payload["errors"] == []
-        assert payload["recents"].get("retry") is not True
-        assert [row["id"] for row in payload["recents"]["sessions"]] == ["worker-chat"]
-
-    def test_successful_heal_still_returns_rows(self, client, profiles_on_disk):
-        home = profiles_on_disk["worker"]
-        _seed_session(home, "worker-chat")
-        legacy = sqlite3.connect(str(home / "state.db"))
-        try:
-            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
-            legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        payload = _sidebar(client, "worker")
-
-        assert payload["errors"] == []
-        assert payload["recents"].get("retry") is not True
-        assert [row["id"] for row in payload["recents"]["sessions"]] == ["worker-chat"]
 
     def test_healthy_empty_store_stays_an_empty_list(self, client, profiles_on_disk):
         from hermes_state import SessionDB

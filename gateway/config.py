@@ -689,6 +689,24 @@ def load_gateway_config() -> GatewayConfig:
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
 
+            # Per-type reset policy overrides (e.g. reset_by_type.thread.mode: none)
+            rbt = yaml_cfg.get("reset_by_type")
+            if isinstance(rbt, dict):
+                existing_rbt = gw_data.get("reset_by_type", {})
+                if not isinstance(existing_rbt, dict):
+                    existing_rbt = {}
+                existing_rbt.update(rbt)
+                gw_data["reset_by_type"] = existing_rbt
+
+            # Per-platform reset policy overrides (e.g. reset_by_platform.discord.mode: none)
+            rbp = yaml_cfg.get("reset_by_platform")
+            if isinstance(rbp, dict):
+                existing_rbp = gw_data.get("reset_by_platform", {})
+                if not isinstance(existing_rbp, dict):
+                    existing_rbp = {}
+                existing_rbp.update(rbp)
+                gw_data["reset_by_platform"] = existing_rbp
+
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
 

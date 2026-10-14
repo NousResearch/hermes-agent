@@ -51,6 +51,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/api/thread-activity", self._handle_thread_activity)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        app.router.add_post("/inject", self._handle_inject)
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket
@@ -254,6 +257,179 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
+
+    async def _handle_thread_activity(self, request: "web.Request") -> "web.Response":
+        """GET /api/thread-activity — check last message time in Discord threads.
+
+        Query params:
+            thread_ids (str): comma-separated Discord thread/channel IDs
+
+        Returns JSON:
+            {
+              "threads": {
+                "123456": {"last_message_at": "2026-06-03T23:43:01+00:00", "author_bot": true},
+                "789012": {"error": "not_found"}
+              }
+            }
+
+        No auth required (read-only, localhost only).
+        Uses the gateway's live Discord bot connection — no REST API calls.
+        """
+        thread_ids_raw = request.query.get("thread_ids", "")
+        if not thread_ids_raw:
+            return web.json_response({"error": "thread_ids query param required"}, status=400)
+
+        thread_ids = [t.strip() for t in thread_ids_raw.split(",") if t.strip()]
+        if not thread_ids:
+            return web.json_response({"error": "no valid thread IDs"}, status=400)
+        if len(thread_ids) > 20:
+            return web.json_response({"error": "max 20 thread IDs per request"}, status=400)
+
+        # Get the Discord adapter from the gateway runner
+        runner = getattr(self, "gateway_runner", None)
+        if not runner:
+            return web.json_response({"error": "gateway_runner not available"}, status=503)
+
+        discord_adapter = None
+        try:
+            from gateway.platforms.base import Platform
+            discord_adapter = runner.adapters.get(Platform.DISCORD)
+        except Exception:
+            pass
+
+        if not discord_adapter or not hasattr(discord_adapter, "_client"):
+            return web.json_response({"error": "Discord adapter not available"}, status=503)
+
+        client = discord_adapter._client
+        results = {}
+
+        for tid in thread_ids:
+            try:
+                tid_int = int(tid)
+                channel = client.get_channel(tid_int)
+                if channel is None:
+                    # Try fetching — thread might not be cached
+                    try:
+                        channel = await client.fetch_channel(tid_int)
+                    except Exception:
+                        results[tid] = {"error": "not_found"}
+                        continue
+
+                # Get last message from the channel
+                last_msg = None
+                async for msg in channel.history(limit=1):
+                    last_msg = msg
+
+                if last_msg:
+                    results[tid] = {
+                        "last_message_at": last_msg.created_at.isoformat(),
+                        "author_bot": last_msg.author.bot if last_msg.author else False,
+                        "author_id": str(last_msg.author.id) if last_msg.author else None,
+                    }
+                else:
+                    results[tid] = {"last_message_at": None, "error": "no_messages"}
+            except ValueError:
+                results[tid] = {"error": "invalid_id"}
+            except Exception as e:
+                results[tid] = {"error": str(e)[:200]}
+
+        return web.json_response({"threads": results})
+
+    async def _handle_inject(self, request: "web.Request") -> "web.Response":
+        """POST /inject — inject a message into a platform thread.
+
+        Creates a real agent session in the target thread, as if a user
+        had typed the message there.  Uses the gateway runner's
+        ``_inject_restart_ping`` method which builds a proper
+        ``SessionSource`` + ``MessageEvent(internal=True)``.
+
+        Body JSON:
+            platform  (str): "discord"
+            chat_id   (str): parent channel ID
+            thread_id (str): thread ID (optional, defaults to chat_id)
+            user_id   (str): Discord user ID for session identity
+            user_name (str): display name
+            message   (str): prompt text to inject
+            delay     (int): seconds to wait before injecting (default 0)
+
+        Auth: X-Webhook-Signature header with HMAC-SHA256 of the raw body
+        using the global webhook secret.
+        """
+        # --- Auth ---
+        secret = self._global_secret
+        if not secret or secret == _INSECURE_NO_AUTH:
+            return web.json_response(
+                {"error": "/inject requires a global webhook secret"},
+                status=403,
+            )
+
+        body = await request.read()
+        sig = request.headers.get("X-Webhook-Signature", "")
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not sig or not hmac.compare_digest(sig, expected):
+            logger.warning("[webhook] /inject: invalid signature")
+            return web.json_response({"error": "invalid signature"}, status=401)
+
+        # --- Parse ---
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        platform_str = data.get("platform", "discord")
+        chat_id = data.get("chat_id", "")
+        thread_id = data.get("thread_id", "")
+        user_id = data.get("user_id", "")
+        user_name = data.get("user_name", "system")
+        message = data.get("message", "")
+        delay = int(data.get("delay", 0))
+
+        if not chat_id or not message:
+            return web.json_response(
+                {"error": "chat_id and message are required"}, status=400
+            )
+
+        # --- Runner check ---
+        runner = self.gateway_runner
+        if not runner:
+            return web.json_response(
+                {"error": "gateway_runner not available"}, status=503
+            )
+
+        # Resolve the target platform adapter
+        try:
+            target_platform = Platform(platform_str)
+        except ValueError:
+            return web.json_response(
+                {"error": f"unknown platform: {platform_str}"}, status=400
+            )
+
+        adapter = runner.adapters.get(target_platform)
+        if not adapter:
+            return web.json_response(
+                {"error": f"platform {platform_str} not connected"}, status=503
+            )
+
+        # --- Fire and forget ---
+        asyncio.create_task(
+            runner._inject_restart_ping(
+                adapter, platform_str, chat_id,
+                thread_id, user_id, user_name,
+                message, delay,
+            )
+        )
+
+        logger.info(
+            "[webhook] /inject: dispatching to %s:%s (thread=%s) as %s",
+            platform_str, chat_id, thread_id or "(none)", user_name,
+        )
+
+        return web.json_response({
+            "status": "injected",
+            "platform": platform_str,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+        })
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
@@ -728,7 +904,28 @@ class WebhookAdapter(BasePlatformAdapter):
     async def _deliver_cross_platform(
         self, platform_name: str, content: str, delivery: dict
     ) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        """Route response to another platform (telegram, discord, etc.).
+
+        platform_name may be a compound target string of the form
+        ``platform:chat_id`` or ``platform:chat_id:thread_id``.  When
+        that form is detected, the chat_id and (optional) thread_id are
+        extracted and injected into deliver_extra so the adapter receives
+        them correctly.  This mirrors the format used by send_message and
+        cron-job deliver strings.
+        """
+        # Parse compound target: "platform:chat_id[:thread_id]"
+        if ":" in platform_name:
+            parts = platform_name.split(":", 2)
+            platform_name = parts[0]
+            extra_override = dict(delivery.get("deliver_extra", {}))
+            if len(parts) >= 2 and parts[1]:
+                extra_override.setdefault("chat_id", parts[1])
+            if len(parts) >= 3 and parts[2]:
+                extra_override.setdefault("thread_id", parts[2])
+                extra_override.setdefault("message_thread_id", parts[2])
+            # Build a patched delivery dict with injected extra
+            delivery = dict(delivery)
+            delivery["deliver_extra"] = extra_override
         if not self.gateway_runner:
             return SendResult(
                 success=False,

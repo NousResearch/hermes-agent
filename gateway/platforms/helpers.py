@@ -239,10 +239,19 @@ class ThreadParticipationTracker:
 
     def _save(self) -> None:
         path = self._state_path()
-        thread_list = list(self._threads)
+        # Merge with disk to avoid clobbering entries added by external
+        # processes (e.g. Vapi bridge registering phone threads).
+        disk_threads = set()
+        if path.exists():
+            try:
+                disk_threads = set(json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        merged = self._threads | disk_threads
+        thread_list = list(merged)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
-            self._threads = set(thread_list)
+        self._threads = set(thread_list)
         atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:
@@ -252,6 +261,17 @@ class ThreadParticipationTracker:
             self._save()
 
     def __contains__(self, thread_id: str) -> bool:
+        if thread_id in self._threads:
+            return True
+        # Hot-reload from disk at most every 30s in case external writers
+        # added threads (Vapi bridge, discord tool, manual edits)
+        import time as _time
+        now = _time.monotonic()
+        if not hasattr(self, '_last_disk_check') or now - self._last_disk_check > 30:
+            self._last_disk_check = now
+            disk_threads = self._load()
+            if disk_threads - self._threads:
+                self._threads |= disk_threads
         return thread_id in self._threads
 
     def clear(self) -> None:

@@ -52,6 +52,74 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
+_HERMES_HARD_STOP_ENTITY = os.getenv("HERMES_HARD_STOP_ENTITY", "binary_sensor.hermes_openai_hard_stop")
+_HERMES_HARD_STOP_CACHE_TTL_SECS = float(os.getenv("HERMES_HARD_STOP_CACHE_TTL_SECS", "15"))
+_HERMES_HARD_STOP_TIMEOUT_SECS = float(os.getenv("HERMES_HARD_STOP_TIMEOUT_SECS", "2"))
+_HERMES_HARD_STOP_CACHE: dict[str, Any] = {"ts": 0.0, "state": None, "reason": ""}
+
+
+def _read_dotenv_value(path: Path, key: str) -> Optional[str]:
+    """Read a simple KEY=value from a dotenv file without importing dotenv."""
+    try:
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() != key:
+                continue
+            return v.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
+def _hermes_hard_stop_ha_config() -> tuple[Optional[str], Optional[str]]:
+    """Return Home Assistant URL/token for the hard-stop check."""
+    home = Path(os.path.expanduser("~/.claude-code"))
+    env_path = home / ".env"
+    hass_url = os.getenv("HASS_URL") or _read_dotenv_value(env_path, "HASS_URL")
+    hass_token = os.getenv("HASS_TOKEN") or _read_dotenv_value(env_path, "HASS_TOKEN")
+    return (hass_url.rstrip("/") if hass_url else None, hass_token)
+
+
+def _check_hermes_first_turn_hard_stop() -> tuple[bool, str]:
+    """Check HA hard-stop signal for new gateway sessions.
+
+    Returns (blocked, reason).  Fail-open on HA/config errors so a telemetry
+    outage does not brick Hermes; only an explicit HA sensor state of 'on'
+    blocks new first turns.
+    """
+    now = time.time()
+    cached_state = _HERMES_HARD_STOP_CACHE.get("state")
+    if cached_state is not None and now - float(_HERMES_HARD_STOP_CACHE.get("ts") or 0) < _HERMES_HARD_STOP_CACHE_TTL_SECS:
+        return cached_state == "on", str(_HERMES_HARD_STOP_CACHE.get("reason") or "")
+
+    hass_url, hass_token = _hermes_hard_stop_ha_config()
+    if not hass_url or not hass_token:
+        logger.debug("Hermes hard-stop check skipped: HASS_URL/HASS_TOKEN missing")
+        return False, ""
+
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{hass_url}/api/states/{_HERMES_HARD_STOP_ENTITY}",
+            headers={"Authorization": f"Bearer {hass_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=_HERMES_HARD_STOP_TIMEOUT_SECS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        state = str(data.get("state") or "unknown").lower()
+        attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+        reason = str(attrs.get("reason") or attrs.get("friendly_name") or "")
+        _HERMES_HARD_STOP_CACHE.update({"ts": now, "state": state, "reason": reason})
+        return state == "on", reason
+    except Exception as exc:
+        logger.warning("Hermes hard-stop HA check failed; allowing first turn: %s", exc)
+        _HERMES_HARD_STOP_CACHE.update({"ts": now, "state": "error", "reason": str(exc)})
+        return False, ""
+
+
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
     """Rewrite slash-command mentions to Telegram-valid command names.
 
@@ -437,7 +505,7 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
-# Load environment variables from ~/.hermes/.env first.
+# Load environment variables from ~/.claude-code/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -922,7 +990,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                 if slug == normalized and declared_name in disabled:
                     return (
                         f"The **{command_name}** skill is installed but disabled.\n"
-                        f"Enable it with: `hermes skills config`"
+                        f"Enable it with: `agent skills config`"
                     )
 
         # Check optional skills (shipped with repo but not installed)
@@ -1366,10 +1434,10 @@ class GatewayRunner:
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
-        """Check if the hermes-agent-setup skill is installed."""
+        """Check if the agent-config skill is installed."""
         try:
             from tools.skill_manager_tool import _find_skill
-            return _find_skill("hermes-agent-setup") is not None
+            return _find_skill("agent-config") is not None
         except Exception:
             return False
 
@@ -1616,6 +1684,54 @@ class GatewayRunner:
             return False
         return True
 
+    def _is_discord_thread(self, source: SessionSource) -> bool:
+        """True when the source is a Discord thread (auto-created or manual)."""
+        if source.platform != Platform.DISCORD:
+            return False
+        return bool(source.thread_id)
+
+    def _is_phone_call_thread(self, thread_id: str) -> bool:
+        """Check if a thread ID belongs to a Vapi bridge phone call thread."""
+        import json as _json
+        _thread_phone_file = os.path.join(
+            os.path.expanduser("~/Developer/vapi-hermes-bridge"),
+            "thread_phone_map.json",
+        )
+        try:
+            if os.path.exists(_thread_phone_file):
+                with open(_thread_phone_file, "r") as f:
+                    return thread_id in _json.load(f)
+        except Exception:
+            pass
+        return False
+
+    # Cache for corp-collab employee thread IDs — refreshed once per process lifetime
+    _corp_collab_thread_ids: Optional[set] = None
+
+    def _is_corp_collab_thread(self, thread_id: str) -> bool:
+        """Check if a thread ID belongs to a corp-collab employee."""
+        if self._corp_collab_thread_ids is None:
+            ids: set = set()
+            try:
+                import glob as _glob
+                import yaml as _yaml
+                pattern = os.path.expanduser("~/.claude-code/collab/employees/*/profile.yaml")
+                for path in _glob.glob(pattern):
+                    try:
+                        with open(path, "r") as f:
+                            prof = _yaml.safe_load(f)
+                        tid = prof.get("thread_id")
+                        if tid:
+                            ids.add(str(tid))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self._corp_collab_thread_ids = ids
+            if ids:
+                logger.info("Loaded %d corp-collab employee thread IDs for rename protection", len(ids))
+        return str(thread_id) in self._corp_collab_thread_ids
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
@@ -1757,13 +1873,20 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_config: Optional[dict] = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session primary by default. An opt-in cheap model may handle
+        obvious standalone informational turns; continuing sessions stay on the
+        primary to preserve provider prompt caches and reasoning continuity.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -1776,8 +1899,29 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
+        routing_cfg = {}
+        if isinstance(user_config, dict):
+            agent_cfg = user_config.get("agent") or {}
+            if isinstance(agent_cfg, dict):
+                routing_cfg = agent_cfg.get("simple_model_routing") or {}
+        routing_enabled = bool(
+            isinstance(routing_cfg, dict) and routing_cfg.get("enabled", False)
+        )
+        try:
+            from agent.model_routing import select_turn_model
+            turn_model = select_turn_model(
+                user_message,
+                model,
+                routing_cfg,
+                history=history,
+                enabled=routing_enabled,
+            )
+        except Exception as exc:
+            logger.debug("Simple model routing failed; using primary: %s", exc)
+            turn_model = model
+
         route = {
-            "model": model,
+            "model": turn_model,
             "runtime": runtime,
             "signature": (
                 model,
@@ -1994,8 +2138,8 @@ class GatewayRunner:
         """Load ephemeral prefill messages from config or env var.
         
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the prefill_messages_file key in ~/.hermes/config.yaml.
-        Relative paths are resolved from ~/.hermes/.
+        the prefill_messages_file key in ~/.claude-code/config.yaml.
+        Relative paths are resolved from ~/.claude-code/.
         """
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
@@ -2032,7 +2176,7 @@ class GatewayRunner:
         """Load ephemeral system prompt from config or env var.
         
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        agent.system_prompt in ~/.claude-code/config.yaml.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
@@ -2544,6 +2688,8 @@ class GatewayRunner:
             if self._restart_requested
             else "Your current task will be interrupted."
         )
+        if self._restart_requested:
+            hint = "Your current task will be interrupted and auto-resumed after restart."
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
@@ -2650,6 +2796,79 @@ class GatewayRunner:
                     home.chat_id,
                     e,
                 )
+
+    def _write_auto_resume_pings(self) -> None:
+        """Write .restart_pings.json for all interrupted sessions.
+
+        Called during shutdown after mark_resume_pending.  On boot, the new
+        gateway process reads this file and injects synthetic "resume work"
+        messages into each interrupted thread, so the agent automatically
+        picks up where it left off without requiring a manual user message.
+        """
+        if not self._restart_requested:
+            return
+
+        active = self._snapshot_running_agents()
+        if not active:
+            return
+
+        pings: list[dict] = []
+        for session_key in active:
+            source = None
+            try:
+                if getattr(self, "session_store", None) is not None:
+                    self.session_store._ensure_loaded()
+                    entry = self.session_store._entries.get(session_key)
+                    source = getattr(entry, "origin", None) if entry else None
+            except Exception:
+                pass
+
+            if source is not None:
+                platform_str = source.platform.value
+                chat_id = str(source.chat_id)
+                thread_id = source.thread_id
+                user_id = getattr(source, "user_id", "") or ""
+                user_name = getattr(source, "user_name", "system") or "system"
+            else:
+                _parsed = _parse_session_key(session_key)
+                if not _parsed:
+                    continue
+                platform_str, chat_id, thread_id = _parsed
+                user_id = ""
+                user_name = "system"
+
+            pings.append({
+                "platform": platform_str,
+                "chat_id": chat_id,
+                "thread_id": str(thread_id) if thread_id else None,
+                "user_id": str(user_id),
+                "user_name": user_name,
+                "message": "resume work: gateway restarted",
+                "delay": 15,
+            })
+
+        if not pings:
+            return
+
+        ping_path = _hermes_home / ".restart_pings.json"
+        try:
+            # Merge with any existing pings (e.g. from pre-restart scripts)
+            existing: list = []
+            if ping_path.exists():
+                try:
+                    existing = json.loads(ping_path.read_text())
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            existing.extend(pings)
+            ping_path.write_text(json.dumps(existing, indent=2))
+            logger.info(
+                "Wrote %d auto-resume ping(s) to %s",
+                len(pings), ping_path,
+            )
+        except Exception as e:
+            logger.warning("Failed to write auto-resume pings: %s", e)
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -3045,7 +3264,7 @@ class GatewayRunner:
         if not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
+                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.claude-code/.env to allow open access, "
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
         
@@ -3336,6 +3555,9 @@ class GatewayRunner:
                 skip_targets=skip_home_targets,
             )
 
+        # Process any queued restart pings (synthetic user messages)
+        await self._process_restart_pings()
+
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
             from tools.process_registry import process_registry
@@ -3368,6 +3590,24 @@ class GatewayRunner:
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
+
+        # Start todo scheduler — usage-aware deferred task queue
+        try:
+            from gateway.todo_scheduler import TodoScheduler
+            self._todo_scheduler = TodoScheduler(self)
+            asyncio.create_task(self._todo_scheduler.run())
+            logger.info("Todo scheduler started")
+        except Exception as e:
+            logger.warning("Todo scheduler failed to start: %s", e)
+
+        # Start recurring jobs scheduler
+        try:
+            from gateway.recurring_jobs import RecurringScheduler
+            self._recurring_scheduler = RecurringScheduler(adapter=self)
+            asyncio.create_task(self._recurring_scheduler.start())
+            logger.info("Recurring jobs scheduler started")
+        except Exception as e:
+            logger.warning("Recurring jobs scheduler failed to start: %s", e)
 
         logger.info("Press Ctrl+C to stop")
         
@@ -4217,6 +4457,9 @@ class GatewayRunner:
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
+                # Write auto-resume pings so the new gateway process
+                # injects "resume work" messages on boot.
+                self._write_auto_resume_pings()
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
@@ -5756,7 +5999,7 @@ class GatewayRunner:
                         if _skill_name in _get_plat_disabled(platform=_plat):
                             return (
                                 f"The **{_skill_name}** skill is disabled for {_plat}.\n"
-                                f"Enable it with: `hermes skills config`"
+                                f"Enable it with: `agent skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
@@ -5962,7 +6205,7 @@ class GatewayRunner:
                                 "then /restart the gateway."
                             )
                             if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill claude-code`"
                             await _stt_adapter.send(
                                 source.chat_id,
                                 _stt_msg,
@@ -6133,6 +6376,24 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+            _hard_stop_active, _hard_stop_reason = _check_hermes_first_turn_hard_stop()
+            if _hard_stop_active:
+                _reason_suffix = f" Reason: {_hard_stop_reason}" if _hard_stop_reason else ""
+                logger.warning(
+                    "Hermes hard stop active; blocking new first turn for session=%s source=%s.%s",
+                    session_key,
+                    source.platform.value if source.platform else "unknown",
+                    _reason_suffix,
+                )
+                return (
+                    "⛔ Hermes hard stop is active for new first-turn requests. "
+                    "OpenAI 5h usage or combined 7d usage is too high, so I’m "
+                    "preserving provider capacity for active/Vapi work. "
+                    "Existing sub-turns can continue. Press the Home Assistant "
+                    "`Hermes Hard Stop Unlock 5m` button for a temporary override."
+                    f"{_reason_suffix}"
+                )
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -6683,6 +6944,24 @@ class GatewayRunner:
                 return None
 
             response = agent_result.get("final_response") or ""
+
+            # Discord thread title startup sync — runs after agent response
+            # regardless of proxy vs direct mode
+            if response and self._session_db and self._is_discord_thread(source):
+                try:
+                    _sync_loop = getattr(self, "_gateway_loop", None)
+                    if _sync_loop and not _sync_loop.is_closed():
+                        import dataclasses as _dc
+                        try:
+                            _src_copy = _dc.replace(source)
+                        except Exception:
+                            _src_copy = source
+                        asyncio.run_coroutine_threadsafe(
+                            self._maybe_sync_discord_thread_title(_src_copy, session_entry.session_id),
+                            _sync_loop,
+                        )
+                except Exception:
+                    pass
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -9199,13 +9478,21 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            tool_routing_cfg = agent_cfg.get("tool_routing") or {}
+            if isinstance(tool_routing_cfg, dict) and tool_routing_cfg.get("enabled", False):
+                from agent.tool_routing import select_task_toolsets
+                enabled_toolsets = sorted(select_task_toolsets(
+                    enabled_toolsets, prompt, enabled=True
+                ))
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt, model, runtime_kwargs, history=None, user_config=user_config
+            )
 
             def run_sync():
                 agent = AIAgent(
@@ -9992,6 +10279,194 @@ class GatewayRunner:
 
         future.add_done_callback(_log_rename_failure)
 
+    # ------------------------------------------------------------------
+    # Discord thread title sync (mirrors Telegram topic rename above)
+    # ------------------------------------------------------------------
+
+    # Tracks threads where the user manually renamed — agent won't override.
+    # Set of thread_id strings.  Populated by on_thread_update in discord.py
+    # when a rename is NOT from the agent.
+    _discord_user_renamed_threads: set  # initialised lazily
+
+    _DISCORD_USER_RENAMED_THREADS_FILE = "state/discord_user_renamed_threads.json"
+
+    def _get_discord_user_renamed_threads(self) -> set:
+        if not hasattr(self, "_discord_user_renamed_threads") or not isinstance(getattr(self, "_discord_user_renamed_threads", None), set):
+            # Load persisted set from disk
+            path = _hermes_home / self._DISCORD_USER_RENAMED_THREADS_FILE
+            loaded: set = set()
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text())
+                    if isinstance(data, list):
+                        loaded = set(str(x) for x in data)
+                except Exception as _e:
+                    logger.debug("Failed to load user-renamed threads: %s", _e)
+            self._discord_user_renamed_threads = loaded
+        return self._discord_user_renamed_threads
+
+    def _save_discord_user_renamed_threads(self) -> None:
+        """Persist user-renamed thread IDs to disk so they survive restarts."""
+        try:
+            path = _hermes_home / self._DISCORD_USER_RENAMED_THREADS_FILE
+            path.parent.mkdir(parents=True, exist_ok=True)
+            threads = self._get_discord_user_renamed_threads()
+            path.write_text(json.dumps(sorted(threads), indent=2))
+        except Exception as _e:
+            logger.debug("Failed to save user-renamed threads: %s", _e)
+
+    # Tracks thread IDs where the agent is about to rename — so on_thread_update
+    # can tell agent renames from user renames.
+    _discord_agent_pending_renames: set  # initialised lazily
+
+    def _get_discord_agent_pending_renames(self) -> set:
+        if not hasattr(self, "_discord_agent_pending_renames") or not isinstance(getattr(self, "_discord_agent_pending_renames", None), set):
+            self._discord_agent_pending_renames = set()
+        return self._discord_agent_pending_renames
+
+    def _sanitize_discord_thread_name(self, title: str) -> str:
+        """Return a Discord-safe thread name from a generated session title."""
+        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not cleaned:
+            return "Hermes Chat"
+        # Discord thread names: max 100 chars
+        if len(cleaned) > 95:
+            cleaned = cleaned[:92].rstrip() + "..."
+        return cleaned
+
+    async def _rename_discord_thread_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Discord thread when Hermes auto-titles a session."""
+        if not self._is_discord_thread(source) or not source.thread_id:
+            return
+        # Skip rename for phone call log threads (managed by Vapi bridge)
+        if self._is_phone_call_thread(source.thread_id):
+            logger.debug("Skipping thread rename for phone call thread %s", source.thread_id)
+            return
+        # Skip rename if user manually renamed this thread — respect user's choice
+        user_renamed = self._get_discord_user_renamed_threads()
+        if source.thread_id in user_renamed:
+            logger.info("Skipping agent thread rename for %s — user manually renamed it", source.thread_id)
+            return
+        # Skip rename for corp-collab employee threads — managed by corp-collab system
+        if self._is_corp_collab_thread(source.thread_id):
+            logger.info("Skipping agent thread rename for %s — corp-collab employee thread", source.thread_id)
+            return
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        thread_name = self._sanitize_discord_thread_name(title)
+        # Mark as agent-initiated so on_thread_update won't treat it as user rename
+        pending = self._get_discord_agent_pending_renames()
+        pending.add(source.thread_id)
+        try:
+            client = getattr(adapter, "client", None) or getattr(adapter, "_client", None)
+            if client is None:
+                pending.discard(source.thread_id)
+                return
+            thread = client.get_channel(int(source.thread_id))
+            if thread is None:
+                try:
+                    thread = await client.fetch_channel(int(source.thread_id))
+                except Exception:
+                    pending.discard(source.thread_id)
+                    return
+            if hasattr(thread, "edit"):
+                await thread.edit(name=thread_name)
+        except Exception:
+            logger.debug("Failed to rename Discord thread for auto-generated title", exc_info=True)
+        finally:
+            # Clean up pending after a short delay to allow on_thread_update to fire
+            async def _clear_pending():
+                await asyncio.sleep(5)
+                pending.discard(source.thread_id)
+            try:
+                asyncio.ensure_future(_clear_pending())
+            except Exception:
+                pending.discard(source.thread_id)
+
+    def _schedule_discord_thread_title_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if not title or not self._is_discord_thread(source):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = asyncio.run_coroutine_threadsafe(
+            self._rename_discord_thread_for_session_title(copied_source, session_id, title),
+            loop,
+        )
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
+    async def _maybe_sync_discord_thread_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+    ) -> None:
+        """On first message in a thread, check if Discord thread name matches session title.
+
+        If the session already has a title and it differs from the Discord thread
+        name, rename the thread to match the internal title. This handles threads
+        that were out of sync due to restarts, bugs, or the feature being added
+        after threads already existed.
+
+        Skips if the user manually renamed the thread — respects user's choice.
+        """
+        if not self._is_discord_thread(source) or not source.thread_id:
+            return
+        if not self._session_db:
+            return
+        # Skip if user manually renamed this thread
+        user_renamed = self._get_discord_user_renamed_threads()
+        if source.thread_id in user_renamed:
+            return
+        title = self._session_db.get_session_title(session_id)
+        if not title:
+            return  # No title yet — auto-title will handle it
+        # Get the current Discord thread name from the source chat_name
+        # chat_name format: "Guild / #channel / thread_name"
+        current_thread_name = (source.chat_name or "").rsplit(" / ", 1)[-1].strip()
+        if not current_thread_name:
+            return
+        sanitized_title = self._sanitize_discord_thread_name(title)
+        # Compare: if they already match, skip
+        if current_thread_name == sanitized_title:
+            return
+        # Debounce: only sync once per session to avoid spamming renames
+        sync_key = f"discord_thread_sync:{source.thread_id}"
+        if not hasattr(self, "_discord_thread_sync_done"):
+            self._discord_thread_sync_done = set()
+        if sync_key in self._discord_thread_sync_done:
+            return
+        self._discord_thread_sync_done.add(sync_key)
+        try:
+            await self._rename_discord_thread_for_session_title(source, session_id, title)
+            logger.info("Discord thread sync: renamed thread %s to '%s'", source.thread_id, sanitized_title)
+        except Exception:
+            logger.debug("Discord thread sync: failed to rename thread", exc_info=True)
+
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
 
     def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
@@ -10318,6 +10793,15 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Sync title → Discord thread name
+                    if self._is_discord_thread(source):
+                        try:
+                            # /title is user-initiated — clear any user-renamed lock
+                            if source.thread_id:
+                                self._get_discord_user_renamed_threads().discard(source.thread_id)
+                            self._schedule_discord_thread_title_rename(source, session_id, sanitized)
+                        except Exception:
+                            pass
                     return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."
@@ -11662,6 +12146,117 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
+
+    async def _process_restart_pings(self) -> None:
+        """Inject synthetic user messages queued by pre-restart scripts.
+
+        Reads ``~/.claude-code/.restart_pings.json`` — a JSON array of
+        objects with ``platform``, ``chat_id``, ``thread_id``, ``user_id``,
+        ``user_name``, ``message``, and an optional ``delay`` (seconds to
+        wait before injection, default 0).
+
+        Each entry becomes a synthetic ``MessageEvent`` with
+        ``internal=True`` so it bypasses user authorization checks.
+        The file is deleted after processing.
+
+        Example file content::
+
+            [
+                {
+                    "platform": "discord",
+                    "chat_id": "1501081034832351302",
+                    "thread_id": "1501500285300903956",
+                    "user_id": "234311476607844353",
+                    "user_name": "bradcarnage",
+                    "message": "You good?",
+                    "delay": 60
+                }
+            ]
+        """
+        ping_path = _hermes_home / ".restart_pings.json"
+        if not ping_path.exists():
+            return
+
+        try:
+            pings = json.loads(ping_path.read_text())
+            if not isinstance(pings, list):
+                logger.warning("restart_pings: expected JSON array, got %s", type(pings).__name__)
+                return
+        except Exception as e:
+            logger.warning("restart_pings: failed to read: %s", e)
+            return
+        finally:
+            ping_path.unlink(missing_ok=True)
+
+        for ping in pings:
+            try:
+                platform_str = ping.get("platform")
+                chat_id = ping.get("chat_id")
+                thread_id = ping.get("thread_id")
+                user_id = ping.get("user_id", "")
+                user_name = ping.get("user_name", "system")
+                message_text = ping.get("message", "You good?")
+                delay = int(ping.get("delay", 0))
+
+                if not platform_str or not chat_id:
+                    logger.warning("restart_pings: skipping entry with missing platform/chat_id")
+                    continue
+
+                platform = Platform(platform_str)
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    logger.warning("restart_pings: adapter %s not connected", platform_str)
+                    continue
+
+                # Schedule the injection as a background task with optional delay
+                asyncio.create_task(
+                    self._inject_restart_ping(
+                        adapter, platform_str, chat_id, thread_id,
+                        user_id, user_name, message_text, delay,
+                    )
+                )
+                logger.info(
+                    "restart_pings: scheduled '%s' for %s:%s (delay=%ds)",
+                    message_text[:50], platform_str, thread_id or chat_id, delay,
+                )
+            except Exception as e:
+                logger.warning("restart_pings: failed to process entry: %s", e)
+
+    async def _inject_restart_ping(
+        self, adapter, platform_str: str, chat_id: str,
+        thread_id: str, user_id: str, user_name: str,
+        message_text: str, delay: int,
+    ) -> None:
+        """Inject a single restart ping after an optional delay."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        # For Discord threads, chat_id must be the thread ID (Discord
+        # treats threads as channels). The original chat_id from the
+        # ping file becomes parent_chat_id for session routing.
+        effective_chat_id = thread_id or chat_id
+        parent_chat_id = chat_id if thread_id else None
+
+        source = SessionSource(
+            platform=Platform(platform_str),
+            chat_id=effective_chat_id,
+            thread_id=thread_id or chat_id,
+            user_id=user_id,
+            user_name=user_name,
+            parent_chat_id=parent_chat_id,
+        )
+        event = MessageEvent(
+            text=message_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        logger.info(
+            "restart_pings: injecting '%s' as %s into %s:%s",
+            message_text[:50], user_name, platform_str, thread_id or chat_id,
+        )
+        await adapter.handle_message(event)
+
     async def _send_home_channel_startup_notifications(
         self,
         *,
@@ -11860,8 +12455,8 @@ class GatewayRunner:
             disabled_note = "[The user sent voice message(s), but transcription is disabled in config."
             if self._has_setup_skill():
                 disabled_note += (
-                    " You have a skill called hermes-agent-setup that can help "
-                    "users configure Hermes features including voice, tools, and more."
+"a skill called agent-config that can help "
+                    "users configure agent features including voice, tools, and more."
                 )
             disabled_note += "]"
             if user_text:
@@ -11895,8 +12490,8 @@ class GatewayRunner:
                         )
                         if self._has_setup_skill():
                             _no_stt_note += (
-                                " You have a skill called hermes-agent-setup "
-                                "that can help users configure Hermes features "
+"a skill called agent-config "
+                                "that can help users configure agent features "
                                 "including voice, tools, and more."
                             )
                         _no_stt_note += "]"
@@ -12200,6 +12795,11 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("skills", "catalog_mode"),
+        ("tool_output", "result_budget_chars"),
+        ("tool_output", "turn_budget_chars"),
+        ("tool_output", "preview_chars"),
+        ("tool_output", "tool_overrides"),
     )
 
     @classmethod
@@ -12733,7 +13333,7 @@ class GatewayRunner:
             headers["X-Hermes-Session-Id"] = session_id
 
         body = {
-            "model": "hermes-agent",
+            "model": "claude-code",
             "messages": api_messages,
             "stream": True,
         }
@@ -12991,6 +13591,15 @@ class GatewayRunner:
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        tool_routing_cfg = agent_cfg_local.get("tool_routing") or {}
+        if isinstance(tool_routing_cfg, dict) and tool_routing_cfg.get("enabled", False):
+            from agent.tool_routing import select_task_toolsets
+            enabled_toolsets = sorted(select_task_toolsets(
+                enabled_toolsets,
+                message,
+                history=history,
+                enabled=True,
+            ))
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -13429,6 +14038,11 @@ class GatewayRunner:
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
+            # NOTE: We no longer write HERMES_SESSION_* into process-global
+            # os.environ here. Concurrent gateway turns raced and overwrote each
+            # other's values, causing resume pings (e.g. graceful-restart) to be
+            # delivered to the wrong Discord thread. Session context is passed to
+            # subprocesses via env_vars at spawn time in terminal_tool.py instead.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
@@ -13583,7 +14197,13 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                history=history,
+                user_config=user_config,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -13798,6 +14418,13 @@ class GatewayRunner:
                 unregister_gateway_notify,
             )
 
+            # Freeze approval routing info so the notify callback always
+            # targets the correct chat/thread even if outer-scope variables
+            # are shared across concurrent executor contexts.  This prevents
+            # the approval dialog from appearing in the wrong Discord thread.
+            _approval_chat_id = _status_chat_id
+            _approval_thread_metadata = _status_thread_metadata
+
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
 
@@ -13805,6 +14432,12 @@ class GatewayRunner:
                 (e.g. Discord's ``send_exec_approval``), use that for a richer
                 UX.  Otherwise fall back to a plain text message with
                 ``/approve`` instructions.
+
+                Uses ``_approval_chat_id`` and ``_approval_thread_metadata``
+                frozen at registration time (inside run_sync) rather than the
+                outer-scope ``_status_chat_id`` / ``_status_thread_metadata``
+                which may reference a different thread when multiple agent
+                runs share executor contexts.
                 """
                 # Pause the typing indicator while the agent waits for
                 # user approval.  Critical for Slack's Assistant API where
@@ -13813,7 +14446,7 @@ class GatewayRunner:
                 # is active.  The approval message send auto-clears the Slack
                 # status; pausing prevents _keep_typing from re-setting it.
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
-                _status_adapter.pause_typing_for_chat(_status_chat_id)
+                _status_adapter.pause_typing_for_chat(_approval_chat_id)
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
@@ -13825,11 +14458,11 @@ class GatewayRunner:
                     try:
                         _approval_result = asyncio.run_coroutine_threadsafe(
                             _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
+                                chat_id=_approval_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_thread_metadata,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)
@@ -13856,9 +14489,9 @@ class GatewayRunner:
                 try:
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
-                            _status_chat_id,
+                            _approval_chat_id,
                             msg,
-                            metadata=_status_thread_metadata,
+                            metadata=_approval_thread_metadata,
                         ),
                         _loop_for_step,
                     ).result(timeout=15)
@@ -14117,6 +14750,12 @@ class GatewayRunner:
                     }
                     if self._is_telegram_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
+                    elif self._is_discord_thread(source):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_title_rename(
                             source,
                             effective_session_id,
                             title,
@@ -14835,13 +15474,37 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
         # maybe_run_curator() is internally gated by config.interval_hours
         # (7 days by default), so CURATOR_EVERY is just the poll rate — the
         # real work only fires once per config interval.
+        # Also fail-closed on induce level 3 (same gate as SkillOpt): curator
+        # spawns a forked review agent that burns tokens, so it must not run
+        # while lvl3 induce is off. Any error checking the sensor => skip.
         if tick_count % CURATOR_EVERY == 0:
             try:
-                from agent.curator import maybe_run_curator
-                maybe_run_curator(
-                    idle_for_seconds=float("inf"),
-                    on_summary=lambda msg: logger.info("curator: %s", msg),
-                )
+                import urllib.request
+                _induce_ok = False
+                try:
+                    _hass_url = os.environ.get("HASS_URL", "")
+                    _hass_token = os.environ.get("HASS_TOKEN", "")
+                    if not _hass_url or not _hass_token:
+                        raise RuntimeError("HASS_URL and HASS_TOKEN are required for curator induce gate")
+                    _req = urllib.request.Request(
+                        f"{_hass_url}/api/states/binary_sensor.claude_usage_induce_lvl3",
+                        headers={"Authorization": f"Bearer {_hass_token}"},
+                    )
+                    with urllib.request.urlopen(_req, timeout=5) as _resp:
+                        _data = json.loads(_resp.read())
+                        _induce_ok = _data.get("state") == "on"
+                except Exception as _ge:
+                    logger.debug("Curator induce gate check failed (failing closed): %s", _ge)
+                    _induce_ok = False
+
+                if _induce_ok:
+                    from agent.curator import maybe_run_curator
+                    maybe_run_curator(
+                        idle_for_seconds=float("inf"),
+                        on_summary=lambda msg: logger.info("curator: %s", msg),
+                    )
+                else:
+                    logger.debug("Curator tick skipped — induce lvl3 gate closed")
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 

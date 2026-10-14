@@ -344,6 +344,24 @@ def build_session_context_prompt(
             if src.message_id:
                 id_lines.append(f"  - Triggering message: `{src.message_id}`")
             lines.extend(id_lines)
+            # When spawned inside an existing thread (not a brand-new one),
+            # the agent has no prior conversation state — the thread history
+            # holds the actual context. Direct the model to fetch it before
+            # acting on ambiguous references ("it", "that", "the system", etc.).
+            if src.thread_id:
+                lines.append("")
+                lines.append(
+                    "**Thread continuity:** This session has NO memory of prior "
+                    "turns in this thread — each spawn is fresh. If the user's "
+                    "message references earlier work (pronouns like \"it\", \"that\", "
+                    "\"the system\"; follow-ups like \"did it work\", \"try again\", "
+                    "\"check on it\"; or any implicit continuation), you MUST call "
+                    "`discord` action=`fetch_messages` on this thread FIRST to "
+                    "recover context before acting. Do not infer the target system "
+                    "from the thread title alone — titles drift. When unsure, "
+                    "fetch first. See the `discord-thread-context` skill for the "
+                    "full recovery workflow."
+                )
         else:
             lines.append("")
             lines.append(

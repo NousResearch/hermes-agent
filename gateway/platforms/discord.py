@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import logging
+import json
 import os
 import struct
 import subprocess
@@ -740,6 +741,228 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_thread_create(thread: discord.Thread):
+                """Auto-join new threads so on_message fires for them."""
+                try:
+                    if thread.me is None or not thread.is_joined():
+                        await thread.join()
+                        logger.info("[%s] Auto-joined new thread %s (%s)", adapter_self.name, thread.id, thread.name)
+                except Exception:
+                    logger.debug("Failed to auto-join thread %s", thread.id, exc_info=True)
+
+            @self._client.event
+            async def on_thread_update(before: discord.Thread, after: discord.Thread):
+                """Sync Discord thread rename → session title in DB.
+
+                Also tracks whether the rename was from the user (manual) vs agent
+                (auto-title).  If user-initiated, marks the thread so the agent
+                won't override it on subsequent auto-titles.
+                """
+                if before.name == after.name:
+                    return  # Not a rename
+                thread_id = str(after.id)
+
+                # Detect whether this rename was agent-initiated
+                runner = getattr(adapter_self, "gateway_runner", None)
+                agent_initiated = False
+                if runner is not None:
+                    pending = runner._get_discord_agent_pending_renames()
+                    if thread_id in pending:
+                        agent_initiated = True
+                        pending.discard(thread_id)
+
+                if not agent_initiated and runner is not None:
+                    # User manually renamed — mark so agent won't override
+                    user_renamed = runner._get_discord_user_renamed_threads()
+                    user_renamed.add(thread_id)
+                    runner._save_discord_user_renamed_threads()
+                    logger.info(
+                        "[%s] Thread %s manually renamed '%s' -> '%s' — agent will respect user's name",
+                        adapter_self.name, thread_id, before.name, after.name,
+                    )
+
+                # Only care about threads we participate in
+                # Build a minimal source to derive the session key
+                guild = after.guild
+                parent = getattr(after, "parent", None)
+                parent_channel_id = str(parent.id) if parent else None
+                source = adapter_self.build_source(
+                    chat_id=thread_id,
+                    chat_name=adapter_self._format_thread_chat_name(after),
+                    chat_type="thread",
+                    user_id="system",
+                    user_name="system",
+                    thread_id=thread_id,
+                    guild_id=str(guild.id) if guild else None,
+                    parent_chat_id=parent_channel_id,
+                )
+                # Look up session via session store
+                store = getattr(adapter_self, "_session_store", None)
+                if store is None:
+                    return
+                try:
+                    from gateway.session import build_session_key
+                    session_key = build_session_key(
+                        source,
+                        group_sessions_per_user=adapter_self.config.extra.get("group_sessions_per_user", True),
+                        thread_sessions_per_user=adapter_self.config.extra.get("thread_sessions_per_user", False),
+                    )
+                    entry = store._entries.get(session_key)
+                    if entry is None:
+                        return
+                    session_id = entry.session_id
+                except Exception:
+                    return
+                # Update session title in DB
+                runner = getattr(adapter_self, "gateway_runner", None)
+                session_db = getattr(runner, "_session_db", None) if runner else None
+                if session_db is None:
+                    return
+                try:
+                    new_title = after.name.strip()
+                    if new_title:
+                        sanitized = session_db.sanitize_title(new_title)
+                        if sanitized:
+                            session_db.set_session_title(session_id, sanitized)
+                            logger.info(
+                                "[%s] Thread renamed '%s' -> '%s', session title updated for %s",
+                                adapter_self.name, before.name, after.name, session_id,
+                            )
+                except Exception:
+                    logger.debug("Failed to sync thread rename to session title", exc_info=True)
+
+            @self._client.event
+            async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+                """Relay emoji reactions as user messages for interactive quizzes.
+
+                When a channel ID is listed in
+                ``~/.hermes/state/discord_reaction_relay.json``, reactions
+                from allowed (non-bot) users are converted into regular
+                ``MessageEvent``s so the agent sees them as typed answers.
+
+                The relay file is a JSON dict mapping channel_id (str) to
+                ``true``.  The ``discord_reaction_service.py`` script manages
+                it automatically.
+                """
+                # Ignore the bot's own reactions
+                if adapter_self._client.user and payload.user_id == adapter_self._client.user.id:
+                    return
+
+                channel_id_str = str(payload.channel_id)
+
+                # Check if this channel has reaction relay enabled
+                relay_path = os.path.join(
+                    os.path.expanduser("~/.hermes/state"),
+                    "discord_reaction_relay.json",
+                )
+                try:
+                    if not os.path.exists(relay_path):
+                        return
+                    with open(relay_path, "r") as _rf:
+                        relay_channels = json.loads(_rf.read())
+                    if not relay_channels.get(channel_id_str):
+                        return
+                except Exception:
+                    return
+
+                # Enforce allowed-user check
+                user_id_str = str(payload.user_id)
+                if adapter_self._allowed_user_ids:
+                    if user_id_str not in adapter_self._allowed_user_ids:
+                        return
+
+                # Get emoji as text
+                emoji_str = str(payload.emoji)
+
+                # Fetch the channel and build a source for the MessageEvent
+                try:
+                    channel = adapter_self._client.get_channel(payload.channel_id)
+                    if channel is None:
+                        channel = await adapter_self._client.fetch_channel(payload.channel_id)
+
+                    is_thread = isinstance(channel, discord.Thread)
+                    thread_id = channel_id_str if is_thread else None
+                    parent_channel_id = None
+                    if is_thread:
+                        parent_channel_id = adapter_self._get_parent_channel_id(channel)
+
+                    effective_channel = channel
+
+                    if is_thread:
+                        chat_type = "thread"
+                        chat_name = adapter_self._format_thread_chat_name(effective_channel)
+                    elif isinstance(channel, discord.DMChannel):
+                        chat_type = "dm"
+                        chat_name = f"DM-{user_id_str}"
+                    else:
+                        chat_type = "group"
+                        chat_name = getattr(channel, "name", channel_id_str)
+                        if hasattr(channel, "guild") and channel.guild:
+                            chat_name = f"{channel.guild.name} / #{chat_name}"
+
+                    chat_topic = adapter_self._get_effective_topic(channel, is_thread=is_thread)
+
+                    # Get user display name
+                    user_name = user_id_str
+                    if payload.member:
+                        user_name = payload.member.display_name
+
+                    guild = getattr(channel, "guild", None)
+                    source = adapter_self.build_source(
+                        chat_id=str(effective_channel.id),
+                        chat_name=chat_name,
+                        chat_type=chat_type,
+                        user_id=user_id_str,
+                        user_name=user_name,
+                        thread_id=thread_id,
+                        chat_topic=chat_topic,
+                        is_bot=False,
+                        guild_id=str(guild.id) if guild else None,
+                        parent_chat_id=parent_channel_id,
+                    )
+
+                    event = MessageEvent(
+                        text=emoji_str,
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        raw_message=None,
+                        message_id=f"reaction-{payload.message_id}-{payload.user_id}",
+                    )
+
+                    logger.info(
+                        "[%s] Reaction relay: %s reacted with %s in %s",
+                        adapter_self.name, user_name, emoji_str, channel_id_str,
+                    )
+
+                    await adapter_self.handle_message(event)
+
+                    # Appointment confirmation hook: if emoji is 1️⃣/2️⃣/❌,
+                    # POST to vapi-hermes-bridge to trigger outbound call
+                    _appt_emoji_map = {"1️⃣": "primary", "2️⃣": "fallback", "❌": "cancel", "📞": "call"}
+                    if emoji_str in _appt_emoji_map:
+                        try:
+                            import aiohttp
+                            _action = _appt_emoji_map[emoji_str]
+                            async with aiohttp.ClientSession() as _sess:
+                                async with _sess.post(
+                                    "http://127.0.0.1:8742/confirm-appointment",
+                                    json={"thread_id": channel_id_str, "choice": _action},
+                                    timeout=aiohttp.ClientTimeout(total=5),
+                                ) as _resp:
+                                    if _resp.status == 200:
+                                        _data = await _resp.json()
+                                        if _data.get("status") not in ("error",):
+                                            logger.info(
+                                                "[%s] Appointment confirmed: %s → %s",
+                                                adapter_self.name, channel_id_str, _action,
+                                            )
+                        except Exception:
+                            pass  # Bridge not running or no appointment — silently ignore
+
+                except Exception as e:
+                    logger.error("[%s] Reaction relay error: %s", adapter_self.name, e)
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -825,10 +1048,41 @@ class DiscordAdapter(BasePlatformAdapter):
 
         logger.info("[%s] Disconnected", self.name)
 
+    async def _join_existing_threads(self) -> None:
+        """Join all active threads in guilds so on_message fires for them.
+
+        This covers threads created while the bot was offline and threads
+        created by REST API (e.g. Vapi bridge phone call threads).
+        """
+        if not self._client:
+            return
+        joined = 0
+        for guild in self._client.guilds:
+            try:
+                # fetch_active_threads returns threads that are not archived
+                result = await guild.fetch_active_threads()  # type: ignore[attr-defined]
+                threads = getattr(result, "threads", result) if not isinstance(result, list) else result
+                for thread in threads:
+                    try:
+                        if not thread.is_joined():
+                            await thread.join()
+                            joined += 1
+                    except Exception:
+                        logger.debug("Failed to join thread %s in %s", thread.id, guild.name, exc_info=True)
+            except Exception:
+                logger.debug("Failed to fetch threads for guild %s", guild.name, exc_info=True)
+        if joined:
+            logger.info("[%s] Joined %d existing thread(s) on startup", self.name, joined)
+
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
             return
+        # Join existing threads first so we receive messages in all of them
+        try:
+            await self._join_existing_threads()
+        except Exception:
+            logger.warning("[%s] Thread join sweep failed", self.name, exc_info=True)
         try:
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
@@ -1046,6 +1300,108 @@ class DiscordAdapter(BasePlatformAdapter):
             "deleted": deleted,
         }
 
+    # ── Quiz emoji auto-reaction ──────────────────────────────────────────
+    _QUIZ_EMOJI_RE = re.compile(
+        r'^('
+        r'[\U0001F1E0-\U0001F1FF]'          # regional indicators (🇦-🇿)
+        r'|[\U0001F300-\U0001F9FF]'          # misc symbols, emoticons
+        r'|[\u2600-\u27BF]'                  # misc symbols
+        r'|[\u2700-\u27BF]'                  # dingbats
+        r'|[\u2300-\u23FF]'                  # misc technical
+        r'|[\u2B50-\u2B55]'                  # stars, circles
+        r'|[0-9]\uFE0F?\u20E3'              # keycap digits
+        r'|[\u2705\u274C\u274E]'             # ✅ ❌ ❎
+        r'|[\U0001F44D\U0001F44E]'           # 👍 👎
+        r'|[\U0001F937]'                     # 🤷
+        r')'
+        r'[\uFE0F]?'                         # optional variation selector
+        r'\s',                               # followed by whitespace
+        re.UNICODE
+    )
+
+    def _extract_quiz_emoji(self, content: str) -> list:
+        """Detect quiz messages and extract emoji for reactions.
+
+        Algorithm (per Brad's spec):
+        1. Check for hotwords "Question" and "React" in the message
+        2. Split by newline, iterate backwards
+        3. Start collecting emoji once we hit a line starting with an emoji
+        4. Stop when we hit a line that doesn't start with an emoji
+        5. Reverse the collected list to restore order
+        """
+        if not content:
+            return []
+
+        content_lower = content.lower()
+        # Must contain both hotwords
+        if "question" not in content_lower or "react" not in content_lower:
+            return []
+
+        lines = content.split('\n')
+        emojis = []
+        collecting = False
+
+        # Iterate backwards through lines
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                if collecting:
+                    # Empty line while collecting — stop
+                    break
+                continue
+
+            match = self._QUIZ_EMOJI_RE.match(stripped)
+            if match:
+                collecting = True
+                emojis.append(match.group(1))
+            elif collecting:
+                # Hit a non-emoji line after collecting — done
+                break
+
+        # Reverse to restore original order
+        emojis.reverse()
+        return emojis
+
+    async def _auto_add_quiz_reactions(self, channel: Any, message_id: str, content: str) -> None:
+        """Fire-and-forget: detect quiz messages and add emoji reactions."""
+        try:
+            emojis = self._extract_quiz_emoji(content)
+            if not emojis:
+                return
+
+            # Also enable the reaction relay for this channel
+            relay_path = os.path.join(
+                os.path.expanduser("~/.hermes/state"),
+                "discord_reaction_relay.json",
+            )
+            os.makedirs(os.path.dirname(relay_path), exist_ok=True)
+            relay_data = {}
+            if os.path.exists(relay_path):
+                try:
+                    with open(relay_path, "r") as _rf:
+                        relay_data = json.loads(_rf.read())
+                except Exception:
+                    relay_data = {}
+            channel_id_str = str(channel.id)
+            if not relay_data.get(channel_id_str):
+                relay_data[channel_id_str] = True
+                with open(relay_path, "w") as _wf:
+                    _wf.write(json.dumps(relay_data))
+
+            # Fetch the message object and add reactions
+            msg = await channel.fetch_message(int(message_id))
+            if msg:
+                for emoji in emojis:
+                    await self._add_reaction(msg, emoji)
+                    await asyncio.sleep(0.3)
+
+            logger.info(
+                "[%s] Auto-added quiz reactions %s to message %s",
+                self.name, emojis, message_id,
+            )
+        except Exception as e:
+            logger.debug("[%s] Quiz auto-reaction failed: %s", self.name, e)
+
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
         if not message or not hasattr(message, "add_reaction"):
@@ -1187,6 +1543,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         raise
                 message_ids.append(str(msg.id))
+
+            # Fire-and-forget: auto-add quiz emoji reactions in a separate task
+            if message_ids and content:
+                asyncio.ensure_future(
+                    self._auto_add_quiz_reactions(channel, message_ids[-1], content)
+                )
 
             return SendResult(
                 success=True,
@@ -2710,6 +3072,19 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        @tree.command(name="todo", description="Queue a task for processing when compute is available")
+        @discord.app_commands.describe(prompt="The task prompt to queue")
+        async def slash_todo(interaction: discord.Interaction, prompt: str):
+            await self._handle_todo_slash(interaction, prompt)
+
+        @tree.command(name="recurring", description="Manage recurring scheduled tasks")
+        @discord.app_commands.describe(action="Action: add, list, remove, enable, disable, info")
+        @discord.app_commands.describe(args="Job details (for add: name|schedule|instructions)")
+        async def slash_recurring(
+            interaction: discord.Interaction, action: str, args: str = ""
+        ):
+            await self._handle_recurring_slash(interaction, action, args)
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -3106,10 +3481,399 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 
+# ------------------------------------------------------------------
+    # Todo task helpers
+    # ------------------------------------------------------------------
+
+    async def _handle_todo_slash(
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+    ) -> None:
+        """Handle /todo -- create a thread, queue the task, don't start processing.
+
+        Script mode: ``/todo script:/path/to/script.py`` or
+        ``/todo script:/path/to/script.py|deliver:channel_id``
+        runs the script directly with zero inference cost (no_agent).
+        """
+        if not await self._check_slash_authorization(interaction, "/todo"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        # -----------------------------------------------------------
+        # Detect no_agent script mode
+        # Format: script:/path/to/script.py[|deliver:channel_id]
+        # -----------------------------------------------------------
+        is_script = prompt.strip().startswith("script:")
+        script_path = None
+        deliver_channel_id = None
+
+        if is_script:
+            parts = prompt.strip().split("|", 1)
+            script_path = parts[0][len("script:"):].strip()
+            if len(parts) > 1:
+                extra = parts[1].strip()
+                if extra.startswith("deliver:"):
+                    deliver_channel_id = extra[len("deliver:"):].strip()
+
+            # Validate script exists (script_path may include args like --dry-run)
+            import os as _os
+            import shlex as _shlex
+            _script_file = _shlex.split(_os.path.expanduser(script_path))[0]
+            if not _os.path.isfile(_script_file):
+                await interaction.followup.send(
+                    f"❌ Script not found: `{_script_file}`\n"
+                    f"(from: `{script_path}`)",
+                    ephemeral=True,
+                )
+                return
+
+        # Create a thread with the prompt as the name (Discord limit: 100 chars)
+        if is_script:
+            # Use the script filename as thread name
+            import os as _os
+            thread_name = f"⚡ {_os.path.basename(script_path)}"
+        else:
+            thread_name = prompt[:97] + "..." if len(prompt) > 100 else prompt
+
+        result = await self._create_thread(
+            interaction,
+            name=thread_name,
+            message="",
+            auto_archive_duration=1440,
+        )
+
+        if not result.get("success"):
+            error = result.get("error", "unknown error")
+            await interaction.followup.send(
+                f"Failed to create thread: {error}", ephemeral=True
+            )
+            return
+
+        thread_id = result.get("thread_id")
+
+        # Track thread so follow-ups don't require @mention
+        if thread_id:
+            self._threads.mark(thread_id)
+
+        if is_script:
+            # Script mode: lighter waiting message
+            await self.send(
+                chat_id=str(thread_id),
+                content=(
+                    f"<@{interaction.user.id}>\n"
+                    "⚡ **Script task queued** (no inference cost)\n"
+                    f"Script: `{script_path}`\n"
+                    + (f"Deliver to: <#{deliver_channel_id}>\n" if deliver_channel_id else "")
+                    + "Waiting for free compute slot…"
+                ),
+                metadata={"thread_id": str(thread_id)},
+            )
+        else:
+            # Send "waiting" message in the thread (mention the creator)
+            await self.send(
+                chat_id=str(thread_id),
+                content=(
+                    f"<@{interaction.user.id}>\n"
+                    "\u23f3 **Waiting for free compute time.**\n"
+                    "This task will be picked up automatically when resources are available."
+                ),
+                metadata={"thread_id": str(thread_id)},
+            )
+
+            # Echo the exact user prompt so it's visible in the thread
+            await self.send(
+                chat_id=str(thread_id),
+                content=f"**Prompt:**\n{prompt}",
+                metadata={"thread_id": str(thread_id)},
+            )
+
+        # Queue the task (don't start processing)
+        from gateway.todo_scheduler import TodoQueue
+
+        queue = TodoQueue.instance()
+
+        guild_name = ""
+        guild_id = ""
+        if hasattr(interaction, "guild") and interaction.guild:
+            guild_name = interaction.guild.name
+            guild_id = str(interaction.guild.id)
+
+        _parent_channel = self._thread_parent_channel(
+            getattr(interaction, "channel", None)
+        )
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+
+        task_data = {
+            "prompt": prompt,
+            "thread_id": str(thread_id),
+            "parent_channel_id": _parent_id,
+            "guild_id": guild_id,
+            "user_id": str(interaction.user.id),
+            "user_name": interaction.user.display_name,
+            "guild_name": guild_name,
+            "chat_name": (
+                f"{guild_name} / {thread_name}" if guild_name else thread_name
+            ),
+        }
+
+        if is_script:
+            task_data["no_agent"] = True
+            task_data["script"] = script_path
+            if deliver_channel_id:
+                task_data["deliver_channel_id"] = deliver_channel_id
+
+        task_id = await queue.add(task_data)
+
+        mode_label = "⚡ script (no inference)" if is_script else "🤖 agent"
+        link = f"<#{thread_id}>"
+        await interaction.followup.send(
+            f"\U0001f4cb Task queued (`{task_id}`) \u2192 {link}\n"
+            f"Mode: {mode_label}\n"
+            "Will process when compute is available.",
+            ephemeral=True,
+        )
+
+        # Wake the scheduler after a short delay (let thread settle)
+        from gateway.todo_scheduler import TodoScheduler
+        if TodoScheduler._instance is not None:
+            TodoScheduler._instance.notify(delay=2)
+
+    async def _handle_recurring_slash(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        args: str = "",
+    ) -> None:
+        """Handle /recurring — manage recurring scheduled tasks."""
+        if not await self._check_slash_authorization(interaction, "/recurring"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        from gateway.recurring_jobs import (
+            add_job, remove_job, update_job, get_job, list_jobs,
+            parse_schedule, SCHEDULE_ALIASES, DEFAULT_SECURITY_SCOPE,
+        )
+
+        action = action.strip().lower()
+
+        if action == "list":
+            jobs = list_jobs()
+            if not jobs:
+                await interaction.followup.send(
+                    "📋 No recurring jobs defined.", ephemeral=True
+                )
+                return
+            lines = []
+            for j in jobs:
+                status = "✅" if j.get("enabled", True) else "⏸️"
+                mode = "⚡" if j.get("no_agent") else "🤖"
+                schedule = j.get("schedule", "?")
+                name = j.get("name", "unnamed")
+                jid = j.get("id", "?")
+                enqueued = j.get("enqueue_count", 0)
+                errors = j.get("error_count", 0)
+                lines.append(
+                    f"{status}{mode} **{name}** (`{jid}`) — {schedule} "
+                    f"| runs: {enqueued} | errors: {errors}"
+                )
+            await interaction.followup.send(
+                "📋 **Recurring Jobs**\n" + "\n".join(lines),
+                ephemeral=True,
+            )
+
+        elif action == "add":
+            # Parse: name|schedule|instructions
+            # Script mode: name|schedule|script:/path/to/script.py[|deliver:channel_id]
+            parts = args.split("|", 3)
+            if len(parts) < 2:
+                await interaction.followup.send(
+                    "❌ Usage: `/recurring add name|schedule|instructions`\n"
+                    "Script mode: `name|schedule|script:/path/to/script.py|deliver:channel_id`\n"
+                    f"Schedules: {', '.join(SCHEDULE_ALIASES.keys())}",
+                    ephemeral=True,
+                )
+                return
+            name = parts[0].strip()
+            schedule = parts[1].strip()
+            instructions = parts[2].strip() if len(parts) > 2 else ""
+
+            # Detect no_agent script mode
+            is_script = instructions.startswith("script:")
+            script_path = None
+            deliver_channel_id = None
+
+            if is_script:
+                script_path = instructions[len("script:"):].strip()
+                # Check for deliver: in next part
+                if len(parts) > 3:
+                    extra = parts[3].strip()
+                    if extra.startswith("deliver:"):
+                        deliver_channel_id = extra[len("deliver:"):].strip()
+                # Validate script exists
+                import os as _os
+                expanded = _os.path.expanduser(script_path)
+                if not _os.path.isfile(expanded):
+                    await interaction.followup.send(
+                        f"❌ Script not found: `{script_path}`\n"
+                        f"(expanded: `{expanded}`)",
+                        ephemeral=True,
+                    )
+                    return
+
+            try:
+                interval_s = parse_schedule(schedule)
+            except ValueError:
+                await interaction.followup.send(
+                    f"❌ Invalid schedule: `{schedule}`\n"
+                    f"Valid: {', '.join(SCHEDULE_ALIASES.keys())}",
+                    ephemeral=True,
+                )
+                return
+
+            _parent = self._thread_parent_channel(
+                getattr(interaction, "channel", None)
+            )
+            _parent_id = str(getattr(_parent, "id", "") or "1501081034832351302")
+            _guild_id = str(interaction.guild.id) if interaction.guild else "793984343667900468"
+            _guild_name = interaction.guild.name if interaction.guild else "Brad's Computer Stuff & Things"
+
+            job_data = {
+                "name": name,
+                "schedule": schedule,
+                "instructions": instructions,
+                "security_scope": DEFAULT_SECURITY_SCOPE,
+                "parent_channel_id": _parent_id,
+                "guild_id": _guild_id,
+                "guild_name": _guild_name,
+                "user_id": str(interaction.user.id),
+                "user_name": interaction.user.display_name,
+                "notify_thread_id": "1501660002199535616",
+            }
+
+            if is_script:
+                job_data["no_agent"] = True
+                job_data["script"] = script_path
+                if deliver_channel_id:
+                    job_data["deliver_channel_id"] = deliver_channel_id
+
+            job_id = add_job(job_data)
+
+            import math
+            human_interval = (
+                f"{interval_s}s" if interval_s < 60
+                else f"{interval_s // 60}m" if interval_s < 3600
+                else f"{interval_s // 3600}h" if interval_s < 86400
+                else f"{math.ceil(interval_s / 86400)}d"
+            )
+
+            mode_label = "⚡ script (no inference)" if is_script else "🤖 agent"
+            await interaction.followup.send(
+                f"✅ Recurring job `{job_id}` created: **{name}**\n"
+                f"Mode: {mode_label}\n"
+                f"Schedule: every {human_interval}\n"
+                + (f"Script: `{script_path}`\n" if is_script else "")
+                + (f"Deliver to: <#{deliver_channel_id}>\n" if deliver_channel_id else "")
+                + (f"Instructions: {instructions[:200] or '(none)'}" if not is_script else ""),
+                ephemeral=True,
+            )
+
+        elif action == "remove":
+            job_id = args.strip()
+            if not job_id:
+                await interaction.followup.send(
+                    "❌ Usage: `/recurring remove <job_id>`",
+                    ephemeral=True,
+                )
+                return
+            if remove_job(job_id):
+                await interaction.followup.send(
+                    f"🗑️ Removed recurring job `{job_id}`.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Job `{job_id}` not found.",
+                    ephemeral=True,
+                )
+
+        elif action in ("enable", "disable"):
+            job_id = args.strip()
+            if not job_id:
+                await interaction.followup.send(
+                    f"❌ Usage: `/recurring {action} <job_id>`",
+                    ephemeral=True,
+                )
+                return
+            enabled = action == "enable"
+            if update_job(job_id, {"enabled": enabled}):
+                emoji = "✅" if enabled else "⏸️"
+                await interaction.followup.send(
+                    f"{emoji} Job `{job_id}` {'enabled' if enabled else 'disabled'}.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Job `{job_id}` not found.",
+                    ephemeral=True,
+                )
+
+        elif action == "info":
+            job_id = args.strip()
+            if not job_id:
+                await interaction.followup.send(
+                    "❌ Usage: `/recurring info <job_id>`",
+                    ephemeral=True,
+                )
+                return
+            job = get_job(job_id)
+            if not job:
+                await interaction.followup.send(
+                    f"❌ Job `{job_id}` not found.",
+                    ephemeral=True,
+                )
+                return
+            import datetime
+            created = datetime.datetime.fromtimestamp(
+                job.get("created_at", 0)
+            ).strftime("%Y-%m-%d %H:%M")
+            last_run = (
+                datetime.datetime.fromtimestamp(
+                    job.get("last_enqueued_at", 0)
+                ).strftime("%Y-%m-%d %H:%M")
+                if job.get("last_enqueued_at", 0) > 0
+                else "never"
+            )
+            mode = "⚡ Script (no inference)" if job.get("no_agent") else "🤖 Agent"
+            info = (
+                f"📋 **{job.get('name', 'unnamed')}** (`{job_id}`)\n"
+                f"**Mode:** {mode}\n"
+                f"**Schedule:** {job.get('schedule', '?')}\n"
+                f"**Enabled:** {job.get('enabled', True)}\n"
+                f"**Created:** {created}\n"
+                f"**Last run:** {last_run}\n"
+                f"**Runs:** {job.get('enqueue_count', 0)} | "
+                f"**Errors:** {job.get('error_count', 0)}\n"
+            )
+            if job.get("no_agent"):
+                info += f"**Script:** `{job.get('script', '?')}`\n"
+                dc = job.get("deliver_channel_id")
+                if dc:
+                    info += f"**Deliver to:** <#{dc}>\n"
+            else:
+                info += f"**Instructions:**\n{job.get('instructions', '(none)')[:500]}"
+            await interaction.followup.send(info, ephemeral=True)
+
+        else:
+            await interaction.followup.send(
+                "❌ Unknown action. Use: `add`, `list`, `remove`, "
+                "`enable`, `disable`, `info`",
+                ephemeral=True,
+            )
+
     # ------------------------------------------------------------------
     # Thread creation helpers
     # ------------------------------------------------------------------
-
     async def _handle_thread_create_slash(
         self,
         interaction: discord.Interaction,
@@ -3207,6 +3971,72 @@ class DiscordAdapter(BasePlatformAdapter):
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
         from gateway.platforms.base import resolve_channel_prompt
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
+
+    async def _fetch_phone_thread_context(self, thread_id: str) -> str | None:
+        """Fetch phone caller context from the Vapi bridge for a phone thread.
+        Returns a formatted context string, or None if this isn't a phone thread."""
+        import aiohttp
+        bridge_url = f"http://127.0.0.1:8742/phone-context/{thread_id}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(bridge_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+                    if not data.get("found"):
+                        return None
+        except Exception:
+            return None
+
+        # Build context prompt
+        lines = [
+            "## Phone Call Thread Context",
+            f"This Discord thread is linked to phone number: {data.get('phone_display', data.get('phone', 'Unknown'))}",
+        ]
+
+        contact = data.get("contact")
+        if contact:
+            lines.append(f"**Contact:** {contact.get('name', 'Unknown')} (HubSpot ID: {contact.get('id', '')})")
+            if contact.get("email"):
+                lines.append(f"**Email:** {contact['email']}")
+            if contact.get("company"):
+                lines.append(f"**Company:** {contact['company']}")
+
+        appointments = data.get("appointments", [])
+        if appointments:
+            lines.append("\n**Appointments:**")
+            for appt in appointments:
+                lines.append(f"- {appt.get('summary', 'Untitled')} — {appt.get('status', '?')} — {appt.get('primary_start', '?')}")
+                if appt.get("location"):
+                    lines.append(f"  Location: {appt['location']}")
+
+        notes = data.get("notes", [])
+        if notes:
+            lines.append("\n**Customer Notes:**")
+            for note in notes:
+                lines.append(f"- {note}")
+
+        recent_calls = data.get("recent_calls", [])
+        if recent_calls:
+            lines.append(f"\n**Call Log ({len(recent_calls)} recent calls):**")
+            for call in recent_calls:
+                formatted = call.get("formatted_time", call.get("timestamp", "?"))
+                duration = call.get("duration", 0)
+                ended = call.get("ended_reason", "")
+                tools = call.get("tool_count", 0)
+                booked = " ✅ appt booked" if call.get("appt_booked") else ""
+                services = call.get("services", [])
+                svc_str = f" — services: {', '.join(services)}" if services else ""
+                lines.append(f"- **{formatted}** — {ended} — {duration}s — {tools} tools{booked}{svc_str}")
+
+        lines.append("\nYou can use this context to help Brad manage this caller's account, appointments, and history.")
+        lines.append("\n**Appointment Confirmation:**")
+        lines.append("When Brad confirms an appointment slot (primary or fallback), call the bridge API:")
+        lines.append("```")
+        lines.append(f"curl -X POST http://127.0.0.1:8742/confirm-appointment -H 'Content-Type: application/json' -d '{{\"choice\": \"primary\", \"thread_id\": \"{thread_id}\"}}'")
+        lines.append("```")
+        lines.append("choice: 'primary' (R1) or 'fallback' (R2). This deletes the non-chosen calendar event, renames the confirmed one, updates HubSpot deal to closedwon, and marks the appointment confirmed.")
+        return "\n".join(lines)
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
@@ -3410,7 +4240,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name="Reason", value=description[:1024] if len(description) > 1024 else description, inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -3982,6 +4812,14 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+
+        # ── Phone thread context injection ──
+        # If this is a phone call thread (created by Vapi bridge), fetch caller
+        # context so the agent has full info about this caller.
+        if is_thread and thread_id and not _channel_prompt:
+            _phone_ctx = await self._fetch_phone_thread_context(thread_id)
+            if _phone_ctx:
+                _channel_prompt = _phone_ctx
 
         reply_to_id = None
         reply_to_text = None

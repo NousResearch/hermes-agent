@@ -61,6 +61,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     throw new Error('--manifest-url, --platform, --arch and --out are required')
   }
   console.log(await stageBundleInputs({ manifestUrl: values['manifest-url'], platform: values.platform, arch: values.arch, out: values.out,
-    expectedCommit: process.env.GITHUB_ACTIONS === 'true' ? process.env.GITHUB_SHA : undefined,
+    expectedCommit: process.env.GITHUB_ACTIONS === 'true' ? (process.env.HERMES_TESTED_COMMIT || process.env.GITHUB_SHA) : undefined,
     manifestSha256: process.env.BUNDLE_MANIFEST_SHA256 || undefined }))
 }

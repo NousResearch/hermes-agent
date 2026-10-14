@@ -2406,6 +2406,7 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -2434,6 +2435,7 @@ jobs:
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}

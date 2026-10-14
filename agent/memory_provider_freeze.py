@@ -11,7 +11,7 @@ from agent import memory_provider as _provider
 _UNSUPPORTED = object()
 
 
-def _freeze_scalar(value: Any, budget: List[int]) -> Any:
+def _freeze_scalar(value: Any, budget: list[int]) -> Any:
     if value is None or type(value) in (bool, int):
         _provider._account_encoded_bytes(budget, _provider._encoded_json_scalar_size(value))
         return value
@@ -35,7 +35,7 @@ def _freeze_scalar(value: Any, budget: List[int]) -> Any:
 
 
 def _freeze_mapping(
-    value: dict, *, depth: int, budget: List[int], operation_budget: Optional[List[int]]
+    value: dict, *, depth: int, budget: list[int], operation_budget: Optional[list[int]]
 ) -> Any:
     item_count = dict.__len__(value)
     if item_count > _provider.MAX_MEMORY_OBSERVATION_ITEMS:
@@ -63,7 +63,7 @@ def _freeze_mapping(
 
 
 def _freeze_sequence(
-    value: list | tuple, *, depth: int, budget: List[int], operation_budget: Optional[List[int]]
+    value: list | tuple, *, depth: int, budget: list[int], operation_budget: Optional[list[int]]
 ) -> tuple:
     item_count = list.__len__(value) if isinstance(value, list) else tuple.__len__(value)
     if item_count > _provider.MAX_MEMORY_OBSERVATION_ITEMS:
@@ -93,8 +93,8 @@ def _freeze_json_value(
     value: Any,
     *,
     depth: int = 0,
-    budget: Optional[List[int]] = None,
-    operation_budget: Optional[List[int]] = None,
+    budget: Optional[list[int]] = None,
+    operation_budget: Optional[list[int]] = None,
 ) -> Any:
     """Validate and recursively freeze one JSON-safe observation value.
 

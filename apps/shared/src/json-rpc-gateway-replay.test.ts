@@ -166,6 +166,95 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it('bounds stale replay cursors while preserving a recent active gap', async () => {
+    const replayWatermarkCap = 64
+    const observedCount = replayWatermarkCap + 8
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', event => seen.push(event.seq!))
+
+    const first = client.connect('ws://x')
+    let sock = sockets[0]
+    sock.open()
+    await first
+
+    for (let index = 0; index < observedCount; index += 1) {
+      sock.serverFrame({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: { type: 'message.delta', session_id: `session-${index}`, seq: 1 }
+      })
+    }
+
+    const activeSession = `session-${observedCount - 1}`
+    const closedSession = `session-${observedCount - 2}`
+    const goneSession = `session-${observedCount - 3}`
+    const evictedSession = `session-${observedCount - 4}`
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: activeSession, seq: 4 }
+    })
+
+    // Every authoritative end shape retires its cursor: successful close,
+    // session-not-found from a scoped RPC, and backend reclamation.
+    const close = client.request<{ closed: boolean }>('session.close', { session_id: closedSession })
+    let request = sock.lastRequest()
+    sock.serverFrame({ jsonrpc: '2.0', id: request.id, result: { closed: true } })
+    await close
+
+    const gone = client.request('session.status', { session_id: goneSession })
+    request = sock.lastRequest()
+    sock.serverFrame({ jsonrpc: '2.0', id: request.id, error: { code: 4001, message: 'session not found' } })
+    await expect(gone).rejects.toMatchObject({ code: 4001 })
+
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: {
+        type: 'session.reclaimed',
+        payload: { session_id: evictedSession, stored_session_id: evictedSession, reason: 'lru_evict' }
+      }
+    })
+
+    expect(client.getSeqWatermarks()).not.toHaveProperty(closedSession)
+    expect(client.getSeqWatermarks()).not.toHaveProperty(goneSession)
+    expect(client.getSeqWatermarks()).not.toHaveProperty(evictedSession)
+
+    seen.length = 0
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[1]
+    sock.open()
+    await second
+
+    const replayRequests = sock.sent
+      .map(text => JSON.parse(text) as { id: string; method: string; params: Record<string, unknown> })
+      .filter(frame => frame.method === 'session.events.since')
+
+    expect(replayRequests.length).toBeLessThanOrEqual(replayWatermarkCap)
+    expect(replayRequests.some(frame => frame.params.session_id === closedSession)).toBe(false)
+    expect(replayRequests.some(frame => frame.params.session_id === goneSession)).toBe(false)
+    expect(replayRequests.some(frame => frame.params.session_id === evictedSession)).toBe(false)
+
+    const activeReplay = replayRequests.find(frame => frame.params.session_id === activeSession)
+    expect(activeReplay?.params).toEqual({ session_id: activeSession, last_seen: 4 })
+    sock.serverFrame({
+      jsonrpc: '2.0',
+      id: activeReplay!.id,
+      result: {
+        events: [{ type: 'message.delta', session_id: activeSession, seq: 5 }],
+        latest_seq: 5,
+        truncated: false,
+        count: 1
+      }
+    })
+
+    await vi.waitFor(() => expect(seen).toEqual([5]))
+    expect(client.getSeqWatermarks()[activeSession]).toBe(5)
+    client.close()
+  })
+
   it('replayed seqs advance watermarks but never regress them', async () => {
     const client = makeClient()
     const first = client.connect('ws://x')

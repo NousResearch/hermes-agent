@@ -11,18 +11,10 @@ name: Bootstrap installer build
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: Commit, branch or tag to build
+      commit:
+        description: Full 40-character commit SHA already merged to the default branch
         required: true
-        default: main
-      pin_branch:
-        description: Branch the installer follows at install time (HERMES_BUILD_PIN_BRANCH)
-        required: true
-        default: main
-      pin_commit:
-        description: Optional commit pin baked in instead (HERMES_BUILD_PIN_COMMIT)
-        required: false
-        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -33,22 +25,70 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HERMES_BUILD_PIN_BRANCH: ${{ inputs.pin_branch }}
-  HERMES_BUILD_PIN_COMMIT: ${{ inputs.pin_commit }}
   CARGO_INCREMENTAL: '0'
   SCCACHE_DISABLE: '1'
 
 jobs:
+  admit:
+    name: Admit trusted source commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.admission.outputs.commit }}
+    steps:
+      # Admission runs only from the default-branch controller. The requested
+      # source is not checked out or executed until its immutable identity has
+      # been validated against the freshly fetched protected branch.
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an exact commit already on the default branch
+        id: admission
+        shell: bash
+        env:
+          BUILD_COMMIT: ${{ inputs.commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/heads/$DEFAULT_BRANCH"
+          expected_workflow="$GITHUB_REPOSITORY/.github/workflows/bootstrap-installer-build.yml@$expected_ref"
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "$expected_ref" ] || [ "$GITHUB_WORKFLOW_REF" != "$expected_workflow" ]; then
+            echo '::error::bootstrap signing requires the repository default-branch dispatch workflow'
+            exit 1
+          fi
+          if ! [[ "$BUILD_COMMIT" =~ ^[a-f0-9]{40}$ ]]; then
+            echo '::error::bootstrap signing requires an exact full 40-character commit SHA'
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          resolved="$(git rev-parse --verify --end-of-options "${BUILD_COMMIT}^{commit}")"
+          if [ "$resolved" != "$BUILD_COMMIT" ]; then
+            echo '::error::bootstrap signing commit did not resolve to its exact supplied identity'
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$BUILD_COMMIT" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::bootstrap signing commit is not on origin/$DEFAULT_BRANCH"
+            exit 1
+          fi
+          printf 'commit=%s\n' "$BUILD_COMMIT" >> "$GITHUB_OUTPUT"
+
   windows-x64:
     name: Hermes-Setup.exe (windows x64, signed)
+    needs: admit
     runs-on: windows-latest
     environment: release-signing
     timeout-minutes: 90
+    env:
+      HERMES_BUILD_PIN_COMMIT: ${{ needs.admit.outputs.commit }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
+          ref: ${{ needs.admit.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
@@ -151,14 +191,18 @@ jobs:
 
   macos-arm64:
     name: Hermes-Setup.dmg (macos arm64, signed + notarized)
+    needs: admit
     runs-on: macos-latest
     environment: release-signing
     timeout-minutes: 90
+    env:
+      HERMES_BUILD_PIN_COMMIT: ${{ needs.admit.outputs.commit }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
+          ref: ${{ needs.admit.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:

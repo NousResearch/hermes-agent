@@ -1,5 +1,10 @@
 use std::process::Command;
 
+#[path = "src/commit_sha.rs"]
+mod commit_sha;
+
+use commit_sha::is_full_commit_sha;
+
 fn main() {
     // -----------------------------------------------------------------
     // Bake the install.ps1 pin into the binary at compile time.
@@ -15,9 +20,9 @@ fn main() {
     // immutable commit pin for reproducible/release installers.
     //
     // Commit pin resolution:
-    //   - HERMES_BUILD_PIN_COMMIT, if set and non-empty. Accepts a SHA, tag,
-    //     or branch name; resolved to an immutable SHA via `git rev-parse`
-    //     when possible, else used verbatim if it already looks like a SHA.
+    //   - HERMES_BUILD_PIN_COMMIT, if set and non-empty. A tag or branch is
+    //     resolved at build time, but only an exact lowercase 40-character
+    //     commit SHA is ever embedded in the installer.
     //   - Otherwise: NO commit pin (branch-follow is the default).
     //
     // Branch pin resolution:
@@ -119,28 +124,22 @@ fn resolve_commit_pin() -> Option<String> {
         if out.status.success() {
             if let Ok(s) = String::from_utf8(out.stdout) {
                 let s = s.trim().to_string();
-                if !s.is_empty() {
+                if is_full_commit_sha(&s) {
                     return Some(s);
                 }
             }
         }
     }
     // Couldn't resolve via git (e.g. building outside a checkout). Accept the
-    // literal value only if it already looks like a SHA; otherwise fail loud
-    // rather than bake an unresolvable ref into the binary.
-    if is_sha(requested) {
+    // literal value only if it is already a full content-addressed identity;
+    // abbreviated SHAs are not stable installer provenance.
+    if is_full_commit_sha(requested) {
         return Some(requested.to_string());
     }
     panic!(
         "HERMES_BUILD_PIN_COMMIT={requested:?} could not be resolved to a commit \
-         (git rev-parse failed and it is not a valid SHA)"
+         (git rev-parse failed or did not produce an exact lowercase 40-character SHA)"
     );
-}
-
-/// True if `s` looks like an abbreviated-or-full git SHA (7..=40 hex chars).
-fn is_sha(s: &str) -> bool {
-    let len = s.len();
-    (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn resolve_branch_pin() -> Option<String> {

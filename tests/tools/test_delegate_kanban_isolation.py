@@ -376,7 +376,7 @@ def test_unavailable_delegation_context_direct_fence_refuses_an_owned_worker(mon
     Negative control: restore the ``owned = os.environ.get("HERMES_KANBAN_TASK")``
     allow-branch and this test goes red (nothing is raised).
     """
-    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    _kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from tools import kanban_tools
 
     # Dispatcher-owned worker environment: HERMES_KANBAN_TASK is set by the helper.
@@ -446,7 +446,7 @@ def test_unavailable_delegation_context_fence_refuses_when_the_process_owns_no_t
     """
     import logging
 
-    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    _kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from tools import kanban_tools
 
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

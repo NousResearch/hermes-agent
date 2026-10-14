@@ -35,6 +35,8 @@ from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
+from hermes_cli.cli_session_switch import (
+    _end_current_session, _open_switched_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -175,52 +177,7 @@ def _cron_api(**kwargs) -> dict:
     return json.loads(cronjob_tool(**kwargs))
 
 
-# Session-switch plumbing shared by /resume and /branch.
-def _end_current_session(cli, reason: str) -> None:
-    """Flush un-persisted messages, then end the current session row with ``reason``.
-    Best-effort on both steps (the switch proceeds even if the DB write fails)."""
-    if cli.agent:
-        with suppress(Exception):
-            cli.agent._flush_messages_to_session_db(
-                cli.conversation_history, conversation_history=cli.conversation_history)
-    with suppress(Exception):
-        cli._session_db.end_session(cli.session_id, reason)
-
-
-def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
-    """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
-    per-session state, re-anchor the DB flush index, and notify memory providers with
-    reset=False (their state stays valid and just targets the new id; parent keeps lineage)."""
-    if not cli.agent:
-        return
-    cli.agent.session_id = session_id
-    cli.agent.reset_session_state()
-    if hasattr(cli.agent, "_last_flushed_db_idx"):
-        cli.agent._last_flushed_db_idx = len(cli.conversation_history)
-    if hasattr(cli.agent, "_todo_store"):
-        with suppress(Exception):
-            from tools.todo_tool import TodoStore
-            cli.agent._todo_store = TodoStore()
-    if hasattr(cli.agent, "_invalidate_system_prompt"):
-        cli.agent._invalidate_system_prompt()
-    with suppress(Exception):
-        _mm = getattr(cli.agent, "_memory_manager", None)
-        # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals
-        # providers to flush accumulated per-session state (_session_turns, _turn_counter, _document_id).
-        # Fires BEFORE the plugin on_session_reset hook (shell hooks only see the new id; Python providers
-        # see the transition). See #6672. When the old session has history, end-of-session extraction
-        # (LLM-bound, seconds) and this switch are queued as ONE task on the memory manager's serialized
-        # worker — end strictly before switch, without blocking /new (#16454). With no history there is
-        # nothing to extract; switch inline as before.
-        # Notify memory providers that session_id rotated to a resumed session. reset=False — the provider's
-        # accumulated state is still valid; it just needs to target the new session_id for subsequent
-        # writes. See #6672.
-        # Notify memory providers that session_id forked to a new branch. reset=False — the branched session
-        # carries the transcript forward, so provider state tracks the lineage. parent_session_id links the
-        # branch back to the original. See #6672.
-        if _mm is not None:
-            _mm.on_session_switch(
-                session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)
+# Session-switch plumbing (end, open, repoint) lives in ``hermes_cli/cli_session_switch.py``.
 
 
 def _without_session_meta(messages) -> list:
@@ -926,7 +883,16 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(f"  {kanban_refusal}")
         read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
         if target_id == self.session_id:
+            # Already on it: a launch whose attach was refused lands here without a subscription,
+            # so open it before reporting.
+            if (refusal := _open_switched_session(self, target_id)):
+                return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
             return _cp(f"  {_t('resume.already_on')}")
+        # A switched-to session must be subscribed on this viewer before its first turn
+        # (``_open_switched_session``): the write side is the gateway's, and /resume can land
+        # before any agent exists.
+        if (refusal := _open_switched_session(self, target_id)):
+            return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
         old_session_id = self.session_id
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None

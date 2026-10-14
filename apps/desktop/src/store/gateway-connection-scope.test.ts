@@ -49,7 +49,8 @@ const {
   openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,
-  setPrimaryGatewayConnectionId
+  setPrimaryGatewayConnectionId,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
 const { setApiRequestConnection } = await import('@/hermes')
@@ -108,27 +109,38 @@ describe('primary gateway registry scope', () => {
     expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
   })
 
-  it('ignores primary connection-id writes while a secondary registry scope is active (#95628 hardening)', async () => {
+  it('records a primary re-dial made while a secondary scope is foregrounded (#95628 keeps ambient routing)', async () => {
     setPrimaryGateway({ connectionState: 'open' } as never, 'default')
     setPrimaryGatewayConnectionId('primary-vps')
 
     // Foreground Gateway B's composite scope (connectionId 'homelab').
     await expect(ensureGatewayForAgent('homelab', 'default')).resolves.toBe(true)
+    vi.mocked(setApiRequestConnection).mockClear()
 
-    // Presentation-layer write while the secondary is foregrounded: the id
-    // describes the secondary, not the primary. It must be dropped — accepting
-    // it relabels the primary socket and poisons ambient routing.
-    setPrimaryGatewayConnectionId('homelab')
+    // A connection apply re-dials the PRIMARY socket to another machine while
+    // the secondary stays in front. Ambient requests still belong to the
+    // secondary, but the primary must stop claiming the machine it left —
+    // owner routing to 'primary-vps' would otherwise land on 'local'.
+    setPrimaryGatewayConnectionId('local')
+    expect(setApiRequestConnection).not.toHaveBeenCalled()
 
-    // Back on the primary route, its registry identity is intact.
     await ensureGatewayForProfile('default')
 
-    expect(activeGatewayConnectionId()).toBe('primary-vps')
-    expect(setApiRequestConnection).toHaveBeenLastCalledWith('primary-vps')
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect(setApiRequestConnection).toHaveBeenLastCalledWith('local')
   })
 })
 
 describe('pruneSecondaryGateways with registry-scoped entries', () => {
+  // The min-lifetime grace (#94769) spares a freshly opened idle socket for
+  // one prune tick, so reclamation assertions age the socket past the grace
+  // window first; spare assertions are unaffected by aging.
+  const pruneAged = (keep?: Set<string>) => {
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
+    pruneSecondaryGateways(keep ?? new Set())
+    vi.useRealTimers()
+  }
+
   it('keeps the previous source socket open when Sessions switches backends', async () => {
     await ensureGatewayForAgent('work', 'default')
     await ensureGatewayForAgent('homelab', 'default')
@@ -144,7 +156,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     // LOCAL source has live work; that must not pin homelab's socket.
     await openGatewayForAgent('homelab', 'default')
 
-    pruneSecondaryGateways(new Set(['default']))
+    pruneAged(new Set(['default']))
 
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=default'])
   })
@@ -172,11 +184,11 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
   it('still keeps a local (profile-keyed) secondary via its bare profile name', async () => {
     await openGatewayForAgent(null, 'research')
 
-    pruneSecondaryGateways(new Set(['research']))
+    pruneAged(new Set(['research']))
 
     expect(gatewayMocks.closed).toEqual([])
 
-    pruneSecondaryGateways(new Set())
+    pruneAged()
 
     expect(gatewayMocks.closed).toHaveLength(1)
   })
@@ -189,7 +201,7 @@ describe('pruneSecondaryGateways with registry-scoped entries', () => {
     await openGatewayForAgent(null, 'default')
     await openGatewayForAgent('homelab', 'default')
 
-    pruneSecondaryGateways(new Set(['conn:homelab::default']))
+    pruneAged(new Set(['conn:homelab::default']))
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?token=t'])
   })

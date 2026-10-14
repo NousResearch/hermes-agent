@@ -173,8 +173,6 @@ describe('insertion', () => {
   })
 })
 
-// #89884: the composer used to be a single-line Input whose form submitted on
-// every Enter, so multi-line room prompts were impossible.
 describe('keyboard (#89884)', () => {
   it('submits on Enter and leaves Shift+Enter to the textarea', async () => {
     const { input, onSubmitDraft } = await mount('a room prompt')
@@ -209,5 +207,42 @@ describe('keyboard (#89884)', () => {
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
 
     expect(onSubmitDraft).not.toHaveBeenCalled()
+  })
+})
+
+// #91706: a command approval in a room could be SELECTED but never sent — the
+// footer "Respond" button sat off-screen or under an overflowing code block.
+// Approvals are a closed choice set, so the click itself is the answer.
+describe('approval card (#91706)', () => {
+  const entry = {
+    at: 1,
+    choices: ['once', 'session', 'always', 'deny'],
+    command: 'rm -rf /tmp/scratch',
+    group: 'Core',
+    kind: 'approval' as const,
+    member: 'alpha',
+    memberKey: 'alpha',
+    multiSelect: false,
+    question: '',
+    requestId: 'req-1',
+    sessionId: 'sid-1',
+    thread: 't1'
+  }
+
+  it('submits the clicked choice at once, with no second Respond click', async () => {
+    const answer = vi.fn(async () => undefined)
+    vi.doMock('./group-turns', () => ({ answerGroupClarify: answer }))
+    vi.doMock('./group-chat', () => ({ appendGroupChatEntry: vi.fn() }))
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(<GroupClarifyCard entry={entry} members={MEMBERS} />)
+
+    expect(screen.queryByRole('button', { name: 'Respond' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    // A second click while the first is in flight must not double-submit.
+    fireEvent.click(screen.getByRole('button', { name: 'session' }))
+
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
+    expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'once')
   })
 })

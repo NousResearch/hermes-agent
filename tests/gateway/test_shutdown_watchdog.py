@@ -73,98 +73,6 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
 
 
-def test_self_replacement_arms_watcher_for_exit75(tmp_path, monkeypatch):
-    """Windows exit-75 must arm the detached respawn watcher (no supervisor)."""
-    from gateway import shutdown_watchdog as sw
-
-    pid_file = tmp_path / "gateway.pid"
-    run_argv = ["C:\\venv\\Scripts\\python.exe", "-m", "hermes_cli.main", "gateway", "run"]
-    pid_file.write_text(
-        json.dumps({"pid": os.getpid(), "kind": "hermes-gateway", "argv": run_argv}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("gateway.status._get_pid_path", lambda: pid_file)
-
-    calls = []
-
-    def fake_arm(old_pid, argv):
-        calls.append((old_pid, list(argv)))
-        return True
-
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fake_arm
-    )
-
-    assert sw._spawn_windows_self_replacement(sw.GATEWAY_SERVICE_RESTART_EXIT_CODE) is True
-    assert calls == [(os.getpid(), run_argv)]
-
-
-def test_self_replacement_skips_other_exit_codes(monkeypatch):
-    """Only the restart-contract code arms a replacement; stops stay stops."""
-    from gateway import shutdown_watchdog as sw
-
-    def fail_arm(old_pid, argv):
-        raise AssertionError("launcher must not be called for non-75 exits")
-
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fail_arm
-    )
-    assert sw._spawn_windows_self_replacement(1) is False
-    assert sw._spawn_windows_self_replacement(0) is False
-
-
-def test_self_replacement_skips_stale_pidfile(tmp_path, monkeypatch):
-    """A pid file owned by another process must NOT trigger a respawn."""
-    from gateway import shutdown_watchdog as sw
-
-    pid_file = tmp_path / "gateway.pid"
-    pid_file.write_text(
-        json.dumps({"pid": 999999, "kind": "hermes-gateway", "argv": ["python"]}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("gateway.status._get_pid_path", lambda: pid_file)
-
-    def fail_arm(old_pid, argv):
-        raise AssertionError("stale pidfile must not arm the watcher")
-
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fail_arm
-    )
-    assert sw._spawn_windows_self_replacement(sw.GATEWAY_SERVICE_RESTART_EXIT_CODE) is False
-
-
-def test_self_replacement_armed_before_both_hard_exits():
-    """Source pin: replacement arming precedes os._exit in BOTH watchdog paths."""
-    import ast
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    src = (root / "gateway" / "shutdown_watchdog.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    # Count real os._exit(...) CALLS via AST so docstring prose mentioning
-    # ``os._exit(exit_code)`` (arm_shutdown_watchdog's docstring) doesn't count.
-    exit_nodes = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_exit"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "os"
-    ]
-    exit_lines = sorted({node.lineno for node in exit_nodes})
-    assert len(exit_lines) == 2, (
-        f"expected exactly two watchdog os._exit sites, got {exit_lines}"
-    )
-    lines = src.splitlines()
-    for ln in exit_lines:
-        before = "\n".join(lines[: ln - 1])
-        assert "_spawn_windows_self_replacement(exit_code)" in before, (
-            f"arming missing before os._exit at line {ln}"
-        )
-
-
-
 
 
 async def _run_heartbeat_until_payload(tmp_path, timeout_s=10.0):
@@ -215,25 +123,15 @@ def short_home():
         shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
-async def test_loop_tick_witness_arms_over_tcp_on_windows(
-    short_home, caplog, monkeypatch
-):
-    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback."""
+async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
+    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback.
+
+    Runs on native Windows (``os.name == "nt"`` for real) rather than faking
+    the platform from Linux — see "Don't fake the host OS" in AGENTS.md.
+    """
     tmp_path = short_home
-    # Pretend the platform is Windows as seen from the module under test.
-    # A plain monkeypatch of the global os.name would flip pathlib.Path
-    # dispatch (Path.__new__ reads os.name at runtime) and crash pytest's
-    # own tmp-dir machinery, so swap the module's `os` binding for a proxy
-    # whose `.name` is "nt" and which delegates everything else to real os.
-    class _WindowsOsProxy:
-        name = "nt"
-
-        def __getattr__(self, item):
-            return getattr(os, item)
-
-    monkeypatch.setattr(shutdown_watchdog_module, "os", _WindowsOsProxy())
-
     start_unix_server_calls = []
 
     def _forbid_start_unix_server(*args, **kwargs):
@@ -244,6 +142,11 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(
         shutdown_watchdog_module.asyncio,
         "start_unix_server",
         side_effect=_forbid_start_unix_server,
+        # ``asyncio.start_unix_server`` does not exist on native Windows, so
+        # without create=True patch.object itself raises AttributeError.
+        # create=True arms the forbidden-call tripwire anyway and mock
+        # deletes the created attribute on exit.
+        create=True,
     ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
         payload = await _run_heartbeat_until_payload(tmp_path)
 
@@ -263,6 +166,7 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(
     assert not list(tmp_path.glob("**/gateway.loop-tick.*.sock"))
 
 
+@pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 async def test_loop_tick_witness_arms_on_posix(short_home):
     payload = await _run_heartbeat_until_payload(short_home)

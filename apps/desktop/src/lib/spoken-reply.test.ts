@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   absorbSpokenReplyRewrite,
+  adoptSpokenReplySession,
   assistantReplyOrdinal,
   clearSpokenRepliesForTests,
   isLiveTailReplyId,
@@ -59,6 +60,29 @@ describe('absorbSpokenReplyRewrite', () => {
     expect(absorbSpokenReplyRewrite(spoken, after)).toEqual(spoken)
   })
 
+  it('follows a live-tail rewrite when tool rows change the assistant ordinal', () => {
+    const before = [user('u1'), assistant('narration'), assistant('tool-segment'), assistant('assistant-stream-s')]
+
+    markAssistantIdSpoken('s', before, 'assistant-stream-s')
+
+    // Hydration folds the tool segments into one bubble. The assistant ordinal
+    // moves; the user turn does not.
+    const after = [user('u1'), assistant('42')]
+
+    expect(resolveSpokenReply('s', after)?.id).toBe('42')
+    expect(spokenReplyOf('s')?.id).toBe('42')
+  })
+
+  it('does not mark a later user turn spoken when the live tail vanished', () => {
+    markAssistantIdSpoken('s', [user('u1'), assistant('assistant-stream-s')], 'assistant-stream-s')
+
+    const after = [user('u1'), assistant('durable-1'), user('u2'), assistant('assistant-stream-next')]
+    const spoken = resolveSpokenReply('s', after)
+
+    expect(spoken?.id).not.toBe('assistant-stream-next')
+    expect(after.findLast(message => message.role === 'assistant')?.id).not.toBe(spoken?.id)
+  })
+
   it('keeps the anchor when the spoken id is still in the list', () => {
     const spoken = { id: 'assistant-stream-s', ordinal: 0 }
     const messages = [assistant('assistant-stream-s')]
@@ -88,5 +112,32 @@ describe('resolveSpokenReply', () => {
     expect(spoken?.id).toBe('durable-1')
     expect(assistantReplyOrdinal(nextTurn, 'assistant-stream-2')).toBe(1)
     expect(spoken?.ordinal).toBe(0)
+  })
+})
+
+describe('adoptSpokenReplySession', () => {
+  it('moves the null-session anchor onto the created session id', () => {
+    markAssistantIdSpoken(null, [assistant('a1')], 'a1')
+    adoptSpokenReplySession(null, 'session-created')
+
+    expect(spokenReplyOf('session-created')?.id).toBe('a1')
+    // Moved, not copied: the next new chat (null session again) starts clean.
+    expect(spokenReplyOf(null)).toBeNull()
+  })
+
+  it('does not overwrite an anchor the created session already has', () => {
+    markAssistantIdSpoken(null, [assistant('a1')], 'a1')
+    markAssistantIdSpoken('session-created', [assistant('a1'), assistant('a2')], 'a2')
+    adoptSpokenReplySession(null, 'session-created')
+
+    expect(spokenReplyOf('session-created')?.id).toBe('a2')
+  })
+
+  it('does not leak a spoken anchor from one real session into another', () => {
+    markAssistantIdSpoken('session-a', [assistant('a1')], 'a1')
+    adoptSpokenReplySession('session-a', 'session-b')
+
+    expect(spokenReplyOf('session-b')).toBeNull()
+    expect(spokenReplyOf('session-a')?.id).toBe('a1')
   })
 })

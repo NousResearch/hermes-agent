@@ -1,0 +1,185 @@
+{
+  "description": "Create, update, or delete skills — your procedural memory for recurring task types. The call is an operations array (a single edit is a list of one); it applies atomically — any failure rolls every touched skill back. Ops: create (full SKILL.md; lands in the profile's skills directory or configured skills.create_dir; must precede that skill's other ops), patch (targeted old_string/new_string fix — preferred; content alone REPLACES the whole file, read it via skill_view() first), write_file/remove_file (supporting files), delete (sole op only). Existing skills are modified wherever they live. Keep the description's first 57 chars a self-contained trigger: 'Use when <trigger>. <one-line behavior>.' Write lessons, not logs: imperative rule + why, no PR numbers/dates/incident narration, one rule per lesson, references/ named by topic (extend before adding). skill_view() shows format conventions.",
+  "name": "skill_manage",
+  "parameters": {
+    "properties": {
+      "operations": {
+        "description": "Ordered ops; each names its target skill (lowercase, hyphens/underscores, max 64 chars). Each action is its own shape; another action's text slot is invalid.",
+        "items": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "enum": [
+                    "create"
+                  ],
+                  "type": "string"
+                },
+                "category": {
+                  "description": "Optional category subdir (e.g. 'devops').",
+                  "type": "string"
+                },
+                "content": {
+                  "description": "Full SKILL.md text (YAML frontmatter + markdown body).",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "action",
+                "content"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "enum": [
+                    "patch"
+                  ],
+                  "type": "string"
+                },
+                "file_path": {
+                  "description": "Optional supporting file (write_file's shape); default SKILL.md.",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "new_string": {
+                  "description": "Replacement; empty string deletes the match.",
+                  "type": "string"
+                },
+                "old_string": {
+                  "description": "Text to find (same matching semantics as the patch tool).",
+                  "type": "string"
+                },
+                "replace_all": {
+                  "description": "Replace all occurrences (default false).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "action",
+                "old_string",
+                "new_string"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "enum": [
+                    "patch"
+                  ],
+                  "type": "string"
+                },
+                "content": {
+                  "description": "Full SKILL.md rewrite (REPLACES the whole file; last resort).",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "action",
+                "content"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "enum": [
+                    "write_file"
+                  ],
+                  "type": "string"
+                },
+                "file_content": {
+                  "description": "Full text of the supporting file.",
+                  "type": "string"
+                },
+                "file_path": {
+                  "description": "Path RELATIVE to the skill's own directory, e.g. 'references/api.md' — no leading slash, never absolute; first segment references/, templates/, scripts/, or assets/.",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "action",
+                "file_path",
+                "file_content"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "enum": [
+                    "remove_file"
+                  ],
+                  "type": "string"
+                },
+                "file_path": {
+                  "description": "Supporting file (write_file's shape).",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "action",
+                "file_path"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "absorbed_into": {
+                  "description": "Curator consolidation only: umbrella skill that absorbed this one (must exist).",
+                  "type": "string"
+                },
+                "action": {
+                  "enum": [
+                    "delete"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "action"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "operations"
+    ],
+    "type": "object"
+  }
+}

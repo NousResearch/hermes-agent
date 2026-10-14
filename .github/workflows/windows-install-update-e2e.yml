@@ -1,0 +1,135 @@
+name: Windows install + update E2E
+
+# PR-time native Windows install/update journey (tests/e2e/core/windows_update):
+# the real scripts/install.ps1 on a fresh fake user profile (git redirected to a local
+# bare clone, no git/python/uv on PATH), then the real `hermes update` HEAD -> NEXT,
+# a running gateway across that update, and a turn against the loopback provider.
+# Each file walks one journey (one install) and asserts several user-visible cells;
+# tracked bugs are message-gated xfails (tests/e2e/core/_pending_fixes.py).
+#
+# Called from tests-os.yml when a Python PR touches the install/update code
+# (the classifier's e2e_upgrade lane) and on every push to main. Pushes to
+# wine2e-install/** run it alone, for sabotage proofs and iteration without the
+# rest of CI.
+
+on:
+  workflow_call:
+    inputs:
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
+  # An acceptance run of an integrated batch on its own: e.g.
+  # `gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptance=upd-txn`.
+  workflow_dispatch:
+    inputs:
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
+  push:
+    branches: ['wine2e-install/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-install-update-e2e-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-update:
+    name: Windows install.ps1 + hermes update E2E
+    runs-on: windows-latest-32-core
+    # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
+    timeout-minutes: 75
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          # serve.git is a bare clone of this checkout: the installer's treeless clone and
+          # `hermes update` need real history and release tags (version identity), as on GitHub.
+          fetch-depth: 0
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          packages: git,ripgrep
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Run Windows install + update E2E
+        shell: bash
+        run: |
+          scripts/run_tests.sh tests/e2e/core/windows_update/ -- \
+            -m "platforms and integration" -v --tb=short -rA
+        env:
+          HERMES_E2E_WINDOWS_INSTALL: '1'
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
+          # Machine work dirs (serve.git, transcripts) stay short under runner.temp. The fake
+          # user profiles live in C:\Users itself, where a real one does: the checkout carries
+          # 159-character paths, so a deeper profile hits MAX_PATH where no user would (the
+          # runner is disposable, so writing C:\Users is fine).
+          HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
+          HERMES_E2E_PROFILES_ROOT: C:\Users
+          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
+          # One journey per file, all in parallel (each is mostly network + subprocess wait).
+          HERMES_TEST_WORKERS: '6'
+          # test_crash_cells.py runs its whole journey (install, gateway phase, six crash cells)
+          # inside one file: ~2,100 s on a normal runner, past 2,400 s on a slow one.
+          HERMES_TEST_FILE_TIMEOUT: '3600'
+          HERMES_TEST_FILE_RETRIES: '0'
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+
+      - name: Every crash cell ran
+        # run_tests.sh passes a file whose tests were all deselected (pytest exit 5) or skipped,
+        # so a lost marker or opt-in would run zero crash cells green. The crash journey writes
+        # this manifest only when it ran (tests/e2e/core/windows_update/test_crash_cells.py).
+        shell: pwsh
+        env:
+          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
+        run: |
+          $manifest = Join-Path $env:HERMES_E2E_ARTIFACTS 'crash-cells-ran.txt'
+          if (-not (Test-Path -LiteralPath $manifest)) {
+            throw "test_crash_cells.py ran no crash cells: $manifest is missing"
+          }
+          Get-Content -LiteralPath $manifest
+
+      - name: Upload transcripts, logs and receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-install-update-e2e-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/win-update-e2e
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: No leftover Python / Hermes processes
+        # Backstop for each journey's teardown: nothing a machine started may outlive it.
+        if: always()
+        shell: pwsh
+        run: |
+          $names = 'python.exe', 'pythonw.exe', 'hermes.exe', 'node.exe'
+          # Work dirs live under runner.temp\wm; profiles are C:\Users\*hermes-e2e-<id>.
+          $root = "${{ runner.temp }}\wm".ToLower()
+          $profileMark = 'hermes-e2e-'
+          $deadline = (Get-Date).AddSeconds(20)
+          do {
+            $left = @(Get-CimInstance Win32_Process | Where-Object {
+              $blob = "$($_.CommandLine) $($_.ExecutablePath)".ToLower()
+              ($names -contains $_.Name.ToLower()) -and ($blob.Contains($root) -or $blob.Contains($profileMark))
+            })
+            if ($left.Count -eq 0) { 'no leftover processes from the E2E machines'; exit 0 }
+            Start-Sleep -Milliseconds 500
+          } while ((Get-Date) -lt $deadline)
+          foreach ($p in $left) {
+            "::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)"
+          }
+          exit 1

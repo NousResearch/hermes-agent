@@ -1,4 +1,6 @@
 import type { WakeStartResponse, WakeStatusResponse, WakeStopResponse } from '../../../gatewayTypes.js'
+import { t } from '../../../i18n/runtime.js'
+import type { TranslationKey } from '../../../i18n/types.js'
 import { setWakeUserDisabled } from '../../wakeState.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -8,50 +10,58 @@ type WakeSub = (typeof WAKE_SUBCOMMANDS)[number]
 
 const isWakeSub = (value: string): value is WakeSub => (WAKE_SUBCOMMANDS as readonly string[]).includes(value)
 
-// Friendly text for the gateway's wake.start refusal codes. Unknown codes
-// fall through to the raw reason so new server-side codes stay visible.
-const START_REASON_TEXT: Record<string, string> = {
-  disabled: 'disabled (config wake_word.enabled)',
-  disabled_for_surface: 'scoped to another surface (config wake_word.surface)',
-  not_owner: 'another surface owns the listener',
-  owned: 'another surface owns the listener',
-  unavailable: 'unavailable'
+// Friendly text for the gateway's wake.start refusal codes (catalog keys,
+// resolved at reply time so a locale swap is observed). Unknown codes fall
+// through to the raw reason so new server-side codes stay visible.
+const START_REASON_KEY: Record<string, TranslationKey> = {
+  disabled: 'slashCmd.wake.reason.disabled',
+  disabled_for_surface: 'slashCmd.wake.reason.disabledForSurface',
+  not_owner: 'slashCmd.wake.reason.notOwner',
+  owned: 'slashCmd.wake.reason.owned',
+  unavailable: 'slashCmd.wake.reason.unavailable'
 }
 
-const startFailureLine = (r: WakeStartResponse): string => {
-  const reason = r.reason ?? 'unknown'
-  const base = START_REASON_TEXT[reason] ?? reason
-  const owner = r.owner_surface ? ` (owned by ${r.owner_surface})` : ''
-  const hint = r.hint?.trim() ? ` — ${r.hint.trim()}` : ''
+const withHint = (text: string, hint: string | undefined): string =>
+  hint?.trim() ? t('slashCmd.wake.withHint', text, hint.trim()) : text
 
-  return `wake: not started — ${base}${owner}${hint}`
+const startFailureLine = (r: WakeStartResponse): string => {
+  const key = r.reason ? START_REASON_KEY[r.reason] : undefined
+  const base = key ? t(key) : (r.reason ?? t('slashCmd.wake.reason.unknown'))
+  const owner = r.owner_surface ? ` (${t('slashCmd.wake.ownedBy', r.owner_surface)})` : ''
+
+  return withHint(t('slashCmd.wake.notStarted', `${base}${owner}`), r.hint)
+}
+
+/** ` for “phrase” · provider` detail suffix shared by the on/status replies. */
+const detailSuffix = (r: { phrase?: string; provider?: string }): string => {
+  const phrase = r.phrase ? ` ${t('slashCmd.wake.forPhrase', r.phrase)}` : ''
+  const provider = r.provider ? ` · ${r.provider}` : ''
+
+  return `${phrase}${provider}`
 }
 
 const statusLine = (r: WakeStatusResponse): string => {
-  const phrase = r.phrase ? ` for “${r.phrase}”` : ''
-  const provider = r.provider ? ` · ${r.provider}` : ''
+  const details = detailSuffix(r)
 
   if (r.listening) {
-    if (r.audio_silent) {
-      const hint = r.hint?.trim() ? ` — ${r.hint.trim()}` : ''
+    const listening = t('slashCmd.wake.listening', details)
 
-      return `wake: listening${phrase}${provider} · ⚠ mic delivers only silence${hint}`
+    if (r.audio_silent) {
+      return withHint(`${listening} · ${t('slashCmd.wake.micSilent')}`, r.hint)
     }
 
-    return `wake: listening${phrase}${provider}`
+    return listening
   }
 
   if (r.owner_surface && !r.owned_by_caller) {
-    return `wake: off here · listener owned by ${r.owner_surface}${phrase}${provider}`
+    return t('slashCmd.wake.offOwnedBy', r.owner_surface, details)
   }
 
   if (r.available === false) {
-    const hint = r.hint?.trim() ? ` — ${r.hint.trim()}` : ''
-
-    return `wake: unavailable${hint}`
+    return withHint(t('slashCmd.wake.unavailable'), r.hint)
   }
 
-  return `wake: off${phrase}${provider} · /wake on to arm`
+  return t('slashCmd.wake.off', details)
 }
 
 const runOn = (ctx: SlashRunCtx): void => {
@@ -68,11 +78,9 @@ const runOn = (ctx: SlashRunCtx): void => {
           return ctx.transcript.sys(startFailureLine(r))
         }
 
-        const phrase = r.phrase ? ` for “${r.phrase}”` : ''
-        const provider = r.provider ? ` · ${r.provider}` : ''
-        const saved = r.enabled_persisted ? ' · enabled in config' : ''
+        const saved = r.enabled_persisted ? ` · ${t('slashCmd.wake.enabledInConfig')}` : ''
 
-        ctx.transcript.sys(`wake: listening${phrase}${provider}${saved}`)
+        ctx.transcript.sys(t('slashCmd.wake.listening', `${detailSuffix(r)}${saved}`))
       })
     )
     .catch(ctx.guardedErr)
@@ -87,15 +95,16 @@ const runOff = (ctx: SlashRunCtx): void => {
     .rpc<WakeStopResponse>('wake.stop', { persist: true })
     .then(
       ctx.guarded<WakeStopResponse>(r => {
-        const saved = r.disabled_persisted ? ' · disabled in config' : ''
+        const saved = r.disabled_persisted ? ` · ${t('slashCmd.wake.disabledInConfig')}` : ''
 
         if (r.stopped) {
-          return ctx.transcript.sys(`wake: listener off${saved}`)
+          return ctx.transcript.sys(t('slashCmd.wake.listenerOff', saved))
         }
 
-        const reason = r.reason === 'not_owner' ? 'this surface doesn’t own the listener' : (r.reason ?? 'not running')
+        const reason =
+          r.reason === 'not_owner' ? t('slashCmd.wake.notOwnerStop') : (r.reason ?? t('slashCmd.wake.notRunning'))
 
-        ctx.transcript.sys(`wake: nothing to stop — ${reason}${saved}`)
+        ctx.transcript.sys(t('slashCmd.wake.nothingToStop', reason, saved))
       })
     )
     .catch(ctx.guardedErr)
@@ -123,7 +132,7 @@ export const wakeCommands: SlashCommand[] = [
       const sub = arg.trim().toLowerCase()
 
       if (sub && !isWakeSub(sub)) {
-        return ctx.transcript.sys('usage: /wake [on|off|status]')
+        return ctx.transcript.sys(t('slashCmd.wake.usage'))
       }
 
       WAKE_RUNNERS[sub && isWakeSub(sub) ? sub : 'status'](ctx)

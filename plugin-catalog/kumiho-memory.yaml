@@ -1,0 +1,18 @@
+name: kumiho-memory
+repo: https://github.com/KumihoIO/kumiho-plugins
+sha: e032c86f1a733f07eba54173e4a351aa432d68d6
+subdir: hermes
+title: Kumiho Memory
+description: "Recall and save decisions, preferences and facts in your Kumiho Cloud workspace. Portable Agent Plugins v1 package with hosted OAuth MCP and six skills. Disclosure — connects to Kumiho's hosted MCP at https://mcp.kumiho.cloud/mcp (OAuth at control.kumiho.cloud, tokens held by Hermes); memory queries, including an automatic topic lookup near the start of relevant conversations, and approved captures are sent there; the server is marked `trust: untrusted`, so Hermes asks before every tool not annotated read-only. The optional backfill helper reads only files the user names and writes review packets to a new folder; Dream State can create a recurring Hermes cron task when asked (read-only by default). No local server, telemetry or background process."
+maintainer: KumihoIO
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/KumihoIO/kumiho-plugins/tree/e032c86f1a733f07eba54173e4a351aa432d68d6/hermes
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

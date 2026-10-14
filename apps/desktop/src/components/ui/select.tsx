@@ -4,6 +4,13 @@ import * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
+import {
+  menuItemClass,
+  menuItemFocusClass,
+  menuLabelClass,
+  menuMotionClass,
+  menuSurfaceClass
+} from '@/components/ui/menu'
 import { cn } from '@/lib/utils'
 
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
@@ -41,7 +48,9 @@ function SelectValue({ ...props }: React.ComponentProps<typeof SelectPrimitive.V
 function SelectContent({
   className,
   children,
+  collisionPadding = 8,
   position = 'popper',
+  sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
   // Portal into the enclosing dialog (if any) so the dropdown is a DOM
@@ -53,19 +62,23 @@ function SelectContent({
     <SelectPrimitive.Portal container={container}>
       <SelectPrimitive.Content
         className={cn(
-          'relative z-(--z-modal-popover) max-h-72 min-w-32 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=top]:slide-in-from-bottom-2 data-[side=right]:slide-in-from-left-2',
+          menuSurfaceClass,
+          menuMotionClass,
+          'relative z-(--z-modal-popover) max-h-72 min-w-36 overflow-hidden p-0',
           position === 'popper' &&
-            'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
+            'max-h-[min(18rem,var(--radix-select-content-available-height))] origin-(--radix-select-content-transform-origin)',
           className
         )}
+        collisionPadding={position === 'popper' ? collisionPadding : undefined}
         data-slot="select-content"
         position={position}
+        sideOffset={position === 'popper' ? sideOffset : undefined}
         {...props}
       >
         <SelectPrimitive.Viewport
           className={cn(
-            'p-1',
-            position === 'popper' && 'h-(--radix-select-trigger-height) w-full min-w-(--radix-select-trigger-width)'
+            'dt-portal-scrollbar p-1',
+            position === 'popper' && 'w-full min-w-(--radix-select-trigger-width)'
           )}
         >
           {children}
@@ -80,28 +93,24 @@ function SelectGroup({ ...props }: React.ComponentProps<typeof SelectPrimitive.G
 }
 
 function SelectLabel({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Label>) {
-  return (
-    <SelectPrimitive.Label
-      className={cn('px-2 py-1.5 text-[0.65rem] font-medium uppercase tracking-wide text-muted-foreground', className)}
-      data-slot="select-label"
-      {...props}
-    />
-  )
+  return <SelectPrimitive.Label className={cn(menuLabelClass, className)} data-slot="select-label" {...props} />
 }
 
 function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
   return (
     <SelectPrimitive.Item
       className={cn(
-        'relative flex w-full cursor-pointer items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-xs outline-none select-none focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
+        menuItemClass,
+        menuItemFocusClass,
+        'w-full cursor-pointer pr-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
         className
       )}
       data-slot="select-item"
       {...props}
     >
-      <span className="absolute right-2 flex size-3.5 items-center justify-center">
+      <span className="absolute right-2 flex size-3.5 items-center justify-center text-foreground">
         <SelectPrimitive.ItemIndicator>
-          <Codicon name="check" size="1rem" />
+          <Codicon name="check" size="0.75rem" />
         </SelectPrimitive.ItemIndicator>
       </span>
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
@@ -109,4 +118,14 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
   )
 }
 
-export { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue }
+function SelectSeparator({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Separator>) {
+  return (
+    <SelectPrimitive.Separator
+      className={cn('-mx-1 my-1 h-px bg-(--ui-stroke-tertiary)', className)}
+      data-slot="select-separator"
+      {...props}
+    />
+  )
+}
+
+export { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue }

@@ -112,7 +112,7 @@ def _runner(monkeypatch, *, last_inbound_at):
     r.adapters = {}
     monkeypatch.setattr(r, "_scale_to_zero_idle_timeout_seconds", lambda: 120.0, raising=False)
     monkeypatch.setattr(r, "_scale_to_zero_has_live_background_work", lambda: False, raising=False)
-    monkeypatch.setattr("cron.scheduler.get_running_job_ids", lambda: [])
+    monkeypatch.setattr("cron.scheduler.get_running_job_ids", list)
     return r
 
 

@@ -7,11 +7,11 @@ subsequent terminal/file-tool call until the gateway restarts.
 
 Regression coverage for https://github.com/NousResearch/hermes-agent/issues/17558.
 """
+import pytest
 
 import os
 import shutil
 import tempfile
-import threading
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
@@ -28,6 +28,7 @@ class TestResolveSafeCwd:
         assert _resolve_safe_cwd(path) == path
 
 
+    @pytest.mark.platforms("linux")
     def test_returns_root_when_only_root_exists(self, monkeypatch):
         """If every ancestor except the filesystem root is gone, the root
         itself is still a valid recovery target — don't skip it just because
@@ -35,10 +36,6 @@ class TestResolveSafeCwd:
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
-
-
-def _fake_interrupt():
-    return threading.Event()
 
 
 def _make_fake_popen(captured: dict, fds: list):
@@ -99,7 +96,6 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:
@@ -124,7 +120,6 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:

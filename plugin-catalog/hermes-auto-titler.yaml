@@ -1,0 +1,19 @@
+name: hermes-auto-titler
+repo: https://github.com/Vocllum/hermes-auto-titler
+sha: 42259f5cf346eba307e1cc8cac835203d986bcb6
+version: "0.3.0"
+image: https://raw.githubusercontent.com/Vocllum/hermes-auto-titler/42259f5cf346eba307e1cc8cac835203d986bcb6/docs/catalog-card.png
+description: "Topic-aware session title tracking for Hermes Agent. Hermes generates the first title by default; AutoTitler follows conversation changes and session close without changing the host title-generation switch. Disclosure — sends excerpts of each conversation (sampled user turns, short assistant replies, compaction summaries) to your Hermes title-generation model in the background, also for up to 200 recent untitled sessions at startup; needs plugins.entries.hermes-auto-titler.llm.allow_task_override (or allow_provider/model_override for a custom route). 0.3 no longer edits config.yaml, but users upgrading from 0.2.x keep auxiliary.title_generation.enabled=false until they re-enable it (/autotitler status shows the fix)."
+maintainer: Vocllum
+tier: community
+category: automation
+docs_url: https://github.com/Vocllum/hermes-auto-titler
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  - on_session_end
+  - on_session_finalize
+  provides_middleware: []
+  requires_env: []

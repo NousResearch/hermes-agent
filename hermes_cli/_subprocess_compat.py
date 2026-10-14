@@ -1,29 +1,9 @@
 """Windows subprocess compatibility helpers.
 
-Hermes is developed on Linux / macOS and tested natively on Windows too.
-Several common subprocess patterns break silently-or-loudly on Windows:
-
-* ``["npm", "install", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch
-  shim.  ``subprocess.Popen(["npm", ...])`` fails with WinError 193
-  ("not a valid Win32 application") because CreateProcessW can't run a
-  ``.cmd`` file without ``shell=True`` or PATHEXT resolution.
-
-* ``start_new_session=True`` — on POSIX, this maps to ``os.setsid()`` and
-  actually detaches the child.  On Windows it's silently ignored; the
-  Windows equivalent is the ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW``
-  creationflags bundle, which Python only applies when you pass it
-  explicitly.
-
-* Console-window flashes — every ``subprocess.Popen`` of a ``.exe`` on
-  Windows spawns a cmd window briefly unless ``CREATE_NO_WINDOW`` is
-  passed.  Cosmetic but jarring for background daemons.
-
-This module centralizes the platform-branching logic so the rest of the
-codebase doesn't sprinkle ``if sys.platform == "win32":`` everywhere.
-
-**All helpers are no-ops on non-Windows** — calling them in Linux/macOS
-code paths is safe by design.  That's the "do no damage on POSIX"
-guarantee.
+* ``["npm", ...]`` — on Windows ``npm`` is ``npm.cmd``, a batch shim; ``Popen`` fails with
+  WinError 193 because CreateProcessW can't run a ``.cmd`` without ``shell=True``/PATHEXT.
+* ``start_new_session=True`` — POSIX ``os.setsid()`` detach; silently ignored on Windows, whose
+  equivalent is the ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`` creationflags bundle.
 """
 
 from __future__ import annotations
@@ -33,66 +13,69 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from pathlib import Path
+from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
+    "FILTER_DISCOVERY_FAILED",
     "IS_WINDOWS",
+    "NO_DRIVER_DIFF_FLAGS",
+    "NO_LAZY_FETCH_ENV",
+    "bounded_git_probe",
+    "bounded_probe_run",
+    "expose_pm_git",
+    "noninteractive_git_env",
+    "noninteractive_repo_git_env",
+    "pid_exists_stdlib",
+    "pid_is_hermes",
     "resolve_node_command",
+    "restore_ambient_pythonpath",
+    "selected_git_env",
     "split_command_line",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
-    "windows_hide_flags",
     "windows_detach_popen_kwargs",
-    "bounded_git_probe",
-    "bounded_probe_run",
-    "noninteractive_git_env",
-    "NO_DRIVER_DIFF_FLAGS",
-    "pid_is_hermes",
+    "windows_hide_flags",
 ]
 
-# Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering
-# git command (``diff``, ``log -p``, ``show``, ``blame``). A malicious repo can
-# name a driver in ``.gitattributes`` (``* diff=evil``) and point it at an
-# arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``.
-# Because the attacker chooses the driver name, ``GIT_CONFIG_KEY`` overrides in
-# ``noninteractive_git_env`` cannot enumerate and disable it — only these
-# command-line flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv``
-# kills ``textconv=``. Both are required (verified empirically: each alone
-# leaves the other live). Smudge/clean filters are neutralized by the env
-# layer's ``core.hooksPath`` + running against the index without checkout.
+# Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
+# malicious repo can name a driver in ``.gitattributes`` (``* diff=evil``) and point it at an
+# arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``; because the
+# attacker chooses the name, ``GIT_CONFIG_KEY`` overrides in ``noninteractive_git_env`` cannot
+# enumerate it — only these flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv`` kills
+# ``textconv=``; each alone leaves the other live. Repository-named clean/smudge/process filters
+# are handled separately by ``noninteractive_repo_git_env`` at repo-scoped automatic call sites.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
-# Subcommands that render diffs and therefore invoke ``.gitattributes``-scoped
-# diff/textconv drivers. Only these accept ``NO_DRIVER_DIFF_FLAGS`` — ``status``
-# and friends reject the flags (``unknown option``), so the helper must gate on
-# this set rather than blanket-prepending.
+# Only these subcommands accept ``NO_DRIVER_DIFF_FLAGS`` — ``status`` and friends reject them
+# (``unknown option``), so the helper gates on this set rather than blanket-prepending.
 _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
+
+# Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
+# (``-C diff`` is a path; ``-c diff=x`` is a config pair).
+_GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def run(cmd, **kwargs) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not start its installer.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
-    """Return a copy of subcommand-first git *args* with diff-driver flags
-    inserted for diff-rendering subcommands.
+    """Copy of subcommand-first git *args* (no leading ``"git"``) with :data:`NO_DRIVER_DIFF_FLAGS`
+    inserted right after a diff-rendering subcommand; other subcommands are returned unchanged.
 
-    *args* is the argument list WITHOUT the leading ``"git"`` (e.g.
-    ``["diff", "HEAD"]`` or ``["-c", "core.quotePath=false", "diff", ...]``).
-    The first non-option token is treated as the subcommand; if it is one of
-    :data:`_DIFF_RENDERING_SUBCOMMANDS`, :data:`NO_DRIVER_DIFF_FLAGS` is
-    inserted immediately after it. Non-diff subcommands are returned unchanged.
-
-    Pair with :func:`noninteractive_git_env`: the env layer disables
-    fsmonitor/hooks/pager/editor/credential sinks, this closes the one class
-    (attacker-named attribute drivers) env overrides cannot reach.
+    Pair with :func:`noninteractive_git_env`: the env layer disables fsmonitor/hooks/pager/editor/
+    credential sinks, this closes the one class (attacker-named attribute drivers) env cannot reach.
     """
     out = list(args)
-    # Options that consume the FOLLOWING token as their value, so that value is
-    # never mistaken for the subcommand (``-C diff`` is a path; ``-c diff=x`` is
-    # a config pair — neither is the diff subcommand).
-    _value_opts = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
     i = 0
     while i < len(out):
         tok = out[i]
-        if tok in _value_opts:
+        if tok in _GIT_VALUE_OPTS:
             i += 2
             continue
         if tok.startswith("-"):
@@ -100,9 +83,7 @@ def harden_git_argv(args: Sequence[str]) -> list[str]:
             continue
         if tok in _DIFF_RENDERING_SUBCOMMANDS:
             return out[: i + 1] + list(NO_DRIVER_DIFF_FLAGS) + out[i + 1 :]
-        # First non-option token is the subcommand; if it isn't a diff renderer
-        # there is nothing to harden.
-        return out
+        return out  # first non-option token is a non-diff subcommand
     return out
 
 
@@ -115,30 +96,21 @@ _WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
 def split_command_line(line: str) -> list[str]:
     """Split a user-supplied command line into tokens, Windows-safely.
 
-    ``shlex.split(line)`` (posix=True) treats every backslash as an escape
-    character, so Windows paths are silently mangled: ``C:\\Users\\me\\out.txt``
-    becomes ``C:Usersmeout.txt`` — no error, just a wrong path that then
-    "succeeds" against a mangled relative filename (#83934) or makes a valid
-    hook script report "not executable" (#78293).
+    ``shlex.split`` (posix=True) treats every backslash as an escape, mangling Windows paths. On
+    Windows use ``posix=False`` and strip one layer of matching quotes per token; on POSIX this is
+    exactly ``shlex.split``. Raises ValueError on unbalanced quotes.
 
-    On Windows this uses ``posix=False``, which preserves backslashes while
-    still honoring double-quoted tokens ("path with spaces"). The trade-off
-    is that posix=False keeps surrounding quotes on quoted tokens, so we
-    strip one layer of matching double quotes per token — that matches how
-    Windows command lines are conventionally parsed. On POSIX the behavior
-    is exactly ``shlex.split``.
-
-    Raises ValueError for unbalanced quotes, same as ``shlex.split``.
+    ``shlex.split(line)`` (posix=True) treats every backslash as an escape character, so Windows paths are
+    silently mangled: ``C:\\Users\\me\\out.txt`` becomes ``C:Usersmeout.txt`` — no error, just a wrong path
+    that then "succeeds" against a mangled relative filename (#83934) or makes a valid hook script report
+    "not executable" (#78293).
     """
-    if not IS_WINDOWS:
-        import shlex
-
-        return shlex.split(line)
     import shlex
 
-    tokens = shlex.split(line, posix=False)
+    if not IS_WINDOWS:
+        return shlex.split(line)
     out: list[str] = []
-    for tok in tokens:
+    for tok in shlex.split(line, posix=False):
         if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
             tok = tok[1:-1]
         out.append(tok)
@@ -150,200 +122,131 @@ def split_command_line(line: str) -> list[str]:
 # -----------------------------------------------------------------------------
 
 
+def restore_ambient_pythonpath(env: Mapping[str, str]) -> dict:
+    """Re-add the ambient ``PYTHONPATH`` to a child environment that a
+    ``build_subprocess_env``-style factory already built.
+
+    No-boot-through-venv: the boot interpreter is the pm STORE python, whose
+    imports arrive via ``PYTHONPATH=<repo>;<venv>/site-packages`` (it has no
+    editable install). The subprocess-env factories strip Hermes-owned
+    PYTHONPATH entries so agent-run children on DIFFERENT interpreter
+    versions never load the backend's C extensions — but a child that
+    re-execs THIS interpreter (``sys.executable -m hermes_cli.main``) runs
+    on the same version and needs those entries back. Prepending keeps the
+    launcher's repo-first ordering intact.
+    """
+    merged = dict(env)
+    ambient = os.environ.get("PYTHONPATH")
+    if ambient:
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = (
+            ambient + os.pathsep + existing if existing else ambient
+        )
+    return merged
+
+
 def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
-    """Resolve a Node-ecosystem command name to an absolute-path argv.
+    """Resolve a Node-ecosystem command name (``npm``, ``npx``, ``yarn``…) to an absolute-path argv.
 
-    On Windows, commands like ``npm``, ``npx``, ``yarn``, ``pnpm``,
-    ``playwright``, ``prettier`` ship as ``.cmd`` files (batch shims).
-    ``subprocess.Popen(["npm", "install"])`` fails with WinError 193
-    because CreateProcessW doesn't execute batch files directly.
-
-    ``shutil.which(name)`` *does* resolve ``.cmd`` via PATHEXT and returns
-    the fully-qualified path — which CreateProcessW accepts because the
-    extension tells Windows to route through ``cmd.exe /c``.
-
-    On POSIX ``shutil.which`` also returns a fully-qualified path when
-    found.  That's a small change from bare-name resolution (the OS does
-    its own PATH search) but functionally identical and has the side
-    benefit of making the argv reproducible in logs.
-
-    Behavior when the command is not on PATH:
-    - On Windows: return the bare name — caller can still try with
-      ``shell=True`` as a last resort, OR the subsequent Popen will
-      raise FileNotFoundError with a readable error we want to surface.
-    - On POSIX: same.  Bare ``npm`` on a Linux box without npm installed
-      fails the same way it did before this function existed.
-
-    Args:
-        name: The command name to resolve (``npm``, ``npx``, ``node`` …).
-        argv: The remaining arguments.  Must NOT include ``name`` itself —
-            this function builds the full argv list.
-
-    Returns:
-        A list suitable for passing to subprocess.Popen/run/call.
+    On Windows these ship as ``.cmd`` batch shims that CreateProcessW won't execute by bare name;
+    ``shutil.which`` resolves via PATHEXT to a fully-qualified path whose extension routes it
+    through ``cmd.exe /c``.
     """
     resolved = shutil.which(name)
-    if resolved:
-        return [resolved, *argv]
-    return [name, *argv]
+    return [resolved or name, *argv]
 
 
-# -----------------------------------------------------------------------------
-# Detached / hidden process creation
-# -----------------------------------------------------------------------------
-
-
-# Win32 CreationFlags — defined here rather than imported from subprocess
-# because CREATE_NO_WINDOW and DETACHED_PROCESS aren't guaranteed to be
-# present on stdlib subprocess on older Pythons or non-Windows builds.
+# Win32 CreationFlags — defined here because CREATE_NO_WINDOW / DETACHED_PROCESS aren't guaranteed
+# to exist on stdlib subprocess for older Pythons or non-Windows builds.
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
-# DETACHED_PROCESS is intentionally NOT part of any flag bundle here — do not
-# re-add it.  Two reasons (the recurring console-flash bug #54220 / #56747):
-#
-# 1. MSDN (Process Creation Flags): CREATE_NO_WINDOW "is ignored if used with
-#    either CREATE_NEW_CONSOLE or DETACHED_PROCESS".  Combining them means
-#    DETACHED_PROCESS governs and the no-window bit is dead.
-# 2. A DETACHED_PROCESS child has NO console at all, so every console-subsystem
-#    descendant it ever spawns (git, gh, cmd, node, wmic, powershell, …) must
-#    allocate its OWN console — a visible flash per spawn, including spawns
-#    inside third-party libraries that no per-call-site CREATE_NO_WINDOW sweep
-#    can reach.  A CREATE_NO_WINDOW child instead OWNS a hidden console that
-#    all descendants inherit, making "no flashing windows" a property of the
-#    one daemon launch.  Root cause isolated + A/B verified on Windows 11 by
-#    the desktop backend fix (commit aa2ae36c3f): with per-site hide flags
-#    neutered, naive git/gh/cmd spawns don't flash under a hidden-console
-#    parent and do flash under a console-less one.
-_DETACHED_PROCESS = 0x00000008  # kept for reference; must stay out of bundles
+# DETACHED_PROCESS (0x00000008) is intentionally NOT part of any flag bundle — do not re-add it
+# (the recurring console-flash bug #54220 / #56747): (1) MSDN: CREATE_NO_WINDOW "is ignored if used with either
+# CREATE_NEW_CONSOLE or DETACHED_PROCESS"; (2) a DETACHED_PROCESS child has NO console, so every
+# console-subsystem descendant (git, gh, cmd, node, powershell, …) allocates its own — a visible
+# flash per spawn, including inside third-party libraries no per-site sweep can reach. A
+# CREATE_NO_WINDOW child instead OWNS a hidden console all descendants inherit (A/B verified on
+# Windows 11 by the desktop backend fix, commit aa2ae36c3f: with per-site hide flags neutered,
+# naive git/gh/cmd spawns don't flash under a hidden-console parent and do under a console-less one).
+# 1. Combining them means DETACHED_PROCESS governs and the no-window bit is dead. 2. See #54220, #56747.
 _CREATE_NO_WINDOW = 0x08000000
-# Escape any Win32 job object the parent process belongs to. Without this,
-# a detached child still inherits its parent's job object membership, and
-# when that parent (Electron, Tauri, Windows Terminal, the Desktop GUI's
-# bootstrap-installer) dies, the OS tears down the whole job — taking the
-# "detached" child with it. Critical for the post-update gateway watcher:
-# Electron spawns the Tauri updater inside its own job, the updater spawns
-# the watcher subprocess; without BREAKAWAY the watcher dies the instant
-# Electron exits, so the gateway never gets respawned after a `hermes
-# update` triggered from the GUI. See fix/windows-gateway-reliability.
+# Escape any Win32 job object the parent belongs to. Without this a detached child inherits the
+# parent's job, and when that parent (Electron, Tauri, Windows Terminal, the Desktop bootstrap
+# installer) dies the OS tears down the whole job — taking the "detached" child with it. Critical
+# for the post-update gateway watcher spawned from inside Electron's job.
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def windows_detach_flags() -> int:
-    """Return Win32 creationflags that detach a child from the parent
-    console and process group without leaving it console-less.  0 on
-    non-Windows.
+    """Win32 creationflags detaching a child from the parent console/group; 0 elsewhere.
 
-    Pair with ``start_new_session=False`` (default) when calling
-    subprocess.Popen — on POSIX use ``start_new_session=True`` instead,
-    which maps to ``os.setsid()`` in the child.
+    Pair with the default ``start_new_session=False`` (POSIX uses ``start_new_session=True``).
+    CREATE_NEW_PROCESS_GROUP stops Ctrl+C propagating; CREATE_NO_WINDOW gives the child a hidden
+    console descendants (git, gh, cmd, node, …) inherit so they don't flash — deliberately replacing
+    the old DETACHED_PROCESS approach, which re-created the per-descendant console-flash bug
+    (#54220/#56747) at every spawn; CREATE_BREAKAWAY_FROM_JOB escapes Electron/Tauri job objects. A
+    job that forbids breakaway yields PermissionError from Popen — callers catch OSError and fall
+    back to :func:`windows_detach_flags_without_breakaway`.
 
-    Rationale:
-    - ``CREATE_NEW_PROCESS_GROUP`` — child has its own process group so
-      Ctrl+C in the parent console doesn't propagate.
-    - ``CREATE_NO_WINDOW`` — the child gets its own fresh console that is
-      never shown.  This both detaches it from the parent's console
-      lifetime (closing the launching terminal doesn't CTRL_CLOSE it) AND
-      gives every console-subsystem descendant (git, gh, cmd, node, …) a
-      console to inherit, so they don't allocate visible flashing ones.
-      This deliberately replaces the old ``DETACHED_PROCESS`` approach:
-      MSDN specifies CREATE_NO_WINDOW is *ignored* when combined with
-      DETACHED_PROCESS, and a truly console-less daemon re-creates the
-      per-descendant console-flash bug (#54220/#56747) at every spawn —
-      see the note on ``_DETACHED_PROCESS`` above.
-    - ``CREATE_BREAKAWAY_FROM_JOB`` — escape any job object the parent is
-      in.  Electron (Desktop app) and Tauri (bootstrap installer) wrap
-      their children in job objects; without breakaway, those children
-      die when the parent process exits even though they have their own
-      console.  This was the missing flag that made the post-update
-      gateway respawn watcher silently die alongside the Tauri updater
-      after the Electron Desktop's update flow finished.
-
-    If a process is in a job that disallows breakaway (rare —
-    JOB_OBJECT_LIMIT_BREAKAWAY_OK isn't set), CreateProcess returns
-    ERROR_ACCESS_DENIED.  Python surfaces that as ``PermissionError``
-    on the ``subprocess.Popen`` call.  Callers in this codebase already
-    wrap detached spawns in ``try/except OSError`` and fall back to a
-    cmd.exe wrapper, so the breakaway-denied case degrades gracefully
-    rather than crashing.
+    Rationale: This both detaches it from the parent's console lifetime (closing the launching terminal
+    doesn't CTRL_CLOSE it) AND gives every console-subsystem descendant (git, gh, cmd, node, …) a console to
+    inherit, so they don't allocate visible flashing ones. This deliberately replaces the old
+    ``DETACHED_PROCESS`` approach: MSDN specifies CREATE_NO_WINDOW is *ignored* when combined with
+    DETACHED_PROCESS, and a truly console-less daemon re-creates the per-descendant console-flash bug
+    (#54220/#56747) at every spawn — see the note on ``_DETACHED_PROCESS`` above. Electron (Desktop app) and
+    Tauri (bootstrap installer) wrap their children in job objects; without breakaway, those children die
+    when the parent process exits even though they have their own console. This was the missing flag that
+    made the post-update gateway respawn watcher silently die alongside the Tauri updater after the Electron
+    Desktop's update flow finished.
     """
     if not IS_WINDOWS:
         return 0
-    return (
-        _CREATE_NEW_PROCESS_GROUP
-        | _CREATE_NO_WINDOW
-        | _CREATE_BREAKAWAY_FROM_JOB
-    )
+    return _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
 
 
 def windows_detach_flags_without_breakaway() -> int:
-    """Same as :func:`windows_detach_flags` minus ``CREATE_BREAKAWAY_FROM_JOB``.
-
-    The docstring on :func:`windows_detach_flags` notes that a process in
-    a job which disallows breakaway (no ``JOB_OBJECT_LIMIT_BREAKAWAY_OK``)
-    will see ``ERROR_ACCESS_DENIED`` from CreateProcess, surfacing as
-    ``OSError`` (``PermissionError``) on the ``subprocess.Popen`` call.
-    Callers that want to recover — by retrying without the breakaway
-    bit — can pair the two helpers symbolically rather than coding the
-    ``& ~0x01000000`` magic at every site:
-
-    .. code-block:: python
-
-        try:
-            subprocess.Popen(argv, creationflags=windows_detach_flags(), …)
-        except OSError:
-            subprocess.Popen(
-                argv,
-                creationflags=windows_detach_flags_without_breakaway(),
-                …,
-            )
-
-    See ``gateway_windows.py::_spawn_detached`` for the canonical
-    implementation of this pattern.  Returns 0 on non-Windows.
-    """
+    """:func:`windows_detach_flags` minus ``CREATE_BREAKAWAY_FROM_JOB``; 0 on non-Windows."""
     if not IS_WINDOWS:
         return 0
     return _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
 
 
 def windows_hide_flags() -> int:
-    """Return Win32 creationflags that merely hide the child's console
-    window without detaching the child.  0 on non-Windows.
+    """Win32 creationflags hiding the child's console without detaching it; 0 elsewhere.
 
-    Use for short-lived console apps spawned as part of a larger
-    operation (``taskkill``, ``where``, version probes) where we want no
-    flash but also want to collect stdout/exit code synchronously.
-
-    The difference from :func:`windows_detach_flags`: no
-    ``CREATE_NEW_PROCESS_GROUP`` / ``CREATE_BREAKAWAY_FROM_JOB`` — the
-    child stays in the parent's process group and job so Ctrl+C and job
-    teardown propagate normally, as a short-lived helper wants.  Stdio
-    handles are inherited either way, so ``capture_output=True`` works
-    with both bundles.
+    For short-lived synchronous helpers (``taskkill``, ``where``, version probes): no flash, but the
+    child stays in the parent's process group and job so Ctrl+C and job teardown still propagate.
+    Stdio is inherited, so ``capture_output=True`` works.
     """
-    if not IS_WINDOWS:
-        return 0
-    return _CREATE_NO_WINDOW
+    return _CREATE_NO_WINDOW if IS_WINDOWS else 0
 
+
+
+def no_prompt_git_kwargs() -> dict:
+    """``subprocess.run`` kwargs for the updater's network git calls.
+
+    GitHub answers anonymous fetches with HTTP 401 during outages (and for
+    unreachable repos); git then prompts ``Username for 'https://github.com':``
+    on the inherited terminal and the update sits there forever. Disable the
+    prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
+    *prompt* is disabled — a configured credential helper / askpass still
+    runs, so a private-fork origin keeps authenticating non-interactively.
+    Lives here, dependency-free, because the update hand-off's bootstrap
+    interpreter runs the treeless conversion before any dependency exists.
+    """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    # Every network git spawn (fetch/pull/shallow heal) runs under a console-less
+    # desktop backend on Windows; hide the per-spawn console (#117781).
+    return {"stdin": subprocess.DEVNULL, "env": env, "creationflags": windows_hide_flags()}
 
 def suppress_platform_ver_console() -> None:
-    """Stub out ``platform._syscmd_ver`` on Windows so it can never flash a
-    console window.  No-op on non-Windows.
+    """Stub ``platform._syscmd_ver`` on Windows so it never flashes a console. No-op elsewhere.
 
-    CPython's ``platform.win32_ver()`` — reached by ``platform.uname()``,
-    ``platform.version()``, and ``platform.platform()`` — unconditionally
-    shells out ``cmd /c ver`` via ``subprocess.check_output(..., shell=True)``
-    with no ``CREATE_NO_WINDOW``.  From a windowless parent (the pythonw
-    gateway and every kanban worker it spawns) that allocates a fresh
-    *visible* console: one flashing ``cmd`` window per process, triggered by
-    any dependency that merely touches ``platform.uname()`` at import time.
-
-    With ``_syscmd_ver`` stubbed to return its inputs, ``win32_ver()`` hits
-    the documented ``ValueError`` fallback and reads the version from
-    ``sys.getwindowsversion().platform_version`` — same information, queried
-    in-process, no subprocess, no window.  Verified equivalent on
-    CPython 3.11 (``platform()`` → ``Windows-10-10.0.xxxxx-SP0`` either way).
-
-    Call early, before heavyweight imports — the flash typically happens
-    during a dependency's import, not from Hermes' own code.
+    ``platform.win32_ver()`` shells out ``cmd /c ver`` without CREATE_NO_WINDOW, so a windowless
+    parent (pythonw gateway, kanban workers) flashes a cmd window whenever a dependency touches
+    ``platform.uname()`` at import. With the stub, ``win32_ver()`` takes its documented fallback to
+    ``sys.getwindowsversion()`` — same data, in-process. Call before heavy imports.
     """
     if not IS_WINDOWS:
         return
@@ -357,137 +260,420 @@ def suppress_platform_ver_console() -> None:
 
             platform._syscmd_ver = _quiet_syscmd_ver
     except Exception:
-        # Purely cosmetic hardening — never let it break startup.
-        pass
+        pass  # Purely cosmetic hardening — never let it break startup.
 
 
 def windows_detach_popen_kwargs() -> dict:
-    """Return a dict of Popen kwargs that detach a child on Windows and
-    fall back to the POSIX equivalent (``start_new_session=True``) on
-    Linux/macOS.
+    """Popen kwargs detaching a child on Windows, or ``start_new_session=True`` on POSIX.
 
-    Usage pattern:
-
-    .. code-block:: python
-
-        subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-            **windows_detach_popen_kwargs(),
-        )
-
-    This replaces the unsafe-on-Windows pattern:
-
-    .. code-block:: python
-
-        subprocess.Popen(..., start_new_session=True)
-
-    which silently fails to detach on Windows (the flag is accepted but
-    has no effect — the child stays attached to the parent's console
-    and dies when the console closes).
+    Bare ``start_new_session=True`` is accepted but has no effect on Windows: the child stays
+    attached to the parent console and dies when it closes.
     """
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
 
 
-# -----------------------------------------------------------------------------
-# Non-interactive git environment (credential-prompt hang guard)
-# -----------------------------------------------------------------------------
+# Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes
+# git spawn ``git fetch`` from the promisor remote, and a probe's timeout kills only its own git: the
+# startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
+# history download on every launch that ran on orphaned, piling up partial packs. With this set the
+# probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 
 
-def noninteractive_git_env(
-    base: "Mapping[str, str] | None" = None,
-) -> dict[str, str]:
-    """Environment for *internal* git invocations that must never prompt.
+# GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
+# repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
+_GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+_GIT_CONFIG_OVERRIDES = {
+    "credential.helper": "",
+    "core.askPass": "",
+    "core.fsmonitor": "false",
+    "core.untrackedCache": "false",
+    "core.hooksPath": os.devnull,
+    "core.pager": "cat",
+    "core.editor": "true",
+    "sequence.editor": "true",
+    "diff.external": "",
+    # ssh itself bypasses stdin=DEVNULL/GIT_TERMINAL_PROMPT and opens /dev/tty directly — an
+    # unknown host key (or password auth) prompts there and steals the caller's terminal (#104591).
+    # BatchMode makes ssh fail instead of prompting; a working ssh-agent still succeeds. Injected
+    # at the config layer so an explicit user GIT_SSH_COMMAND (env) still takes precedence.
+    "core.sshCommand": "ssh -o BatchMode=yes",
+}
 
-    Hermes shells out to git from many non-interactive contexts — MCP catalog
-    installs, plugin install/update, profile distribution staging, worktree
-    base fetches, desktop review-pane fetch/push. When the remote is private,
-    misconfigured, or requires auth, git's default behavior is to prompt on
-    the inherited terminal (or via an askpass helper), which silently hangs
-    the operation until its timeout — or forever at call sites without one.
-    Ported from openai/codex#34540 / #34612 ("detach non-interactive
-    subprocesses from stdin"): a background tool invocation must fail fast
-    with a readable error, not wait for input nobody can type.
 
-    Returns a copy of ``base`` (default ``os.environ``) with:
+def _safe_directory_cache_key(env: Mapping[str, str]) -> tuple:
+    """Everything that decides which files ``git config --system/--global`` reads, plus the
+    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    home = env.get("HOME", "")
+    xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    candidates = (
+        env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig",
+        env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
+        os.path.join(xdg, "git", "config"),
+    )
+    stamps = []
+    for path in candidates:
+        try:
+            stamps.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            stamps.append(None)
+    return (
+        env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_SYSTEM"), env.get("GIT_CONFIG_NOSYSTEM"),
+        home, env.get("XDG_CONFIG_HOME"), env.get("PATH"), *stamps,
+    )
 
-    * ``GIT_TERMINAL_PROMPT=0`` — git fails with "terminal prompts disabled"
-      instead of prompting for credentials.
-    * ``GCM_INTERACTIVE=Never`` — Git Credential Manager (the default
-      credential helper on Windows installs) never pops its own dialog.
-    * isolated git config — inherited ``GIT_CONFIG_*`` overrides, global/system
-      config, pagers, editors, fsmonitor, external diff, and hooks are disabled
-      for the child process. A user's repo/global config should not be able to
-      hang or mutate Hermes's internal plumbing calls.
 
-    ``GIT_ASKPASS`` / ``SSH_ASKPASS`` are deliberately left alone: when the
-    user has a *working* askpass helper or ssh-agent configured, auth should
-    still succeed non-interactively. The env only disables paths that block
-    on a human.
+_safe_directory_cache: dict[tuple, list[str]] = {}
 
-    Pair with ``stdin=subprocess.DEVNULL`` so git (and any credential helper
-    it spawns) also can't read the parent's inherited stdin.
 
-    This is for internal plumbing calls only — the agent-facing terminal tool
-    has its own policy layer and user-visible PTY, where prompting can be
-    legitimate.
+def _user_safe_directories(base_env: Mapping[str, str]) -> list[str]:
+    """The user's configured ``safe.directory`` values, in git's own effective order.
+
+    Read with ``git config -z --get-all`` under *base_env* (the caller's untouched environment) so
+    an explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
+    Best-effort: any failure (git missing, malformed config, timeout) yields no entries and leaves
+    the caller exactly as it behaved before. Memoised per process on the inputs that select the
+    config files (and the global file's mtime): ``noninteractive_git_env()`` runs on every internal
+    git call, including the startup banner probe, and two ``git config`` children per call is
+    ~10 ms against ~0.2 ms for the rest of the function.
+
+    ``safe.directory`` is an *ordered* multi-valued setting and an empty value resets every entry
+    seen so far, so a user can revoke a system-wide ``safe.directory=*`` and then name only the
+    repositories they actually trust. Order and empty resets are therefore policy, not formatting:
+    scopes are read lowest-precedence first (system, then global) and every value is preserved
+    verbatim -- no de-duplication (it is a sequence, not a set) and no dropping of the reset
+    marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
+    value containing whitespace or a newline as the single entry git reads it as.
     """
-    env = dict(base if base is not None else os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GCM_INTERACTIVE"] = "Never"
-
-    # Do not inherit caller-supplied config injection. We rebuild the
-    # GIT_CONFIG_COUNT block below so ambient -c values cannot re-enable
-    # pagers, hooks, fsmonitor, editors, or credential prompts.
+    cache_key = _safe_directory_cache_key(base_env)
+    cached = _safe_directory_cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+    env = dict(base_env)
+    # --get-all itself must not be derailed by ambient injection or an interactive prompt.
     for key in list(env):
-        if (
-            key == "GIT_CONFIG_PARAMETERS"
-            or key.startswith("GIT_CONFIG_KEY_")
-            or key.startswith("GIT_CONFIG_VALUE_")
-        ):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
             env.pop(key, None)
     env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    values: list[str] = []
+    for scope in ("--system", "--global"):
+        try:
+            proc = subprocess.run(
+                ["git", "config", scope, "-z", "--get-all", "safe.directory"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+                creationflags=windows_hide_flags(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        # -z terminates every value with NUL, so the trailing split field is always empty and is
+        # not a config entry; interior empty fields are real reset markers and must survive.
+        records = proc.stdout.split("\0")
+        if records and records[-1] == "":
+            records.pop()
+        values.extend(records)
+    _safe_directory_cache[cache_key] = list(values)
+    return values
 
-    devnull = os.devnull
-    env["GIT_CONFIG_GLOBAL"] = devnull
-    env["GIT_CONFIG_SYSTEM"] = devnull
+
+def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """PM's full Git environment, or the original base for system-Git fallback.
+
+    Keep lazy acquisition under PM's policy (not just installed-package lookup).
+    Unsupported targets and failed acquisition must not disable a working system
+    Git. Callers apply their own config/security isolation after selection.
+    """
+    env = dict(base if base is not None else os.environ)
+    try:
+        from pm import ensure
+
+        return ensure("git", base_env=env).env
+    except Exception:
+        return env
+
+
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
+
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
+    """
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
+        return
+    from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
+
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
+
+
+def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for *internal* git invocations that must never prompt.
+
+    Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
+    prompting), ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
+    config: inherited ``GIT_CONFIG_*`` injection, global/system config, pagers, editors, fsmonitor,
+    external diff and hooks are all disabled so a user's repo/global config cannot hang or mutate
+    Hermes's plumbing calls. ``core.sshCommand`` is pinned to ``ssh -o BatchMode=yes`` so the ssh
+    child of a fetch/ls-remote fails instead of prompting — ssh bypasses ``stdin=DEVNULL`` and
+    opens ``/dev/tty`` directly (#104591); an agent-authenticated ssh still succeeds, and an
+    explicit user ``GIT_SSH_COMMAND`` env var still takes precedence over this config-layer pin.
+    ``GIT_ASKPASS``/``SSH_ASKPASS`` env vars are left alone, but OpenSSH BatchMode disables
+    passphrase/password prompts, including SSH askpass. Usable keys and ssh-agent authentication
+    still work; Git's own working askpass helper is unaffected. Pair with
+    ``stdin=subprocess.DEVNULL``. Internal plumbing only — the agent-facing terminal tool has its
+    own policy layer and visible PTY.
+
+    Hermes shells out to git from many non-interactive contexts — MCP catalog installs, plugin
+    install/update, profile distribution staging, worktree base fetches, desktop review-pane fetch/push.
+    When the remote is private, misconfigured, or requires auth, git's default behavior is to prompt on the
+    inherited terminal (or via an askpass helper), which silently hangs the operation until its timeout — or
+    forever at call sites without one. Ported from openai/codex#34540 / #34612 ("detach non-interactive
+    subprocesses from stdin"): a background tool invocation must fail fast with a readable error, not wait
+    for input nobody can type.
+    """
+    env = dict(base if base is not None else os.environ)
+    # Captured before the isolation below rewrites GIT_CONFIG_GLOBAL/SYSTEM to /dev/null --
+    # reading after that point would resolve the user's config to an empty file.
+    safe_directories = _user_safe_directories(base if base is not None else os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
+    # ambient -c values cannot re-enable pagers, hooks, fsmonitor, editors or credential prompts.
+    for key in list(env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-
-    config_overrides = {
-        "credential.helper": "",
-        "core.askPass": "",
-        "core.fsmonitor": "false",
-        "core.untrackedCache": "false",
-        "core.hooksPath": devnull,
-        "core.pager": "cat",
-        "core.editor": "true",
-        "sequence.editor": "true",
-        "diff.external": "",
-    }
-    env["GIT_CONFIG_COUNT"] = str(len(config_overrides))
-    for idx, (key, value) in enumerate(config_overrides.items()):
+    overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
+    # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
+    # re-injection every internal git call fails "detected dubious ownership" on any repo whose
+    # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
+    # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
+    # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
+    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only and non-widening: the values
+    # are replayed in git's own effective order, empty reset markers included (see
+    # _user_safe_directories), so a global reset still revokes a system-wide wildcard exactly as it
+    # does for the user's interactive git. Appended last, but the hardening overrides above are
+    # distinct keys, so they are unaffected by ordering within safe.directory.
+    overrides.extend(("safe.directory", value) for value in safe_directories)
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
-
     return env
 
 
-# -----------------------------------------------------------------------------
-# Bounded, fail-open git probing (Windows post-kill deadlock guard)
-# -----------------------------------------------------------------------------
+_FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
+# ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current branch,
+# ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``), so
+# the spawned git can load an include this discovery's ``--includes`` skipped. Every include target
+# is therefore read directly, whatever its condition, and its filter names are neutralized too.
+# Global/system config is already /dev/null, so only repo-local includes reach this.
+_INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
+# Any include (conditional or not) inside an include target: discovery does not walk it twice.
+_INCLUDE_KEY = re.compile(r"^include(?:if\..*)?\.path$", re.IGNORECASE)
+# `git config --get-regexp` pattern for the keys discovery reads (filter commands and includes).
+_DISCOVERY_KEYS_REGEXP = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
+# Each include target costs one bounded spawn on every hardened git call; refuse past this many.
+_MAX_INCLUDE_TARGETS = 16
+# Each discovered key costs two env entries; a repo with tens of thousands of filters would make
+# every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
+_MAX_FILTER_KEYS = 256
+# Stand-in stderr for a git call refused because filter discovery could not be trusted.
+FILTER_DISCOVERY_FAILED = "git filter discovery failed"
 
+
+def noninteractive_repo_git_env(
+    cwd: str | os.PathLike[str],
+    base: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Harden internal git for one repository, including named clean/smudge/process filters.
+
+    The static environment can pin fixed config keys such as core.fsmonitor and
+    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
+    Discover the effective filter command keys for this checkout and append empty command
+    overrides plus required=false to the already-isolated config block. Discovery is
+    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
+    automatic git operation instead of running with only partial hardening.
+    """
+    env = noninteractive_git_env(base)
+    # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
+    # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
+    # One probe lists the filter keys and the include paths with their origin file: -z --show-origin
+    # yields "file:<origin>", "<key>\n<value>" pairs.
+    proc = bounded_probe_run(
+        ["git", "-C", str(cwd), "config", "--includes", "--show-origin", "-z", "--get-regexp",
+         _DISCOVERY_KEYS_REGEXP],
+        timeout=2, env=env,
+    )
+    if proc is None or proc.returncode not in (0, 1):
+        return None
+    names: list[str] = []
+    targets: set[Path] = set()
+    toplevel: Path | None = None
+    fields = proc.stdout.split("\0")
+    for origin, entry in zip(fields[0::2], fields[1::2]):
+        key, _, value = entry.partition("\n")
+        if not _INCLUDE_IF_KEY.fullmatch(key):
+            names.append(key)
+            continue
+        if not origin.startswith("file:"):
+            return None
+        origin_path = Path(origin[len("file:"):])
+        if not origin_path.is_absolute():
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
+            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
+            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
+                return None
+            if toplevel is None:
+                top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                                        timeout=2, env=env)
+                if top is None or top.returncode != 0:
+                    return None
+                toplevel = Path(top.stdout.rstrip("\r\n"))  # a checkout path may end in a space
+            origin_path = toplevel / origin_path
+        # A relative include path resolves against the directory of the config file naming it.
+        target = (origin_path.parent / os.path.expanduser(value)).resolve()
+        if target in targets or not target.exists():
+            continue  # already read, or missing (git skips a missing include file)
+        if not target.is_file() or len(targets) >= _MAX_INCLUDE_TARGETS:
+            return None  # a FIFO/device/directory, or too many targets to read on every call
+        targets.add(target)
+        probe = bounded_probe_run(
+            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _DISCOVERY_KEYS_REGEXP],
+            timeout=2, env=env,
+        )
+        if probe is None or probe.returncode not in (0, 1):
+            return None
+        found = probe.stdout.split("\0")
+        # An include inside an include target would need the same walk again; refuse instead.
+        if any(_INCLUDE_KEY.fullmatch(name) for name in found):
+            return None
+        names.extend(found)
+
+    keys: list[str] = []
+    required: list[str] = []
+    seen: set[str] = set()
+    # Dedup on the exact key name git prints: section and variable lowercased, subsection case kept,
+    # and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
+    for raw in names:
+        key = raw.strip()
+        if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
+            continue
+        seen.add(key)
+        keys.append(key)
+        if len(keys) > _MAX_FILTER_KEYS:
+            return None
+        required_key = key.rsplit(".", 1)[0] + ".required"
+        if required_key not in seen:
+            seen.add(required_key)
+            required.append(required_key)
+
+    start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
+    overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    for offset, (key, value) in enumerate(overrides):
+        env[f"GIT_CONFIG_KEY_{start + offset}"] = key
+        env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
+    env["GIT_CONFIG_COUNT"] = str(start + len(overrides))
+    return env
+
+
+def posix_is_zombie(pid: int) -> bool:
+    """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            stat_fields = fh.read().split()
+        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+    except FileNotFoundError:
+        try:
+            r = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
+            )
+            return r.returncode == 0 and r.stdout.strip().startswith("Z")
+        except Exception:
+            pass
+    except (IndexError, PermissionError, OSError):
+        pass
+    return False
+
+
+def win32_pid_exists(pid: int) -> bool:
+    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.GetLastError.restype = ctypes.c_uint
+        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
+        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
+            # but owned by another user/session. Any other error: conservative False.
+            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+        try:
+            # WAIT_TIMEOUT = still running; anything else = gone.
+            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return False
+
+
+def pid_exists_stdlib(pid: int) -> bool:
+    """Stdlib-only "is this PID alive" check that never signals the target (zombies report dead).
+
+    For code that must run without the dependency environment: the detached gateway restart
+    watcher is started by whatever interpreter the updater runs on (the bare store Python after
+    the package-manager handoff), so it cannot import ``gateway.status`` (``utils`` pulls in
+    ``ruamel``). ``gateway.status._pid_exists`` prefers psutil and falls back to this.
+    """
+    pid = int(pid)
+    if IS_WINDOWS:
+        return win32_pid_exists(pid)
+    if posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
+        return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (Windows returned above)
+    except PermissionError:
+        return True  # Exists but we can't signal it.
+    except OSError:  # ProcessLookupError included
+        return False
+    return True
 
 
 def _process_start_time(pid: int) -> int | None:
-    """Return the repository's stable process-start fingerprint, if available."""
+    """The repository's stable process-start fingerprint, if available."""
     try:
         from gateway.status import get_process_start_time
 
@@ -497,20 +683,13 @@ def _process_start_time(pid: int) -> int | None:
 
 
 def _text_names_hermes(text: str) -> bool:
-    """True when *text* names Hermes at a path-segment / token boundary.
+    r"""True when *text* names Hermes at a path-segment / token boundary.
 
-    A bare ``"hermes" in text`` substring test would also match unrelated
-    processes whose paths merely contain the letters (``...\\shermesa\\...``),
-    which is exactly the false-positive class this guard exists to prevent.
-    Instead, split on path separators and whitespace and require a segment
-    that *starts with* ``hermes`` (``hermes``, ``hermes.exe``, ``hermes_cli``,
-    ``hermes-agent``, ``hermes-runtime``) or the hidden-dir form
-    ``.hermes``/``.hermes-runtime``.
+    A bare ``"hermes" in text`` substring test would also match unrelated processes whose paths
+    merely contain the letters (``...\shermesa\...``) — the false-positive class this prevents.
     """
-    for token in re.split(r"[\\/\s=,;\"']+", text.lower()):
-        if token.startswith("hermes") or token.startswith(".hermes"):
-            return True
-    return False
+    return any(token.startswith(("hermes", ".hermes"))
+               for token in re.split(r"[\\/\s=,;\"']+", text.lower()))
 
 
 def _process_command_is_hermes(pid: int) -> bool:
@@ -526,20 +705,12 @@ def _process_command_is_hermes(pid: int) -> bool:
         return False
 
 
-def pid_is_hermes(
-    pid: int,
-    *,
-    expected_start_time: int | None = None,
-) -> bool:
-    """Return whether it is safe to use ``taskkill`` for *pid*.
+def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
+    """Whether it is safe to use ``taskkill`` for *pid*.
 
-    The PID must be valid, currently exist, and identify a Hermes process. When
-    the caller captured a start-time fingerprint before the destructive action,
-    the live process must still have the same ``(pid, start_time)`` identity.
-    Any ambiguity fails closed. Non-Windows callers have no ``taskkill`` path,
-    so a valid PID with no (or a matching) explicit expectation is accepted
-    there — but a caller-provided fingerprint that no longer matches is a
-    recycled PID on every platform and is always refused.
+    The PID must be valid, currently exist, and identify a Hermes process. When the caller captured
+    a start-time fingerprint before the destructive action, the live process must still have the
+    same ``(pid, start_time)`` identity. Any ambiguity fails closed.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
@@ -550,17 +721,13 @@ def pid_is_hermes(
             return _process_start_time(pid) == expected_start_time
         except Exception:
             return False
-
     try:
         current_start_time = _process_start_time(pid)
     except Exception:
         return False
     if current_start_time is None:
         return False
-    if (
-        expected_start_time is not None
-        and current_start_time != expected_start_time
-    ):
+    if expected_start_time is not None and current_start_time != expected_start_time:
         return False
     try:
         return _process_command_is_hermes(pid)
@@ -568,39 +735,23 @@ def pid_is_hermes(
         return False
 
 
-def kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Best-effort terminate *proc* and its descendants on both platforms.
+def kill_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort terminate *proc* and its descendants on both platforms; never raises.
 
-    ``proc.kill()`` alone only terminates the direct child. On Windows a
-    suspended descendant (e.g. ``git.exe``) can survive holding duplicates of the
-    captured pipe handles, which keeps the pipes from reaching EOF and leaks two
-    reader threads + the process per fired timeout — ``taskkill /T /F`` takes the
-    whole tree down so the bounded drain that follows can actually reach EOF.
-    On POSIX the same class exists: killing the launcher leaves descendants
-    (credential helpers, ``git-remote-https``, hook children) running and
-    holding the pipe write ends. Callers spawn the child in its own process
-    group (``process_group=0``, Python ≥3.11), so when — and only
-    when — the child leads its own group (``pgid == pid``), the entire group is
-    signalled with ``os.killpg``. The ownership check means a fallback spawn
-    that shares our group can never cause us to kill unrelated processes.
-    Ported from openai/codex#36793 ("Terminate timed-out Git process trees");
-    generalized for the shell-hook runner via openai/codex#37527
-    ("Terminate timed-out hook process trees").
+    ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
+    path whose contract is to fail open, so every failure (access denied, already reaped) is
+    swallowed rather than escaping the caller's ``except``.
 
-    All failures are swallowed — this is cleanup on an already-failing path, and
-    the caller's contract is to fail open. ``kill()`` can raise (access denied,
-    already reaped); an unhandled raise here would escape the caller's ``except``
-    handler and break that contract. The ``taskkill`` spawn itself cannot
-    re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
-    own timeout cleanup has no reader threads to join.
-
-    Delegates the tree-kill to :func:`agent.deadline.kill_process_tree`
-    (#85125 4d) — same taskkill /T /F on Windows and killpg-when-leader on
-    POSIX, plus a psutil descendant sweep that also reaches descendants that
-    ``setsid``'d into their own sessions. On any import/delegation failure it
-    falls back to the original local implementation
-    (:func:`_legacy_kill_process_tree`), so the fail-open contract holds even
-    in stripped environments.
+    On Windows a suspended descendant (e.g. ``git.exe``) can survive holding duplicates of the captured pipe
+    handles, which keeps the pipes from reaching EOF and leaks two reader threads + the process per fired
+    timeout — ``taskkill /T /F`` takes the whole tree down so the bounded drain that follows can actually
+    reach EOF. On POSIX the same class exists: killing the launcher leaves descendants (credential helpers,
+    ``git-remote-https``, hook children) running and holding the pipe write ends. Callers spawn the child in
+    its own process group (``process_group=0``, Python ≥3.11), so when — and only when — the child leads its
+    own group (``pgid == pid``), the entire group is signalled with ``os.killpg``. The ownership check means
+    a fallback spawn that shares our group can never cause us to kill unrelated processes. Ported from
+    openai/codex#36793 ("Terminate timed-out Git process trees"); generalized for the shell-hook runner via
+    openai/codex#37527 ("Terminate timed-out hook process trees").
     """
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree
@@ -609,24 +760,17 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     except Exception:
         _legacy_kill_process_tree(proc)
         return
-    # Ensure Popen's own bookkeeping sees the exit (matches the legacy body:
-    # a direct kill() so communicate()/wait() cannot hang on a stale handle).
+    # Ensure Popen's own bookkeeping sees the exit so communicate()/wait() cannot hang.
     try:
         proc.kill()
     except OSError:
         pass
 
 
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
-    """Pre-#85125 local tree-kill — fallback when agent.deadline is unavailable.
-
-    Kept verbatim so ``kill_process_tree`` can honor its swallow-everything
-    contract even when the delegation path itself fails (partial install,
-    import cycle during teardown).
-    """
+def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
+    """Local tree-kill fallback when agent.deadline is unavailable (partial install, cycle)."""
     if not IS_WINDOWS:
-        # Group-kill first: verify the child actually leads its own process
-        # group before signalling it, so we never blast a shared group.
+        # Verify the child leads its own process group before signalling, never a shared group.
         try:
             import signal as _signal
 
@@ -640,140 +784,118 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
     except OSError:
         pass
     if IS_WINDOWS:
-        # No identity guard here on purpose: *proc* is our own retained
-        # ``Popen`` handle. The child cannot be reaped (and its PID cannot be
-        # recycled) while we still hold the handle, so an identity check could
-        # only ever false-refuse a legitimate cleanup. The fail-closed
-        # ``pid_is_hermes`` guard is for BARE pids from state files or process
-        # scans, where recycling is real.
+        # No identity guard on purpose: *proc* is our own retained Popen handle, so the PID cannot
+        # be recycled while we hold it. The fail-closed ``pid_is_hermes`` guard is for BARE pids.
         try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                timeout=2,
-                check=False,
-                creationflags=windows_hide_flags(),
-            )
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=2, check=False,
+                           creationflags=windows_hide_flags())
         except Exception:
             pass
 
 
 def bounded_probe_run(
-    argv: Sequence[str],
-    *,
-    timeout: float,
-    errors: str = "replace",
-    env: "Mapping[str, str] | None" = None,
-) -> "subprocess.CompletedProcess[str] | None":
-    """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
-    for fail-open probe call sites. Returns a ``CompletedProcess`` when the
-    child finished within *timeout* (any exit code), or ``None`` on spawn
-    failure or timeout.
+    argv: Sequence[str], *, timeout: float, errors: str = "replace",
+    env: Mapping[str, str] | None = None, cwd: str | os.PathLike[str] | None = None,
+    raise_on_spawn_failure: bool = False, input: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
-    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup
-    calls an *unbounded* ``communicate()`` after killing the direct child.
-    Killing it can leave a descendant (``git.exe`` under a launcher shim,
-    ``conhost.exe`` under wmic/powershell) holding duplicates of the captured
-    stdout/stderr handles, so the pipes never reach EOF and the reader-thread
-    join blocks forever. The wmic / ``Get-CimInstance Win32_Process`` gateway
-    scan hit exactly this during ``hermes update`` on slow-WMI machines
-    (#87134); the git probes hit it first (#68609 / #66037).
+    ``input`` is written to the child's stdin (closed afterwards); without it stdin is ``DEVNULL``.
 
-    The bounded flow: an explicit ``communicate(timeout)``, then on any
-    failure a tree-kill (see :func:`kill_process_tree`) plus a bounded 1s
-    post-kill drain; if the pipes are still held after that, they're abandoned
-    (the orphaned reader threads are daemonic and cost nothing).
+    Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
+    ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
+    exception propagates instead, so callers that treat a *timeout* as a verdict can still tell
+    "our own probe never started" apart from "the child hung".
 
-    The spawn contract mirrors the ``run`` calls it replaces: PIPE/PIPE/DEVNULL,
-    ``text`` with UTF-8 decoding (*errors* configurable — the process scans use
-    ``"ignore"``), and the hidden-window ``creationflags`` on Windows only. On
-    POSIX the child is placed in its own process group (``process_group=0``,
-    Python ≥3.11) so timeout cleanup can take down descendants with the
-    launcher instead of orphaning them.
+    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
+    ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
+    launcher shim, ``conhost.exe`` under wmic/powershell) holding duplicates of the captured stdout/stderr
+    handles, so the pipes never reach EOF and the reader-thread join blocks forever. The wmic /
+    ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
+    machines (#87134); the git probes hit it first (#68609 / #66037).
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    job = None
     try:
-        proc = subprocess.Popen(
-            list(argv),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors=errors,
-            env=dict(env) if env is not None else None,
-            **_popen_kwargs,
-        )
+        # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
+        # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
+        # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
+        # on windows-latest). KILL_ON_JOB_CLOSE reaches it regardless of ancestry.
+        from hermes_cli.local_runtime.processes import spawn_server
+
+        proc, job = spawn_server(
+            list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+            text=True, encoding="utf-8", errors=errors,
+            env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
+        if raise_on_spawn_failure:
+            raise
         return None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except Exception:
-        # Timeout OR any other communicate() failure (torn-down pipe, decode
-        # error): terminate the child + descendants and drain bounded. Leaving
-        # it running would leak the same suspended-descendant class this guards.
-        kill_process_tree(proc)
-        try:
-            proc.communicate(timeout=1)
-        except Exception:
-            pass
+        # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
+        # drain bounded — leaving it running would leak the suspended-descendant class this guards.
+        _close_job(job)
+        kill_and_drain(proc, 1)
         return None
+    # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
+    _close_job(job)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 
-def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
-    """Run a short, throwaway ``git`` probe and return stripped stdout, or ``""``
-    on ANY failure (nonzero exit, timeout, spawn error, decode error).
+def kill_and_drain(proc: subprocess.Popen, seconds: float) -> tuple | None:
+    """Tree-kill *proc* (:func:`kill_process_tree`), then read what its pipes still hold for at
+    most *seconds*: ``(stdout, stderr)``, or ``None`` when a descendant the kill missed still
+    holds them. Those pipes are left to ``communicate()``'s reader threads, never closed
+    (closing a pipe a thread is reading blocks; a ``with Popen`` exit would close them)."""
+    kill_process_tree(proc)
+    try:
+        return proc.communicate(timeout=seconds)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        proc.stdin = proc.stdout = proc.stderr = None
+        return None
 
-    This is the shared, deadlock-safe replacement for
-    ``subprocess.run(["git", ...], timeout=...)`` at fail-open probe call sites
-    (``tui_gateway.git_probe.run_git``, ``agent.coding_context._git``).
 
-    **Security (GHSA-7x36-8jrh-v4pw):** these probes run automatically against
-    whatever directory the session sits in — the coding-workspace snapshot and
-    the gateway project-tree build fire ``git status`` / ``git branch`` before
-    any tool call, approval, or trust prompt. An index refresh executes the
-    repository-configured ``core.fsmonitor`` program, and other config keys
-    (hooks, pager, editor, credential helper) are execution sinks too. A repo
-    delivered as files with its ``.git`` directory intact (a shared zip, sync
-    folder, or USB stick — ``git clone`` never transfers ``.git/config``) would
-    otherwise get host code execution as the user. Every probe now runs under
-    :func:`noninteractive_git_env`, which pins those keys to inert values via
-    ``GIT_CONFIG_*`` and ignores global/system config. Diff-rendering callers
-    additionally pass :data:`NO_DRIVER_DIFF_FLAGS` (attribute-scoped drivers
-    can't be disabled through env overrides).
+def _close_job(job) -> None:
+    if job is None:
+        return
+    try:
+        job.close()
+    except Exception:
+        pass
 
-    Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup
-    calls an *unbounded* ``communicate()`` after killing git. Killing the
-    PATH-resolved launcher can leave a suspended descendant ``git.exe`` holding
-    duplicates of the captured stdout/stderr handles, so the pipes never reach
-    EOF and the reader-thread join blocks forever. On the Desktop agent-build
-    path (``_start_agent_build → _session_info → branch() → run_git``) that turned
-    an optional branch label into ``agent initialization timed out``
-    (issues #68609 / #66037).
 
-    The bounded flow: an explicit ``communicate(timeout)``, then on any failure a
-    tree-kill (see :func:`_kill_git_process_tree`) plus a bounded 1s post-kill
-    drain; if the pipes are still held after that, they're abandoned (the orphaned
-    reader threads are daemonic and cost nothing).
+def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: Mapping[str, str] | None = None) -> str:
+    """Run a short ``git`` probe and return stripped stdout, or ``""`` on ANY failure.
 
-    The normal-path spawn contract mirrors the previous ``run`` call byte-for-byte:
-    PIPE/PIPE/DEVNULL, ``text`` with UTF-8 ``errors="replace"`` decoding, and the
-    hidden-window ``creationflags`` on Windows only. On POSIX the probe is
-    additionally placed in its own process group (``process_group=0``,
-    Python ≥3.11) so timeout cleanup can take down descendants — credential
-    helpers, ``git-remote-https``, hook children — with the launcher instead of
-    orphaning them (see :func:`_kill_git_process_tree`; port of
-    openai/codex#36793). ``process_group`` only changes which group the child
-    belongs to; it does not detach the terminal or alter the fast path.
+    On Windows ``run()``'s post-timeout cleanup calls an unbounded ``communicate()``; a suspended
+    descendant git.exe holding the pipe handles then blocks forever. Here: bounded ``communicate``,
+    tree-kill plus a 1s drain, then abandon the pipes; on POSIX the probe gets its own process
+    group so cleanup also takes down credential/remote helpers.
+
+    Security (GHSA-7x36-8jrh-v4pw): these probes run automatically against whatever directory the
+    session sits in, before any tool call or trust prompt, and an index refresh executes the
+    repo-configured ``core.fsmonitor`` program. Every probe therefore runs under
+    :func:`noninteractive_git_env`; diff-rendering callers additionally pass
+    :data:`NO_DRIVER_DIFF_FLAGS` (attribute-scoped drivers can't be disabled via env).
+
+    Killing the PATH-resolved launcher can leave a suspended descendant ``git.exe`` holding duplicates of
+    the captured stdout/stderr handles, so the pipes never reach EOF and the reader-thread join blocks
+    forever. On the Desktop agent-build path (``_start_agent_build → _session_info → branch() → run_git``)
+    that turned an optional branch label into ``agent initialization timed out`` (issues #68609 / #66037).
+    The normal-path spawn contract mirrors the previous ``run`` call byte-for-byte: PIPE/PIPE/DEVNULL,
+    ``text`` with UTF-8 ``errors="replace"`` decoding, and the hidden-window ``creationflags`` on Windows
+    only. On POSIX the probe is additionally placed in its own process group (``process_group=0``, Python
+    ≥3.11) so timeout cleanup can take down descendants — credential helpers, ``git-remote-https``, hook
+    children — with the launcher instead of orphaning them (see :func:`kill_process_tree`; port of
+    openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
+    the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
-
-
-# Backward-compat alias — existing call sites/tests import the historical name.
-_kill_git_process_tree = kill_process_tree

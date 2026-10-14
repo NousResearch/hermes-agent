@@ -1,6 +1,6 @@
 """Invariant: the relay path sheds platform crypto — it re-validates nothing.
 
-Under the A2 trust model (see docs/relay-connector-contract.md §6), the
+Under the A2 trust model (see website/docs/developer-guide/relay-connector-contract.md §6), the
 *connector* is the sole crypto/identity boundary: it verifies/decrypts every
 inbound platform payload at the edge (it holds the tenant secrets), normalizes
 it to a tenant-scoped ``MessageEvent``, and forwards only the sanitized event.

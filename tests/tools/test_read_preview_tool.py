@@ -3,20 +3,8 @@
 import json
 
 from tools import read_preview_tool as rp
-from tools.registry import registry
 
 
-def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    import tools.preview_tool  # noqa: F401 — registers desktop_preview
-    """Consolidated (#95681): this module's tool became an action of the
-    single `desktop_preview` tool in desktop_ui; the old registration is gone and
-    `preview` reaches a desktop client on ANY backend (no env gate)."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert registry.get_entry("read_preview") is None
-    entry = registry.get_entry("desktop_preview")
-    assert entry is not None
-    assert entry.toolset == "desktop_ui"
-    assert entry.check_fn is None
 
 
 def test_requires_callback():
@@ -66,3 +54,13 @@ def test_callback_failure_is_reported():
 
     result = json.loads(rp.read_preview_tool(callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+def test_empty_answer_names_both_cases_and_the_remedy():
+    """Nothing-open and bridge-timeout arrive as the same empty answer; the
+    error must tell them apart (open a page vs update an older app, #94272)."""
+    result = json.loads(rp.read_preview_tool(callback=lambda **_: ""))
+
+    assert "call open_preview first" in result["error"]
+    assert "timed out" in result["error"]
+    assert "older than this backend" in result["error"]

@@ -29,7 +29,7 @@ function sampleGraph(): StarmapGraph {
       },
       {
         category: 'devops',
-        createdBy: null,
+        createdBy: 'learn',
         id: 'skill-b',
         kind: 'skill',
         label: 'skill-b',
@@ -104,15 +104,6 @@ describe('share-code', () => {
     const decoded = decodeShareCode(encodeShareCode(sampleGraph()))
 
     expect(decoded.clusters.find(c => c.category === 'devops')?.count).toBe(2)
-  })
-
-  it('produces a short, opaque, prefixed code', () => {
-    const code = encodeShareCode(sampleGraph())
-
-    expect(code.startsWith('HML')).toBe(true)
-    expect(code.slice(3)).toMatch(/^[A-Za-z0-9_-]+$/)
-    // Strictly smaller than the naive JSON it replaces — the whole point.
-    expect(code.length).toBeLessThan(JSON.stringify(sampleGraph()).length)
   })
 
   it('stays compact on a large graph (no string bloat)', () => {

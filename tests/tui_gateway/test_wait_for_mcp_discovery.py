@@ -10,7 +10,7 @@ the startup hang, and a no-op once discovery has finished.
 import threading
 import time
 
-import tui_gateway.entry as entry
+from tui_gateway import entry
 
 
 def _restore_thread_slot(saved):

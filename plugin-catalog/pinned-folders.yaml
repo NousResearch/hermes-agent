@@ -1,0 +1,21 @@
+name: pinned-folders
+repo: https://github.com/jacobhausler/hermes-pinned-folders
+sha: ec3cecf321c022ae0babd55db49fcfbb32f71db9
+subdir: ""
+description: "A Pinned tab in the Desktop sidebar that files your pinned chats into nested folders: drag to order and nest, folder colors, right-click menus (including Unpin), unread/working badges on collapsed folders, a filter box, open-folder-as-tabs, and layout export/import via the clipboard. Layout stays local to the app; pins belong to the backend. SDK-only build (desktop/plugin.js); no network."
+maintainer: jacobhausler
+tier: community
+category: desktop
+docs_url: https://github.com/jacobhausler/hermes-pinned-folders#readme
+version: "0.1.4"
+image: "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/ec3cecf321c022ae0babd55db49fcfbb32f71db9/docs/catalog-banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/ec3cecf321c022ae0babd55db49fcfbb32f71db9/docs/catalog-context-menu.png"
+  - "https://raw.githubusercontent.com/jacobhausler/hermes-pinned-folders/ec3cecf321c022ae0babd55db49fcfbb32f71db9/docs/catalog-filter.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

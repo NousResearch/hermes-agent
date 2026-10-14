@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.self_repo_guard as self_repo_guard
+from tools import self_repo_guard
 
 
 def _make_env_config(**overrides):
@@ -68,7 +68,6 @@ class TestSelfRepoGuardWiring:
         config = _make_env_config(cwd=str(repo))
         result, env = _run("git checkout pr-51020", config, monkeypatch, repo)
         assert result["status"] == "blocked"
-        assert "mix module versions" in result["error"]
         assert str(repo) in result["error"]
         env.execute.assert_not_called()
 

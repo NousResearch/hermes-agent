@@ -144,6 +144,7 @@ class TestAllowlistOps:
 
 
 
+    @pytest.mark.platforms("linux")
     def test_tilde_path_approval_records_resolvable_mtime(self, tmp_path, monkeypatch):
         """If the command uses ~ the approval must still find the file."""
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -171,7 +172,6 @@ class TestAllowlistOps:
         # Touch the script to bump its mtime then re-approve.
         import os
         import time
-        new_mtime = original_entry.get("script_mtime_at_approval")
         time.sleep(0.01)
         os.utime(script, None)  # current time
 

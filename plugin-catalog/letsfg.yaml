@@ -1,0 +1,20 @@
+name: letsfg
+title: LetsFG
+repo: https://github.com/LetsFG/LetsFG
+sha: 437b91df572aa4248e6747b6212c7db53cee4fc3
+subdir: integrations/hermes
+description: "Search and book real flights and hotels through the hosted LetsFG MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the letsfg travel-booking workflow skill bundled: fares across airlines and the major travel sites, flexible dates, destinations in a region, bookable hotel rates, then book, follow and stop bookings. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — hosted-only connector with no local code: every tool call goes to the vendor's remote MCP server at letsfg.co/mcp. Booking tools act on real money: a booking holds the price on the card saved on the user's LetsFG account (captured only once the airline or hotel confirms, released if it fails); per LetsFG, a booking, paid extra or hotel cancellation starts only when the user presses Approve in an e-mail from LetsFG, never from the conversation, and Hermes itself does not prompt before these tools unless you set `trust: untrusted` on the letsfg MCP server. Card details are only ever entered on letsfg.co, never in the conversation. Traveller details given for a booking (name, date of birth, gender, passport, contact, address) are sent to LetsFG and saved on that account. OAuth must be enabled with `hermes mcp add letsfg --url https://letsfg.co/mcp --auth oauth --connect-timeout 300`; the bundled mcp.json alone yields 401."
+maintainer: LetsFG
+tier: community
+category: tools
+version: "1.1.0"
+docs_url: https://github.com/LetsFG/LetsFG/tree/main/integrations/hermes
+image: https://raw.githubusercontent.com/LetsFG/LetsFG/437b91df572aa4248e6747b6212c7db53cee4fc3/integrations/hermes/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one extra command after install, because a portable mcp.json cannot declare OAuth: hermes mcp add letsfg --url https://letsfg.co/mcp --auth oauth --connect-timeout 300"

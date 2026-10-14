@@ -85,11 +85,15 @@ function installDelegate(): void {
   setSessionTileDelegate({
     archiveSession: vi.fn(async () => undefined),
     branchSession: vi.fn(async () => undefined),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(async () => undefined),
     executeSlash: vi.fn(async () => undefined),
     interruptSession: vi.fn(async () => undefined),
     resumeTile: vi.fn(async () => RUNTIME_ID),
-    submitToSession: vi.fn(async () => undefined),
+    submitToSession: vi.fn(async () => ({
+      runtimeSessionId: RUNTIME_ID,
+      storedSessionId: null
+    })),
     updateSession
   })
 }

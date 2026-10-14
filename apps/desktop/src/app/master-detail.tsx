@@ -206,8 +206,12 @@ const DETAIL_PANE_COLLAPSED_PX = 4
 // strip <Button size="icon">'s larger built-in size — a custom utility class
 // isn't size-merge-aware, so Button's icon size would leak and blow it up.
 // Compose extra state (data-[state=open], hover:text-destructive) with cn().
+// The visible box stays 20px; a transparent 2px ::before ring grows the pointer
+// target to 24px, the WCAG 2.5.8 Target Size (Minimum) floor (audit #38072,
+// finding 6), without changing how the button looks or lays out. The 2.5.5
+// enhanced 44px target is deliberately not met here.
 export const ICON_BUTTON =
-  'size-5 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
+  "size-5 relative cursor-pointer rounded-[4px] text-muted-foreground/70 before:absolute before:-inset-0.5 before:content-[''] hover:bg-(--ui-control-active-background) hover:text-foreground"
 
 export function DetailPane({
   actions,

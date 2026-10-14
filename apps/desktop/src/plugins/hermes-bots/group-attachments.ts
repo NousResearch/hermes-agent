@@ -27,8 +27,8 @@ function groupAttachmentKind(file: File): AttachmentKind {
 
 /** File objects → [{ name, data, kind }] (data URLs), oversized files skipped
  *  with a toast. Images are downscaled; PDFs and other files ride as raw data
- *  URLs for the gateway's pdf.attach / file.attach staging. Shared by the
- *  picker button, the composer paste handler, and room drag & drop. */
+ *  URLs for the gateway's file.attach staging. Shared by the picker button,
+ *  the composer paste handler, and room drag & drop. */
 export async function filesToGroupAttachments(files: File[] | FileList | null | undefined): Promise<Attachment[]> {
   const picked: Attachment[] = []
 

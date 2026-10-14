@@ -11,26 +11,40 @@
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
+import { backendProfileArg } from './profile-id-guard'
+
 /**
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
  */
 export function serveBackendArgs(profile?: string) {
-  const head = profile ? ['--profile', profile] : []
+  // A non-slug value (numeric roster id, display label) must never cross into
+  // spawn argv: the CLI used to str()-coerce it into a phantom profiles/0 dir (#88842).
+  const pinned = backendProfileArg(profile)
+  const head = pinned ? ['--profile', pinned] : []
 
   return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
 }
+
+// Flags that consume the next token; the subcommand is the first bare token
+// that is not one of their values. `--profile=serve` never collides (it is a
+// different string), but the two-token `--profile serve` / `-p serve` do.
+const VALUE_FLAGS = new Set(['-m', '--profile', '-p'])
 
 /**
  * Rewrite a resolved backend argv from `serve` to the legacy
  * `dashboard --no-open` form, preserving every other argument (incl. a leading
  * `-m hermes_cli.main` and any `--profile <name>`). Returns a copy; if there is
- * no `serve` token the argv is returned unchanged.
+ * no `serve` subcommand token the argv is returned unchanged.
  */
 export function dashboardFallbackArgs(args) {
-  const i = args.indexOf('serve')
+  let i = 0
 
-  if (i === -1) {
+  while (i < args.length && args[i] !== 'serve') {
+    i += VALUE_FLAGS.has(args[i]) ? 2 : 1
+  }
+
+  if (i >= args.length) {
     return args.slice()
   }
 

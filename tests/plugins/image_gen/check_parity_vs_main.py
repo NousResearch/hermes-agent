@@ -191,6 +191,7 @@ def _run_scenario(repo_path: Path, label: str, config_yaml: str, env: dict) -> d
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     if out.returncode != 0:
         return {

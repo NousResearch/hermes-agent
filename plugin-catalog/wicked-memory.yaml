@@ -1,0 +1,24 @@
+name: wicked-memory
+repo: https://github.com/choaticpixels/hermes-wicked-memory
+sha: 3a262dcb7f6ec95966b63a66b434c8885b3dfdf2
+version: "0.1.0"
+description: "Persistent, wallet-scoped long-term memory for Hermes: remember, semantic recall, versioned update, history and approved hard delete, backed by the hosted Wicked Memory service, plus skills for using it and for connecting the Wicked MCP server. Works with no setup (a wallet is generated on first use; search uses the service's shared free key). Disclosure — sends the memory text and search queries the agent chooses to memory.wickedapi.com (or your configured base_url), each request signed by the agent's wallet, plus one GET to /v1/status on first use to read the published community key; stores a generated private key unencrypted in the plugin data dir unless you supply WICKED_MEMORY_PRIVATE_KEY; no shell commands, no background processes, no telemetry; every wicked_memory_forget asks for human approval. The bundled wicked-suite-mcp skill walks you through adding the author's hosted Wicked MCP server (https://mcp.wickedapi.com/mcp, 75 tools, some x402-priced); that server is a separate manual step and is not covered by this pin."
+maintainer: choaticpixels
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/choaticpixels/hermes-wicked-memory#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - wicked_memory_remember
+    - wicked_memory_recall
+    - wicked_memory_update
+    - wicked_memory_history
+    - wicked_memory_forget
+    - wicked_memory_whoami
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

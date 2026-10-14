@@ -1,0 +1,30 @@
+name: mrscraper
+repo: https://github.com/ai-mrscraper/hermes-mrscraper-plugin
+sha: 87f7b14132671ae9d02b5edb7e69f64b0982a31b
+description: "MrScraper web search, rendered extraction, crawling, and scraper tools. Disclosure — every tool call is a paid MrScraper API request billed to your account; URLs, prompts and schemas you pass are sent to mrscraper.com."
+maintainer: ai-mrscraper
+tier: community
+category: web
+docs_url: https://github.com/ai-mrscraper/hermes-mrscraper-plugin#readme
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - mrscraper_get_account_info
+    - mrscraper_crawl_website_urls
+    - mrscraper_search_google_serp
+    - mrscraper_extract_page_by_prompt
+    - mrscraper_extract_listings
+    - mrscraper_extract_structured_data
+    - mrscraper_get_results
+    - mrscraper_get_latest_results
+    - mrscraper_get_result_detail
+    - mrscraper_create_prompt_scraper
+    - mrscraper_create_listing_scraper
+    - mrscraper_create_website_crawl_scraper
+    - mrscraper_run_existing_scraper
+    - mrscraper_run_existing_scraper_batch
+    - mrscraper_fetch_rendered_html
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MRSCRAPER_API_TOKEN

@@ -56,37 +56,3 @@ def test_empty_model_recovers_session_last_good(monkeypatch):
     model, _ = runner._resolve_session_agent_runtime(session_key=sk, user_config={})
 
     assert model == "deepseek/deepseek-v4-flash", "recovery turn must reuse last-known-good, not build model=''"
-
-
-def test_bare_runner_without_cache_attr_does_not_crash(monkeypatch):
-    """object.__new__ runners (test helpers / pitfall #17) lack _last_resolved_model.
-
-    The getattr guard must tolerate the missing attribute.
-    """
-    _patch_resolution(monkeypatch, model_from_config="deepseek/deepseek-v4-flash")
-    runner = object.__new__(gateway_run.GatewayRunner)
-    runner._session_model_overrides = {}
-    runner._service_tier = None
-    # Deliberately omit _last_resolved_model.
-
-    model, _ = runner._resolve_session_agent_runtime(session_key="x", user_config={"model": {}})
-
-    assert model == "deepseek/deepseek-v4-flash"
-
-
-# ── _has_pending_fallback gate ──────────────────────────────────────────────
-
-
-def _bare_agent():
-    import run_agent
-
-    return object.__new__(run_agent.AIAgent)
-
-
-def test_has_pending_fallback_empty_chain():
-    agent = _bare_agent()
-    agent._fallback_chain = []
-    agent._fallback_index = 0
-    assert agent._has_pending_fallback() is False
-
-

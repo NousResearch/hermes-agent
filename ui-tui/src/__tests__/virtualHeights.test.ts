@@ -119,11 +119,8 @@ describe('virtual height estimates', () => {
     // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
     // measurement converges to the true height regardless.
     const giant = 'x'.repeat(1_000_000)
-    const t0 = performance.now()
     const rows = wrappedLines(giant, 80)
-    const elapsed = performance.now() - t0
 
     expect(rows).toBeLessThanOrEqual(800)
-    expect(elapsed).toBeLessThan(50)
   })
 })

@@ -1,6 +1,6 @@
 ---
 title: "Nous Tool Gateway（工具网关）"
-description: "通过 Nous 订阅统一使用网页搜索、文生图、语音合成与浏览器自动化，无需单独申请 Firecrawl、FAL、OpenAI、Browser Use 等 API Key"
+description: "通过 Nous 订阅统一使用网页搜索、文生图、语音合成与浏览器自动化，无需单独申请网页搜索、FAL、OpenAI、Browser Use 等 API Key"
 sidebar_label: "Tool Gateway"
 sidebar_position: 2
 ---
@@ -11,13 +11,13 @@ sidebar_position: 2
 Tool Gateway 包含在付费 Nous Portal 订阅中。**[管理订阅 →](https://portal.nousresearch.com/manage-subscription)**
 :::
 
-**Tool Gateway** 让已付费的 [Nous Portal](https://portal.nousresearch.com) 用户通过同一份订阅，直接使用网页搜索、文生图、语音合成（TTS）与浏览器自动化，而**不必**再分别注册 Firecrawl、FAL、OpenAI、Browser Use 等服务的 API Key。
+**Tool Gateway** 让已付费的 [Nous Portal](https://portal.nousresearch.com) 用户通过同一份订阅，直接使用网页搜索、文生图、语音合成（TTS）与浏览器自动化，而**不必**再分别注册网页搜索、FAL、OpenAI、Browser Use 等服务的 API Key。
 
 ## 包含能力
 
 | 工具 | 作用 | 若不用网关，可改用 |
 |------|------|---------------------|
-| **网页搜索与抓取** | 通过 Firecrawl 搜索并抽取页面内容 | `FIRECRAWL_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`TAVILY_API_KEY` |
+| **网页搜索与抓取** | 由 Nous 托管的搜索与页面内容抽取 | `FIRECRAWL_API_KEY`、`EXA_API_KEY`、`PARALLEL_API_KEY`、`TAVILY_API_KEY` |
 | **文生图** | 通过 FAL 生成图像（8 个模型：FLUX 2 Klein/Pro、GPT-Image、Nano Banana Pro、Ideogram、Recraft V4 Pro、Qwen、Z-Image） | `FAL_KEY` |
 | **语音合成** | 通过 OpenAI TTS 将文字转为语音 | `VOICE_TOOLS_OPENAI_KEY`、`ELEVENLABS_API_KEY` |
 | **浏览器自动化** | 通过 Browser Use 控制云端浏览器 | `BROWSER_USE_API_KEY`、`BROWSERBASE_API_KEY` |
@@ -49,7 +49,7 @@ Your Nous subscription includes the Tool Gateway.
   text-to-speech, and browser automation through your Nous subscription.
   No need to sign up for separate API keys — just pick the tools you want.
 
-  ○ Web search & extract (Firecrawl) — not configured
+  ○ Web search & extract — not configured
   ○ Image generation (FAL) — not configured
   ○ Text-to-speech (OpenAI TTS) — not configured
   ○ Browser automation (Browser Use) — not configured
@@ -97,7 +97,7 @@ browser:
 
 当某工具类别的选择键为 `nous` 时，运行时会把 API 调用路由到 Nous Tool Gateway，而不是使用直连 Key：
 
-1. **网页工具** — `web_search` / `web_extract` 走网关的 Firecrawl 端点  
+1. **网页工具** — `web_search` / `web_extract` 走网关的托管搜索端点  
 2. **文生图** — `image_generate` 走网关的 FAL 端点  
 3. **TTS** — `text_to_speech` 走网关的 OpenAI Audio 端点  
 4. **浏览器** — `browser_navigate` 等走网关的 Browser Use 端点  

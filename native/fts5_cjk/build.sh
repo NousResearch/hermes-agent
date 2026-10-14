@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build libfts5_cjk.so and install to ~/.hermes/lib/ (or $1).
 #
 # Uses the system sqlite3ext.h when present, else the vendored copy in

@@ -99,6 +99,7 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+| `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
 
 ## Per-turn context selection and observation
 
@@ -133,6 +134,88 @@ Contract:
 - **`select_context()` is request-only.** The returned list replaces the messages for a single provider call; persisted history is never written. Returning `None`, `[]`, a non-list, or a list containing non-dicts all fall open to the unmodified request.
 - **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
 - **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only. **Coverage is best-effort:** it fires from the standard turn-finalization seam. Some abnormal early-return paths in the loop (e.g. a content-policy block or a provider terminal failure) persist and return without routing through finalization, so they do not currently emit this hook — treat it as a best-effort observation for completed turns, not a guaranteed callback for every early exit. Unifying all terminal paths behind one finalization seam is a separate follow-up.
+
+### Stable message identity: `message_uid`
+
+Every message the host has persisted carries `message_uid`: a 32-hex id
+(`uuid4().hex`) minted once, at the row's first insert, and stored in
+`messages.message_uid`. It is the key to use when an engine keeps its own
+per-message state (a verbatim store, a summary DAG, per-message embeddings)
+and needs to recognise a message it has already seen. The physical row id
+(`_row_id`) is not that key: it is re-issued by every copy and only present on
+some restore paths.
+
+What the host guarantees:
+
+- **Present on every engine surface** once a row exists: the `compress()`
+  input list, `on_turn_complete()` clones, `post_llm_call`'s
+  `conversation_history`, `on_session_end()` messages, and every restored
+  history (CLI, TUI, ACP, gateway, compression's durable-snapshot adoption). It
+  is restored unconditionally, unlike `_row_id`. The one exception is a row
+  written before the column existed: on a large store the upgrade mints those
+  over the next few opens, so a legacy row can briefly arrive without one.
+  Treat a missing uid as "no identity yet", never as an error.
+- **Kept across every host copy of the same logical message:** in-place
+  compaction generations and their concurrent-tail clones, rotation-child
+  handoff copies and foreign-tail clones, `replace_messages` re-issues,
+  rewind, export/import, and `/branch` / Desktop branch copies (the child
+  session's copied rows keep the parent's uids).
+- **Kept across content rewrites of the same row:** the persist override, the
+  sanitizer's row-addressed rewrite, the interrupted-stream fill. Treat
+  `(message_uid, content)` as a *version* of the message; never fail closed on
+  a content change under a known uid.
+- **Merges keep the first constituent's uid and record the rest.** Whenever
+  the host folds one durable message into another (alternation repair's
+  consecutive-user and consecutive-assistant merges, the compressor restating
+  an in-flight task onto its summary carrier, the real user anchor folded into
+  a trailing scaffolding turn, micro-compaction's adjacent-user merge), the
+  composite keeps the uid of the constituent whose text comes first and
+  records the others in `_absorbed_message_uids` (text order). The list is
+  persisted on the survivor's row (`messages.absorbed_message_uids`) and
+  restored with it, so after a restart an engine still sees that `A\n\nB` is
+  the host's fold of `A` and `B` rather than a new message. Merges made while
+  restoring a history (`repair_alternation=True`) record the witness the same
+  way. A row the host discards rather than folds (a provisional verification
+  candidate superseded by the final answer, or an assistant turn whose text
+  sits beside multimodal content, which is never joined) is not recorded: the
+  witness names text that lives on in the composite, nothing else.
+- **Engine-authored rows keep the uid the engine sets.** If your `compress()`
+  output pre-stamps `message_uid` on a summary carrier (or any row it emits),
+  the host writes that value through the commit, both in place and on
+  rotation, and every later restore and copy returns it; rows without one are
+  minted at insert. An engine can therefore recognise its own rows by uid.
+- **A uid names one logical message, not one row.** Copies of a message share
+  it by design, and a host path that re-appends an edited or merged message
+  next to a still-active earlier row (a persist override on a restored list,
+  a merged survivor flushed as a new row) leaves two active rows with one uid.
+  Never assume per-row uniqueness in the active set; key your own state on
+  the uid and treat the later row as the current version.
+- **Tool calls get per-occurrence ids too.** Provider tool-call ids repeat
+  (Hermes mints deterministic `call_<12hex>` ids for identical calls, and models
+  reuse ids), so an assistant message carries `_tool_call_uids`, a
+  `{tool_call_id: uid}` map for its `tool_calls`, and each tool-result message
+  carries the matching `_tool_call_uid`. Calls that repeat a provider id inside
+  one response share one uid (every result carries it, so no call looks
+  unanswered). When a fold leaves one message holding calls from two turns
+  that share an id, that id maps to a list of uids, one per occurrence in
+  `tool_calls` order. The provider-facing `id` inside
+  `tool_calls` is untouched. Both are minted at the assistant row's first
+  insert, paired onto the result when it is flushed (same batch, or from the
+  live list when the result lands in a later flush) and on restore (from the
+  preceding assistant row), persisted (`messages.tool_call_uids`,
+  `messages.tool_call_uid`), and kept across the same copy and rewrite paths
+  as `message_uid`. A result whose call was never persisted with a uid has none.
+- **Never on the wire.** `message_uid`, `_absorbed_message_uids`,
+  `_tool_call_uids` and `_tool_call_uid` are in
+  `PERSISTENCE_ONLY_MESSAGE_FIELDS`: stripped from every outgoing provider
+  copy and ignored by the token estimator. Engines that never read them are
+  unaffected.
+- **Absent only before the row exists.** The current turn's user message has
+  no uid during a preflight `compress()` that runs before the turn-start
+  flush; the same dict object receives it at that flush. Stores upgraded from
+  an older schema backfill a uid onto every existing row once (schema v31),
+  and an insert trigger mints one for any row an older build writes into a
+  v31 store afterwards (that build's live dicts still lack it until restored).
 
 ### When to use these hooks — and when NOT to
 
@@ -190,7 +273,7 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ### Via directory (recommended)
 
-Place your engine in `plugins/context_engine/<name>/`. The `__init__.py` must export a `ContextEngine` subclass. The discovery system finds and instantiates it automatically.
+Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
 
 ### Via general plugin system
 
@@ -204,6 +287,21 @@ def register(ctx):
 
 Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
 
+The registered instance is shared process-wide, but every `AIAgent` (parent, subagents, gateway
+sessions) needs its own engine so a child's `update_model()` cannot mutate the parent's budget.
+Hermes therefore calls `engine.clone_for_agent()` on the registered instance at each agent init.
+The default is `copy.deepcopy(self)`; override it when the engine holds state that cannot be
+deep-copied (locks, SQLite or HTTP connections) and return a fresh engine sharing the durable
+backend while copying only the mutable budget fields. If the clone raises, the agent falls back to
+the built-in compressor and logs `Context engine 'X' could not be safely copied for this agent`.
+
+```python
+def clone_for_agent(self):
+    clone = LCMEngine(db_path=self.db_path)  # reopens its own connection
+    clone.threshold_percent = self.threshold_percent
+    return clone
+```
+
 ## Lifecycle
 
 ```
@@ -212,7 +310,7 @@ Only one engine can be registered. A second plugin attempting to register is rej
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway expiry)
+6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
@@ -267,6 +365,6 @@ Your engine must therefore assume:
 
 ## See also
 
-- [Context Compression and Caching](/developer-guide/context-compression-and-caching) — how the built-in compressor works
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — analogous single-select plugin system for memory
-- [Plugins](/user-guide/features/plugins) — general plugin system overview
+- [Context Compression and Caching](./context-compression-and-caching.md) — how the built-in compressor works
+- [Memory Provider Plugins](./memory-provider-plugin.md) — analogous single-select plugin system for memory
+- [Plugins](../user-guide/features/plugins.md) — general plugin system overview

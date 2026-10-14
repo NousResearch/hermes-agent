@@ -56,10 +56,7 @@ if sys.platform == "win32":
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Windows-only live probe: CLOSE-WAIT reconnect behavior (#87057)",
-    ),
+    pytest.mark.platforms("windows"),  # Windows-only live probe: CLOSE-WAIT reconnect behavior (#87057)
 ]
 
 
@@ -242,13 +239,15 @@ async def test_drain_bounded_and_functional_when_close_wedges_live(monkeypatch):
         await polling_req.initialize()
         code, _ = await polling_req.do_request(server.url, "POST")
         assert code == 200
-        old_client = polling_req._client  # noqa: SLF001
+        old_client = polling_req._client
         _diag(server, "wedge-probe: after first round-trip")
 
-        async def _wedged_shutdown():
+        async def _wedged_shutdown(_request):
             await asyncio.Event().wait()
 
-        monkeypatch.setattr(polling_req, "shutdown", _wedged_shutdown)
+        # PTB 22.8 slots HTTPXRequest instances, so the bound method is
+        # read-only. Patch the class seam for this one live request instead.
+        monkeypatch.setattr(HTTPXRequest, "shutdown", _wedged_shutdown)
         monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 1.0)
 
         adapter = _make_adapter()
@@ -264,7 +263,7 @@ async def test_drain_bounded_and_functional_when_close_wedges_live(monkeypatch):
             f"drain with a wedged shutdown must stay bounded, took {elapsed:.2f}s"
         )
 
-        new_client = polling_req._client  # noqa: SLF001
+        new_client = polling_req._client
         assert new_client is not old_client, (
             "drain must swap in a fresh HTTP client when shutdown wedges "
             "(initialize() no-ops while is_closed is False)"

@@ -1,6 +1,9 @@
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
+
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -19,8 +22,6 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
-
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -95,11 +96,13 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
   description: string
+  /** Server→client request id; the answer is the response frame for it. */
+  requestId: string
   smartDenied?: boolean
 }
 
@@ -112,7 +115,7 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyBatchQuestion {
+export interface ClarifyQuestion {
   choices: string[] | null
   multiSelect?: boolean
   qid: string
@@ -120,11 +123,8 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
-  choices: string[] | null
-  question: string
   requestId: string
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyBatchQuestion[]
+  questions: ClarifyQuestion[]
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
@@ -174,61 +174,15 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  cwd?: string
-  fast?: boolean
-  install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
-}
-
-export interface Usage {
-  active_subagents?: number
-  /** Rolling mean API latency over the last 10 calls (seconds). */
-  avg_latency_s?: number
-  /** Rolling output tokens/sec over the last 10 calls. */
-  avg_tps?: number
-  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
-  cache_hit_pct?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
+export type SessionInfo = SessionLiveInfo
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string
@@ -238,6 +192,31 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
+/**
+ * `vault.save_login` server→client request — save a new website login from a
+ * browser sign-in page. Two-step capture (identifier shown, password masked);
+ * the answer goes only to the encrypted vault, never to the model.
+ */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
+/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
+export interface VaultCodeReq {
+  hint: string
+  requestId: string
+  site: string
 }
 
 export interface PanelData {

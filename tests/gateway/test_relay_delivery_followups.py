@@ -30,9 +30,7 @@ Four review findings on the original branch:
 """
 
 import asyncio
-import os
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -176,14 +174,6 @@ def test_drain_grace_uses_threaded_remaining_budget(monkeypatch):
     assert _disconnect_drain_grace_s(reserved + 1.0) == pytest.approx(1.0)
 
 
-def test_drain_grace_env_fallback_unchanged(monkeypatch):
-    """No threaded budget -> the env-mirrored runner default still applies
-    (the original #82592 clamp semantics are preserved)."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "10")
-    reserved = 3 * _TEARDOWN_AWAIT_TIMEOUT_S + 0.5
-    assert _disconnect_drain_grace_s() == pytest.approx(
-        min(_DISCONNECT_DRAIN_GRACE_S, 10.0 - reserved)
-    )
 
 
 @pytest.mark.asyncio

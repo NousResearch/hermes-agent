@@ -53,8 +53,11 @@ const {
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   pruneSecondaryGateways,
-  setPrimaryGateway
+  setPrimaryGateway,
+  SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
+
+const { SOURCE_SWITCH_DIAL_TIMEOUT_MS } = await import('@/lib/with-timeout')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -152,7 +155,11 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     // lease released, the idle entry must be disposed exactly as before.
     await ensureGatewayForProfile('default')
 
+    // Age the socket past the min-lifetime grace so this prune asserts the
+    // lease release, not the freshly-opened spare (#94769).
+    vi.useFakeTimers({ now: Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000 })
     pruneSecondaryGateways(new Set())
+    vi.useRealTimers()
 
     expect(secondaryGateways[0].close).toHaveBeenCalled()
   })
@@ -174,12 +181,70 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
-    // Past the lease window: reclaimed. (Lease is wall-clock bounded so a
-    // leaked lease cannot pin a dead entry forever.)
-    vi.setSystemTime(Date.now() + 31_000)
+    // Past the lease window — which now spans a whole dial budget (#120298) —
+    // reclaimed. (Lease is wall-clock bounded so a leaked lease cannot pin a
+    // dead entry forever.)
+    vi.setSystemTime(Date.now() + SOURCE_SWITCH_DIAL_TIMEOUT_MS + SECONDARY_MIN_LIFETIME_MS)
     pruneSecondaryGateways(new Set())
     expect(secondaryGateways[0].close).toHaveBeenCalled()
 
     releaseConnect()
+  })
+
+  it('a freshly opened idle secondary rides one prune tick before reaping (#94769)', async () => {
+    vi.useFakeTimers()
+
+    // A socket that just opened is a prune ↔ on-demand-dial race in the making:
+    // its consumer may not have registered in the keep-set yet, and closing it
+    // detaches the runtime → backend orphan-reap → `session.reclaimed` →
+    // re-resume on a fresh socket the next recompute closes again. The
+    // min-lifetime grace bounds that race without pinning the entry forever.
+    await ensureGatewayForProfile('bot')
+    expect(secondaryGateways[0].connectionState).toBe('open')
+
+    // Move away so 'bot' is neither active nor in the keep-set.
+    await ensureGatewayForProfile('default')
+    expect(secondaryGateways).toHaveLength(1)
+
+    // Immediately after open: spared by the grace window.
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    // Past the grace window: reclaimed as idle, as before.
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+    pruneSecondaryGateways(new Set())
+    expect(secondaryGateways[0].close).toHaveBeenCalled()
+  })
+
+  it('a dial the switch budget still allows is spared for its whole window, not just the first 30 s (#120298)', async () => {
+    vi.useFakeTimers()
+
+    try {
+      let releaseConnect: () => void = () => undefined
+      connectGate = new Promise<void>(resolve => {
+        releaseConnect = resolve
+      })
+
+      const switching = ensureGatewayForProfile('bot')
+      await flushUntilSecondaryRegistered()
+      expect(secondaryGateways).toHaveLength(1)
+
+      // The dial budget covers a whole remote bring-up chain (ssh connect, the
+      // platform/locate/version probes, the remote spawn's ready sentinel, the
+      // forward). A dial late in that window is still a dial the switch is
+      // waiting on, so a recompute landing here must find the target leased —
+      // otherwise the pruner disposes it, the bring-up lands afterwards, and
+      // the switch resolves on a socket that openSecondary has already closed.
+      vi.setSystemTime(Date.now() + SOURCE_SWITCH_DIAL_TIMEOUT_MS - 1_000)
+      pruneSecondaryGateways(new Set())
+      expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+      releaseConnect()
+      await switching
+
+      expect(secondaryGateways[0].connectionState).toBe('open')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

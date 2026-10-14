@@ -1,0 +1,16 @@
+name: secure-env-ingress
+repo: https://github.com/web3blind/hermes-secure-env-plugin
+sha: 78737e35e68e2b2954083d773b3ee8bcf926e921
+subdir: secure_env_ingress
+description: "One-use HTTPS forms for missing environment secrets, native encrypted Browser Vault logins/TOTP setup keys, standalone verification codes, and approved secret operations outside chat and LLM input. Disclosure — /senv setup supplies a skill using sudo for host packages and TLS setup after approval; the TLS listener binds all interfaces by default; pre_gateway_dispatch observes gateway messages to bind commands to their sender. In interactive Telegram sessions, browser_vault saves logins or fills a code field through the captured browser supervisor without explicitly submitting the site form. Browser Use compatibility does not prove the latest named tab association. secure_operation executes administrator-allowlisted, SHA-256-pinned external Python consumers with gateway privileges; consumers are trusted, not sandboxed, and none are enabled by default. Secret input is not persisted by this mode; consumers must enforce their own handling policy. Links are bearer authorization, not submitter identity; cancellation cannot stop an already-running consumer."
+maintainer: web3blind
+tier: community
+category: tools
+version: "0.6.4"
+docs_url: https://github.com/web3blind/hermes-secure-env-plugin#readme
+platforms: [linux]
+capabilities:
+  provides_tools: [browser_vault, secure_operation]
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []

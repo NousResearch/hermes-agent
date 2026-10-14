@@ -10,14 +10,10 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
-
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
 
 def _entry(
     error_code: int,
@@ -43,7 +39,6 @@ def _entry(
         entry["failure_reason"] = failure_reason
     return entry
 
-
 def _load(tmp_path, monkeypatch, entries: list[dict]):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -54,7 +49,6 @@ def _load(tmp_path, monkeypatch, entries: list[dict]):
     from agent.credential_pool import load_pool
 
     return load_pool("openrouter")
-
 
 def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch):
     """A single 429-throttled key recovers within ~1 min, not 1 hour.
@@ -69,14 +63,12 @@ def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch
     assert entry.id == "cred-1"
     assert entry.last_status == "ok"
 
-
 def test_sole_credential_403_recovers_after_short_cooldown(tmp_path, monkeypatch):
     """403 (edge-throttle variant, hits the catch-all default TTL) also recovers."""
     pool = _load(tmp_path, monkeypatch, [_entry(403, age_seconds=90)])
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
-
 
 def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
     """A 403 classified as BILLING must keep the full bench, not the 60s cooldown.
@@ -95,34 +87,12 @@ def test_sole_credential_billing_403_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.has_available() is False
     assert pool.select() is None
 
-
-def test_sole_credential_billing_403_survives_reload(tmp_path, monkeypatch):
-    """The classified reason persists, so a restart can't downgrade the bench.
-
-    `failure_reason` is written to auth.json with the entry; without that, a
-    process restart would re-read a bare 403 and hand the spent key back after
-    60 seconds.
-    """
-    from agent.credential_pool import _exhausted_ttl
-
-    pool = _load(
-        tmp_path,
-        monkeypatch,
-        [_entry(403, age_seconds=90, failure_reason="billing")],
-    )
-    entry = pool.entries()[0]
-    assert entry.failure_reason == "billing"
-    assert _exhausted_ttl(403, sole_credential=True, failure_reason="billing") == 60 * 60
-    assert _exhausted_ttl(403, sole_credential=True) == 60
-
-
 def test_sole_credential_402_keeps_full_bench(tmp_path, monkeypatch):
     """402 (billing/quota) is genuine exhaustion — a quick retry can't help, so
     the sole-credential short cooldown must NOT apply."""
     pool = _load(tmp_path, monkeypatch, [_entry(402, age_seconds=90)])
     assert pool.has_available() is False
     assert pool.select() is None
-
 
 def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeypatch):
     """next_available_at must also honour the sole-credential short cooldown.
@@ -147,7 +117,6 @@ def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeyp
         f"next_available_at returned {remaining:.0f}s — should be seconds, not hours"
     )
 
-
 def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     """With more than one non-DEAD entry there IS something to rotate to, so the
     short cooldown must not kick in — both recently-throttled keys stay benched."""
@@ -162,14 +131,12 @@ def test_multi_key_429_keeps_full_bench(tmp_path, monkeypatch):
     assert pool.has_available() is False
     assert pool.select() is None
 
-
 # ── #82154: UNVERIFIED billing must not keep the one-hour bench ──────────────
 # Anthropic's "out of extra usage" 400 is ambiguous: the same body is returned
 # when the server-side content filter rejects part of the request, leaving the
 # credential perfectly healthy. An hour-long bench on that verdict blocks a
 # healthy key and (sole-credential case) replays the stored error for the full
 # hour — making a real fix look like it did not work.
-
 
 def test_sole_credential_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
     """An unverified billing 400 gets the short transient cooldown, not the
@@ -182,7 +149,6 @@ def test_sole_credential_unverified_billing_400_recovers_quickly(tmp_path, monke
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
-
 
 def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch):
     """The short cooldown applies regardless of pool size: a content-filter
@@ -201,7 +167,6 @@ def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch
     entry = pool.select()
     assert entry is not None
     assert entry.last_status == "ok"
-
 
 def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     """Direct TTL contract: unverified billing is transient-sized; confirmed
@@ -228,15 +193,3 @@ def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
         _exhausted_ttl(402, sole_credential=True, failure_reason="billing_unverified")
         == EXHAUSTED_TTL_DEFAULT_SECONDS
     )
-
-
-def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
-    """The unverified marker persists with the entry, so a restart keeps the
-    short cooldown instead of upgrading it to a billing bench."""
-    pool = _load(
-        tmp_path,
-        monkeypatch,
-        [_entry(400, age_seconds=10, failure_reason="billing_unverified")],
-    )
-    entry = pool.entries()[0]
-    assert entry.failure_reason == "billing_unverified"

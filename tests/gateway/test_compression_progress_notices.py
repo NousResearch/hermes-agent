@@ -59,7 +59,7 @@ def progress_notices_enabled(monkeypatch):
 @pytest.fixture
 def progress_notices_default(monkeypatch):
     """Gateway config without the key — the silent-by-design default."""
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

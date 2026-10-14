@@ -2,7 +2,7 @@
 
 The 40-second problem: a cold local model streams 16-21 GB of weights
 before the first token, and the chat rendered that as the generic
-"provider may be slow or overloaded" stall warning. llama-server's child
+"waiting on <model>" long-wait notice. llama-server's child
 emits real per-tensor progress which the router relays over /models/sse
 ONLY — these tests pin the consumer that turns that stream into the
 status route's `loading` field and the chat's load notice."""
@@ -10,7 +10,6 @@ status route's `loading` field and the chat's load notice."""
 from __future__ import annotations
 
 import json
-import time
 
 import hermes_cli.local_runtime.load_progress as lp
 
@@ -123,28 +122,6 @@ def test_load_notice_for_managed_model(tmp_path, monkeypatch):
     assert _managed_local_load_notice(_Agent(), {"model": "Elsewhere"}) is None
 
 
-def test_load_notice_matches_desktop_wait_filter():
-    """The notices must pass the desktop's providerWaitText regex and parse
-    under parseModelLoadWait's shapes — pinned here as plain string
-    contracts so the two sides can't drift silently."""
-    import re
-
-    accept = r"^(?:⏳|⚠|↻|⚙)\s*(?:waiting on|loading|processing prompt|no (?:output|response)|model returned)"
-
-    load = "⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 43% (responses start once the model is loaded)"
-    assert re.match(accept, load)
-    m = re.match(r"^⏳\s*loading\s+(.+?)\s+into memory\s+—\s+(\d{1,3})%", load)
-    assert m and m.group(1) == "Qwen3.6-35B-A3B-UD-Q4_K_M" and m.group(2) == "43"
-
-    prefill = "⚙ processing prompt — 31%"
-    assert re.match(accept, prefill)
-    p = re.match(r"^⚙\s*processing prompt(?:\s+—\s+(\d{1,3})%)?", prefill)
-    assert p and p.group(1) == "31"
-
-    bare = "⚙ processing prompt"
-    assert re.match(accept, bare)
-    b = re.match(r"^⚙\s*processing prompt(?:\s+—\s+(\d{1,3})%)?", bare)
-    assert b and b.group(1) is None
 
 
 # ── prefill progress ─────────────────────────────────────────

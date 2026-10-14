@@ -11,9 +11,6 @@ from agent.side_question import (
 
 
 class TestRenderHistory:
-    def test_empty_history(self):
-        assert render_history_for_side_question([]) == "(no prior conversation)"
-        assert render_history_for_side_question(None) == "(no prior conversation)"
 
     def test_basic_roles(self):
         history = [

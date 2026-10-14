@@ -1,0 +1,23 @@
+name: cloudflare-web-search
+repo: https://github.com/Adolanium/hermes-cloudflare-web-search
+sha: a0ee6267fb981154affcb77b52cf092a49fae9d5
+description: "Cloudflare Web Search backend for Hermes' existing web_search tool, with Ceramic, Exa, or Linkup selected in plugin settings. Search only; keep a separate extract backend. Disclosure — sends queries, result limits, gateway IDs, and optional BYOK aliases to api.cloudflare.com, which forwards searches to the selected provider and records them in AI Gateway logs. Requests can consume gateway credits or provider quota. Reads its own settings and CLOUDFLARE_WEB_SEARCH_API_TOKEN through Hermes' profile-scoped APIs. Registers one web provider, with no new tools, hooks, background processes, file writes, or self-updater. Independent community plugin."
+maintainer: Adolanium
+tier: community
+category: web
+title: Cloudflare Web Search
+docs_url: https://github.com/Adolanium/hermes-cloudflare-web-search#readme
+version: "1.0.1"
+platforms: []
+known_issues:
+  - >-
+    Set web.cache_enabled: false in every profile using this backend. Hermes' shared
+    search cache omits profiles and routing settings, so repeated queries can reuse
+    another profile's result or an earlier provider, account, gateway, or BYOK route.
+    This setting also disables the profile's extraction result cache.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CLOUDFLARE_WEB_SEARCH_API_TOKEN

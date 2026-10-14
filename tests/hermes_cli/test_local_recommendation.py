@@ -2,12 +2,12 @@
 
 The recommendation itself is DERIVED (catalog.recommended_entry: best
 quality among resident entries clearing the pleasant speed floor, else
-fastest resident, else least-painful spilled), so nobody hand-maintains
-per-hardware-class picks. This table is the editorial control on that
-derivation: it enumerates the real memory size classes x {discrete,
-unified} and pins every cell. A catalog change (new model, quality
-re-rank, quant swap) flips cells HERE, and the diff of this file in
-review IS the sign-off on what each machine class gets.
+fastest resident). Spilled models stay browseable but are never automatic
+recommendations, so nobody hand-maintains per-hardware-class picks. The
+one exception is a recognized product whose manufacturer chose its default
+(catalog._PRODUCT_DEFAULTS), tested at the bottom of this file.
+This table pins the model and reason across discrete and unified memory
+classes so changes to the recommendation remain reviewable.
 
 These are decision pins, not change-detectors: each cell is a choice a
 human approved, exactly like a golden file. When a cell flips on
@@ -28,7 +28,6 @@ from hermes_cli.local_runtime.catalog import (
     PLEASANT_FLOOR_TOK_S,
     predicted_decode_tok_s,
     recommended_entry,
-    recommended_id,
     select_variant,
 )
 from hermes_cli.local_runtime.estimator import HardwareBudget
@@ -36,16 +35,16 @@ from hermes_cli.local_runtime.estimator import HardwareBudget
 _GIB = 1 << 30
 
 
-def _discrete(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _discrete(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     margin = max(2 * _GIB, int(total * 0.09))
     return HardwareBudget(usable_vram_bytes=max(0, total - margin),
                           total_device_bytes=total,
                           ram_available_bytes=64 * _GIB, uma=False)
 
 
-def _unified(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _unified(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     return HardwareBudget(usable_vram_bytes=int(total * 0.80),
                           total_device_bytes=total,
                           ram_available_bytes=0, uma=True)
@@ -56,37 +55,38 @@ def _unified(size_gb: int) -> HardwareBudget:
 #
 #   VRAM | discrete                | unified
 #   -----+-------------------------+------------------------
-#     8  | qwen3.6-35b-a3b spilled | (none fits)
-#    16  | qwen3.6-35b-a3b spilled | (none fits)
+#     8  | (no recommendation)      | (none fits)
+#    16  | (no recommendation)      | (none fits)
 #    24  | qwen3.8-27b             | (none fits)
 #    32  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
-#    96  | qwen3.8-27b             | qwen3.6-35b-a3b
-#   128  | qwen3.8-flash-next      | qwen3.6-35b-a3b
+#    96  | qwen3.8-flash-next      | qwen3.8-flash-next
+#   128  | qwen3.8-flash-next      | qwen3.8-flash-next
 #   256  | qwen3.8-flash-next      | qwen3.8-flash-next
 #   512  | qwen3.8-flash-next      | qwen3.8-flash-next
 #
 # Reading guide for reviewers:
-# - Discrete <=16 GB: nothing runs resident; the 35B MoE is the least
-#   painful spill (active slice streams from host; a dense spill reads
-#   every weight over the bus).
-# - Discrete 24-96 GB: the 27B is the flagship experience — dense reads
+# - Discrete <=16 GB: nothing runs resident; no automatic recommendation.
+#   Browse remains available for explicit spill choices.
+# - Discrete 24-48 GB: the 27B is the flagship experience — dense reads
 #   at ~1 TB/s clear the floor easily, so quality decides.
-# - Discrete/unified where Flash Next fits resident (128 GB discrete,
-#   256+ GB unified): the frontier model is the pick — highest quality,
-#   and its sparse decode clears the floor even at UMA bandwidth
-#   (~24 tok/s predicted at 210 GB/s).
-# - Unified 32-128 GB — the Spark class, the reason this resolver
-#   exists: the dense 27B predicts ~13 tok/s at UMA bandwidth (below
-#   the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
+# - 96 GB and up, discrete or unified: Flash Next fits resident. Its
+#   IQ4_XS build loads ~60 GiB — the engine reads the 26.8 GiB per-layer
+#   embedding table from disk on demand — so with its MTP head and
+#   projector it holds the native 256K window in ~83 GiB on 128 GB, and
+#   144K on 96 GB. It is the
+#   pick: highest quality, and its sparse decode clears the floor even at
+#   UMA bandwidth (~28 tok/s predicted at 210 GB/s).
+# - Unified 32-48 GB: the dense 27B predicts ~13 tok/s at UMA bandwidth
+#   (below the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
 # - Unified <=24 GB: no entry passes the physics check inside the UMA
 #   budget (spilling is impossible on UMA by construction — the pool IS
 #   the RAM). The pane's browse flow is the path for those machines
 #   until a small catalog entry lands (revisit when one does).
 DECISION_TABLE = [
-    (8, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (8, "discrete", None, None),
     (8, "unified", None, None),
-    (16, "discrete", "qwen3.6-35b-a3b", "least-painful-spilled"),
+    (16, "discrete", None, None),
     (16, "unified", None, None),
     (24, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (24, "unified", None, None),
@@ -94,10 +94,10 @@ DECISION_TABLE = [
     (32, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (48, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (48, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
-    (96, "discrete", "qwen3.8-27b", "best-quality-resident"),
-    (96, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (96, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
+    (96, "unified", "qwen3.8-flash-next", "best-quality-resident"),
     (128, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (128, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (128, "unified", "qwen3.8-flash-next", "best-quality-resident"),
     (256, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
     (256, "unified", "qwen3.8-flash-next", "best-quality-resident"),
     (512, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
@@ -122,6 +122,71 @@ def test_recommendation_decision_table(size_gb, kind, expected, expected_reason)
         assert (picked[0].id, picked[1]) == (expected, expected_reason)
 
 
+@pytest.mark.parametrize("gpu_name", [
+    "NVIDIA RTX Spark N1X",
+    "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+    "NVIDIA RTX Spark N1X (updated device description)",
+])
+@pytest.mark.parametrize("capacity", [24, 48, 256])
+def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monkeypatch, capacity, gpu_name):
+    import subprocess
+    import urllib.request
+
+    from hermes_cli.local_runtime import catalog
+
+    def no_io(*args, **kwargs):
+        raise AssertionError("calibration must use shipped data, not a runtime benchmark")
+
+    monkeypatch.setattr(subprocess, "run", no_io)
+    monkeypatch.setattr(urllib.request, "urlopen", no_io)
+    # The derived rule alone; the RTX Spark's product default has its own tests below.
+    monkeypatch.setattr(catalog, "_PRODUCT_DEFAULTS", {})
+    budget = _unified(capacity)
+    budget.gpu_name = gpu_name
+    budget.platform = "win32"
+    entry = next(e for e in CATALOG if e.id == "qwen3.8-27b")
+    assert predicted_decode_tok_s(entry, entry.variants[0], budget) >= PLEASANT_FLOOR_TOK_S
+    picked = recommended_entry(budget)
+    expected = {24: None, 48: "qwen3.8-27b", 256: "qwen3.8-flash-next"}[capacity]
+    assert (picked[0].id if picked else None) == expected
+
+
+@pytest.mark.parametrize("budget_changes, entry_changes, quant, backend, spilled", [
+    ({"gpu_name": ""}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA Other Device"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA RTX Spark N1X2"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"gpu_name": "NVIDIA RTX Spark N1X Pro"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"platform": "linux"}, {}, "UD-Q4_K_M", "cuda", False),
+    ({"uma": False}, {}, "UD-Q4_K_M", "cuda", False),
+    ({}, {}, "UD-Q4_K_M", "vulkan", False),
+    ({}, {}, "UD-Q4_K_M", "cpu", False),
+    ({}, {"mtp": False}, "UD-Q4_K_M", "cuda", False),
+    ({}, {"mtp_draft_depth": 3}, "UD-Q4_K_M", "cuda", False),
+    ({}, {}, "Q8_0", "cuda", False),
+    ({}, {}, "UD-Q4_K_M", "cuda", True),
+])
+def test_unmatched_or_spilled_profiles_keep_the_existing_estimate(
+        monkeypatch, budget_changes, entry_changes, quant, backend, spilled):
+    from dataclasses import replace
+    import subprocess
+    import urllib.request
+
+    budget = replace(_unified(48), gpu_name="NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)",
+                     platform="win32")
+    budget = replace(budget, **budget_changes)
+    entry = replace(next(e for e in CATALOG if e.id == "qwen3.8-27b"), **entry_changes)
+    variant = replace(entry.variants[0], quant=quant)
+
+    def no_io(*args, **kwargs):
+        raise AssertionError("speed selection must be an offline lookup and arithmetic")
+
+    monkeypatch.setattr(subprocess, "run", no_io)
+    monkeypatch.setattr(urllib.request, "urlopen", no_io)
+    fallback = predicted_decode_tok_s(entry, variant, replace(budget, gpu_name=""),
+                                      spilled=spilled, backend=backend)
+    assert predicted_decode_tok_s(entry, variant, budget, spilled=spilled, backend=backend) == fallback
+
+
 # ── invariants behind the table (survive catalog changes) ──
 
 
@@ -143,7 +208,7 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     predicted decode is below the pleasant floor while a resident
     alternative clears it."""
     budget = _unified(128)
-    pick = recommended_id(budget)
+    pick = recommended_entry(budget)[0].id
     assert pick is not None
     entry = next(e for e in CATALOG if e.id == pick)
     choice = select_variant(entry, budget)
@@ -157,14 +222,62 @@ def test_unified_never_recommends_a_below_floor_dense_model():
         assert predicted_decode_tok_s(entry, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
 
 
+@pytest.mark.parametrize("budget", [
+    *(_unified(gb) for gb in (16, 24, 31.5, 32, 48, 64, 96, 128, 256)),
+    *(_discrete(gb) for gb in (8, 12, 16, 24, 32, 48, 96)),
+], ids=lambda b: f"{'unified' if b.uma else 'discrete'}-{b.total_device_bytes / _GIB:g}")
+def test_a_derived_recommendation_always_clears_the_floor(budget):
+    """A machine where nothing resident reaches the floor gets no recommendation. A "32 GB" laptop
+    reads 31.5 GB, where only the 27B fits and runs well under the floor on an iGPU or the CPU;
+    it stays one click away in Browse."""
+    picked = recommended_entry(budget)
+    if picked is None or picked[1] == "product-default":
+        return
+    choice = select_variant(picked[0], budget)
+    assert choice is not None and choice.zero_spill
+    assert predicted_decode_tok_s(picked[0], choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
+
+
 def test_quality_decides_where_speed_permits():
     """On big discrete hardware every resident entry clears the floor, so
     the pick must be the highest-quality fitting entry — the axis that
     justifies carrying an editorial field at all."""
     budget = _discrete(512)
-    pick = recommended_id(budget)
+    pick = recommended_entry(budget)[0].id
     resident = [
         e for e in CATALOG
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+# ── the RTX Spark's product default ──
+
+_N1X_PCI_ID = 0x2E1210DE  # NVML packs the device ID above the 16-bit vendor ID
+
+
+@pytest.mark.parametrize("identity", [
+    {"gpu_pci_id": _N1X_PCI_ID},
+    {"gpu_name": "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)"},
+])
+def test_the_rtx_spark_defaults_to_the_27b_with_flash_next_still_fitting(identity):
+    """Its manufacturer's pick. Flash Next fits too and stays one click away; on Windows it loads
+    once the carve-out leaves Windows enough commit to back it."""
+    from dataclasses import replace
+
+    budget = replace(_unified(128), platform="win32", **identity)
+    picked = recommended_entry(budget)
+    assert (picked[0].id, picked[1]) == ("qwen3.8-27b", "product-default")
+    flash_next = next(e for e in CATALOG if e.id == "qwen3.8-flash-next")
+    choice = select_variant(flash_next, budget)
+    assert choice is not None and choice.zero_spill
+
+
+def test_the_derived_rule_decides_on_other_platforms_backends_and_when_the_default_is_ineligible():
+    from dataclasses import replace
+
+    spark = replace(_unified(128), platform="win32", gpu_pci_id=_N1X_PCI_ID)
+    without_the_27b = tuple(e for e in CATALOG if e.id != "qwen3.8-27b")
+    assert recommended_entry(spark, without_the_27b)[1] != "product-default"
+    assert recommended_entry(replace(spark, platform="linux"))[1] != "product-default"
+    assert recommended_entry(spark, backend="vulkan")[1] != "product-default"

@@ -13,7 +13,7 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from gateway.config import GatewayConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionStore
 
@@ -108,6 +108,37 @@ def test_rewind_session_keeps_pending_recovery_state_when_lease_rejects(
     assert result["target_text"] == "REAL ASK"
     assert session_id not in store._dirty_transcripts
     assert session_id not in store._transcript_append_failures
+
+
+def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
+    tmp_path, monkeypatch
+):
+    """/retry re-sends exactly what was stored: a carrier split across text parts comes back as the
+    parts' concatenation (``"".join``), not the "\\n"-joined display flattening."""
+    import hermes_state
+    from agent.context_compressor import retryable_user_text
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    session_id = "rewind-composite-multipart"
+    store._db.create_session(session_id=session_id, source="test")
+    parts = [
+        {"type": "text", "text": _composite_carrier("REAL")["content"]},
+        {"type": "text", "text": " ASK"},
+        {"type": "text", "text": "\ncontinued"},
+    ]
+    store._db.append_message(session_id, "user", parts)
+    store._db.append_message(session_id, "assistant", "old answer")
+    stored = store._db.get_messages_as_conversation(session_id)[0]["content"]
+    assert isinstance(stored, list) and len(stored) == 3
+
+    result = store.rewind_session(session_id, require_retryable_composite=True)
+
+    assert result is not None
+    expected = "".join(p["text"] for p in stored).split(_SUMMARY_END_MARKER, 1)[1].lstrip("\n")
+    assert result["target_text"] == "REAL ASK\ncontinued" == expected
+    assert result["target_text"] == retryable_user_text(
+        [{"type": "text", "text": "REAL"}, {"type": "text", "text": " ASK"}, {"type": "text", "text": "\ncontinued"}])
 
 
 def test_rewind_session_surfaces_unretryable_media_before_mutation(

@@ -36,7 +36,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 def _fake_adapter():
@@ -73,7 +73,7 @@ class _RecordingClient:
     ["_download_slack_file", "_download_slack_file_bytes"],
 )
 def test_unsafe_url_blocked_before_network(monkeypatch, method_name):
-    import tools.url_safety as url_safety
+    from tools import url_safety
 
     calls = {"checked": []}
 
@@ -104,7 +104,7 @@ def test_unsafe_url_blocked_before_network(monkeypatch, method_name):
     ["_download_slack_file", "_download_slack_file_bytes"],
 )
 def test_redirect_guard_is_wired(monkeypatch, method_name):
-    import tools.url_safety as url_safety
+    from tools import url_safety
 
     monkeypatch.setattr(url_safety, "is_safe_url", lambda *a, **k: True)
     monkeypatch.setattr("httpx.AsyncClient", _RecordingClient)

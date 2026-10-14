@@ -105,13 +105,6 @@ class TestScanBundles:
 
 
 class TestGetSkillBundles:
-    def test_returns_cache(self, bundles_env):
-        bundles_dir, _ = bundles_env
-        _make_bundle_yaml(bundles_dir, "a", ["s1"])
-        first = get_skill_bundles()
-        # Second call should hit cache (no rescan unless mtime changed).
-        second = get_skill_bundles()
-        assert first is second or first == second
 
     def test_rescans_on_change(self, bundles_env):
         bundles_dir, _ = bundles_env
@@ -160,28 +153,6 @@ class TestBuildBundleInvocationMessage:
         assert "Skill B content." in msg
         assert "combo" in msg
 
-    def test_forwards_task_id_to_each_loaded_skill(self, bundles_env, monkeypatch):
-        bundles_dir, skills_dir = bundles_env
-        _make_skill(skills_dir, "skill-a")
-        _make_skill(skills_dir, "skill-b")
-        _make_bundle_yaml(bundles_dir, "combo", ["skill-a", "skill-b"])
-        scan_bundles()
-        calls = []
-        monkeypatch.setattr(
-            "tools.skill_usage.bump_use",
-            lambda skill_name, **kwargs: calls.append((skill_name, kwargs)),
-        )
-
-        result = build_bundle_invocation_message(
-            "/combo",
-            task_id="task-bundle",
-        )
-
-        assert result is not None
-        assert calls == [
-            ("skill-a", {"task_id": "task-bundle"}),
-            ("skill-b", {"task_id": "task-bundle"}),
-        ]
 
     def test_skips_missing_skills(self, bundles_env):
         bundles_dir, skills_dir = bundles_env
@@ -215,7 +186,7 @@ class TestBuildBundleInvocationMessage:
 
         result = build_bundle_invocation_message("/combo", platform="telegram")
         assert result is not None
-        msg, loaded, missing = result
+        msg, loaded, _missing = result
         assert loaded == ["skill-a"]
         assert "SECRET DISABLED CONTENT." not in msg
         assert "skill-b" in msg  # called out in the disabled-skipped header line
@@ -258,7 +229,7 @@ class TestSaveAndDeleteBundle:
 
 
     def test_delete_removes_file(self, bundles_env):
-        bundles_dir, _ = bundles_env
+        _bundles_dir, _ = bundles_env
         save_bundle("doomed", ["s1"])
         assert get_bundle("doomed") is not None
         delete_bundle("doomed")

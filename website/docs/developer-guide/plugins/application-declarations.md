@@ -1,0 +1,136 @@
+# Application declarations
+
+A plugin whose MCP server fronts a desktop application declares which application that is and what the server needs of it. The core evaluates the declaration on the host and gates the server's tools, and any skill that names the application, on the answer. The parser imports only the standard library and `hermes_platform`.
+
+The vocabulary lives in `hermes_platform/declaration.py`. A declaration is data plus policy, parsed from plain mappings (already-decoded YAML, JSON, a dict literal — the parser never touches a file):
+
+```python
+from hermes_platform import declaration
+
+decl = declaration.parse_declaration(
+    "my-server",
+    raw_app={"linux": {"presence": "executable", "location": "/opt/my-app/server"}},
+    raw_requires={"app": True},
+    where="my-plugin/plugin.yaml",   # human label used in error messages
+)
+declaration.register("my-server", decl)
+```
+
+`register(server_name, decl)` stores one declaration under the configured server name in a process-local registry. Loader integration is separate work; core does not read plugin YAML automatically.
+
+An unregistered MCP server keeps its connection-only check. A skill that explicitly names an unregistered server is hidden. `clear()` removes every registration and is not a per-plugin unload operation. Registrations are process-wide, not profile-scoped.
+
+## `app` — how to find the application on each OS
+
+```yaml
+app:
+  win32:
+    presence: executable
+    location: "%ProgramFiles%/Vendor/Vendor App/McpServer/Server.exe"
+    version: { kind: uninstall_registry, display_name_prefix: "Vendor App" }
+    liveness:
+      kind: server_json
+      path: "%LOCALAPPDATA%/Vendor/Vendor App/McpServer/server.json"
+      pid_key: pid
+      url_key: http
+      token_key: token
+      endpoint_path: /mcp
+  darwin:
+    presence: bundle
+    location: /Applications/Vendor.app
+    version: { kind: plist }
+```
+
+`location` is one path or an ordered list of places to look; the first present one wins, except that with `requires.min_version` every present copy's version is read and the first copy that qualifies wins. A list item is a path or a mapping that names a location kind:
+
+```yaml
+app:
+  win32:
+    presence: executable
+    location:
+      - { kind: uninstall_registry, display_name_prefix: "Vendor App", file: vendor.exe }
+      - "%ProgramFiles%/Vendor/Vendor App */vendor.exe"
+    version: { kind: pe_resource }
+  darwin:
+    presence: bundle
+    location: [{ kind: app_bundle, name: Vendor.app }]
+    version: { kind: plist }
+  linux:
+    presence: executable
+    location:
+      - { kind: command, name: vendor }
+      - { kind: flatpak, app_id: com.vendor.App }
+      - { kind: snap, name: vendor }
+```
+
+| location kind | OS | key | where it looks |
+|---|---|---|---|
+| (a path string) | any | — | that path; a `*` stands for a versioned folder, highest version first |
+| `command` | any | `name` | `PATH` (`executable` only) |
+| `uninstall_registry` | `win32` | `display_name_prefix`, `file` | `InstallLocation` of each matching uninstall entry, joined with `file` |
+| `app_bundle` | `darwin` | `name` | `/Applications`, then `~/Applications` (`bundle` only) |
+| `flatpak` | `linux` | `app_id` | the system, then the per-user flatpak `exports/bin` |
+| `snap` | `linux` | `name` | `/snap/bin` |
+
+Each kind's OS, key, presence and locator are one `LOCATION_KINDS` entry in `hermes_platform/resolver/app.py`; the parser validates against that table, so a new kind is one entry there. The directories behind each kind live in `hermes_platform/resolver/known_dirs.py`.
+
+| field | type | rule | maps to `AppDef` |
+|---|---|---|---|
+| `<os>` | `win32` \| `darwin` \| `linux` | at least one; unknown key is an error | `AppDef.os_family` |
+| `presence` | `executable` \| `bundle` | required per OS | `.presence` |
+| `location` | str \| list | required; a path is drive-rooted (`C:\\...`) on Windows, or starts with `~` / `%VAR%` / `$VAR`; UNC paths are rejected so a presence check never touches the network; no `..` segment, `**` or URL scheme; expansion at lookup. A list holds paths and location-kind mappings (above) | `.locations` |
+| `version.kind` | `pe_resource` \| `plist` \| `uninstall_registry` \| `none` | default `none`; `pe_resource`/`uninstall_registry` only under `win32`, `plist` only under `darwin` | `.version_kind` |
+| `version.display_name_prefix` | str | required when `uninstall_registry` | `.version_arg` |
+| `liveness.kind` | `server_json` \| `none` | default `none` | `.liveness_kind` |
+| `liveness.path` | str | required when `server_json` | `.liveness_path` |
+| `liveness.pid_key` / `url_key` / `token_key` | str | defaults `pid` / `http` / `token` | `.liveness_*_key` |
+| `liveness.endpoint_path` | str | default `/mcp`; the path used for `initialize`, never the one in the file | `.endpoint_path` |
+
+When `requires.app` is true, an OS missing from `app:` gives `unsupported_os`.
+
+## `requires` — what the server needs before it is offered
+
+```yaml
+requires:
+  app: true
+  min_version: "2.3.0"
+```
+
+| field | type | rule |
+|---|---|---|
+| `app` | bool | when true, `app:` must exist and the server is gated on presence |
+| `min_version` | str | requires `app: true`; dotted numeric; every `app.win32` and `app.darwin` must declare a real `version.kind`; `app.linux` may omit it (Linux has no version source) and is then gated on presence only, but a Linux-only declaration cannot set a minimum; compared numerically per segment, non-numeric characters in a segment are dropped (`2.3.0.12594` ≥ `2.3.0`; prerelease suffixes are not ordered) |
+| `gpu` | str | `nvidia`; the server is offered only on a host where `hermes_platform.host.facts.gpu_class()` reports that vendor. Independent of `app`: a server with no `app:` block can require a GPU. |
+
+`requires.app: true` with no `app:` block is a `DeclarationError`.
+
+`gpu` is for an application that has no install location to check, or that needs the hardware whatever is installed. `gpu_class()` reads the registry on Windows, sysfs on Linux and the CPU architecture on macOS, never a subprocess or a driver library. When it cannot read the GPU (`unknown`), the requirement passes: a failed read must not lock out a machine that has the GPU, and the connection check still applies. Only `nvidia` is accepted: `gpu_class()` reports the highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer the same question for AMD or Intel on a machine that also has an NVIDIA GPU.
+
+## Availability: the one evaluation every reader uses
+
+`hermes_platform/resolver/availability.py::availability(decl) -> Availability`
+
+```
+Availability(
+  state:   available | installed_not_running | missing_app | version_too_old
+         | unsupported_os | unsupported_gpu | no_requirements,
+  version: str | None,       # inspected, when present
+  path:    str | None,       # where the app was found or looked for
+  min_version: str | None,   # from requires
+)
+```
+
+- `no_requirements`: no `requires.app`, and `requires.gpu` (if any) is met; the application gate passes, but the connection check still applies.
+- `unsupported_os`: `requires.app` and no `app.<this os>` block. Zero I/O.
+- `unsupported_gpu`: `requires.gpu` names a vendor this host's GPU is not. The install is refused (`… is unavailable: unsupported_gpu, needs an NVIDIA GPU.`), and a registered server's status sentence is "`<app>` needs an NVIDIA GPU; none was found on this machine. Use `<app>` on a machine with an NVIDIA GPU."
+- `missing_app`: `locate` found nothing at any `location`.
+- `version_too_old`: the version is below the minimum or cannot be read.
+- `available`: present, version acceptable or not required.
+- `installed_not_running`: reserved vocabulary; this evaluator never produces it.
+
+Evaluation uses `locate`, optional version inspection and the cached GPU fact. It never probes a server, launches an application, or connects. The tool registry retains its existing availability cache.
+
+## The two gates
+
+- **MCP `check_fn`** (`tools/mcp_tool_handlers.py::_make_check_fn`): connection alive AND, when a declaration with `requires.app` is registered for the server, `availability(decl).offerable`. Returns a plain `bool` because the registry caches `bool(fn())`.
+- **Skill `requires_apps:` frontmatter** (`agent/skill_utils.py::skill_matches_apps`): each name resolves through `declaration.lookup`; an unknown name hides the skill (fail closed). Offer-time filter, like `environments:`.

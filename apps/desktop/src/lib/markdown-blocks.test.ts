@@ -1,5 +1,5 @@
 import { parseMarkdownIntoBlocks } from '@assistant-ui/react-streamdown'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { parseMarkdownIntoBlocksCached } from './markdown-blocks'
 
@@ -161,4 +161,23 @@ describe('parseMarkdownIntoBlocksCached', () => {
       }
     }
   }, 30_000)
+
+  it('falls back to the raw text block when the lexer throws instead of crashing the thread (#80621)', () => {
+    // The cached splitter feeds the whole transcript renderer; an unhandled
+    // lexer throw would unwind through MessageRenderBoundary to the root
+    // boundary and blank every message. Spy on String.prototype.split (which
+    // the lexer uses) to force a throw, and assert the fallback keeps the text
+    // visible as one raw block.
+    const splitSpy = vi.spyOn(String.prototype, 'split').mockImplementation(() => {
+      throw new Error('boom')
+    })
+
+    try {
+      const text = 'The proof is at `/tmp/render-proof.png` and it looks good.'
+
+      expect(parseMarkdownIntoBlocksCached(text)).toEqual([text])
+    } finally {
+      splitSpy.mockRestore()
+    }
+  })
 })

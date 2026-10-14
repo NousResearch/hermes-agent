@@ -313,3 +313,52 @@ describe('alignToBranchGroup', () => {
     expect(alignToBranchGroup(messages, 99)).toBe(messages.length)
   })
 })
+
+// Regression guard for #90473 / #96606 / #96875: for a LIGHT transcript (the
+// reported shape — a long chat of short messages, e.g. 142 turns), the store
+// window must surface messages[0] (the opening user greeting) as the first
+// rendered message. The 30-message floor and the weight budget both keep a
+// light transcript uncut, so paging to the top can never drop the oldest user
+// turn through the window slice.
+describe('opening user message is the first rendered message (light transcript)', () => {
+  const light = (count: number): ChatMessage[] => transcript(count, 20)
+
+  it('selectTranscriptWindow keeps messages[0] first when the whole transcript is light', () => {
+    const messages = light(142)
+
+    const window = selectTranscriptWindow(messages)
+
+    expect(window.windowed).toBe(false)
+    expect(window.messages[0]).toBe(messages[0])
+  })
+
+  it('growing the window terminates at the full transcript with messages[0] still first', () => {
+    const messages = light(142)
+
+    let pages = 1
+    let window = selectTranscriptWindow(messages, pages)
+
+    while (window.windowed && pages < 100) {
+      window = selectTranscriptWindow(messages, ++pages)
+    }
+
+    expect(window.windowed).toBe(false)
+    expect(window.messages).toHaveLength(messages.length)
+    // The first user message is the head of the fully-rendered transcript.
+    expect(window.messages[0]).toBe(messages[0])
+  })
+
+  it('advanceTranscriptWindow also surfaces messages[0] once pages cover the transcript', () => {
+    const messages = light(142)
+
+    let pages = 1
+    let state = advanceTranscriptWindow(null, messages, pages)
+
+    while (state.window.windowed && pages < 100) {
+      state = advanceTranscriptWindow(state, messages, ++pages)
+    }
+
+    expect(state.window.windowed).toBe(false)
+    expect(state.window.messages[0]).toBe(messages[0])
+  })
+})

@@ -147,3 +147,38 @@ class TestWeixinAdapterAuthzScope:
         assert adapter._dm_policy == "pairing"
         assert adapter._allow_from == []
         assert adapter._is_dm_allowed("default-user") is False
+
+
+class TestWeixinAdapterSplitMultilineScope:
+    """``split_multiline_messages`` must follow the same scoped-secret rules
+    as every other WEIXIN_* tunable in this block (missed by the
+    scoped-reader retrofit): a secondary profile's own scope is
+    authoritative, and the default profile's process-env value must not
+    leak into it."""
+
+    def test_scoped_construction_reads_split_multiline_from_scope_not_environ(
+        self, multiplex_on, monkeypatch
+    ):
+        monkeypatch.setenv("WEIXIN_SPLIT_MULTILINE_MESSAGES", "false")
+        token = secret_scope.set_secret_scope(
+            {"WEIXIN_SPLIT_MULTILINE_MESSAGES": "true"}
+        )
+        try:
+            adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._split_multiline_messages is True
+
+    def test_scoped_miss_does_not_borrow_default_profiles_split_multiline(
+        self, multiplex_on, monkeypatch
+    ):
+        """A secondary profile with no split_multiline_messages of its own
+        must fall back to the coded default, not inherit the default
+        profile's env-only value."""
+        monkeypatch.setenv("WEIXIN_SPLIT_MULTILINE_MESSAGES", "true")
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            adapter = WeixinAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._split_multiline_messages is False

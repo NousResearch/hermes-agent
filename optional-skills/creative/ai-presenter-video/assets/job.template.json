@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "job_id": "replace-me",
+  "state": "intake",
+  "mode": "automation",
+  "input": {
+    "topic": "",
+    "script_path": "",
+    "presenter_image": "",
+    "voice_sample": "",
+    "supporting_media": [],
+    "rights_confirmed": false,
+    "adult_presenter_confirmed": false,
+    "remote_upload_approved": false,
+    "voice_clone_approved": false
+  },
+  "creative": {
+    "language": "auto",
+    "audience": "general",
+    "goal": "explain clearly",
+    "duration_target_s": 60,
+    "aspect": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "style": "credible contemporary presenter",
+    "watermark": "",
+    "cta": ""
+  },
+  "voice": {
+    "strategy": "auto",
+    "voice_id": "",
+    "rate": 1.06,
+    "segment_lufs": -17,
+    "program_lufs": -16
+  },
+  "plan": {
+    "status": "draft",
+    "opening_target_s": 4,
+    "closing_target_s": 5,
+    "chapters": [],
+    "requested_generation_seconds": 0,
+    "estimated_cost": null,
+    "price_evidence_date": "",
+    "pilot_approved": false,
+    "paid_generation_approved": false,
+    "retry_ceiling": 3
+  },
+  "capabilities": {
+    "voice_generation": {},
+    "main_presenter": {},
+    "short_motion": {},
+    "lipsync_repair": {},
+    "word_timestamp_asr": {},
+    "timeline_compositor": {},
+    "encoder_qa": {}
+  },
+  "manual_input_review": {
+    "image_viewed": false,
+    "single_clear_face": false,
+    "image_has_no_unwanted_text": false,
+    "voice_sample_listened": false,
+    "single_clear_speaker": false
+  },
+  "artifacts": {
+    "script": "",
+    "beat_sheet": "",
+    "timeline": "",
+    "storyboard": "",
+    "final_audio": "",
+    "caption_json": "",
+    "rendered": "",
+    "master": "",
+    "share": ""
+  },
+  "qa": {
+    "preflight_report": "",
+    "asr_report": "",
+    "composition_report": "",
+    "delivery_report": "",
+    "manual_visual_review": ""
+  }
+}

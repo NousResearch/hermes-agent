@@ -678,6 +678,12 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
     added = _awaiting_connect(wanted, scope)
     if added:
         discover_mcp_tools()
+    # A live connection can outlast one profile's registry overlay (for example when a shared
+    # connection reconnects under its owner). Repair the current profile independently of config
+    # drift or connection state; this is an idempotent local registry check, not rediscovery.
+    repaired = _registration.register_connected_into_current_scope(servers, repair_only=True)
+    if repaired:
+        logger.info("MCP registry drift repaired for %d server(s)", repaired)
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
             "pending": sorted(connecting - wanted)}
 

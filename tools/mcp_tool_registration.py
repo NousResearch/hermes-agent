@@ -404,14 +404,61 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
-    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
-    candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    candidates = _server_tool_candidates(name, server, config, should_register)
     registered = _register_candidates(
-        name, _resolve_name_collisions(name, candidates),
+        name, candidates,
         check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
     if registered:
         _write_schema_cache(name, server, config, should_register)
     return registered
+
+
+def _server_tool_candidates(name: str, server: "MCPServerTask", config: dict,
+                            should_register: Optional[Callable[[str], bool]] = None) -> list[_Candidate]:
+    """Build the exact native and utility registration candidates for one profile's config."""
+    should_register = should_register or _make_tool_filter(name, config)
+    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
+    candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    return _resolve_name_collisions(name, candidates)
+
+
+def _missing_server_tool_registrations(name: str, server: "MCPServerTask", config: dict,
+                                       scope: Optional[str]) -> list[_Candidate]:
+    """Candidates whose registration is missing from this profile's local registry slot."""
+    from tools.registry import registry
+
+    if not hasattr(server, "_tools"):
+        return []  # lightweight connection records have no discovered manifest to repair
+    known_names = getattr(server, "_registered_tool_names", ()) or ()
+    if known_names and all(registry.snapshot_registration(tool_name, scope=scope) is not None
+                           for tool_name in known_names):
+        return []  # common healthy path: avoid rebuilding/sanitizing schemas on every reconcile tick
+    return [
+        candidate for candidate in _server_tool_candidates(name, server, config)
+        if registry.snapshot_registration(candidate.registry_name, scope=scope) is None
+    ]
+
+
+def _record_repaired_server_tools(name: str, server: "MCPServerTask", config: dict,
+                                  scope: Optional[str], key) -> bool:
+    """Restore missing entries for a live connection in the current profile's registry slot."""
+    missing = _missing_server_tool_registrations(name, server, config, scope)
+    if not missing:
+        return False
+    if scope is not None and _key_scope(key) != scope:
+        _record_scope_trust(name, config, scope)
+    else:
+        _record_tool_trust_metadata(name, config, server._tools, key)
+    names = _register_candidates(
+        name, missing, check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
+    if names:
+        with _core._lock:
+            server._registered_tool_names = sorted(
+                set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
+        logger.warning("MCP server '%s': restored missing tool registrations in profile scope %s",
+                       name, scope or "global")
+        return True
+    return False
 
 
 def _connection_identity(config: dict) -> tuple:
@@ -482,16 +529,18 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
             and resolved_identity is not None and recorded == resolved_identity)
 
 
-def register_connected_into_current_scope(servers: dict) -> int:
-    """Serialize shared-scope reconciliation and registration for one discovery pass."""
+def register_connected_into_current_scope(servers: dict, *, repair_only: bool = False) -> int:
+    """Serialize connected-server registration repair for one discovery pass.
+
+    ``repair_only`` checks tool presence without pruning stale profile ownership; gateway
+    housekeeping uses it because lifecycle/config cleanup belongs to discovery passes.
+    """
     scope = _core._mcp_registry_scope()
-    if scope is None:
-        return 0
     with _SCOPE_REFRESH_LOCKS[hash(scope) % len(_SCOPE_REFRESH_LOCKS)]:
-        return _register_connected_into_current_scope(servers)
+        return _register_connected_into_current_scope(servers, repair_only=repair_only)
 
 
-def _register_connected_into_current_scope(servers: dict) -> int:
+def _register_connected_into_current_scope(servers: dict, *, repair_only: bool = False) -> int:
     """Heal the current profile's MCP overlay from already-connected shared servers.
 
     A shared live connection remains owned by the profile that opened it, but a profile with the
@@ -499,11 +548,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     allowlist, and route fingerprints prevent borrowing a differently-authenticated connection.
     Missing or changed config entries remove only this profile's overlay.
     """
-    from tools.registry import registry
-
     scope = _core._mcp_registry_scope()
-    if scope is None:
-        return 0
 
     # Callers that connect a subset (plugin go-live, a connector, orphan re-registration) pass only
     # those names. A name they omit is judged against this profile's own config, or connecting one
@@ -512,7 +557,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         omitted = {_key_name(key) for key, scopes in _core._server_tool_scopes.items()
                    if scope in scopes and _key_name(key) not in servers}
         # Only a name another profile holds a connection for reaches a cross-profile comparison.
-        foreign = {_key_name(key) for key in _core._servers if _key_scope(key) != scope}
+        foreign = ({_key_name(key) for key in _core._servers if _key_scope(key) != scope}
+                   if scope is not None else set())
     # Resolving what this profile would connect with does PATH lookups, secret-scope reads and
     # live-endpoint probes: do it only for names that can be compared across profiles, once each,
     # before taking the global registry lock. A foreign key that appears after the snapshot has
@@ -544,41 +590,38 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                     or not _same_server_route(server, config, cross_profile=cross_profile,
                                               resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
-    for key in stale:
-        _remove_server_scope(key, scope)
+    if not repair_only:
+        for key in stale:
+            _remove_server_scope(key, scope)
 
     registered_servers = 0
     for name, config in servers.items():
         if not mcp_server_enabled(config):
             continue
         with _core._lock:
-            if _server_key(name, scope, current=False) in _core._servers:
-                continue  # this profile has its own connection for the name
-            # Any other profile's live connection with the same route AND credentials is shareable.
-            shared = [(key, live) for key, live in _core._servers.items()
-                      if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config, cross_profile=True,
-                                             resolved_identity=resolved_ids.get(name))]
+            own_key = _server_key(name, scope, current=False)
+            own_server = _core._servers.get(own_key)
+            if (own_server is not None and getattr(own_server, "session", None) is not None) or scope is None:
+                shared = []
+            else:
+                # Any other profile's live connection with the same route AND credentials is shareable.
+                shared = [(key, live) for key, live in _core._servers.items()
+                          if _key_name(key) == name and getattr(live, "session", None) is not None
+                          and _same_server_route(live, config, cross_profile=True,
+                                                 resolved_identity=resolved_ids.get(name))]
+        if own_server is not None and getattr(own_server, "session", None) is not None:
+            if (_same_server_route(own_server, config)
+                    and _record_repaired_server_tools(name, own_server, config, scope, own_key)):
+                registered_servers += 1
+            continue
         if not shared:
             continue
         key, server = shared[0]
         # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
         with _core._lock:
             _core._server_tool_scopes.setdefault(key, set()).add(scope)
-        _record_scope_trust(name, config, scope)
-        if registry.get_tool_names_for_toolset(f"mcp-{name}"):
-            continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
-        candidates += _utility_candidates(
-            name, _select_utility_schemas(name, server, config), server.tool_timeout)
-        names = _register_candidates(
-            name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
-        if names:
+        if _record_repaired_server_tools(name, server, config, scope, key):
             registered_servers += 1
-            with _core._lock:
-                server._registered_tool_names = sorted(
-                    set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
     return registered_servers
 
 

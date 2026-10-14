@@ -961,11 +961,9 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
         refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
         if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
             _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
+                "Repeated auth failure after %s refreshes for pool entry %s; rotating.", refresh_counts[refresh_key] - 1, refreshed_id,
             )
-            return False, has_retried_429
+            return (True, False) if rotate_and_swap(401, "auth loop exhausted") else (False, has_retried_429)
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
     if agent._swap_credential(refreshed) is False:
         return False, has_retried_429
@@ -1012,17 +1010,13 @@ def recover_with_credential_pool(
     Rate limits: retry once, then rotate. Billing: rotate immediately. Auth: refresh before
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
-    pool = agent._credential_pool
+    from agent.credential_pool_turn import attach_matching_codex_pool
+    pool = agent._credential_pool or attach_matching_codex_pool(agent)
     if pool is None:
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
     # and reset base_url to the primary endpoint. Empty pool provider means unscoped; empty agent
     # provider is a mismatch (swap would leave provider="" model="").
-    # Defensive guard: if a fallback provider is active and its provider name doesn't match the pool's
-    # provider, the pool belongs to the PRIMARY provider. Mutating it based on fallback errors would corrupt
-    # the primary's credential state (see #33088) and, via _swap_credential, overwrite the agent's base_url
-    # back to the primary's endpoint — every subsequent request then goes to the wrong host and 404s (see
-    # #33163). The pool should only act when the agent is still on the same provider that seeded the pool.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
@@ -1119,6 +1113,10 @@ def recover_with_credential_pool(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
         )
+    if effective_reason == FailoverReason.overloaded:
+        if not has_retried_429:
+            return False, True
+        return (True, False) if _rotate_and_swap(503, "overloaded") else (False, True)
     if effective_reason == FailoverReason.model_entitlement:
         # The pool benches (credential, model) only and hands back the next entry that is not
         # benched for this model; None once every entry rejected it, so the caller falls
@@ -1432,6 +1430,8 @@ def restore_primary_runtime(agent) -> bool:
         # _fallback_index past the chain end and silently block future fallbacks (#20465).
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
+        from agent.credential_pool_turn import rotate_externally_exhausted_codex_key
+        rotate_externally_exhausted_codex_key(agent)
         return False
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()

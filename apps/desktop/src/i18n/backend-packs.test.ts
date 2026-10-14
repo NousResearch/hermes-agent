@@ -39,24 +39,21 @@ describe('syncBackendLocalePacks', () => {
       {
         languages: [
           { id: 'en', endonym: 'English', rtl: false, source: 'bundled' },
-          { id: 'it', endonym: 'Italiano', rtl: false, source: 'plugin:hermes-lang-it' }
+          { id: 'pl', endonym: 'Polski', rtl: false, source: 'plugin:hermes-lang-pl' }
         ]
       },
-      { it: { 'common.save': 'Salva', 'catalog.results': '{0} risultati' } },
+      { pl: { 'common.save': 'Zapisz', 'connectorsPage.searchPlaceholder': '{0} wyników' } },
       calls
     )
 
-    await syncBackendLocalePacks(request, 'it')
+    await syncBackendLocalePacks(request, 'pl')
 
-    expect(calls).toContainEqual(['i18n.catalog', { lang: 'it', surface: 'desktop' }])
-    expect(isRegisteredLocale('it')).toBe(true)
-    expect(languageOptions().find(option => option.id === 'it')).toMatchObject({
-      endonym: 'Italiano',
-      source: 'backend'
-    })
-    expect(resolveTranslations('it').common.save).toBe('Salva')
-    expect(resolveTranslations('it').catalog.results(5)).toBe('5 risultati')
-    expect(resolveTranslations('it').common.cancel).toBe(TRANSLATIONS.en.common.cancel)
+    expect(calls).toContainEqual(['i18n.catalog', { lang: 'pl', surface: 'desktop' }])
+    expect(isRegisteredLocale('pl')).toBe(true)
+    expect(languageOptions().find(option => option.id === 'pl')).toMatchObject({ endonym: 'Polski', source: 'backend' })
+    expect(resolveTranslations('pl').common.save).toBe('Zapisz')
+    expect(resolveTranslations('pl').connectorsPage.searchPlaceholder(5)).toBe('5 wyników')
+    expect(resolveTranslations('pl').common.cancel).toBe(TRANSLATIONS.en.common.cancel)
   })
 
   it('accepts a bare array from i18n.languages and skips the catalog call without a requested language', async () => {

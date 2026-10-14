@@ -524,11 +524,10 @@ recipe). If the task exists but you want it gone, remove it with
 from an elevated shell — Hermes does not re-register it once
 `computer_use.autostart` is false.
 
-Swap the backend entirely (for testing):
-
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
-```
+Swap the driver entirely: `computer_use.backend` in `config.yaml` names the one
+active provider (`cua`, the default, or an installed provider plugin; see
+[computer-use backend plugins](../../developer-guide/plugins/index.md#computer-use-backend-plugins)).
+`hermes tools` → Computer Use lists every installed provider.
 
 ### Telemetry
 

@@ -118,7 +118,7 @@ def test_pooled_conn_is_usable_from_another_thread(db):
     def use_it():
         try:
             borrowed.execute("SELECT 1").fetchone()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
 
     t = threading.Thread(target=use_it)
@@ -168,7 +168,7 @@ def test_reads_are_still_correct_under_concurrency(db):
         try:
             results.append(db.get_session("s1")["id"])
             results.append(len(db.get_messages("s1")))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(exc)
 
     threads = [threading.Thread(target=reader) for _ in range(12)]

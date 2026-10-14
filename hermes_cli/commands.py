@@ -65,6 +65,12 @@ class CommandDef:
     argument_mode: str | None = None  # desktop composer: options|text|mixed; None inferred
     # Desktop availability: None = offered; "hidden" = runs but out of the popover; else a reason.
     desktop: str | None = None
+    # Desktop subcommand scope.  When set, the desktop surface only offers
+    # (completion) and forwards (exec) these subcommands — the first argument
+    # token must be one of them.  Use when a command family mixes desktop-
+    # relevant review actions with CLI-hub mutations (e.g. /skills install),
+    # so offering the command doesn't widen the whole family.
+    desktop_subcommands: tuple[str, ...] | None = None
 
     def describe(self) -> str:
         """Localized description (``slash.<name>.description``); ``description`` is the English source."""
@@ -120,11 +126,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
-               gateway_only=True, args_hint="[session|always]", busy_policy="dispatch",
-               desktop="messaging"),
+               gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
-               gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
-               desktop="messaging"),
+               gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
                args_hint="<prompt>", busy_policy="dispatch"),
     CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
@@ -141,7 +145,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                aliases=("s",), args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
+               args_hint="[text | -- <text> | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
     CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
                aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
@@ -216,9 +220,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp] [--global]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
-    CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",
-               args_hint="[normal|fast|auto|cold|status] [--global]",
-               subcommands=("normal", "fast", "auto", "cold", "status", "on", "off", "--global"),
+    CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)", "Configuration",
+               args_hint="[normal|fast|auto|cold|ultrafast|status] [--global]",
+               subcommands=("normal", "fast", "auto", "cold", "ultrafast", "ultra", "status", "on", "off", "--global"),
                desktop="advanced"),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]", argument_mode="options"),
@@ -245,7 +249,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_config_gate="skills.write_approval",
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
-               desktop="settings"),
+               # Desktop exposes only the write-approval review slice — the
+               # same surface the gateway handler offers.  The hub mutations
+               # (search/browse/inspect/install/audit) run a full interactive
+               # CLI hub that must not be reachable from a desktop exec
+               # (#98330 review).
+               desktop_subcommands=("pending", "approve", "reject", "diff",
+                                    "approval")),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
@@ -349,9 +359,12 @@ def infer_argument_mode(cmd: CommandDef) -> str | None:
     return "text" if hint else None
 
 
-def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
+def command_desktop_meta(cmd: CommandDef) -> dict[str, object]:
     """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
-    return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    meta: dict[str, object] = {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+    if cmd.desktop_subcommands is not None:
+        meta["desktop_subcommands"] = list(cmd.desktop_subcommands)
+    return meta
 
 
 def desktop_surface_registry() -> dict[str, str | None]:

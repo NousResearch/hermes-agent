@@ -6,17 +6,23 @@ on:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   pull_request:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   workflow_dispatch:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
         required: false
@@ -39,11 +45,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - name: Install the native linker test prerequisite
         run: |
@@ -70,11 +75,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
@@ -125,11 +129,10 @@ jobs:
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:

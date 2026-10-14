@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -23,7 +24,7 @@ import {
 import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
-import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import { $keepAwakeMode, type KeepAwakeMode, setKeepAwakeMode } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -49,7 +50,7 @@ import {
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { PoolLimitsSetting } from './pool-limits-setting'
+import { OnboardingSettings } from './onboarding-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
@@ -102,7 +103,14 @@ function ConfigSettingsInner({
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const c = t.settings.config
-  const keepAwake = useStore($keepAwake)
+  const keepAwakeMode = useStore($keepAwakeMode)
+
+  const keepAwakeOptions = [
+    { id: 'off', label: c.keepAwakeOff },
+    { id: 'while-working', label: c.keepAwakeWhileWorking },
+    { id: 'always', label: c.keepAwakeAlways }
+  ] as const satisfies readonly { id: KeepAwakeMode; label: string }[]
+
   const disableF12 = useStore($disableF12)
   const alwaysExternalLinks = useStore($alwaysExternalLinks)
   // The editable draft is local (debounced autosave watches it), but it's seeded
@@ -447,12 +455,20 @@ function ConfigSettingsInner({
           power-user, this-computer-only knobs. */}
       {showDesktopSettings && (
         <>
-          <ToggleRow
-            checked={keepAwake}
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={mode => {
+                  triggerHaptic('selection')
+                  setKeepAwakeMode(mode)
+                }}
+                options={keepAwakeOptions}
+                value={keepAwakeMode}
+              />
+            }
             description={c.keepAwakeDesc}
             id={settingElementId(SETTING_IDS.advanced.keepAwake)}
-            label={c.keepAwakeTitle}
-            onChange={setKeepAwake}
+            title={c.keepAwakeTitle}
           />
           <ToggleRow
             checked={disableF12}
@@ -467,8 +483,8 @@ function ConfigSettingsInner({
             label={c.alwaysExternalLinksTitle}
             onChange={setAlwaysExternalLinks}
           />
-          <PoolLimitsSetting />
           <QuickEntrySettings />
+          <OnboardingSettings />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is

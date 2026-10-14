@@ -45,12 +45,12 @@ jobs:
     environment: release-signing
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: 24.11.1
 
@@ -155,12 +155,12 @@ jobs:
     environment: release-signing
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: 24.11.1
 
@@ -209,6 +209,26 @@ jobs:
             echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple-api-key.p8"
           } >> "$GITHUB_ENV"
 
+      - name: Select Xcode 26 for the macOS 26 layered icon
+        # Tauri's bundler compiles src-tauri/icons/icon.icon to Assets.car with
+        # actool, which only Xcode >= 26 ships; on an older Xcode it logs an
+        # error and ships the .icns alone. The runner keeps an older Xcode
+        # selected, so pick 26 and assert it.
+        run: |
+          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$xcode" ]; then
+            echo "::error::no Xcode 26 on this runner; the macOS 26 layered icon cannot be compiled"
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$xcode/Contents/Developer"
+          version="$(actool --version | python3 -c 'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["com.apple.actool.version"]["short-bundle-version"])')"
+          echo "actool $version from $xcode"
+          case "$version" in
+            2[6-9].*|[3-9][0-9].*) ;;
+            *) echo "::error::actool $version cannot compile .icon packages (need >= 26)"; exit 1 ;;
+          esac
+
       - name: Build, sign and notarize
         env:
           # Tauri notarizes the .app with an App Store Connect API key.
@@ -228,7 +248,9 @@ jobs:
           test ${#dmgs[@]} -eq 1
           mkdir -p "$RUNNER_TEMP/out"
           dmg="$RUNNER_TEMP/out/Hermes-Setup.dmg"
-          cp "${dmgs[0]}" "$dmg"
+          # Tauri always uses the app icns as the volume icon; give the DMG the
+          # same drive artwork as the desktop installer before signing.
+          scripts/bundles/set_dmg_volume_icon.sh "${dmgs[0]}" apps/desktop/packaging/dmg-volume.icns "$dmg"
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --wait \
             --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
@@ -245,10 +267,17 @@ jobs:
           codesign --verify --strict --verbose=2 "${apps[0]}"
           xcrun stapler validate "${apps[0]}"
           spctl -a -vv -t exec "${apps[0]}"
+          # The macOS 26 layered icon: Tauri only logs when actool is missing,
+          # so prove the catalog and its plist key made it into the bundle.
+          test -f "${apps[0]}/Contents/Resources/Assets.car"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "${apps[0]}/Contents/Info.plist")" = "Icon"
           dmg="$RUNNER_TEMP/out/Hermes-Setup.dmg"
           codesign --verify --verbose=2 "$dmg"
           xcrun stapler validate "$dmg"
           spctl -a -vv -t open --context context:primary-signature "$dmg"
+          mount=$(hdiutil attach -nobrowse -readonly "$dmg" | awk -F'\t' '/\/Volumes\//{print $NF; exit}')
+          test -f "$mount/.VolumeIcon.icns"
+          hdiutil detach "$mount"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

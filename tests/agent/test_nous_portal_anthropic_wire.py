@@ -90,7 +90,7 @@ class TestRuntimeResolution:
 
     @pytest.fixture(autouse=True)
     def _stub_portal_credentials(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
         monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
         monkeypatch.setattr(rp, "load_pool", lambda p: SimpleNamespace(
             has_credentials=lambda: False,
@@ -411,13 +411,13 @@ class TestPortalThinkingReplay:
         self._assert_thinking_kept(STAGING_URL)
 
     def test_other_third_party_gateways_still_strip_thinking(self):
-        """The Portal carve-out must not leak into MiniMax-style proxies."""
+        """The Portal carve-out must not leak into unknown Anthropic-compatible relays."""
         from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         _system, converted = convert_messages_to_anthropic(
             self._messages(),
-            base_url="https://api.minimax.io/anthropic",
-            model="MiniMax-M2.7",
+            base_url="https://relay.example.com/anthropic",
+            model="claude-opus-4-8",
         )
         assistant = next(m for m in converted if m["role"] == "assistant")
         thinking = [

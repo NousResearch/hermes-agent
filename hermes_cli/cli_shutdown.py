@@ -148,10 +148,11 @@ def _shutdown_cached_aux_clients() -> None:
 
 # Ordered teardown steps (attribute names, resolved at call time so tests can patch them)
 # and the exception class each swallows.
+# Async delegations and MCP servers live in the gateway, which owns their lifetime: a CLI exit
+# neither interrupts the delegations nor tears down MCP servers.
 _CLEANUP_STEPS = (
     ("_stop_cli_wake_word", Exception), ("_cleanup_all_terminals", Exception),
-    ("_interrupt_async_delegations", Exception), ("_cleanup_all_browsers", Exception),
-    ("_shutdown_mcp_servers", BaseException), ("_shutdown_cached_aux_clients", Exception),
+    ("_cleanup_all_browsers", Exception), ("_shutdown_cached_aux_clients", Exception),
 )
 
 
@@ -168,10 +169,12 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     return session_id not in _cli()._single_query_finalize_attempted_session_ids
 
 
-def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> None:
+def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> list[str]:
+    """Fire on_session_finalize; return the plugin messages meant for the user (never raises)."""
     with suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session
-        finalize_session(session_id=session_id, platform=platform, reason=reason)
+        from hermes_cli.lifecycle import finalize_session, session_end_messages
+        return session_end_messages(finalize_session(session_id=session_id, platform=platform, reason=reason))
+    return []
 
 
 def _oneshot_agent_and_session(cli):
@@ -224,7 +227,10 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         return
 
     try:
-        _notify_session_finalize(session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason)
+        # stderr: one-shot stdout is the answer scripts parse.
+        for message in _notify_session_finalize(
+                session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason):
+            print(message, file=sys.stderr, flush=True)
     finally:
         _cli()._single_query_finalize_attempted_session_ids.add(session_id)
 

@@ -44,7 +44,7 @@ class _CaptureTransport:
         # send_for_platform (cron) lane.
         self._identities = [("slack", None)]
 
-    def set_inbound_handler(self, h):  # noqa: D401
+    def set_inbound_handler(self, h):
         self._h = h
 
     async def send_outbound(self, action, *, platform=None):

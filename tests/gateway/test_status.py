@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import status
+from datetime import UTC
 
 
 class TestGatewayPidState:
@@ -125,7 +127,6 @@ class TestGatewayPidState:
         def fake_kill(pid, sig):
             if pid == 99999:
                 raise ProcessLookupError
-            return None
 
         monkeypatch.setattr(status.os, "kill", fake_kill)
 
@@ -264,7 +265,10 @@ class TestScopedGatewayPidQuery:
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
         assert status.get_running_pid(pid_path) is None
         assert not pid_path.exists()
-        assert not (profile_dir / "gateway.lock").exists()
+        # gateway.lock is an ownership inode (gateway/runtime_ownership.py): a stale record
+        # is cleared through the PID file only; unlinking the lock would let a contender that
+        # already opened it become a second owner.
+        assert (profile_dir / "gateway.lock").exists()
 
 
 class TestGatewayRuntimeStatus:
@@ -826,7 +830,7 @@ class TestScopedLocks:
         # unrelated process's name.  This confirms the PID was reused.
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -977,7 +981,7 @@ class TestScopedLocks:
         # Post-#21561: simulate "PID gone" via _pid_exists returning False.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -1017,7 +1021,7 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "lead-gen-outreach"))
 
-        acquired, existing = status.acquire_scoped_lock(
+        acquired, _existing = status.acquire_scoped_lock(
             "telegram-bot-token", "secret", metadata={"platform": "telegram"}
         )
 
@@ -1183,7 +1187,7 @@ class TestTakeoverMarker:
             "target_start_time": 100,
             "replacer_pid": 99999,
             "replacer_hermes_home": str(tmp_path / "profiles" / "other"),
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }))
 
         result = status.consume_takeover_marker_for_self()
@@ -1205,7 +1209,7 @@ class TestTakeoverMarker:
             "target_pid": os.getpid(),
             "target_start_time": 100,
             "replacer_pid": 99999,
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }))
 
         result = status.consume_takeover_marker_for_self()
@@ -1369,6 +1373,12 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
+        # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.
+        def _no_such_process(pid):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_no_such_process))
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1508,84 +1518,35 @@ class TestLaunchdPlistRespawnGovernance:
 
 
 class TestPermissionErrorOnLockFile:
-    """Stale root-owned lock files from launchd Background sessions must not
-    crash the gateway on restart (issue #42685)."""
-
-    def test_permission_error_on_lock_file_returns_false_and_removes(self, tmp_path, monkeypatch):
-        """When the lock file is not writable (root-owned), the function should
-        remove the stale file and report the lock as inactive."""
+    @pytest.mark.platforms("linux")
+    def test_inaccessible_lock_is_not_deleted_or_treated_as_absence(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            if str(path) == str(lock_path):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-        assert not lock_path.exists(), "stale root-owned lock file should be removed"
-
-    def test_permission_error_unlink_failure_still_returns_false(self, tmp_path, monkeypatch):
-        """Even if unlinking the stale lock file fails (e.g. directory not writable),
-        the function should still return False to allow startup."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            if str(path) == str(lock_path):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        real_unlink = Path.unlink
-
-        def deny_unlink(self, *args, **kwargs):
-            if str(self) == str(lock_path):
-                raise OSError(13, "Permission denied", str(self))
-            return real_unlink(self, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-        monkeypatch.setattr(Path, "unlink", deny_unlink)
-
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-
-    def test_acquire_gateway_runtime_lock_recovers_from_permission_error(self, tmp_path, monkeypatch):
-        """acquire_gateway_runtime_lock must survive a stale root-owned lock
-        file: unlink it and retry with a fresh file instead of crashing."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = status._get_gateway_lock_path()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            # Simulate a root-owned file: opening fails while the ORIGINAL
-            # stale file is still on disk; after unlink, the fresh file the
-            # retry creates opens fine.
-            if (
-                str(path) == str(lock_path)
-                and lock_path.exists()
-                and lock_path.read_text(encoding="utf-8") == "stale"
-            ):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-
+        lock = tmp_path / "gateway.lock"
+        lock.write_text("existing owner")
+        # The owner is live (its gateway.pid names a running process). Without one, an unreadable
+        # lock is refused with the sudo recovery (test_foreign_stale_gateway_lock).
+        (tmp_path / "gateway.pid").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        inode = lock.stat().st_ino
+        lock.chmod(0)
         try:
-            assert status.acquire_gateway_runtime_lock() is True
+            assert status.is_gateway_runtime_lock_active(lock) is True
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock.stat().st_ino == inode
         finally:
-            status.release_gateway_runtime_lock()
+            lock.chmod(0o600)
+        assert lock.read_text() == "existing owner"
+        assert status.acquire_gateway_runtime_lock() is True
+        status.release_gateway_runtime_lock()
+        assert lock.stat().st_ino == inode
+
+    @pytest.mark.platforms("linux")
+    def test_runtime_lock_does_not_follow_symlink(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "unrelated"
+        target.write_text("unchanged")
+        (tmp_path / "gateway.lock").symlink_to(target)
+        assert status.acquire_gateway_runtime_lock() is False
+        assert target.read_text() == "unchanged"
 
 
 class TestNormalizeUpdatedAt:
@@ -1598,7 +1559,7 @@ class TestNormalizeUpdatedAt:
         assert isinstance(result, str)
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
-        assert parsed == datetime.fromtimestamp(1750000000, tz=timezone.utc)
+        assert parsed == datetime.fromtimestamp(1750000000, tz=UTC)
 
 
     def test_iso_with_z_suffix_accepted(self):
@@ -1608,7 +1569,7 @@ class TestNormalizeUpdatedAt:
         assert result is not None
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
-        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
     def test_naive_iso_coerced_to_utc(self):
         from datetime import datetime, timezone
@@ -1618,7 +1579,7 @@ class TestNormalizeUpdatedAt:
         parsed = datetime.fromisoformat(result)
         assert parsed.tzinfo is not None
         assert parsed.utcoffset().total_seconds() == 0
-        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+        assert parsed == datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
     def test_offset_aware_iso_round_trips_canonically(self):
         canonical = "2026-07-21T12:00:00+00:00"
@@ -1724,15 +1685,12 @@ class TestResolveGatewayLiveness:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
-            return None
 
         def _reader(path=None):
             seen["status_path"] = path
-            return None
 
         def _runtime_pid(runtime, *, expected_home=None):
             seen["expected_home"] = expected_home
-            return None
 
         status.resolve_gateway_liveness(
             profile_dir=profile_dir,

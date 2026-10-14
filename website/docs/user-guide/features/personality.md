@@ -190,6 +190,7 @@ Hermes ships with built-in personalities you can switch to with `/personality`.
 | **uwu** | Maximum cute with uwu-speak |
 | **philosopher** | Deep contemplation on every query |
 | **hype** | MAXIMUM ENERGY AND ENTHUSIASM!!! |
+| **caveman** | Terse smart caveman — drops fluff, keeps substance 🪨 |
 
 ## Switching personalities with commands
 

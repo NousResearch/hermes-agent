@@ -79,6 +79,35 @@ export function AutoField({
     );
   }
 
+  if (schema.type === "range") {
+    const min = (schema.min as number) ?? 0;
+    const max = (schema.max as number) ?? 2;
+    const step = (schema.step as number) ?? 0.1;
+    const numVal = typeof value === "number" ? value : Number(value ?? 1);
+    return (
+      <div className="grid gap-1.5">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm">{label}</Label>
+          <span className="text-xs font-mono text-muted-foreground tabular-nums">{numVal.toFixed(1)}</span>
+        </div>
+        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={numVal}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+        />
+        <div className="flex justify-between text-[10px] text-muted-foreground/50">
+          <span>{min}</span>
+          <span>{max}</span>
+        </div>
+      </div>
+    );
+  }
+
   if (schema.type === "text") {
     return (
       <div className="grid gap-1.5">

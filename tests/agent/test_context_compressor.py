@@ -224,6 +224,69 @@ class TestNonStringContent:
 
 
 class TestSummaryFailureCooldown:
+    def test_same_model_bare_404_retries_once_and_succeeds(self):
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary after transient retry"
+
+        err_404 = Exception("404: Not Found")
+        err_404.status_code = 404
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with (
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=[err_404, mock_ok],
+            ) as mock_call,
+            patch("agent.context_compressor.time.sleep") as mock_sleep,
+        ):
+            result = c._generate_summary(messages)
+
+        assert mock_call.call_count == 2
+        mock_sleep.assert_called_once_with(1.0)
+        assert result is not None
+        assert "summary after transient retry" in result
+        assert c._last_summary_error is None
+
+    def test_same_model_bare_404_retries_only_once_then_enters_cooldown(self):
+        err_404 = Exception("404: Not Found")
+        err_404.status_code = 404
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gpt-5.6-sol",
+                provider="openai-codex",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with (
+            patch("agent.context_compressor.call_llm", side_effect=err_404) as mock_call,
+            patch("agent.context_compressor.time.sleep"),
+        ):
+            first = c._generate_summary(messages)
+            second = c._generate_summary(messages)
+
+        assert first is None
+        assert second is None
+        assert mock_call.call_count == 2
+        assert c._last_summary_error == "404: Not Found"
+
     def test_summary_failure_enters_cooldown_and_skips_retry(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)

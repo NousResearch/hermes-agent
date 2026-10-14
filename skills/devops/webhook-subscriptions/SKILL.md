@@ -50,7 +50,7 @@ After configuration, start (or restart) the gateway:
 ```bash
 hermes gateway run
 # Or if using systemd:
-systemctl --user restart hermes-gateway
+systemctl --user restart agent-gateway
 ```
 
 Verify it's running:
@@ -195,7 +195,7 @@ Requires `--deliver` to be a real target (telegram, discord, slack, github_comme
 
 If webhooks aren't working:
 
-1. **Is the gateway running?** Check with `systemctl --user status hermes-gateway` or `ps aux | grep gateway`
+1. **Is the gateway running?** Check with `systemctl --user status agent-gateway` or `ps aux | grep gateway`
 2. **Is the webhook server listening?** `curl http://localhost:8644/health` should return `{"status": "ok"}`
 3. **Check gateway logs:** `grep webhook ~/.hermes/logs/gateway.log | tail -20`
 4. **Signature mismatch?** Verify the secret in your service matches the one from `hermes webhook list`. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`.

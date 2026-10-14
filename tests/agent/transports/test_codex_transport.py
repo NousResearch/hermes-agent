@@ -140,6 +140,17 @@ class TestCodexBuildKwargs:
             "x-grok-conv-id": "conv-123",
         }
 
+    def test_ignores_anthropic_speed_override(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            request_overrides={"speed": "fast", "service_tier": "priority"},
+        )
+        assert "speed" not in kw
+        assert kw.get("service_tier") == "priority"
+
     def test_minimal_effort_clamped(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

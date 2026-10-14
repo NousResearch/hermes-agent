@@ -12803,7 +12803,10 @@ function primaryRecoveryState() {
   return {
     hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
     hasPendingStart: primaryStartsInFlight > 0,
-    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
+    // Renderer starts can reset primaryRecoverySuppressed before a deliberate
+    // SIGTERM lands; the physical stop owner remains authoritative.
+    intentionalTeardown:
+      backendConnectionState.isStopping() || primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
   }
 }
 

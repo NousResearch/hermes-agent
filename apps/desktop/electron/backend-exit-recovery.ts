@@ -43,7 +43,14 @@ export function createBackendExitRecoveryLatch({
     state.hasCurrentOwner || state.hasPendingStart || state.intentionalTeardown
 
   const claim = (state: BackendExitRecoveryState): boolean => {
-    if (claimed || blocked(state)) {
+    if (blocked(state)) {
+      // A stale exit during re-home is not an exhausted recovery attempt.
+      crashLooping = false
+
+      return false
+    }
+
+    if (claimed) {
       return false
     }
 
@@ -78,7 +85,13 @@ export function createBackendExitRecoveryLatch({
      * other supervisor respawn.
      */
     retryAfterFailedStart(state: BackendExitRecoveryState): boolean {
-      if (!claimed || blocked(state)) {
+      if (blocked(state)) {
+        crashLooping = false
+
+        return false
+      }
+
+      if (!claimed) {
         return false
       }
 

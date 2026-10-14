@@ -27,7 +27,28 @@ def _scope(**overrides):
     return ControllerScope(**values)
 
 
-def _start_pending(broker, scope, *, tool_call_id="tool-call-fixture"):
+class _TimesOutAfter:
+    """Stand-in for a pending command's event: its wait reports a timeout as soon as ``gate`` is set,
+    whatever the broker's command timeout (unless the command completed first).
+
+    Tests that need "the command timed out while the controller was offline" used a timeout of a few
+    milliseconds and raced it against their own ``disconnect_owner()``. Under load the timeout won:
+    the broker cancelled on the still-live controller, nothing was deferred, and the deferred-cancel
+    assertions failed. The gate fixes the order without depending on the clock.
+    """
+
+    def __init__(self, real, gate):
+        self._real, self._gate = real, gate
+
+    def set(self):
+        self._real.set()
+
+    def wait(self, timeout):
+        assert self._gate.wait(timeout=5.0)
+        return self._real.wait(timeout=0)
+
+
+def _start_pending(broker, scope, *, tool_call_id="tool-call-fixture", time_out_after=None):
     outcome = {}
     ready = threading.Event()
     frames = []
@@ -35,6 +56,9 @@ def _start_pending(broker, scope, *, tool_call_id="tool-call-fixture"):
     def send(frame):
         frames.append(frame)
         if frame["method"] == "browser.controller.command":
+            if time_out_after is not None:  # swapped before dispatch() reaches its wait
+                pending = broker._pending[frame["params"]["command_id"]]
+                pending.event = _TimesOutAfter(pending.event, time_out_after)
             ready.set()
 
     broker.attach(scope, send, owner="owner-fixture")
@@ -204,12 +228,16 @@ def test_transport_disconnect_parks_pending_and_reconnect_completes_it():
 
 
 def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
-    broker = BrowserControlBroker(command_timeout=0.02)
+    # The first command's timeout is driven by ``time_out_after``; the long limit keeps the second
+    # command pending until the test completes it.
+    broker = BrowserControlBroker(command_timeout=5.0)
     scope = _scope()
-    thread, outcome, frames = _start_pending(broker, scope)
+    offline = threading.Event()
+    thread, outcome, frames = _start_pending(broker, scope, time_out_after=offline)
     command_id = frames[0]["params"]["command_id"]
 
     assert broker.disconnect_owner("owner-fixture") == 1
+    offline.set()
     thread.join(timeout=1.0)
     assert isinstance(outcome.get("error"), ControllerTimeout)
     assert broker.pending_count == 0
@@ -363,10 +391,12 @@ def test_different_controller_identity_hard_replaces_parked_session_controller()
 
 
 def test_failed_deferred_cancel_flush_keeps_controller_offline():
-    broker = BrowserControlBroker(command_timeout=0.01)
+    broker = BrowserControlBroker(command_timeout=5.0)
     scope = _scope()
-    thread, outcome, _frames = _start_pending(broker, scope)
+    offline = threading.Event()
+    thread, outcome, _frames = _start_pending(broker, scope, time_out_after=offline)
     assert broker.disconnect_owner("owner-fixture") == 1
+    offline.set()
     thread.join(timeout=1.0)
     assert isinstance(outcome.get("error"), ControllerTimeout)
 

@@ -703,6 +703,25 @@ def _stage_turn_user_message(
     return user_msg, pending_cli_message
 
 
+def _stage_turn_input(
+    agent, messages, user_message, persist_user_message, persist_user_timestamp,
+    persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
+):
+    """A validated gateway retry continues the existing row without adding or editing input."""
+    resume_row_id = getattr(agent, "_resume_user_row_id", None)
+    if resume_row_id is not None:
+        index = next((i for i, row in enumerate(messages)
+                      if row.get("role") == "user" and row.get("_row_id") == resume_row_id), None)
+        if index is None:
+            raise ValueError("Retry checkpoint no longer has its original user row")
+        return index, None, True
+    user_msg, pending = _stage_turn_user_message(
+        agent, user_message, persist_user_message, persist_user_timestamp,
+        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata)
+    append_message(messages, user_msg)
+    return len(messages) - 1, pending, False
+
+
 def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]]) -> None:
     """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
@@ -1104,27 +1123,21 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
-    user_msg, pending_cli_message = _stage_turn_user_message(
-        agent, user_message, persist_user_message, persist_user_timestamp,
-        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
-    )
+    current_turn_user_idx, pending_cli_message, resuming = _stage_turn_input(
+        agent, messages, user_message, persist_user_message, persist_user_timestamp,
+        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata)
     _hydrate_from_history(agent, conversation_history)
-    # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
-    # Append the user message now that close persistence is safe.
-    append_message(messages, user_msg)
-    current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
-
-    agent._user_turn_count += 1
-    # Copilot x-initiator: the first API call of this user turn is user-initiated;
-    # tool-loop follow-ups revert to "agent".
-    agent._is_user_initiated_turn = True
+    if not resuming:
+        agent._user_turn_count += 1
+    agent._is_user_initiated_turn = not resuming
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
-    should_review_memory = _tick_memory_nudge(agent)
-    _emit_reaction(agent, original_user_message, persist_user_display_kind)
+    should_review_memory = False if resuming else _tick_memory_nudge(agent)
+    if not resuming:
+        _emit_reaction(agent, original_user_message, persist_user_display_kind)
 
     if not agent.quiet_mode:
         agent._safe_print(
@@ -1170,38 +1183,40 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
-    )
-    # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
-    # prompt in memory for the whole conversation and would never re-check its skills index.
-    stage_skills_index_note(agent, active_system_prompt, messages)
-    plugin_user_context = _merge_gateway_notes(
-        agent, messages, current_turn_user_idx, plugin_user_context
-    )
-
+    plugin_user_context, ext_prefetch_cache = "", None
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    if not resuming:
+        plugin_user_context = _collect_pre_llm_call_context(
+            agent, effective_task_id=effective_task_id, turn_id=turn_id,
+            original_user_message=original_user_message, messages=messages,
+            conversation_history=conversation_history,
+        )
+        # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
+        # prompt in memory for the whole conversation and would never re-check its skills index.
+        stage_skills_index_note(agent, active_system_prompt, messages)
+        plugin_user_context = _merge_gateway_notes(
+            agent, messages, current_turn_user_idx, plugin_user_context
+        )
 
-    # Title the session now: titling depends only on the user's ask (before any injected
-    # context lands on list content), so it runs concurrently with the turn. Daemon thread,
-    # no-op once titled; it ensures the session row itself.
-    _maybe_title_session_at_turn_start(agent, messages, title_user_message)
+        ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
 
-    # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
-    if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
-        if isinstance(messages[current_turn_user_idx].get("content"), list):
-            _append_multimodal_context(
-                agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
-                preflight_compressed=compaction.compressed,
-            )
-        elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
-            _stamp_api_content_sidecar(
-                agent, messages, current_turn_user_idx, ext_prefetch_cache,
-                plugin_user_context, preflight_compressed=compaction.compressed,
-            )
+        # Title the session now: titling depends only on the user's ask (before any injected
+        # context lands on list content), so it runs concurrently with the turn. Daemon thread,
+        # no-op once titled; it ensures the session row itself.
+        _maybe_title_session_at_turn_start(agent, messages, title_user_message)
+
+        # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
+        if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
+            if isinstance(messages[current_turn_user_idx].get("content"), list):
+                _append_multimodal_context(
+                    agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
+                    preflight_compressed=compaction.compressed,
+                )
+            elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+                _stamp_api_content_sidecar(
+                    agent, messages, current_turn_user_idx, ext_prefetch_cache,
+                    plugin_user_context, preflight_compressed=compaction.compressed,
+                )
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
 

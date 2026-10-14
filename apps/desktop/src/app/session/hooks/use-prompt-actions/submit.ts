@@ -45,6 +45,7 @@ import { routeTargetFromToken, sessionContextDrift } from '../session-context-dr
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
+import { promptAdmissionRejected } from './retry'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import {
   acquireSubmitInFlight,
@@ -1051,6 +1052,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
+                admissionRejected: promptAdmissionRejected(err),
                 ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,

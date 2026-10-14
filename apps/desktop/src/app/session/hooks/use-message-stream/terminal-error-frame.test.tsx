@@ -87,12 +87,14 @@ describe('terminal error message.complete frames', () => {
     await completeWithError({
       text: 'Error: rate limited',
       error: 'rate limited',
+      retry_token: 'failure-checkpoint',
       error_surface: { layer: 'provider', code: 'rate_limit', retryable: true },
       recoverable: true
     })
 
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('rate limited')
+    expect(bubble?.retryToken).toBe('failure-checkpoint')
     expect(bubble?.errorSurface).toEqual({ layer: 'provider', code: 'rate_limit', retryable: true })
   })
 

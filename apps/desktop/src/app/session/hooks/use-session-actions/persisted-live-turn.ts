@@ -269,7 +269,13 @@ export function reconcilePersistedLiveTurn(
               parts: text.trim() ? [assistantTextPart(text)] : [],
               pending: final && Boolean(inflight.streaming),
               ...(!final ? { interim: true } : {}),
-              ...(error ? { error, errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined } : {})
+              ...(error
+                ? {
+                    error,
+                    retryToken: inflight.retry_token,
+                    errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined
+                  }
+                : {})
             }
           ]
         : []

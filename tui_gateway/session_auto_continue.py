@@ -547,6 +547,8 @@ def _inflight_snapshot(session: dict) -> dict | None:
         snapshot["corrections"] = [c for c, _ in correction_pairs]
         if all(isinstance(offset, int) and offset >= 0 for _, offset in correction_pairs):
             snapshot["correction_offsets"] = [int(offset) for _, offset in correction_pairs]  # type: ignore[arg-type]
+    if checkpoint := turn.get("retry_checkpoint"):
+        snapshot["retry_token"] = checkpoint["token"]
     if error:
         # Retained failed turn (_fail_inflight_turn): a resuming client must rebuild the failed bubble, not render the
         # partial text as a healthy reply.

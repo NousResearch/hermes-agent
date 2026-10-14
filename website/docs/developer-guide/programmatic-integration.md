@@ -41,7 +41,7 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 ### Method catalog (selected)
 
 ```
-prompt.submit           prompt.background       session.steer
+prompt.submit           prompt.retry            prompt.background       session.steer
 session.create          session.list            session.active_list
 session.activate        session.close           session.interrupt
 session.history         session.compress        session.branch
@@ -80,6 +80,12 @@ A truncation parameter without `confirm_truncate` is refused with code `4004` or
 A truncating submit is never absorbed by the busy-input policy. While a turn is still running, an ordinary `prompt.submit` is steered, redirected, or queued (`display.busy_input_mode`), but a rewind / edit / regenerate refuses with code `4009` (`session busy`) instead — queueing it would drop the history cut and run the edit as a plain follow-up after the un-edited turn. Hosts call `session.interrupt` and retry the same submit until it lands; the Desktop app does this automatically, so editing a message while Hermes is still thinking stops the live turn and reruns from the edited prompt.
 
 On a successful truncating submit against a durable session, the `prompt.submit` result additionally carries `survivor_user_row_ids` — the fresh post-rewrite row IDs of the surviving user turns, in visible-user-ordinal order. The rewrite re-inserts the kept prefix as new rows, so every row ID the host cached before the rewind is stale afterward; rebind cached IDs from this list (a `null` entry means that turn has no durable ID — drop the cached one) or the next rewind targeting an older surviving turn will be refused with `4018`.
+
+### Continuing a failed provider request on `prompt.retry`
+
+A retained provider rate-limit failure can carry `retry_token` on `message.complete` and on `session.resume.inflight`. Send `prompt.retry {session_id, retry_token}` to continue the durable context, including completed tool results, without adding user input or truncating history. The token is consumed once; busy retries refuse with `4009` and never enter the input queue. Explicit Regenerate still uses the rewind contract above.
+
+Tokens are process-local. A missing token, backend restart, changed/compacted transcript, unproven tool outcome, or unsupported isolated/native worker refuses with `4034`; clients must preserve the transcript and ask the user to review completed work before continuing. Never downgrade this refusal to a truncating submit or replay the original prompt. A tool effect that occurs before its result commits remains an unknowable window: this mechanism does not guarantee arbitrary exactly-once effects.
 
 ### Events streamed back
 

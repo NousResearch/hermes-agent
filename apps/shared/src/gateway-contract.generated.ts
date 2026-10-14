@@ -3043,6 +3043,11 @@ export interface WakeFeedResult {
   reason?: string | null
   fed: boolean
 }
+export interface PromptRetryParams {
+  session_id: string
+  profile?: string | null
+  retry_token: string
+}
 export interface SessionCreateParams {
   profile?: string | null
   cols?: number | null
@@ -3168,6 +3173,7 @@ export interface InflightTurn {
   correction_offsets?: number[] | null
   error?: string | null
   status?: string | null
+  retry_token?: string | null
   recoverable?: boolean | null
   error_surface?: Record<string, unknown> | null
 }
@@ -4807,6 +4813,7 @@ export interface MessageCompletePayload {
   failure_reason?: string | null
   rendered?: string | null
   error?: string | null
+  retry_token?: string | null
   recoverable?: boolean | null
   error_surface?: ErrorSurface | null
   partial?: boolean | null
@@ -5449,6 +5456,8 @@ export interface RpcMethods {
   'prompt.background': { params: SideAgentParams; result: TaskIdResult }
   /** Side question over a snapshot of the live conversation; the answer arrives as btw.complete. */
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
+  /** Continue the exact retained failed provider request; stale checkpoints are refused without a rewind. */
+  'prompt.retry': { params: PromptRetryParams; result: PromptSubmitResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
   /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
@@ -5801,6 +5810,7 @@ export const RPC_METHODS = [
   'projects.update',
   'prompt.background',
   'prompt.btw',
+  'prompt.retry',
   'prompt.submit',
   'reload.env',
   'reload.mcp',

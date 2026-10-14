@@ -39,6 +39,8 @@ export type ChatMessage = {
   completedAt?: number
   pending?: boolean
   error?: string
+  retryToken?: string
+  admissionRejected?: boolean
   /** Structured layer descriptor for a failed turn (parsed error_surface).
    *  Drives the error card's layer label + actions; absent on older
    *  backends, where the card falls back to generic copy. */
@@ -222,6 +224,7 @@ export type GatewayEventPayload = {
   partial?: boolean
   // message.complete with status "error" — the failed turn was retained
   // backend-side and will replay through session.resume's inflight payload.
+  retry_token?: string
   recoverable?: boolean
   // Structured billing wall forwarded on message.complete when a turn fails
   // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).

@@ -2977,6 +2977,24 @@
       }
     },
     {
+      "name": "prompt.retry",
+      "summary": "Continue the exact retained failed provider request; stale checkpoints are refused without a rewind.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptRetryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptSubmitResult"
+        }
+      }
+    },
+    {
       "name": "prompt.submit",
       "summary": "Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing.",
       "params": [
@@ -16849,6 +16867,18 @@
             "default": null,
             "title": "Status"
           },
+          "retry_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Token"
+          },
           "recoverable": {
             "anyOf": [
               {
@@ -19213,6 +19243,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "retry_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Token"
           },
           "recoverable": {
             "anyOf": [
@@ -27016,6 +27058,37 @@
           "id"
         ],
         "title": "ProjectsUpdateParams",
+        "type": "object"
+      },
+      "PromptRetryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "retry_token": {
+            "title": "Retry Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "retry_token"
+        ],
+        "title": "PromptRetryParams",
         "type": "object"
       },
       "PromptSubmitParams": {

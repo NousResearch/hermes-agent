@@ -418,6 +418,7 @@ it('settles a retained idle error once across repeated resume and a changed erro
       status: 'error',
       recoverable: true,
       error: 'Connection reset',
+      retry_token: 'failure-checkpoint',
       error_surface: { layer: 'streaming', code: 'stream_drop', retryable: true }
     }
   }
@@ -442,6 +443,7 @@ it('settles a retained idle error once across repeated resume and a changed erro
     expect(state.messages.at(-1)).toMatchObject({
       error: snapshot.inflight!.error,
       errorSurface: snapshot.inflight!.error_surface,
+      retryToken: snapshot.inflight!.retry_token,
       pending: false
     })
     expect(new Set(state.messages.map(row => row.id)).size).toBe(state.messages.length)

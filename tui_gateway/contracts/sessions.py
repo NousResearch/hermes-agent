@@ -39,6 +39,7 @@ class InflightTurn(Result):
     correction_offsets: list[int] | None = None
     error: str | None = None
     status: str | None = None
+    retry_token: str | None = None
     recoverable: bool | None = None
     error_surface: dict[str, JsonValue] | None = None
 

@@ -1,0 +1,7 @@
+name: telegram_miniapp
+version: 1.0.0
+description: "Dashboard auth provider — non-interactive Telegram Mini App credential. Verifies Telegram's HMAC-signed initData (passed as a bearer token) against TELEGRAM_BOT_TOKEN and resolves a tier (paired/allowlisted read-only, or admin via TELEGRAM_DASHBOARD_ADMIN_USERS) for the /miniapp dashboard view. Off by default: a no-op unless dashboard.telegram_miniapp.enabled is true in config.yaml AND TELEGRAM_BOT_TOKEN is set — fails closed (stays disabled, does not register) if the token is missing, since there is nothing to verify initData against without it."
+author: NousResearch
+kind: backend
+requires_env:
+  - TELEGRAM_BOT_TOKEN

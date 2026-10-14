@@ -1,0 +1,10 @@
+{
+  "name": "telegram-miniapp",
+  "label": "Telegram Mini App",
+  "description": "Backend for the Telegram Mini App dashboard: Telegram allowlist management and tier detection. Its UI opens inside Telegram at /miniapp; off unless dashboard.telegram_miniapp.enabled is set.",
+  "icon": "Puzzle",
+  "version": "1.0.0",
+  "tab": { "path": "/telegram-miniapp", "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

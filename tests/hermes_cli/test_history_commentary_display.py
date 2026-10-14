@@ -7,6 +7,7 @@ from hermes_constants import get_hermes_home_override
 
 import asyncio
 import pytest
+from fastapi import Request
 
 
 def _row(text="I will inspect the files."):
@@ -175,7 +176,7 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
             ("hidden", []),
         ):
             page = await sessions.get_session_messages(
-                "sid",
+                Request(scope={"type": "http", "headers": []}), "sid",
                 profile=profile,
                 limit=120,
                 offset=0,
@@ -235,7 +236,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
 
     async def exercise():
         page = await sessions.get_session_messages(
-            "sid",
+            Request(scope={"type": "http", "headers": []}), "sid",
             profile=None,
             limit=120,
             offset=0,

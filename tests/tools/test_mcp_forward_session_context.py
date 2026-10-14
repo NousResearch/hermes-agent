@@ -26,10 +26,12 @@ def test_forwarded_context_is_task_local_and_opt_in():
         )
 
         async def call(run):
-            tokens = set_session_vars(platform="api_server", session_key=run, session_id="shared-session")
+            tokens = set_session_vars(platform="api_server", session_key=run, session_id="shared-session", request_session_id=run + "-alias")
             try:
-                return await _call_tool_racing_stdio_death(
-                    server, "harness", "inspect", {"session_key": "model-supplied"})
+                from gateway.session_context import scoped_current_session_id
+                with scoped_current_session_id(run + "-rotated"):
+                    return await _call_tool_racing_stdio_death(
+                        server, "harness", "inspect", {"session_key": "model-supplied"})
             finally:
                 clear_session_vars(tokens)
 
@@ -38,7 +40,9 @@ def test_forwarded_context_is_task_local_and_opt_in():
         for arguments, kwargs in calls:
             assert arguments == {"session_key": "model-supplied"}
             assert kwargs["meta"]["com.nousresearch.hermes/platform"] == "api_server"
-            assert kwargs["meta"]["com.nousresearch.hermes/session_id"] == "shared-session"
+            run = kwargs["meta"]["com.nousresearch.hermes/session_key"]
+            assert kwargs["meta"]["com.nousresearch.hermes/session_id"] == run + "-rotated"
+            assert kwargs["meta"]["com.nousresearch.hermes/request_session_id"] == run + "-alias"
 
         for config in ({}, {"forward_session_context": False}, {"forward_session_context": "true"}):
             server._config = config
@@ -78,7 +82,7 @@ def test_real_mcp_protocol_carries_runtime_origin():
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
                     server = SimpleNamespace(_config={"forward_session_context": True}, session=session)
-                    tokens = set_session_vars(platform="api_server", session_key="run_origin", session_id="conversation")
+                    tokens = set_session_vars(platform="api_server", session_key="run_origin", session_id="conversation", request_session_id="original")
                     try:
                         result = await _call_tool_racing_stdio_death(server, "harness", "inspect", {})
                     finally:
@@ -87,7 +91,8 @@ def test_real_mcp_protocol_carries_runtime_origin():
                     assert received == [{
                         "com.nousresearch.hermes/platform": "api_server",
                         "com.nousresearch.hermes/session_key": "run_origin",
-                        "com.nousresearch.hermes/session_id": "conversation"}]
+                        "com.nousresearch.hermes/session_id": "conversation",
+                        "com.nousresearch.hermes/request_session_id": "original"}]
                 group.cancel_scope.cancel()
 
     asyncio.run(exercise())
@@ -117,7 +122,7 @@ def test_registry_handler_keeps_origin_across_mcp_loop_thread(monkeypatch):
     server._stdio_children_dead.return_value = False
     monkeypatch.setitem(mcp_tool._servers, "origin-proof", server)
     mcp_tool_loop._ensure_mcp_loop()
-    tokens = set_session_vars(platform="api_server", session_key="run_thread", session_id="thread-session")
+    tokens = set_session_vars(platform="api_server", session_key="run_thread", session_id="thread-session", request_session_id="thread-alias")
     try:
         result = json.loads(_make_tool_handler("origin-proof", "inspect", 5)({}))
         assert result["result"] == "ok"
@@ -126,14 +131,15 @@ def test_registry_handler_keeps_origin_across_mcp_loop_thread(monkeypatch):
     assert received == [{
         "com.nousresearch.hermes/platform": "api_server",
         "com.nousresearch.hermes/session_key": "run_thread",
-        "com.nousresearch.hermes/session_id": "thread-session"}]
+        "com.nousresearch.hermes/session_id": "thread-session",
+        "com.nousresearch.hermes/request_session_id": "thread-alias"}]
 
 
 def test_no_ambient_or_non_api_identity_is_forwarded(monkeypatch):
     import contextvars
     from gateway.session_context import reset_session_vars
 
-    for name, value in {"PLATFORM": "api_server", "KEY": "ambient-run", "ID": "ambient-session"}.items():
+    for name, value in {"PLATFORM": "api_server", "KEY": "ambient-run", "ID": "ambient-session", "REQUEST_ID": "ambient-alias"}.items():
         monkeypatch.setenv(f"HERMES_SESSION_{name}", value)
 
     async def call_tool(name, *, arguments):
@@ -144,7 +150,7 @@ def test_no_ambient_or_non_api_identity_is_forwarded(monkeypatch):
     async def exercise():
         reset_session_vars()
         assert await _call_tool_racing_stdio_death(server, "harness", "inspect", {}) == "no metadata"
-        for platform, key, session in (("telegram", "chat-key", "session"), ("api_server", "run", "")):
+        for platform, key, session in (("telegram", "chat-key", "session"), ("api_server", "run", ""), ("api_server", "run", "live-without-request")):
             tokens = set_session_vars(platform=platform, session_key=key, session_id=session)
             try:
                 assert await _call_tool_racing_stdio_death(server, "harness", "inspect", {}) == "no metadata"

@@ -449,13 +449,19 @@ Set `forward_session_context: true` only for a server that needs to correlate to
 requests with their originating API execution. Hermes adds this request metadata:
 
 ```json
-{"_meta":{"com.nousresearch.hermes/platform":"api_server","com.nousresearch.hermes/session_key":"run_...","com.nousresearch.hermes/session_id":"..."}}
+{"_meta":{"com.nousresearch.hermes/platform":"api_server","com.nousresearch.hermes/session_key":"run_...","com.nousresearch.hermes/session_id":"live-session", "com.nousresearch.hermes/request_session_id":"client-session"}}
 ```
 
 The values come from the calling task, not model arguments, ambient environment
 variables, or the shared MCP connection. For `POST /v1/runs`, `session_key` is the
-native run ID and `session_id` is its conversation session. No metadata is sent
-when the API identity is incomplete or the caller is another platform. API calls
+native run ID. `session_id` is the live physical session and may rotate during compression.
+`request_session_id` is the selected session before compression-alias resolution (or the run ID
+when no session was selected). It stays immutable for that admission and appears in durable run
+status, including replay and restart. Explicit `body.session_id` preserves the original caller
+alias; a declared conversation header selects its session before live-tip resolution.
+`features.runs_idempotency.request_session_id: true` advertises this contract. No metadata is sent
+when the API identity is incomplete (including API paths without a bound request
+session) or the caller is another platform. API calls
 have no chat sender or triggering message, so those fields are not synthesized.
 Independent runs sharing a connection retain their own values. Model arguments
 remain unchanged.

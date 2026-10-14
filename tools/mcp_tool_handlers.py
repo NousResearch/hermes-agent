@@ -395,10 +395,11 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
         )
     call_options = {}
     if server._config.get("forward_session_context") is True:
-        from gateway.session_context import _VAR_MAP
+        from gateway.session_context import _SESSION_REQUEST_ID, _VAR_MAP
         # API runs have no chat sender/message. Only task-bound identity may leave the process.
         fields = {"platform": "PLATFORM", "session_key": "KEY", "session_id": "ID"}
         context = {field: _VAR_MAP[f"HERMES_SESSION_{suffix}"].get() for field, suffix in fields.items()}
+        context["request_session_id"] = _SESSION_REQUEST_ID.get()
         if context["platform"] == "api_server" and all(isinstance(value, str) and value for value in context.values()):
             call_options["meta"] = {f"com.nousresearch.hermes/{field}": value for field, value in context.items()}
     _call_coro = server.session.call_tool(tool_name, arguments=args, **call_options)

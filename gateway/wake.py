@@ -115,6 +115,9 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     if _runner_draining(adapter):
         raise WakeNotAccepted("gateway began draining during admission; retry after restart",
                               reason="runtime_draining")
+    # No drain began before or during admission, so the producer takes this receipt as final and
+    # will not retry: a drain that begins later must run the wake rather than drop it (#138123).
+    event._admitted_before_drain = True
 
 
 def _runner_draining(adapter: Any) -> bool:

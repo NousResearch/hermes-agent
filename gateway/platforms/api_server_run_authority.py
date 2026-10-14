@@ -1,6 +1,7 @@
 """Compact cancelled attempts only behind a proven newer room authority epoch."""
 import hashlib
 import json
+import sqlite3
 import time
 
 
@@ -241,11 +242,124 @@ def superseded(conn, authority):
 
 
 def _stamp_unstamped_scope(conn, key, scope, epoch):
-    """Bind one pre-column scope to this lineage without adopting a different member."""
+    """Bind one pre-column scope to this lineage without adopting a different member.
+
+    Callers pass a scope they recomputed for this home and member. Every key in that
+    scope is that member's generation. The session-id scan must not use this: one
+    matching status would otherwise stamp every unstamped row that shares the scope,
+    including a migrated public run.
+    """
     conn.execute(
         """UPDATE run_idempotency SET room_authority_key=?,room_authority_epoch=?,room_lineage_key=?
            WHERE scope=? AND room_authority_key IS NULL""",
         (key, int(epoch), key, scope))
+
+
+def _stamp_legacy_row(conn, key, epoch, scope, idempotency_key):
+    """Bind one matched pre-column row. Sibling keys in the scope stay untouched."""
+    conn.execute(
+        """UPDATE run_idempotency
+           SET room_authority_key=?, room_authority_epoch=?, room_lineage_key=?
+           WHERE scope=? AND idempotency_key=? AND room_authority_key IS NULL AND client_replay=0""",
+        (key, int(epoch), key, scope, idempotency_key))
+
+
+def _explicit_compression_fork(row) -> bool:
+    """A branch, delegate, reset, or tool child is not the room session's continuation."""
+    if row["source"] == "tool":
+        return True
+    raw = row["model_config"]
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        cfg = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    parent_id = row["parent_session_id"]
+    markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"), cfg.get("_reset_from"))
+    return parent_id in markers if parent_id else any(marker is not None for marker in markers)
+
+
+def compression_lineage(session_id: str) -> list[str] | None:
+    """Ids from the stored session up through compression parents, root last.
+
+    ``None`` means the session database could not be read. A missing row is a
+    one-element list so an exact hidden id still matches without a session row.
+    Only a child of a session ended ``compression`` is followed, and a fork is not.
+    """
+    if not isinstance(session_id, str) or not session_id:
+        return []
+    try:
+        from hermes_state import _default_db_path
+        path = _default_db_path()
+    except (ImportError, OSError, RuntimeError):
+        return None
+    if path is None or not path.is_file():
+        return [session_id]
+    conn = None
+    try:
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA query_only=ON")
+        conn.row_factory = sqlite3.Row
+        chain = []
+        current = session_id
+        seen = set()
+        for _ in range(64):
+            if not current or current in seen:
+                break
+            seen.add(current)
+            chain.append(current)
+            row = conn.execute(
+                "SELECT parent_session_id, source, model_config FROM sessions WHERE id=?",
+                (current,)).fetchone()
+            if row is None or not row["parent_session_id"]:
+                break
+            if _explicit_compression_fork(row):
+                break
+            parent = conn.execute(
+                "SELECT end_reason FROM sessions WHERE id=?", (row["parent_session_id"],)).fetchone()
+            if parent is None or parent["end_reason"] != "compression":
+                break
+            current = row["parent_session_id"]
+        return chain
+    except (sqlite3.Error, OSError):
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _lineage_ids(status: dict) -> list[str] | None:
+    """Session ids that name this row, including compression ancestors of the stored id.
+
+    ``None`` means the session database could not be read and no id was already on the row.
+    Ids already stored are kept when that read fails, so a canonical ``hosted_session_id``
+    still matches.
+    """
+    found = []
+    hosted = status.get("hosted_session_id")
+    if isinstance(hosted, str) and hosted:
+        found.append(hosted)
+    stored = status.get("session_id")
+    if not isinstance(stored, str) or not stored:
+        return found
+    if stored not in found:
+        found.append(stored)
+    chain = compression_lineage(stored)
+    if chain is None:
+        return found or None
+    for item in chain:
+        if item not in found:
+            found.append(item)
+    return found
+
+
+def _foreign_room_root(ids: list[str], session_ids: set[str]) -> bool:
+    """True when the lineage root is some other member's hidden session id."""
+    root = ids[-1] if ids else ""
+    return root.startswith("room_") and len(root) == 37 and root not in session_ids
 
 
 def _legacy_member_session_ids(conn, claims):
@@ -272,31 +386,81 @@ def _legacy_member_session_ids(conn, claims):
     return [hosted_member_session_id(home, room_id, member_id, profile) for home in homes if home]
 
 
-def _stamp_legacy_member_rows(conn, key, epoch, claims):
-    """Bind pre-column rows whose stored session is this member, whatever gateway hashed the scope."""
+def _status_matches_member(status: dict, session_ids: set[str]) -> bool:
+    """True when the stored session, its canonical id, or a compression ancestor is this member."""
+    ids = _lineage_ids(status)
+    return bool(ids) and any(item in session_ids for item in ids)
+
+
+def _stamp_legacy_member_rows(conn, key, epoch, claims, excluded_scopes=None):
+    """Bind pre-column rows whose session lineage is this member.
+
+    One matching status stamps that row only. A public scope is excluded: a migrated
+    ``POST /v1/runs`` can carry this member's session id and must not become the room replay.
+    """
     session_ids = set(_legacy_member_session_ids(conn, claims))
     if not session_ids:
         return
+    from gateway.platforms.api_server_run_idempotency import _room_generation_key
+    excluded = {str(scope) for scope in (excluded_scopes or ()) if scope}
     rows = conn.execute(
-        """SELECT scope, status_json FROM run_idempotency
+        """SELECT scope, idempotency_key, status_json FROM run_idempotency
            WHERE room_authority_key IS NULL AND client_replay=0"""
     ).fetchall()
-    stamped = set()
-    for scope, status_json in rows:
-        if scope in stamped:
+    for scope, idempotency_key, status_json in rows:
+        if scope in excluded or not _room_generation_key(idempotency_key):
             continue
         try:
             status = json.loads(status_json)
         except (ValueError, TypeError):
             continue
-        if not isinstance(status, dict) or status.get("session_id") not in session_ids:
+        if not isinstance(status, dict) or not _status_matches_member(status, session_ids):
             continue
-        _stamp_unstamped_scope(conn, key, scope, epoch)
-        stamped.add(scope)
+        _stamp_legacy_row(conn, key, epoch, scope, idempotency_key)
+
+
+_RUNNING_LEGACY_STATUSES = frozenset({
+    "queued", "running", "stopping", "waiting_for_approval", "in_progress", "requires_action"})
+
+
+def legacy_run_unresolved(conn, idempotency_key, claims, excluded_scopes=None) -> bool:
+    """True when a running pre-column row for this member cannot be bound.
+
+    Admission must not insert another run for that generation. A root that is some
+    other member's hidden id is not this row. A public scope is not this row.
+    """
+    session_ids = set(_legacy_member_session_ids(conn, claims))
+    if not session_ids:
+        return False
+    from gateway.platforms.api_server_run_idempotency import _room_generation_key
+    if not _room_generation_key(idempotency_key):
+        return False
+    excluded = {str(scope) for scope in (excluded_scopes or ()) if scope}
+    rows = conn.execute(
+        """SELECT scope, status_json FROM run_idempotency
+           WHERE idempotency_key=? AND room_authority_key IS NULL AND client_replay=0""",
+        (idempotency_key,)).fetchall()
+    for scope, status_json in rows:
+        if scope in excluded:
+            continue
+        try:
+            status = json.loads(status_json)
+        except (ValueError, TypeError):
+            return True
+        if not isinstance(status, dict):
+            return True
+        if str(status.get("status") or "") not in _RUNNING_LEGACY_STATUSES:
+            continue
+        if _status_matches_member(status, session_ids):
+            continue
+        ids = _lineage_ids(status)
+        if ids is None or not _foreign_room_root(ids, session_ids):
+            return True
+    return False
 
 
 def observe(conn, scope, authority, previous=None, previous_home=None, namespace=None, claims=None,
-            extra_gateways=None):
+            extra_gateways=None, excluded_scopes=None):
     """Bind old receipts on authenticated observation, then advance one room/member watermark."""
     key, epoch, gateway = successor(conn, authority, previous)
     if not namespace_matches(conn, namespace, (key, epoch, gateway)):
@@ -312,7 +476,7 @@ def observe(conn, scope, authority, previous=None, previous_home=None, namespace
             (authority[0], key, origin_home(conn, previous, previous_home)))
     # A migrated row's scope includes a gateway id main may already have overwritten.
     # The hidden session id does not. Stamp that member's rows before the watermark moves.
-    _stamp_legacy_member_rows(conn, key, epoch, claims)
+    _stamp_legacy_member_rows(conn, key, epoch, claims, excluded_scopes)
     # Read the watermark before this grant replaces it. Production POST /v1/runs does not
     # receive previous_authority; the gateway that admitted the live row is whatever this
     # lineage last stored, plus every gateway remembered since.

@@ -363,6 +363,17 @@ def _room_permission_for(request: web.Request) -> str:
     return "status" if request.method == "GET" else "dispatch"
 
 
+def _public_run_scopes(self, *, _api_server) -> tuple[str, ...]:
+    """Scopes a non-room ``POST /v1/runs`` uses. A migrated public row lives here."""
+    key = self._expected_api_key() or "unauthenticated-test-listener"
+    profile = _api_server._api_request_profile.get() or "default"
+    names = [str(profile or "default")]
+    if "default" not in names:
+        names.append("default")
+    return tuple(
+        hashlib.sha256("\0".join((name, str(key))).encode()).hexdigest() for name in names)
+
+
 def _known_reservation_gateways(claims) -> list[str]:
     """Gateway ids still stored for this member, read before observe replaces the watermark.
 
@@ -390,13 +401,19 @@ def _run_idempotency_scope(self, request: web.Request, *, _api_server) -> str:
         except (AttributeError, TypeError):
             request._hermes_room_run_authority = authority
         scope = room_run_scope(claims)
+        public_scopes = _public_run_scopes(self, _api_server=_api_server)
+        try:
+            request._hermes_room_claims = claims
+            request._hermes_public_run_scopes = public_scopes
+        except (AttributeError, TypeError):
+            pass
         # A refused lineage must not fall through to reservation currency. observe()
         # records the watermark only when this grant is allowed to admit. POST /v1/runs
         # never receives previous_authority; the reservation still names the gateway that
         # admitted this member, including one the watermark is about to replace.
         request._hermes_room_lineage_rejected = not self._run_idempotency_store.observe_room_authority(
             scope, authority, namespace=room_namespace(claims), claims=claims,
-            extra_gateways=_known_reservation_gateways(claims))
+            extra_gateways=_known_reservation_gateways(claims), excluded_scopes=public_scopes)
         return scope
     else:
         parts = (_api_server._api_request_profile.get() or "default",
@@ -414,12 +431,21 @@ def _check_run_auth(self, request: web.Request, *, permission: str, _api_server)
     return None
 
 
+def _room_legacy_kwargs(request) -> dict:
+    return {
+        "claims": getattr(request, "_hermes_room_claims", None),
+        "excluded_scopes": getattr(request, "_hermes_public_run_scopes", None)}
+
+
 def _reserve_room_run(self, request, *args, **kwargs):
     """Recheck a captured peer only for a new row, under the grant accepting writer.
 
     This guard also survives a RunStore publication failure after a successful
     grant commit. Existing run controls retain their original replay authority.
     """
+    if self._room_grant_token(request):
+        for name, value in _room_legacy_kwargs(request).items():
+            kwargs.setdefault(name, value)
     if not self._room_grant_token(request):
         return self._run_idempotency_store.reserve(*args, **kwargs)
     from gateway import hosted_rooms
@@ -541,6 +567,11 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> web.Response:
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
+    if outcome == "legacy_unresolved":
+        return _json_error(
+            _openai_error,
+            "A running room generation could not be bound to this member; it was not started again.",
+            code="legacy_run_unresolved", status=409)
     if outcome == "authority_retired":
         return _json_error(
             _openai_error, "Room authority has advanced; this attempt cannot be admitted.",
@@ -742,6 +773,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         return history_err
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
+    # Room dispatch already replaced the body session with the hidden member id.
+    # Keep it: compression rewrites the id stored as ``session_id`` before reserve.
+    hosted_session_id = session_id if room_dispatch else None
     route = self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
     selection_error = self._request_route_conflict_error(
@@ -753,10 +787,11 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     # A lost-acceptance replay must resolve even while the original run holds the last
     # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
     if idempotency_key:
+        legacy = _room_legacy_kwargs(request)
         outcome, record = self._run_idempotency_store.lookup(
             idempotency_scope, idempotency_key, idempotency_fingerprint,
             retention_until=_room_retention_until(request),
-            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+            room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY), **legacy)
         if outcome != "missing":
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     # Enforce concurrency only for a genuinely new run.
@@ -793,7 +828,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        run_id, "queued", created_at=created_at, session_id=session_id,
+        model=body.get("model", self._model_name),
+        **({"hosted_session_id": hosted_session_id} if hosted_session_id else {}))
     if idempotency_key:
         outcome, record = _reserve_room_run(self, request,
             idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
@@ -1370,6 +1407,11 @@ async def _handle_stop_run_admission(self, request: web.Request, *, _api_server)
         scope, request.headers["Idempotency-Key"].strip(), "", run_id, cancelled,
         retention_until=_room_retention_until(request), cancel_if_missing=True,
         room_authority=request.get(_ROOM_AUTHORITY_REQUEST_KEY))
+    if outcome == "legacy_unresolved":
+        return _json_error(
+            _api_server._openai_error,
+            "A running room generation could not be bound to this member; it was not started again.",
+            code="legacy_run_unresolved", status=409)
     if outcome == "authority_retired":
         return _json_error(_api_server._openai_error, "Room authority has advanced.",
                            code="run_history_retired", status=409)

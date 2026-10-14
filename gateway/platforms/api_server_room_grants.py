@@ -131,6 +131,26 @@ def _previous_authority(claims, body):
     return room_authority({**claims, **previous})
 
 
+def _same_member_publication(conn, claims) -> bool:
+    """True when this member's live reservation is already the authority being published.
+
+    A failed idempotency commit can leave that reservation durable and the watermark
+    empty. The identical retry must finish the invitation. A different gateway or epoch
+    is still a new origin and still requires ``previous_authority``.
+    """
+    row = conn.execute(
+        """SELECT authority_gateway_id, authority_epoch FROM hosted_room_peer_reservations
+           WHERE room_id=? AND member_id=? AND target_profile=? AND revoked_at IS NULL""",
+        (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchone()
+    if row is None:
+        return False
+    try:
+        epoch = int(claims["authority_epoch"])
+    except (TypeError, ValueError):
+        return False
+    return str(row[0]) == str(claims["authority_gateway_id"]) and int(row[1]) == epoch
+
+
 def _record_invitation(self, claims, body, *, db_path=None):
     from gateway import hosted_rooms
     from gateway.platforms.api_server_run_authority import room_authority
@@ -154,15 +174,18 @@ def _record_invitation(self, claims, body, *, db_path=None):
                 (claims["room_id"], claims["member_id"], claims["target_profile"])).fetchall()
             self._run_idempotency_store.remember_room_gateways(
                 claims, [row[0] for row in prior_gateways])
-            if previous is None and not known and conn.execute(
-                    "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
-                    (claims["room_id"], claims["target_profile"])).fetchone() is not None:
-                raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
+            if previous is None and not known and not _same_member_publication(conn, claims):
+                if conn.execute(
+                        "SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND target_profile=?",
+                        (claims["room_id"], claims["target_profile"])).fetchone() is not None:
+                    raise RoomGrantReauthorizationRequired("room origin requires an explicit predecessor")
             # Durable before the rooms commit. observe() can still fail after that commit.
             self._run_idempotency_store.checkpoint_open_transaction()
             hosted_rooms.reserve_peer_room(db_path, claims=claims, expires_at=_hard_expiry(claims), conn=conn)
             conn.commit()
-        self._run_idempotency_store.commit_room_invitation(claims, previous, previous_home, commit_reservation)
+        excluded = tuple(self._public_run_scopes()) if hasattr(self, "_public_run_scopes") else ()
+        self._run_idempotency_store.commit_room_invitation(
+            claims, previous, previous_home, commit_reservation, excluded_scopes=excluded)
 
 
 async def _handle_room_member_invitation(

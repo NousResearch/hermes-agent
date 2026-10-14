@@ -216,7 +216,8 @@ class RunIdempotencyStore:
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: dict[str, Any], *,
                 owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
-                cancel_if_missing: bool = False, room_authority=None, _authorize=None):
+                cancel_if_missing: bool = False, room_authority=None, _authorize=None,
+                claims=None, excluded_scopes=None):
         """Reserve admission, or atomically fence an absent key and stop its existing run.
 
         Cancellation addresses the scoped identity, not a payload fingerprint. Its durable
@@ -248,6 +249,9 @@ class RunIdempotencyStore:
                     kind, lineage_scope, payload, key, cancel_if_missing=cancel_if_missing)
                 self._conn.commit()
                 return outcome, record
+            if self._legacy_run_unresolved(key, claims, excluded_scopes):
+                self._conn.commit()
+                return "legacy_unresolved", None
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -266,7 +270,8 @@ class RunIdempotencyStore:
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
-    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0, room_authority=None):
+    def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0, room_authority=None,
+               claims=None, excluded_scopes=None):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -278,12 +283,23 @@ class RunIdempotencyStore:
             from gateway.platforms.api_server_run_authority import superseded
             retired = row is None and superseded(self._conn, room_authority)
             lineage = None if row is not None or retired else self._lineage_attempt(room_authority, key)
+            unresolved = (
+                row is None and not retired and (lineage is None or lineage[0] is None)
+                and self._legacy_run_unresolved(key, claims, excluded_scopes))
             self._conn.commit()
         if retired:
             return "authority_retired", None
+        if unresolved:
+            return "legacy_unresolved", None
         if row is None and lineage is not None and lineage[0] is not None:
             return self._replay_lineage(lineage[0], lineage[1], lineage[2], key, cancel_if_missing=False)
         return ("missing", None) if row is None else _outcome(row, fingerprint)
+
+    def _legacy_run_unresolved(self, key, claims, excluded_scopes) -> bool:
+        if claims is None:
+            return False
+        from gateway.platforms.api_server_run_authority import legacy_run_unresolved
+        return legacy_run_unresolved(self._conn, key, claims, excluded_scopes)
 
     def accepts_room_authority(self, authority, previous=None, namespace=None, claims=None, previous_home=None):
         from gateway.platforms.api_server_run_authority import namespace_matches, successor, superseded
@@ -325,11 +341,12 @@ class RunIdempotencyStore:
             return origin_home(self._conn, room_authority(claims), claims["home_install_id"])
 
     def observe_room_authority(self, scope, authority, previous=None, previous_home=None, namespace=None, claims=None,
-                               extra_gateways=None):
+                               extra_gateways=None, excluded_scopes=None):
         from gateway.platforms.api_server_run_authority import observe
         with self._immediate_txn():
             current = observe(
-                self._conn, scope, authority, previous, previous_home, namespace, claims, extra_gateways)
+                self._conn, scope, authority, previous, previous_home, namespace, claims, extra_gateways,
+                excluded_scopes)
             self._conn.commit()
         return current
 
@@ -354,7 +371,7 @@ class RunIdempotencyStore:
         self._conn.commit()
         self._conn.execute("BEGIN IMMEDIATE")
 
-    def commit_room_invitation(self, claims, previous, previous_home, commit_reservation):
+    def commit_room_invitation(self, claims, previous, previous_home, commit_reservation, excluded_scopes=None):
         """Grant writer precedes this lock; keep admissions fenced through both commits.
 
         The callback validates legacy reservations, writes the grant, and commits its
@@ -374,7 +391,9 @@ class RunIdempotencyStore:
                 "SELECT 1 FROM run_room_authorities WHERE authority_key=?",
                 (canonical(self._conn, authority)[0],)).fetchone() is not None
             commit_reservation(known)
-            if not observe(self._conn, room_run_scope(claims), authority, previous, previous_home, namespace, claims):
+            if not observe(
+                    self._conn, room_run_scope(claims), authority, previous, previous_home, namespace, claims,
+                    excluded_scopes=excluded_scopes):
                 raise ValueError("room authority has already advanced")
             self._conn.commit()
 

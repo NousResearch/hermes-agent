@@ -27,15 +27,23 @@ def claims():
 
 
 class CommitProbe:
-    """Fault/pause only the physical RunStore commit; all SQL remains real SQLite."""
-    def __init__(self, connection, before_commit):
-        self.connection, self.before_commit = connection, before_commit
+    """Fault/pause only the physical RunStore commit; all SQL remains real SQLite.
+
+    ``skip`` lets the checkpoint commit (the one before ``reserve_peer_room``) finish.
+    The publication window the tests lock is the idempotency commit after that
+    reservation is already durable.
+    """
+    def __init__(self, connection, before_commit, *, skip=0):
+        self.connection, self.before_commit, self.skip = connection, before_commit, skip
+        self.commits = 0
 
     def __getattr__(self, name):
         return getattr(self.connection, name)
 
     def commit(self):
-        self.before_commit()
+        self.commits += 1
+        if self.commits > self.skip:
+            self.before_commit()
         return self.connection.commit()
 
 
@@ -77,7 +85,7 @@ def test_other_connections_cannot_pass_the_publication_window(tmp_path, monkeypa
             reached.set()
             assert release.wait(10), 'publication barrier was not released'
 
-        publisher._conn = CommitProbe(original, pause_commit)
+        publisher._conn = CommitProbe(original, pause_commit, skip=1)
         with ThreadPoolExecutor(max_workers=3) as pool:
             publishing = pool.submit(_record_invitation, adapter, newer, {})
             try:
@@ -136,7 +144,7 @@ async def test_failed_floor_commit_cannot_admit_a_captured_old_request(tmp_path,
             def fail_commit():
                 raise sqlite3.OperationalError('simulated RunStore commit failure')
 
-            store._conn = CommitProbe(original, fail_commit)
+            store._conn = CommitProbe(original, fail_commit, skip=1)
             response = await cli.post('/v1/room-members/invitations',
                 headers={'Authorization': 'Bearer test-room-key'}, json={
                     'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'home',
@@ -159,5 +167,38 @@ async def test_failed_floor_commit_cannot_admit_a_captured_old_request(tmp_path,
             assert not store.accepts_room_authority(room_authority(old), namespace=room_namespace(old), claims=old)
     finally:
         release.set()
+        store._conn = original
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_identical_first_invitation_retry_after_floor_commit_failure(tmp_path):
+    """The rooms row from a failed first invitation must not make the same body return 400."""
+    adapter = _adapter(tmp_path / 'runs.db')
+    store = adapter._run_idempotency_store
+    original = store._conn
+    body = {
+        'room_id': 'room-1', 'home_install_id': 'home', 'authority_gateway_id': 'gateway-a',
+        'authority_epoch': 1, 'member_id': 'member-1'}
+    try:
+        async with TestClient(TestServer(app(adapter))) as cli:
+            def fail_floor():
+                raise sqlite3.OperationalError('disk I/O error')
+
+            store._conn = CommitProbe(original, fail_floor, skip=1)
+            crashed = await cli.post(
+                '/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'}, json=body)
+            crashed_body = await crashed.json()
+            assert crashed.status == 400, crashed_body
+            assert 'disk I/O error' in crashed_body['error']['message']
+            store._conn = original
+            assert store._conn.execute('SELECT COUNT(*) FROM run_room_authorities').fetchone()[0] == 0
+            assert hosted_rooms.peer_room_grant_is_current(hosted_rooms.default_db_path(), claims={
+                **body, 'target_profile': 'default', 'target_install_id': 'ignored'})
+            retried = await cli.post(
+                '/v1/room-members/invitations', headers={'Authorization': 'Bearer test-room-key'}, json=body)
+            assert retried.status == 201, await retried.text()
+            assert store._conn.execute('SELECT COUNT(*) FROM run_room_authorities').fetchone()[0] == 1
+    finally:
         store._conn = original
         store.close()

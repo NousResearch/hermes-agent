@@ -343,3 +343,23 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]
+
+/** Read-only shortcut hints for the current busy-input setting.
+ * The composer still owns keydown dispatch; this list is for UI affordances.
+ * Keep this resolver compatible with the enter_sends axis in #117752.
+ */
+export function readonlyKeybindsFor(mode: 'interrupt' | 'steer' | 'queue'): readonly KeybindReadonly[] {
+  return KEYBIND_READONLY
+    .filter(entry => mode !== 'interrupt' || entry.id !== 'composer.steer')
+    .map(entry => {
+      if (entry.id === 'composer.queue') {
+        return { ...entry, keys: mode === 'queue' ? ['enter'] : ['mod+enter'] }
+      }
+
+      if (entry.id === 'composer.steer') {
+        return { ...entry, keys: mode === 'queue' ? ['mod+enter'] : ['enter'] }
+      }
+
+      return entry
+    })
+}

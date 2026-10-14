@@ -1,4 +1,6 @@
 import { useStore } from '@nanostores/react'
+
+import { $busyInputMode } from '@/app/chat/composer/busy-input-mode'
 import { useContext, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -13,7 +15,7 @@ import {
   allKeybindActions,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
-  KEYBIND_READONLY,
+  readonlyKeybindsFor,
   type KeybindActionMeta,
   type KeybindReadonly,
   KEYBINDS_AREA
@@ -67,6 +69,8 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const { t } = useI18n()
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
+  const busyInputMode = useStore($busyInputMode)
+  const readonlyList = useMemo(() => readonlyKeybindsFor(busyInputMode), [busyInputMode])
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   // Subscribe so contributed actions appear/disappear live in the map. The
@@ -120,12 +124,12 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 
     const lower = query.toLowerCase()
 
-    return KEYBIND_READONLY.filter(shortcut => {
+    return readonlyList.filter(shortcut => {
       const label = k.actions[shortcut.id] ?? shortcut.id
 
       return label.toLowerCase().includes(lower) || shortcut.id.includes(lower)
     })
-  }, [isSearching, query, k.actions])
+  }, [isSearching, query, k.actions, readonlyList])
 
   return (
     <SettingsContent>
@@ -183,7 +187,7 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
               action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
             )
 
-            const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+            const readonly = readonlyList.filter(shortcut => shortcut.category === category)
 
             if (actions.length === 0 && readonly.length === 0) {
               return null

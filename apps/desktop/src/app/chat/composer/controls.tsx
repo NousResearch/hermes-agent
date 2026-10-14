@@ -85,6 +85,7 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
   const showQueueButton = busy && busyAction !== 'queue' && busyAction !== 'stop' && hasComposerPayload
   const primaryActionLabel = busyAction === 'queue' ? c.queueMessage : c.send
+  const primaryKeybindAction = busyAction === 'queue' ? 'composer.queue' : busyAction === 'steer' ? 'composer.steer' : 'composer.send'
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
   // narrow tile hits the same wall from the other direction and folds for the
@@ -149,9 +150,9 @@ export function ComposerControls({
         <Tip
           label={
             showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
+              <TipKeybindLabel actionId="composer.cancel" text={c.stop} />
             ) : (
-              <TipKeybindLabel actionId="composer.send" text={primaryActionLabel} />
+              <TipKeybindLabel actionId={primaryKeybindAction} text={primaryActionLabel} />
             )
           }
           placement="control"

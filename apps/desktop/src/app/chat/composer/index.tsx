@@ -1416,7 +1416,7 @@ export function ChatBar({
             }}
             ref={composerRef}
           >
-            {isHelpHint && <HelpHint />}
+            {isHelpHint && <HelpHint busy={busy} />}
             {trigger && !argStageEmpty && (
               <ComposerTriggerPopover
                 activeIndex={triggerActive}

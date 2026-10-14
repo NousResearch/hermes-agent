@@ -1,4 +1,7 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
+
+import { $busyInputMode } from './busy-input-mode'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
@@ -12,16 +15,25 @@ const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
   { id: 'composer.help', combos: ['?'] },
-  { id: 'composer.sendNewline', combos: ['enter', 'shift+enter'] },
+  { id: 'composer.send', combos: ['enter'] },
+  { id: 'composer.newline', combos: ['shift+enter'] },
   { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
   { id: 'keybinds.openPanel', combos: ['mod+/'] },
   { id: 'composer.cancel', combos: ['escape'] },
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
-export function HelpHint() {
+export function HelpHint({ busy = false }: { busy?: boolean }) {
   const { t } = useI18n()
+  const busyInputMode = useStore($busyInputMode)
   const c = t.composer
+  const actionRows = busy
+    ? [
+        { id: busyInputMode === 'queue' ? 'composer.queue' : busyInputMode === 'steer' ? 'composer.steer' : 'composer.send', combos: ['enter'] },
+        { id: busyInputMode === 'queue' ? 'composer.steer' : 'composer.queue', combos: ['mod+enter'] }
+      ]
+    : [{ id: 'composer.send', combos: ['enter'] }]
+  const hotkeyRows = [...COMPOSER_HOTKEY_ROWS.filter(row => row.id !== 'composer.send'), ...actionRows]
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
@@ -32,8 +44,8 @@ export function HelpHint() {
       </Section>
 
       <Section title={c.hotkeys}>
-        {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
+        {hotkeyRows.map(row => (
+          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? t.keybinds.actions[row.id] ?? ''} key={row.id} />
         ))}
       </Section>
 

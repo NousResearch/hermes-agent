@@ -197,13 +197,23 @@ class GatewayAuthorizationMixin:
     def _profile_adapters_map(self) -> dict:
         return getattr(self, "_profile_adapters", None) or {}
 
-    def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None):
+    def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None, source=None):
         """Live adapter whose intake policy gates authorization (``_adapters_for_profile`` for the
         profile rule). ``None`` when the profile has no adapter for *platform*.
         """
         if not platform:
             return None
-        return self._adapters_for_profile(profile).get(platform)
+        return self._source_transport(self._adapters_for_profile(profile).get(platform), source)
+
+    @staticmethod
+    def _source_transport(adapter, source):
+        resolver = getattr(type(adapter), "resolve_source_adapter", None)
+        return resolver(adapter, source) if callable(resolver) and source is not None else adapter
+
+    @staticmethod
+    def _registered_transport(root, adapter):
+        owns = getattr(type(root), "owns_transport", None)
+        return root is not None and (root is adapter or (callable(owns) and owns(root, adapter) is True))
 
     def _adapters_for_profile(self, profile: Optional[str]) -> dict:
         """The live adapter map *profile* may deliver through: ``_profile_adapters[p]`` for a
@@ -277,9 +287,9 @@ class GatewayAuthorizationMixin:
         from gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None and identity.multiplexed:
-            return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
+            return self._authorization_adapter(platform, identity.transport_profile, source) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return self._primary_adapters().get(platform) if platform else None
+            return self._source_transport(self._primary_adapters().get(platform), source) if platform else None
         return None
 
     def _delivery_adapter_for(self, source: Optional[SessionSource]):
@@ -310,14 +320,14 @@ class GatewayAuthorizationMixin:
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None), source)
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""
-        if adapter is self._primary_adapters().get(platform):
+        if self._registered_transport(self._primary_adapters().get(platform), adapter):
             return True, None
         for profile, profile_adapters in self._profile_adapters_map().items():
-            if adapter is profile_adapters.get(platform):
+            if self._registered_transport(profile_adapters.get(platform), adapter):
                 return True, profile
         return False, None
 
@@ -390,14 +400,14 @@ class GatewayAuthorizationMixin:
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
         return source
 
-    def _adapter_flag(self, platform, name: str, profile) -> bool:
+    def _adapter_flag(self, platform, name: str, profile, source=None) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted
         authenticated upstream decides) is honored directly; ``enforces_own_access_policy`` (WeCom, Weixin,
         Yuanbao, QQBot, WhatsApp gate at intake) is NOT "already authorized" — those adapters default to
         ``open``, so ``_is_user_authorized`` only trusts them under an actual ``allowlist`` policy."""
         if not platform:
             return False
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform, profile, source)
         return adapter is not None and bool(getattr(adapter, name, False))
 
     def _config_extra(self, platform) -> dict:
@@ -406,21 +416,21 @@ class GatewayAuthorizationMixin:
         extra = getattr(platforms.get(platform), "extra", None) if platforms is not None else None
         return extra if isinstance(extra, dict) else {}
 
-    def _adapter_setting(self, platform, attr: str, extra_key: str, profile):
+    def _adapter_setting(self, platform, attr: str, extra_key: str, profile, source=None):
         """Live adapter's resolved ``attr`` (folds in the ``<PLATFORM>_*`` env override),
         else ``config.extra[extra_key]`` for bare runners with no adapter."""
-        adapter = self._authorization_adapter(platform, profile)
+        adapter = self._authorization_adapter(platform, profile, source)
         value = getattr(adapter, attr, None) if adapter is not None else None
         if value is None:
             value = self._config_extra(platform).get(extra_key)
         return value
 
-    def _adapter_policy(self, platform, kind: str, profile) -> str:
+    def _adapter_policy(self, platform, kind: str, profile, source=None) -> str:
         """Lowercased effective ``dm_policy`` (open/allowlist/disabled/pairing) or ``group_policy``
         (open/allowlist/disabled) for *kind* in {"dm", "group"}; ``""`` if unknown."""
         if not platform:
             return ""
-        return str(self._adapter_setting(platform, f"_{kind}_policy", f"{kind}_policy", profile) or "").strip().lower()
+        return str(self._adapter_setting(platform, f"_{kind}_policy", f"{kind}_policy", profile, source) or "").strip().lower()
 
     def _adapter_group_has_sender_allowlist(
         self, platform: Optional[Platform], chat_id: Optional[str], *, profile: Optional[str] = None
@@ -465,15 +475,18 @@ class GatewayAuthorizationMixin:
         forwards unpaired DMs for the handshake (already denied by the pairing-store check).
         Anything else → default-deny.
         """
+        adapter = self._authorization_adapter(source.platform, adapter_profile, source)
+        if source.platform == Platform.WEIXIN and not is_group and getattr(adapter, "_yaml_allow_all_users", False) is True:
+            return bool(adapter._is_dm_allowed(user_id))
         if is_group and self._adapter_group_has_sender_allowlist(source.platform, source.chat_id, profile=adapter_profile):
             return True
-        if self._adapter_policy(source.platform, "group" if is_group else "dm", adapter_profile) != "allowlist":
+        if self._adapter_policy(source.platform, "group" if is_group else "dm", adapter_profile, source) != "allowlist":
             return None
         # Re-check DMs via the live adapter's ``_is_dm_allowed`` when present: pairing revoke can clear
         # WHATSAPP_ALLOWED_USERS while a construction-time snapshot would keep authorizing until
         # restart. Others keep the historical rubber-stamp.
         if not is_group:
-            adapter = self._authorization_adapter(source.platform, profile=adapter_profile)
+            adapter = self._authorization_adapter(source.platform, profile=adapter_profile, source=source)
             dm_check = getattr(adapter, "_is_dm_allowed", None) if adapter is not None else None
             if callable(dm_check):
                 return bool(dm_check(user_id))
@@ -536,7 +549,7 @@ class GatewayAuthorizationMixin:
         # not ``Platform.RELAY``. ``is True``: a MagicMock stand-in must not auto-truthy into authz.
         if allow_adapter_delegation and (
             source.delivered_via_upstream_relay is True
-            or self._adapter_flag(source.platform, "authorization_is_upstream", adapter_profile)
+            or self._adapter_flag(source.platform, "authorization_is_upstream", adapter_profile, source)
         ):
             return True
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
@@ -667,7 +680,7 @@ class GatewayAuthorizationMixin:
 
         if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
             # No env allowlist: own-policy adapters gate at intake (see _own_policy_authorizes).
-            if allow_adapter_delegation and self._adapter_flag(source.platform, "enforces_own_access_policy", adapter_profile):
+            if allow_adapter_delegation and self._adapter_flag(source.platform, "enforces_own_access_policy", adapter_profile, source):
                 verdict = self._own_policy_authorizes(source, user_id, is_group, adapter_profile)
                 if verdict is not None:
                     return verdict

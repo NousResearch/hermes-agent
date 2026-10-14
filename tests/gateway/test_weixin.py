@@ -320,7 +320,7 @@ class TestWeixinChunkDelivery:
         not a failed attempt, so it must not eat the (only) retry slot and fall out of the loop (#112709)."""
         adapter = self._connected_adapter()
         adapter._send_chunk_retries = 0
-        send_message_mock.side_effect = [{"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session expired"}, {"ret": 0}]
+        send_message_mock.side_effect = [{"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}, {"ret": 0}]
 
         result = asyncio.run(adapter.send("wxid_test123", "hello"))
 
@@ -393,7 +393,7 @@ class TestWeixinOutboundMedia:
         expected_aes_key = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
 
         with patch("gateway.platforms.weixin._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
-             patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock) as api_post_mock, \
+             patch("gateway.platforms.weixin._api_post", new=AsyncMock(return_value={"ret": 0})) as api_post_mock, \
              patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey-123"), \
              patch("gateway.platforms.weixin.secrets.token_bytes", return_value=aes_key):
             message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
@@ -734,18 +734,7 @@ class TestWeixinPollLoopSyncBuf:
 
 
 class TestWeixinVoiceAlwaysDownloaded:
-    """Regression tests for #27300: when WeChat (Weixin) returns a
-    ``voice_item.text`` (Tencent Cloud's STT) we must still download
-    the raw audio and route it through Hermes' own STT pipeline.
-
-    Non-Chinese users currently see garbled transcriptions because the
-    existing code short-circuits in two places: the voice download
-    returns ``None`` whenever Tencent provided *any* text (even
-    incorrect), and ``_extract_text`` returns that text as the message
-    body. The fix is to always download and never return Tencent's
-    text — the central STT pipeline in ``gateway/run.py`` produces
-    the actual body from the downloaded audio.
-    """
+    """The explicit Hermes-STT mode preserves multilingual transcription (#27300)."""
 
     def _make_voice_item(self, text: str = "") -> dict:
         """Build a minimal voice item with media + optional Tencent text."""
@@ -774,6 +763,7 @@ class TestWeixinVoiceAlwaysDownloaded:
         (garbled for non-Chinese audio).
         """
         adapter = _make_adapter()
+        adapter._use_platform_transcription = False
         adapter._cdn_base_url = "https://example.invalid"
         adapter._poll_session = Mock()
 
@@ -837,6 +827,7 @@ class TestWeixinVoiceGatewayHandoff:
         text as its body — the central pipeline's transcript replaces it.
         """
         adapter = _make_adapter()
+        adapter._use_platform_transcription = False
         adapter._poll_session = Mock()
         adapter._token = None
         adapter._cdn_base_url = "https://example.invalid"

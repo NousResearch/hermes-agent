@@ -35,6 +35,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.run_stream_config import GatewayStreamConfigMixin
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayStreamConfigMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -1955,7 +1956,7 @@ class GatewayTurnMixin:
                 event._streamed_final_response = str(response or "")
             return None
 
-        return response
+        return self._block_stream_delivery_tail(response, agent_result)
 
     # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
     # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
@@ -2667,51 +2668,6 @@ class GatewayTurnMixin:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
 
-    def _build_stream_consumer_config(
-        self, source: SessionSource, scfg: Any, adapter: Any, *, on_missing_cursor: str,
-    ) -> tuple[Any, Optional[Callable[[], None]]]:
-        """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
-        For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
-        ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
-        from gateway.stream_consumer import StreamConsumerConfig
-        _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
-        # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
-            raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        if source.platform == Platform.MATRIX:
-            _effective_cursor = ""
-        # Fresh-final applies to Telegram only (others edit in place cheaply).
-        # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit / edit-timestamp-stays-stale problem. (Ported from
-        # openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM else 0.0
-        )
-        _consumer_cfg = StreamConsumerConfig(
-            edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor,
-            fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
-            chat_type=getattr(source, "chat_type", "") or "",
-        )
-        return _consumer_cfg, _pause_typing_before_finalize
-
-    def _run_still_current_fn(self, session_key: Optional[str], run_generation: Optional[int]) -> Callable[[], bool]:
-        """Predicate: does this run's generation still own ``session_key``? (always True when untracked)."""
-        def _run_still_current() -> bool:
-            if run_generation is None or not session_key:
-                return True
-            return self._is_session_run_current(session_key, run_generation)
-        return _run_still_current
-
     @staticmethod
     def _proxy_error_result(text: str) -> dict[str, Any]:
         return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
@@ -2734,14 +2690,14 @@ class GatewayTurnMixin:
         if not _scfg.enabled_for(_plat_streaming):
             return None
         try:
-            from gateway.stream_consumer import GatewayStreamConsumer
+            from gateway.stream_consumer_factory import create_stream_consumer
             _adapter = self._delivery_adapter_for(source)
             if not _adapter:
                 return None
             _consumer_cfg, _pause_typing_before_finalize = self._build_stream_consumer_config(
                 source, _scfg, _adapter, on_missing_cursor="fallback",
             )
-            return GatewayStreamConsumer(
+            return create_stream_consumer(
                 adapter=_adapter, chat_id=source.chat_id, config=_consumer_cfg,
                 metadata=_thread_metadata, on_before_finalize=_pause_typing_before_finalize,
                 initial_reply_to_id=event_message_id, run_still_current=_run_still_current,
@@ -2898,7 +2854,7 @@ class GatewayTurnMixin:
             # Partial response — return what we got
         finally:
             if _stream_consumer:
-                _stream_consumer.finish()
+                _stream_consumer.finish(full_response)
             if stream_task:
                 try:
                     await asyncio.wait_for(stream_task, timeout=5.0)
@@ -2912,7 +2868,7 @@ class GatewayTurnMixin:
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
-        return {
+        proxy_result = {
             "final_response": full_response or t("gateway.proxy.no_response"),
             "messages": [
                 {"role": "user", "content": message},
@@ -2924,6 +2880,8 @@ class GatewayTurnMixin:
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
+        self._block_stream_delivery_state(proxy_result, _stream_consumer, seal=True)
+        return proxy_result
 
     async def _run_agent(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
@@ -3017,6 +2975,7 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
+        # Adapters can render native tool lifecycle items through the shared task-card rail.
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -3028,14 +2987,13 @@ class GatewayTurnMixin:
         # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
         if (
-            source.platform == Platform.SLACK
-            and hasattr(adapter, "native_task_cards_enabled")
+            hasattr(adapter, "native_task_cards_enabled")
             and not (_tool_progress_explicit and progress_mode == "off")
         ):
             try:
-                _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
+                _native_slack_task_cards = adapter.native_task_cards_enabled() is True
             except Exception:
-                logger.debug("Slack native task-card config check failed", exc_info=True)
+                logger.debug("Native tool-progress config check failed", exc_info=True)
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
@@ -3748,6 +3706,7 @@ class GatewayTurnMixin:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
+        self._block_stream_delivery_state(_delivery_result, _sc)
         first_response = _delivery_result.get("final_response", "")
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
@@ -3778,7 +3737,7 @@ class GatewayTurnMixin:
             )
             try:
                 _text_delivered = await self._deliver_queued_first_response(
-                    first_response, source=turn_ctx.source, adapter=adapter,
+                    self._block_stream_delivery_tail(first_response, _delivery_result), source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
                     deliver_media=_deliver_media, stream_consumer=_sc,
@@ -4051,6 +4010,7 @@ class GatewayTurnMixin:
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed"):
             return
+        self._block_stream_delivery_state(response, _sc)
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.

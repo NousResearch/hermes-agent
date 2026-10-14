@@ -58,35 +58,72 @@ Select **Weixin** when prompted. The wizard will:
 4. Prompt you to confirm the login on your phone
 5. Save the account credentials automatically to `~/.hermes/weixin/accounts/`
 
+If WeChat displays a numeric verification code, enter it in the terminal when
+prompted. Incorrect codes can be retried; expired QR codes and blocked verification
+attempts trigger a fresh QR code, up to three QR codes per login attempt. If the bot
+is already bound, Hermes reuses the matching credentials saved in the current
+profile. It does not choose between multiple accounts when the server provides no
+account identity.
+
+The login protocol follows Tencent's `@tencent-weixin/openclaw-weixin` 2.4.9
+plugin, installed for OpenClaw by
+`npx -y @tencent-weixin/openclaw-weixin-cli@latest install`. Hermes connects to
+iLink directly through its own adapter.
+
 Once confirmed, you'll see a message like:
 
 ```
 微信连接成功，account_id=your-account-id
 ```
 
-The wizard stores the `account_id`, `token`, and `base_url` so you don't need to configure them manually.
+The wizard stores account tokens in the current profile's saved login files and
+keeps the default account's token in `.env` for legacy compatibility. Settings live in
+`config.yaml`. Run `hermes gateway setup` again and select **Weixin** to reuse a
+saved account or scan a new QR code. Editing settings does not require another scan.
+The wizard preselects your current DM and group policies and lets you edit
+allowlists, API/CDN URLs, multiline splitting, voice transcription, native tool
+progress, quote caching, and the notification home channel.
+Enter `-` to clear an allowlist or home channel. Existing unrelated settings and
+YAML comments are preserved. Changes apply automatically in a running gateway,
+normally within a few seconds. An account with an active reply waits until that
+reply finishes; other accounts continue running. Installing updated adapter code
+still requires one gateway restart to load the new code.
+When the same Weixin user completes a new binding, superseded accounts in this
+profile are removed together with their cursors, peer tokens and quote copies.
+Other profiles and other Weixin users are unaffected.
 
-### 2. Configure Environment Variables
+### 2. Review Configuration
 
-After initial QR login, set at minimum the account ID in `~/.hermes/.env`:
+The wizard configures the account automatically. For manual configuration, keep
+the secret token in the current profile's `.env`:
 
 ```bash
-WEIXIN_ACCOUNT_ID=your-account-id
-
-# Optional: override the token (normally auto-saved from QR login)
-# WEIXIN_TOKEN=your-bot-token
-
-# Optional: restrict access
-WEIXIN_DM_POLICY=open
-WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
-
-# Optional: restore legacy multiline splitting behavior
-# WEIXIN_SPLIT_MULTILINE_MESSAGES=true
-
-# Optional: home channel for cron/notifications
-WEIXIN_HOME_CHANNEL=chat_id
-WEIXIN_HOME_CHANNEL_NAME=Home
+WEIXIN_TOKEN=your-bot-token
 ```
+
+Store settings in `config.yaml`, for example:
+
+```yaml
+platforms:
+  weixin:
+    enabled: true
+    extra:
+      account_id: your-account-id
+      dm_policy: allowlist
+      allow_from: [your-weixin-user-id]
+      group_policy: disabled
+      split_multiline_messages: false
+      # Optional backend routing and log attribution:
+      route_tag: null
+      bot_agent: Hermes
+    home_channel:
+      platform: weixin
+      chat_id: your-weixin-user-id
+      name: Home
+```
+
+Legacy `WEIXIN_*` environment settings remain supported. The wizard migrates
+the settings it edits to YAML so stale environment values cannot undo your changes.
 
 ### 3. Start the Gateway
 
@@ -102,6 +139,9 @@ The adapter will restore saved credentials, connect to the iLink API, and begin 
 - **QR code login** — scan-to-connect setup via `hermes gateway setup`
 - **DM messaging** — configurable access policies; group messaging depends on iLink actually delivering group events for the connected identity (often not the case for iLink bot accounts — see the warning above)
 - **Media support** — images, video, files, and voice messages
+- **Voice transcription** — uses WeChat's supplied text first; audio-only notes use Hermes STT
+- **Quoted reply recovery** — restores ID-only and partial quotes from an account- and conversation-local cache
+- **Native tool progress** — sends iLink tool-start and tool-result events while the agent works
 - **AES-128-ECB encrypted CDN** — automatic encryption/decryption for all media transfers
 - **Context token persistence** — disk-backed reply continuity across restarts
 - **Markdown formatting** — preserves Markdown, including headers, tables, and code blocks, so WeChat clients that support Markdown can render it natively
@@ -110,6 +150,7 @@ The adapter will restore saved credentials, connect to the iLink API, and begin 
 - **SSRF protection** — outbound media URLs are validated before download
 - **Message deduplication** — 5-minute sliding window prevents double-processing
 - **Automatic retry with backoff** — recovers from transient API errors
+- **Gateway lifecycle notifications** — tells iLink when the adapter starts and stops; a notification failure does not prevent connection or cleanup
 
 ## Configuration Options
 
@@ -121,7 +162,12 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `token` | — | iLink Bot token (required, auto-saved from QR login) |
 | `base_url` | `https://ilinkai.weixin.qq.com` | iLink API base URL |
 | `cdn_base_url` | `https://novac2c.cdn.weixin.qq.com/c2c` | CDN base URL for media transfer |
-| `dm_policy` | `open` | DM access: `open`, `allowlist`, `disabled`, `pairing` |
+| `dm_policy` | `pairing` | DM access: `open`, `allowlist`, `disabled`, `pairing` |
+| `allow_all_users` | `false` | Explicit opt-in for open DM access on this Weixin account; the wizard sets it when you select “Allow all direct messages” |
+| `use_platform_transcription` | `true` | Use WeChat's voice transcript without downloading audio or requiring SILK/STT dependencies. Set `false` to re-transcribe downloadable audio with Hermes STT. |
+| `reply_progress_messages` | `true` | Show native iLink tool-start and tool-result events. Explicit `display.tool_progress: off` also disables them. |
+| `bot_agent` | `Hermes` | Optional observability identifier, using ASCII `Name/Version (comment)` tokens, capped at 256 bytes. Invalid tokens are dropped. It does not affect authorization or routing. |
+| `quote_cache` | enabled | Local quote recovery and retention settings; see below. |
 | `group_policy` | `disabled` | Group access: `open`, `allowlist`, `disabled` |
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
@@ -137,10 +183,10 @@ Controls who can send direct messages to the bot:
 
 | Value | Behavior |
 |-------|----------|
-| `open` | Anyone can DM the bot (default) |
+| `open` | Anyone can DM the bot when `allow_all_users: true` or a legacy allow-all environment flag is enabled |
 | `allowlist` | Only user IDs in `allow_from` can DM |
 | `disabled` | All DMs are ignored |
-| `pairing` | Pairing mode (for initial setup) |
+| `pairing` | Pairing mode (default; approve unknown users with `hermes pairing approve`) |
 
 ```bash
 WEIXIN_DM_POLICY=allowlist
@@ -198,9 +244,58 @@ The adapter receives media attachments from users, downloads them from the WeCha
 | **Images** | Downloaded, AES-decrypted, and cached as JPEG. |
 | **Video** | Downloaded, AES-decrypted, and cached as MP4. |
 | **Files** | Downloaded, AES-decrypted, and cached. Original filename is preserved. |
-| **Voice** | If a text transcription is available, it's extracted as text. Otherwise the audio (SILK format) is downloaded and cached. |
+| **Voice** | Uses WeChat's supplied transcript when available. Otherwise raw SILK audio is downloaded, cached, decoded to WAV and passed to Hermes STT. |
 
 **Quoted messages:** Media from quoted (replied-to) messages is also extracted, so the agent has context about what the user is replying to.
+
+### Voice transcription
+
+By default, WeChat's `voice_item.text` is used immediately. This path needs no
+separate decoder, recognition model or STT API key. It still works with
+`stt.enabled: false` because WeChat has already supplied the text.
+
+When WeChat supplies audio without text, Hermes uses its existing transcription
+pipeline. Use `hermes tools` to select and configure a Speech-to-Text provider.
+This path requires the optional SILK decoder (`pilk`), which Hermes attempts to
+install on the first voice note when lazy installs are allowed. To prepare it
+explicitly in a PM-prepared source checkout:
+
+```bash
+python -c "import pm; pm.sync_venv(['silk'], explicit=True)"
+```
+
+Reactivate the checkout and restart the gateway after installing dependencies.
+For Chinese speech, set `stt.language: zh` in the current profile's `config.yaml`
+(provider-specific language settings take precedence). Voice notes are converted
+to text before reaching the agent; recognition quality depends on the selected
+STT provider. If WeChat's transcription is inaccurate for your language, set
+`platforms.weixin.extra.use_platform_transcription: false` to use Hermes STT for
+downloadable audio. See [Voice Mode](../features/voice-mode.md#configuration-reference)
+for provider configuration.
+
+### Quoted replies
+
+New WeChat clients sometimes send only `ref_msg.svr_id`, rather than the quoted
+text or attachment. Hermes saves inbound and successfully sent messages in a
+profile-local SQLite cache, isolated by bot account and conversation. It restores
+quoted text, verified partial selections and retained attachments, including after
+a gateway restart. Server message IDs retain their full precision.
+
+Set `platforms.weixin.extra.quote_cache` to adjust these defaults:
+
+```yaml
+quote_cache:
+  enabled: true
+  retention_days: 30
+  max_messages_per_account: 10000
+  media_retention_days: 7
+  max_media_bytes_per_account: 268435456  # 256 MiB
+  max_single_media_bytes: 26214400       # 25 MiB
+```
+
+The cache keeps its own attachment copies and only deletes files it owns. Expired
+or uncached quotes receive an explicit placeholder. Cache failures disable caching
+without interrupting normal messaging.
 
 ### AES-128-ECB Encrypted CDN
 
@@ -254,7 +349,7 @@ WeChat clients connected through the iLink Bot API can render Markdown directly,
 
 Messages are delivered as a single chat message whenever they fit within the platform limit. Only oversized payloads are split for delivery:
 
-- Maximum message length: **4000 characters**
+- Maximum message length: **2000 characters**
 - Messages under the limit stay intact even when they contain multiple paragraphs or line breaks
 - Oversized messages split at logical boundaries (paragraphs, blank lines, code fences)
 - Code fences are kept intact whenever possible (never split mid-block unless the fence itself exceeds the limit)
@@ -289,7 +384,7 @@ On API errors, the adapter uses a simple retry strategy:
 |-----------|----------|
 | Transient error (1st–2nd) | Retry after 2 seconds |
 | Repeated errors (3+) | Back off for 30 seconds, then reset counter |
-| Session expired (`errcode=-14`) | Pause for 10 minutes (re-login may be needed) |
+| Bot token expired (`errcode=-14`) | Pause all requests for one hour, or reconnect through `hermes gateway setup` |
 | Timeout | Immediately re-poll (normal long-poll behavior) |
 
 ### Deduplication
@@ -299,6 +394,65 @@ Inbound messages are deduplicated using message IDs with a 5-minute window. This
 ### Token Lock
 
 Only one Weixin gateway instance can use a given token at a time. The adapter acquires a scoped lock on startup and releases it on shutdown. If another gateway is already using the same token, startup fails with an informative error message.
+
+## Multiple accounts and diagnostics
+
+Run `hermes gateway setup` again to add another WeChat account to the same profile.
+Select a saved login to edit it, answer **No** to **Enable this account?** to disable
+it, or choose it as the default for notifications and sends without an account ID.
+Adding an account preserves existing accounts and their settings. Credentials,
+conversations and quote caches are isolated by account. Replying to a conversation,
+including an origin-targeted cron job, uses the account that received it.
+
+For manual configuration, reference saved logins by their account IDs:
+
+```yaml
+platforms:
+  weixin:
+    enabled: true
+    extra:
+      default_account: first-id@im.bot
+      accounts:
+        first-id@im.bot:
+          enabled: true
+          dm_policy: allowlist
+          allow_from: [wxid_owner]
+        second-id@im.bot:
+          enabled: true
+          dm_policy: pairing
+```
+
+Tokens remain in the profile's `weixin/accounts/` login files. A direct tool target
+can name an account explicitly: `weixin:second-id@im.bot/wxid_peer`. An unknown or
+disabled account fails instead of sending through the default bot. Existing single
+account configurations still work. New conversations use account-specific keys;
+older saved conversations without an account ID retain their legacy default route.
+
+[Hermes profiles](../profiles.md) remain available when accounts need separate
+agent settings, memories or pairing grants. Pairing grants are shared within a
+profile; account-level allowlists and disabled policies still gate intake.
+
+Weixin supports incremental block replies when Hermes streaming is enabled:
+
+```yaml
+streaming:
+  enabled: true
+platforms:
+  weixin:
+    extra:
+      block_streaming:
+        min_chars: 200
+        idle_ms: 3000
+```
+
+The global streaming switch and per-platform opt-outs still apply. Blocks contain
+stable Markdown without a cursor; CJK italic markers, H5/H6 markers and complete
+Markdown image links are removed. Code spans, code fences, tables, rules and bold
+are preserved. Use `MEDIA:` directives for actual attachments.
+
+Authorized users can send `/echo <text>` to test message delivery without an LLM
+call. `/toggle-debug` turns processing-time footers on or off for this bot account.
+Both commands pass through the gateway's authorization and slash-access policy.
 
 ## All Environment Variables
 
@@ -331,7 +485,8 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Bot ignores group messages | Group policy defaults to `disabled`. Set `WEIXIN_GROUP_POLICY=open` or `allowlist` — but note that QR-login iLink bot identities (`...@im.bot`) typically cannot receive ordinary WeChat group messages at all. If the gateway logs show no raw inbound events for group messages, the limitation is on the iLink side, not in Hermes. |
 | Media download/upload fails | Ensure `cryptography` is installed. Check network access to `novac2c.cdn.weixin.qq.com` |
 | `Blocked unsafe URL (SSRF protection)` | The outbound media URL points to a private/internal address. Only public URLs are allowed |
-| Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
+| Voice messages show as text | By default, Hermes directly uses WeChat's supplied transcription. Audio-only notes are transcribed by Hermes STT. |
+| Voice transcription fails | Configure a usable Speech-to-Text provider with `hermes tools`, enable `stt.enabled`, and install the `silk` extra. For Chinese speech, check `stt.language: zh` and any provider-specific language override. |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
 | Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`. Alternatively, open the URL printed above the QR |

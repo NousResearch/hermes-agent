@@ -99,13 +99,23 @@ def _parse_signal(ref):
     return (f"group:{group_id}", None) if group_id else _UNRESOLVED
 
 
+def _parse_weixin(ref):
+    # An explicit account selector is retained until the native sender resolves credentials.
+    if "/" in ref:
+        account, peer = ref.strip().split("/", 1)
+        if account and _WEIXIN_TARGET_RE.fullmatch(peer):
+            return (f"{account}/{peer}", None)
+        return _UNRESOLVED
+    return _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False)(ref)
+
+
 _PLATFORM_PARSERS = {
     "telegram": _parse_telegram,
     "feishu": _parse_regex_groups(_FEISHU_TARGET_RE),
     "discord": _parse_regex_groups(_NUMERIC_TOPIC_RE),  # "<channel>[:<thread>]" snowflakes
     "slack": _parse_slack,
     "matrix": _parse_matrix,
-    "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
+    "weixin": _parse_weixin,
     "yuanbao": _parse_yuanbao,
     "ntfy": _parse_nonempty,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),

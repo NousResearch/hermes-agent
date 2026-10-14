@@ -110,7 +110,7 @@ class TestLoadGatewayConfigForRunner:
 
 class TestPlatformHasBotCredential:
     def test_telegram_empty_token_false(self):
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_credentials import _platform_has_bot_credential
 
         assert _platform_has_bot_credential(
             Platform.TELEGRAM, PlatformConfig(enabled=True, token="")
@@ -128,7 +128,7 @@ class TestPlatformHasBotCredential:
         transient failure, so a momentary DNS blip took Matrix down until
         the gateway was restarted by hand.
         """
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_credentials import _platform_has_bot_credential
 
         cfg = PlatformConfig(enabled=True)
         cfg.extra = {
@@ -163,7 +163,7 @@ class TestPlatformHasBotCredential:
         environment, so without these explicit setenv calls this test would
         pass against an env-reading implementation and guard nothing.
         """
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_credentials import _platform_has_bot_credential
 
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example.org")
         monkeypatch.setenv("MATRIX_USER_ID", "@envbot:env.example.org")
@@ -214,7 +214,7 @@ class TestPrimaryStartupSkipsEmptyTokenUnderMultiplex:
         # stand-in by invoking the real loop logic via a partial start is
         # heavy. Instead assert the skip helper path by simulating the
         # condition the start() loop uses.
-        from gateway.run import _platform_has_bot_credential
+        from gateway.run_credentials import _platform_has_bot_credential
 
         skipped = []
         for platform, platform_config in cfg.platforms.items():
@@ -331,7 +331,8 @@ class TestPrimaryMessageRuntimeScope:
 class TestReconnectDropsEmptyToken:
     @pytest.mark.asyncio
     async def test_empty_token_removed_from_queue(self):
-        from gateway.run import GatewayRunner, _platform_has_bot_credential
+        from gateway.run import GatewayRunner
+        from gateway.run_credentials import _platform_has_bot_credential
         from gateway.config import Platform, PlatformConfig
 
         # Unit-level: the branch condition the watcher uses.

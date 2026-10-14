@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+from gateway.run import _profile_runtime_scope
+from gateway.run_credentials import _platform_has_bot_credential
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 

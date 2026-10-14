@@ -9,8 +9,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from hermes_cli.setup import print_success  # def-time binding (table value)
-from hermes_cli.setup import print_warning  # def-time binding (table value)
 
 
 def _gw():
@@ -168,11 +166,15 @@ def _platform_status(platform: dict) -> str:
             configured = False
         return "configured" if configured else "not configured"
 
+    if platform.get("key") == "weixin":
+        from hermes_cli.gateway_setup_weixin import _weixin_status
+        return _weixin_status()
+
     token_var = platform.get("token_var", "")
     if not token_var:
         return "not configured"
     # Built-ins needing a second credential to count as fully configured.
-    second_var = {"signal": "SIGNAL_ACCOUNT", "weixin": "WEIXIN_TOKEN"}.get(platform.get("key"))
+    second_var = {"signal": "SIGNAL_ACCOUNT"}.get(platform.get("key"))
     present = [bool(_gw().get_env_value(v)) for v in (token_var, second_var) if v]
     if all(present):
         return "configured"
@@ -393,128 +395,6 @@ def _setup_standard_platform(platform: dict):
     _gw().print_success(f"{emoji} {label} configured!")
 
 
-# Weixin DM policy by menu index (index 2 = allowlist is prompted separately).
-_WEIXIN_DM_POLICIES = {
-    0: ("pairing", "false", print_success, "  DM pairing enabled."),
-    1: ("open", "true", print_warning, "  Open DM access enabled for Weixin."),
-    3: ("disabled", "false", print_warning, "  Direct messages disabled."),
-}
-
-
-_WEIXIN_GROUP_NOTE = (
-    "  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a",
-    "  scriptable personal WeChat account. Ordinary WeChat groups typically cannot",
-    "  invite an @im.bot identity, and iLink does not deliver ordinary-group events",
-    "  to most bot accounts. The settings below only apply when iLink actually",
-    "  delivers group events for your account type — otherwise DM remains the only",
-    "  working channel regardless of this choice.",
-)
-
-
-def _setup_weixin():
-    """Interactive setup for Weixin / WeChat personal accounts."""
-    _print_setup_header("💬 Weixin / WeChat")
-    print()
-    _gw()._print_info_lines(
-        "  1. Hermes will open Tencent iLink QR login in this terminal.",
-        "  2. Use WeChat to scan and confirm the QR code.",
-        "  3. Hermes will store the returned account_id/token in ~/.hermes/.env.",
-        "  4. This adapter supports native text, image, video, and document delivery.",
-    )
-
-    if not _confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
-        return
-
-    try:
-        from gateway.platforms.weixin import check_weixin_requirements, qr_login
-    except Exception as exc:
-        _gw().print_error(f"  Weixin adapter import failed: {exc}")
-        _gw().print_info("  Install gateway dependencies first, then retry.")
-        return
-
-    if not check_weixin_requirements():
-        _gw().print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
-        _gw().print_info("  Install them, then rerun `hermes gateway setup`.")
-        return
-
-    print()
-    if not _gw().prompt_yes_no("  Start QR login now?", True):
-        _gw().print_info("  Cancelled.")
-        return
-
-    try:
-        credentials = _gw().asyncio.run(qr_login(str(_gw().get_hermes_home())))
-    except KeyboardInterrupt:
-        print()
-        _gw().print_warning("  Weixin setup cancelled.")
-        return
-    except Exception as exc:
-        _gw().print_error(f"  QR login failed: {exc}")
-        return
-
-    if not credentials:
-        _gw().print_warning("  QR login did not complete.")
-        return
-
-    account_id = credentials.get("account_id", "")
-    user_id = credentials.get("user_id", "")
-    _gw().save_env_value("WEIXIN_ACCOUNT_ID", account_id)
-    _gw().save_env_value("WEIXIN_TOKEN", credentials.get("token", ""))
-    if credentials.get("base_url", ""):
-        _gw().save_env_value("WEIXIN_BASE_URL", credentials.get("base_url", ""))
-    _gw().save_env_value(
-        "WEIXIN_CDN_BASE_URL", _gw().get_env_value("WEIXIN_CDN_BASE_URL") or "https://novac2c.cdn.weixin.qq.com/c2c"
-    )
-
-    print()
-    access_choices = [
-        "Use DM pairing approval (recommended)", "Allow all direct messages", "Only allow listed user IDs",
-        "Disable direct messages",
-    ]
-    access_idx = _gw().prompt_choice("  How should direct messages be authorized?", access_choices, 0)
-    if access_idx == 2:
-        allowlist = _prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
-        _save_env_values(
-            WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist
-        )
-        _gw().print_success("  Weixin allowlist saved.")
-    else:
-        policy, allow_all, emit, message = _WEIXIN_DM_POLICIES.get(access_idx, _WEIXIN_DM_POLICIES[3])
-        _save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
-        emit(message)
-        if access_idx == 0:
-            _gw().print_info(
-                "  Unknown DM users can request access and you approve them with `hermes pairing approve`."
-            )
-
-    print()
-    _gw()._print_info_lines(*_WEIXIN_GROUP_NOTE)
-    group_choices = [
-        "Disable group chats (recommended)", "Allow all group chats", "Only allow listed group chat IDs",
-    ]
-    group_idx = _gw().prompt_choice("  How should group chats be handled?", group_choices, 0)
-    if group_idx == 0:
-        _save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
-        _gw().print_info("  Group chats disabled.")
-    elif group_idx == 1:
-        _save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
-        _gw().print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
-    else:
-        allow_groups = _prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
-        _save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
-        _gw().print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
-
-    if user_id:
-        print()
-        _offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
-
-    print()
-    _gw().print_success("Weixin configured!")
-    _gw().print_info(f"  Account ID: {account_id}")
-    if user_id:
-        _gw().print_info(f"  User ID: {user_id}")
-
-
 def _setup_qqbot():
     """Interactive setup for QQ Bot — scan-to-configure or manual credentials."""
     _print_setup_header("🐧 QQ Bot")
@@ -699,7 +579,7 @@ def _setup_signal():
 
 def _builtin_setup_fn(key: str):
     """Resolve a built-in platform's setup function; late-bound to dodge the hermes_cli.setup cycle."""
-    from hermes_cli import setup as _s
+    from hermes_cli.gateway_setup_weixin import _setup_weixin
     return {
         # telegram/discord/slack/whatsapp/dingtalk/feishu/wecom setup_fns come from their plugins.
         "bluebubbles": _gw().setup_platforms._setup_bluebubbles,

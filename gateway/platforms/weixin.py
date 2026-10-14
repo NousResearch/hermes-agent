@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid
 from datetime import datetime
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 logger = logging.getLogger(__name__)
 WEIXIN_COPY_LINE_WIDTH = 120
@@ -36,22 +37,28 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.weixin_quotes import WeixinQuoteStore, message_id as _inbound_message_id, resolve_quote
+from gateway.platforms.weixin_experience import WeixinExperienceMixin, WeixinSessionPausedError
+from gateway.platforms.weixin_protocol import (
+    sanitize_bot_agent, classify_network_error, normalize_route_tag, bind_request_metadata, get_request_metadata, WeixinCDNClientError,
+)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
-    """``config.extra[key]`` first, else the scoped ``WEIXIN_<KEY>``; stripped."""
+    """Scoped ``WEIXIN_<KEY>`` then ``config.extra[key]``; stripped."""
     return str(_extra_or_env(extra, key, f"WEIXIN_{key.upper()}", default)).strip()
 
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
-ILINK_APP_ID, CHANNEL_VERSION, ILINK_APP_CLIENT_VERSION = "bot", "2.2.0", (2 << 16) | (2 << 8) | 0
+ILINK_APP_ID, CHANNEL_VERSION, ILINK_APP_CLIENT_VERSION = "bot", "2.4.9", (2 << 16) | (4 << 8) | 9
 EP_GET_UPDATES, EP_SEND_MESSAGE, EP_SEND_TYPING = "ilink/bot/getupdates", "ilink/bot/sendmessage", "ilink/bot/sendtyping"
 EP_GET_CONFIG, EP_GET_UPLOAD_URL = "ilink/bot/getconfig", "ilink/bot/getuploadurl"
 EP_GET_BOT_QR, EP_GET_QR_STATUS = "ilink/bot/get_bot_qrcode", "ilink/bot/get_qrcode_status"
+EP_NOTIFY_START, EP_NOTIFY_STOP = "ilink/bot/msg/notifystart", "ilink/bot/msg/notifystop"
 LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS, QR_TIMEOUT_MS = 35_000, 15_000, 10_000, 35_000
 MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
@@ -141,13 +148,14 @@ def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
     return padded
 
 
-def _headers(token: Optional[str], body: str) -> dict[str, str]:
+def _headers(token: Optional[str], body: str, *, route_tag: Optional[str] = None) -> dict[str, str]:
     uin = base64.b64encode(str(int.from_bytes(secrets.token_bytes(4), "big")).encode("utf-8")).decode("ascii")
     return {
         "Content-Type": "application/json", "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body.encode("utf-8"))), "X-WECHAT-UIN": uin,
         "iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
         **({"Authorization": f"Bearer {token}"} if token else {}),
+        **({"SKRouteTag": route_tag} if route_tag else {}),
     }
 
 
@@ -231,6 +239,7 @@ class TypingTicketCache:
     def __init__(self, ttl_seconds: float = 600.0):
         self._ttl_seconds = ttl_seconds
         self._cache: dict[str, tuple[str, float]] = {}
+        self._failures: dict[str, tuple[float, float]] = {}
 
     def get(self, user_id: str) -> Optional[str]:
         entry = self._cache.get(user_id)
@@ -241,6 +250,15 @@ class TypingTicketCache:
 
     def set(self, user_id: str, ticket: str) -> None:
         self._cache[user_id] = (ticket, time.time())
+        self._failures.pop(user_id, None)
+
+    def should_fetch(self, user_id: str) -> bool:
+        return time.monotonic() >= self._failures.get(user_id, (0, 2))[0]
+
+    def failed(self, user_id: str) -> None:
+        _, previous = self._failures.get(user_id, (0, 1))
+        delay = min(previous * 2, 3600)
+        self._failures[user_id] = (time.monotonic() + delay, delay)
 
 
 def _parse_aes_key(aes_key_b64: str) -> bytes:
@@ -278,13 +296,30 @@ async def _api_request(
 
 async def _api_post(
     session: aiohttp.ClientSession, *, base_url: str, endpoint: str, payload: dict[str, Any], token: Optional[str], timeout_ms: int,
+    bot_agent: Optional[str] = None, route_tag: Optional[str] = None,
 ) -> dict[str, Any]:
-    body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION}}, ensure_ascii=False, separators=(",", ":"))
-    return await _api_request(session, "POST", base_url=base_url, endpoint=endpoint, headers=_headers(token, body), timeout_ms=timeout_ms, body=body)
+    adapter = _LIVE_ADAPTERS.get(token)
+    scoped_bot_agent, scoped_route_tag = get_request_metadata(token)
+    bot_agent = adapter._bot_agent if adapter else sanitize_bot_agent(bot_agent if bot_agent is not None else scoped_bot_agent)
+    route_tag = adapter._route_tag if adapter else normalize_route_tag(route_tag if route_tag is not None else scoped_route_tag)
+    body = json.dumps({**payload, "base_info": {"channel_version": CHANNEL_VERSION, "bot_agent": bot_agent}}, ensure_ascii=False, separators=(",", ":"))
+    if adapter:
+        adapter._assert_weixin_session_active()
+    response = await _api_request(session, "POST", base_url=base_url, endpoint=endpoint,
+                                  headers=_headers(token, body, route_tag=route_tag), timeout_ms=timeout_ms, body=body)
+    if adapter and SESSION_EXPIRED_ERRCODE in (response.get("ret"), response.get("errcode")):
+        adapter._pause_weixin_session()
+        adapter._assert_weixin_session_active()
+    return response
 
 
-async def _api_get(session: aiohttp.ClientSession, *, base_url: str, endpoint: str, timeout_ms: int) -> dict[str, Any]:
+async def _api_get(
+    session: aiohttp.ClientSession, *, base_url: str, endpoint: str, timeout_ms: int, route_tag: Optional[str] = None,
+) -> dict[str, Any]:
     headers = {"iLink-App-Id": ILINK_APP_ID, "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION)}
+    route_tag = normalize_route_tag(route_tag)
+    if route_tag:
+        headers["SKRouteTag"] = route_tag
     return await _api_request(session, "GET", base_url=base_url, endpoint=endpoint, headers=headers, timeout_ms=timeout_ms)
 
 
@@ -297,12 +332,17 @@ async def _get_updates(session: aiohttp.ClientSession, *, base_url: str, token: 
 
 async def _send_items(
     session: aiohttp.ClientSession, *, base_url: str, token: str, to: str, item_list: list[dict[str, Any]], context_token: Optional[str], client_id: str,
+    run_id: Optional[str] = None,
 ) -> dict[str, Any]:
     message: dict[str, Any] = {
         "from_user_id": "", "to_user_id": to, "client_id": client_id, "message_type": MSG_TYPE_BOT, "message_state": MSG_STATE_FINISH,
         "item_list": item_list}
     if context_token:
         message["context_token"] = context_token
+    adapter = _LIVE_ADAPTERS.get(token)
+    run_id = run_id or (adapter._weixin_reply_run_ids.get(to) if adapter else None)
+    if run_id:
+        message["run_id"] = run_id
     return await _api_post(session, base_url=base_url, endpoint=EP_SEND_MESSAGE, payload={"msg": message}, token=token, timeout_ms=API_TIMEOUT_MS)
 
 
@@ -339,9 +379,19 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
             if encrypted_param:
                 await response.read()
                 return encrypted_param
-            raw = (await response.text())[:200]
+            raw = response.headers.get("x-error-message") or (await response.text())[:200]
+            if 400 <= response.status < 500:
+                raise WeixinCDNClientError(f"CDN upload HTTP {response.status}: {raw}")
             raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw}" if response.status == 200 else f"CDN upload HTTP {response.status}: {raw}")
-    return await asyncio.wait_for(_do(), timeout=120)
+    for attempt in range(1, 4):
+        try:
+            return await asyncio.wait_for(_do(), timeout=120)
+        except WeixinCDNClientError:
+            raise
+        except (aiohttp.ClientError, OSError, RuntimeError):
+            if attempt == 3:
+                raise
+            logger.warning("Weixin CDN upload failed; retrying (%d/3)", attempt)
 
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
@@ -520,7 +570,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
-def _extract_text(item_list: list[dict[str, Any]]) -> str:
+def _extract_text(item_list: list[dict[str, Any]], *, use_platform_transcription: bool = True) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -530,24 +580,18 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
                 title = ref.get("title") or ""
                 return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
             if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
+                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item], use_platform_transcription=use_platform_transcription)) if p]
                 if parts:
                     return f"[引用: {' | '.join(parts)}]\n{text}".strip()
             return text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
-            # Tencent's ``voice_item.text`` is their STT output and is wrong for non-Chinese audio.
-            # When raw audio exists return "" so gateway/run.py's central STT transcribes the download;
-            # otherwise use Weixin's transcript but mark its voice origin.
-            # #27300: Tencent Cloud's `voice_item.text` is their STT output, which is wrong for any
-            # non-Chinese audio (the original report was a Russian voice message that came back as English
-            # gibberish). Return empty so the central STT pipeline in ``gateway/run.py`` produces the body
-            # from the downloaded audio instead.
             voice_item = item.get("voice_item") or {}
-            # Use it, but preserve the voice origin so the agent can distinguish this from text the user
-            # typed (#65022).
-            voice_text = str(voice_item.get("text") or "")
-            if not (voice_item.get("media") or {}) and voice_text:
+            voice_text = str(voice_item.get("text") or "").strip()
+            media = voice_item.get("media") or {}
+            has_audio = media.get("encrypt_query_param") or media.get("full_url")
+            # Tencent's transcript avoids decoder/STT setup. Multilingual users can opt out (#27300).
+            if voice_text and (use_platform_transcription or not has_audio):
                 return f"[Voice transcription provided by Weixin]\n{voice_text}"
     return ""
 
@@ -571,8 +615,30 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(_account_dir(hermes_home) / f"{account_id}.sync.json", {"get_updates_buf": sync_buf})
 
 
-async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str, str]:
-    qr_resp = await _api_get(session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}", timeout_ms=QR_TIMEOUT_MS)
+def list_weixin_accounts(hermes_home: str) -> list[dict[str, str]]:
+    """Saved logins for this profile, newest first; listing never creates a profile."""
+    accounts = []
+    for path in (Path(hermes_home) / "weixin" / "accounts").glob("*.json"):
+        if path.name.endswith((".context-tokens.json", ".sync.json")):
+            continue
+        data = _read_json(path)
+        if isinstance(data, dict) and isinstance(data.get("token"), str) and data["token"].strip():
+            accounts.append({
+                "account_id": path.stem, "token": data["token"].strip(),
+                "base_url": str(data.get("base_url") or ILINK_BASE_URL), "user_id": str(data.get("user_id") or ""),
+                "saved_at": str(data.get("saved_at") or ""),
+            })
+    return sorted(accounts, key=lambda account: account["saved_at"], reverse=True)
+
+
+async def _fetch_qr(
+    session: aiohttp.ClientSession, bot_type: str, accounts: list[dict[str, str]], *, bot_agent: Optional[str] = None,
+    route_tag: Optional[str] = None,
+) -> tuple[str, str]:
+    qr_resp = await _api_post(
+        session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?{urlencode({'bot_type': bot_type})}",
+        payload={"local_token_list": [account["token"] for account in accounts[:10]]}, token=None, timeout_ms=QR_TIMEOUT_MS,
+        bot_agent=bot_agent, route_tag=route_tag)
     return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
 
 
@@ -591,12 +657,107 @@ def _print_qr(qrcode_value: str, qrcode_url: str, *, report_render_error: bool) 
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
 
-async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480) -> Optional[dict[str, str]]:
+@dataclass
+class _QrLoginState:
+    qrcode: str
+    qrcode_url: str
+    base_url: str = ILINK_BASE_URL
+    verify_code: str = ""
+    qr_count: int = 1
+    scanned: bool = False
+    bot_agent: str = "Hermes"
+    route_tag: Optional[str] = None
+
+
+async def _read_verify_code(prompt: str) -> str:
+    # A cancellable terminal prompt avoids leaving input() blocked in an executor on Ctrl+C.
+    from prompt_toolkit import PromptSession
+    return await PromptSession().prompt_async(prompt)
+
+
+async def _advance_qr_login(
+    session: aiohttp.ClientSession, response: dict[str, Any], state: _QrLoginState, *, bot_type: str,
+    accounts: list[dict[str, str]], verify_code_reader: Callable[[str], Awaitable[str]],
+) -> bool:
+    status = response.get("status", "wait")
+    if status == "wait":
+        print(".", end="", flush=True)
+    elif status == "scaned":
+        state.verify_code = ""
+        if not state.scanned:
+            print("\n已扫码，请在微信里确认...")
+            state.scanned = True
+    elif status == "scaned_but_redirect" and response.get("redirect_host"):
+        state.base_url = f"https://{response['redirect_host']}"
+    elif status == "need_verifycode":
+        prompt = "输入的数字不匹配，请重新输入：" if state.verify_code else "请输入手机微信显示的数字，以继续连接："
+        try:
+            state.verify_code = (await verify_code_reader(prompt)).strip()
+        except EOFError:
+            print("\n无法读取验证码，请在交互式终端重新执行登录。")
+            return False
+    elif status in {"expired", "verify_code_blocked"}:
+        state.qr_count += 1
+        if state.qr_count > 3:
+            print("\n二维码多次失效或验证码错误次数过多，请重新执行登录。")
+            return False
+        print(f"\n二维码已失效，正在刷新... ({state.qr_count}/3)")
+        try:
+            state.qrcode, state.qrcode_url = await _fetch_qr(
+                session, bot_type, accounts, bot_agent=state.bot_agent, route_tag=state.route_tag)
+        except Exception:
+            logger.exception("weixin: QR refresh failed")
+            return False
+        if not state.qrcode:
+            logger.error("weixin: refreshed QR response missing qrcode")
+            return False
+        # A fresh QR starts at the fixed host and has no prior verification challenge.
+        state.base_url, state.verify_code, state.scanned = ILINK_BASE_URL, "", False
+        _print_qr(state.qrcode, state.qrcode_url, report_render_error=False)
+    return True
+
+
+def _finish_qr_login(
+    hermes_home: str, response: dict[str, Any], state: _QrLoginState, accounts: list[dict[str, str]],
+) -> Optional[dict[str, str]]:
+    if response.get("status") == "binded_redirect":
+        matches = accounts
+        bot_id, user_id = response.get("ilink_bot_id"), response.get("ilink_user_id")
+        if bot_id:
+            matches = [account for account in matches if account["account_id"] == bot_id]
+        elif user_id:
+            matches = [account for account in matches if account["user_id"] == user_id]
+        if len(matches) != 1:
+            print("\n微信已绑定，但无法唯一确认本地账号。请使用原账号配置启动网关。")
+            return None
+        print("\n微信已连接，无需重复绑定。")
+        return {key: matches[0][key] for key in ("account_id", "token", "base_url", "user_id")}
+    creds = {
+        "account_id": str(response.get("ilink_bot_id") or ""), "token": str(response.get("bot_token") or ""),
+        "base_url": str(response.get("baseurl") or state.base_url), "user_id": str(response.get("ilink_user_id") or "")}
+    if not creds["account_id"] or not creds["token"]:
+        logger.error("weixin: QR confirmed but credential payload was incomplete")
+        return None
+    save_weixin_account(hermes_home, **creds)
+    from gateway.platforms.weixin_accounts import clear_stale_weixin_accounts
+    clear_stale_weixin_accounts(hermes_home, creds["account_id"], creds["user_id"])
+    print(f"\n微信连接成功，account_id={creds['account_id']}")
+    return creds
+
+
+async def qr_login(
+    hermes_home: str, *, bot_type: str = "3", timeout_seconds: int = 480,
+    verify_code_reader: Optional[Callable[[str], Awaitable[str]]] = None,
+    bot_agent: Optional[str] = None, route_tag: Optional[str] = None,
+) -> Optional[dict[str, str]]:
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
+    accounts = list_weixin_accounts(hermes_home)
+    bot_agent = sanitize_bot_agent(bot_agent)
+    route_tag = normalize_route_tag(route_tag)
     async with _new_session() as session:
         try:
-            qrcode_value, qrcode_url = await _fetch_qr(session, bot_type)
+            qrcode_value, qrcode_url = await _fetch_qr(session, bot_type, accounts, bot_agent=bot_agent, route_tag=route_tag)
         except Exception as exc:
             logger.error("weixin: failed to fetch QR code: %s", exc)
             return None
@@ -606,45 +767,28 @@ async def qr_login(hermes_home: str, *, bot_type: str = "3", timeout_seconds: in
         print("\n请使用微信扫描以下二维码：")
         _print_qr(qrcode_value, qrcode_url, report_render_error=True)
         deadline = time.monotonic() + timeout_seconds
-        current_base_url, refresh_count = ILINK_BASE_URL, 0
+        state = _QrLoginState(qrcode_value, qrcode_url, bot_agent=bot_agent, route_tag=route_tag)
         while time.monotonic() < deadline:
+            query = {"qrcode": state.qrcode}
+            if state.verify_code:
+                query["verify_code"] = state.verify_code
             try:
-                status_resp = await _api_get(session, base_url=current_base_url, endpoint=f"{EP_GET_QR_STATUS}?qrcode={qrcode_value}", timeout_ms=QR_TIMEOUT_MS)
+                status_resp = await _api_get(
+                    session, base_url=state.base_url, endpoint=f"{EP_GET_QR_STATUS}?{urlencode(query)}",
+                    timeout_ms=QR_TIMEOUT_MS, route_tag=state.route_tag)
             except Exception as exc:
                 if not isinstance(exc, asyncio.TimeoutError):
                     logger.warning("weixin: QR poll error: %s", exc)
                 await asyncio.sleep(1)
                 continue
-            status = str(status_resp.get("status") or "wait")
-            if status == "wait":
-                print(".", end="", flush=True)
-            elif status == "scaned":
-                print("\n已扫码，请在微信里确认...")
-            elif status == "scaned_but_redirect" and status_resp.get("redirect_host"):
-                current_base_url = f"https://{status_resp['redirect_host']}"
-            elif status == "expired":
-                refresh_count += 1
-                if refresh_count > 3:
-                    print("\n二维码多次过期，请重新执行登录。")
-                    return None
-                print(f"\n二维码已过期，正在刷新... ({refresh_count}/3)")
-                try:
-                    qrcode_value, qrcode_url = await _fetch_qr(session, bot_type)
-                    _print_qr(qrcode_value, qrcode_url, report_render_error=False)
-                except Exception as exc:
-                    logger.error("weixin: QR refresh failed: %s", exc)
-                    return None
-            elif status == "confirmed":
-                creds = {
-                    "account_id": str(status_resp.get("ilink_bot_id") or ""), "token": str(status_resp.get("bot_token") or ""),
-                    "base_url": str(status_resp.get("baseurl") or ILINK_BASE_URL), "user_id": str(status_resp.get("ilink_user_id") or "")}
-                if not creds["account_id"] or not creds["token"]:
-                    logger.error("weixin: QR confirmed but credential payload was incomplete")
-                    return None
-                save_weixin_account(hermes_home, **creds)
-                print(f"\n微信连接成功，account_id={creds['account_id']}")
-                return creds
-            await asyncio.sleep(1)
+            if status_resp.get("status") in {"confirmed", "binded_redirect"}:
+                return _finish_qr_login(hermes_home, status_resp, state, accounts)
+            if not await _advance_qr_login(
+                session, status_resp, state, bot_type=bot_type, accounts=accounts,
+                verify_code_reader=verify_code_reader or _read_verify_code):
+                return None
+            if status_resp.get("status") != "need_verifycode":
+                await asyncio.sleep(1)
         print("\n微信登录超时。")
         return None
 
@@ -689,12 +833,14 @@ _OUTBOUND_BY_EXT: tuple[tuple[frozenset, str, str], ...] = (
 _DIRECT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
-class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
+class WeixinAdapter(WeixinExperienceMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     ALLOW_ALL_ENV_PREFIX = "WEIXIN"
+    _yaml_allow_all_users = False
     supports_code_blocks = True  # Weixin renders fenced code blocks
     splits_long_messages = True  # send() chunks via _split_text()
     MAX_MESSAGE_LENGTH = 2000
-    SUPPORTS_MESSAGE_EDITING = False  # WeChat cannot edit; streaming must send-final-only so the cursor (▉) is never left visible
+    SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_BLOCK_STREAMING = True
     _SPLIT_THRESHOLD = 1800  # iLink chunks at ~2048 chars
 
     def __init__(self, config: PlatformConfig):
@@ -720,12 +866,18 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
+        self._yaml_allow_all_users = _coerce_bool(_extra_or_secret(extra, "allow_all_users"), default=False)
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
         allow_from, group_allow_from = extra.get("allow_from"), extra.get("group_allow_from")
         self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
+        self._use_platform_transcription = _coerce_bool(extra.get("use_platform_transcription"), default=True)
+        self._quote_store = WeixinQuoteStore(hermes_home, self._account_id, extra.get("quote_cache"))
+        self._init_weixin_experience(extra)
+        self._bot_agent = sanitize_bot_agent(extra.get("bot_agent"))
+        self._route_tag = normalize_route_tag(extra.get("route_tag"))
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
         self._configure_text_batch_delays()
@@ -733,6 +885,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
             self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    def _open_dm_opted_in(self) -> bool:
+        return self._yaml_allow_all_users or super()._open_dm_opted_in()
+
+    def build_source(self, **kwargs):
+        source = super().build_source(**kwargs)
+        source.account_id = self._account_id
+        return source
 
     @staticmethod
     def _coerce_list(value: Any) -> list[str]:
@@ -761,8 +921,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # _api_post/_api_get enforce timeouts with asyncio.wait_for() instead.
         self._send_session = _new_session(timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None))
         self._token_store.restore(self._account_id)
+        await self._notify_lifecycle(EP_NOTIFY_START)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
+        if self._quote_store.enabled:
+            self._weixin_quote_gc_task = asyncio.create_task(self._weixin_quote_gc(), name="weixin-quote-gc")
         _LIVE_ADAPTERS[self._token] = self
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
         if self._group_policy != "disabled":
@@ -784,7 +947,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
         await cancel_task(self._poll_task)
+        await cancel_task(self._weixin_quote_gc_task)
+        self._weixin_quote_gc_task = None
         self._poll_task = None
+        if self._send_session and not self._send_session.closed:
+            await self._notify_lifecycle(EP_NOTIFY_STOP)
         for attr in ("_poll_session", "_send_session"):
             session = getattr(self, attr)
             if session and not session.closed:
@@ -793,6 +960,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
+
+    async def _notify_lifecycle(self, endpoint: str) -> None:
+        """iLink lifecycle notices are best effort; cleanup must still release sessions and locks."""
+        try:
+            response = await _api_post(
+                self._send_session, base_url=self._base_url, endpoint=endpoint, payload={},
+                token=self._token, timeout_ms=CONFIG_TIMEOUT_MS, bot_agent=self._bot_agent, route_tag=self._route_tag)
+            if response.get("ret") not in {0, None} or response.get("errcode") not in {0, None}:
+                logger.warning("[%s] %s failed: ret=%s errcode=%s", self.name, endpoint, response.get("ret"), response.get("errcode"))
+        except Exception as exc:
+            logger.warning("[%s] %s failed: %s", self.name, endpoint, exc, exc_info=True)
 
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
@@ -814,9 +992,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     timeout_ms = suggested_timeout
                 ret, errcode = response.get("ret", 0), response.get("errcode", 0)
                 if ret not in {0, None} or errcode not in {0, None}:
-                    if _is_session_expired(response, ret, errcode):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
+                    if SESSION_EXPIRED_ERRCODE in (ret, errcode):
+                        self._pause_weixin_session()
+                        logger.error("[%s] Bot token expired; pausing all requests for one hour. Reconnect with hermes gateway setup.", self.name)
+                        await asyncio.sleep(self._weixin_pause_remaining())
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
@@ -836,9 +1015,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     await asyncio.to_thread(_save_sync_buf, self._hermes_home, self._account_id, sync_buf)
             except asyncio.CancelledError:
                 break
+            except WeixinSessionPausedError:
+                await asyncio.sleep(self._weixin_pause_remaining())
+                consecutive_failures = 0
             except Exception as exc:
                 consecutive_failures += 1
-                logger.error("[%s] poll error (%d/%d): %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc)
+                logger.error("[%s] poll error (%d/%d) type=%s: %s", self.name, consecutive_failures, MAX_CONSECUTIVE_FAILURES, classify_network_error(exc), exc)
                 consecutive_failures = await backoff()
                 if consecutive_failures == 0:
                     # Full failure streak: recycle the session. Failed connects through a local proxy (e.g.
@@ -871,12 +1053,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _process_message(self, message: dict[str, Any]) -> None:
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
-        message_id = str(message.get("message_id") or "").strip()
+        message_id = _inbound_message_id(message)
         if not sender_id or sender_id == self._account_id or (message_id and self._dedup.is_duplicate(message_id)):
             return
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
+        text = _extract_text(item_list, use_platform_transcription=self._use_platform_transcription)
         if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
@@ -886,6 +1068,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
+        self._weixin_received_at[effective_chat_id] = time.monotonic()
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
@@ -896,12 +1079,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
                 await self._collect_media(candidate, media_paths, media_types)
+        media_name = next((str((item.get("file_item") or {}).get("file_name")) for item in item_list if (item.get("file_item") or {}).get("file_name")), None)
+        await asyncio.to_thread(self._quote_store.put, effective_chat_id, message_id, text,
+                                media_paths[0] if media_paths else None, media_types[0] if media_types else None, media_name)
+        text, reply_id = await resolve_quote(self, item_list, effective_chat_id, text, media_paths, media_types)
         if not text and not media_paths:
             return
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
-            message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
+            message_id=message_id or None, reply_to_message_id=reply_id,
+            media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
@@ -909,6 +1097,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             await self.handle_message(event)
 
     async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> None:
+        if item.get("type") == ITEM_VOICE and self._use_platform_transcription and str((item.get("voice_item") or {}).get("text") or "").strip():
+            return
         spec = _INBOUND_MEDIA.get(item.get("type"))
         path, mime = await self._download_media(item, spec) if spec else (None, "")
         if path:
@@ -916,8 +1106,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             media_types.append(mime)
 
     async def _download_media(self, item: dict[str, Any], spec: tuple[Any, ...]) -> tuple[Optional[str], str]:
-        """Download + decrypt one inbound media item -> (cached path or None, mime). Voice is always downloaded
-        (never trust Tencent's ``voice_item.text``) so gateway/run.py's central STT re-transcribes."""
+        """Download and decrypt media not already handled by the platform's voice transcript."""
         item_key, timeout_seconds, cache_fn, mime, label = spec
         payload = item.get(item_key) or {}
         media = payload.get("media") or {}
@@ -927,11 +1116,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             aes_key_b64 = media.get("aes_key")
             if item_key == "image_item" and payload.get("aeskey"):  # image_item may carry a raw hex ``aeskey`` beside the media block
                 aes_key_b64 = base64.b64encode(bytes.fromhex(str(payload.get("aeskey")))).decode("ascii") or aes_key_b64
-            # #27300: previously short-circuited when ``voice_item.text`` was set on the assumption that
-            # Tencent Cloud's STT was good enough. For non-Chinese audio that text is garbage (e.g. a
-            # Russian message comes back as English phonemes) — we must always download the raw audio so
-            # ``gateway/run.py``'s central STT pipeline can re-transcribe with the user's configured
-            # mlx-whisper / whisper.cpp / faster-whisper backend.
             data = await _download_and_decrypt_media(
                 self._poll_session, cdn_base_url=self._cdn_base_url, encrypted_query_param=media.get("encrypt_query_param"),
                 aes_key_b64=aes_key_b64, full_url=media.get("full_url"), timeout_seconds=timeout_seconds)
@@ -941,14 +1125,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return None, mime
 
     async def _fetch_typing_ticket(self, session: Any, user_id: str, context_token: Optional[str], failure_label: str) -> Optional[str]:
+        if not self._typing_cache.should_fetch(user_id):
+            return None
         try:
             response = await _get_config(session, base_url=self._base_url, token=self._token, user_id=user_id, context_token=context_token)
             typing_ticket = str(response.get("typing_ticket") or "")
-            if typing_ticket:
+            if typing_ticket and response.get("ret") in (None, 0) and response.get("errcode") in (None, 0):
                 self._typing_cache.set(user_id, typing_ticket)
                 return typing_ticket
         except Exception as exc:
             logger.debug("[%s] %s for %s: %s", self.name, failure_label, _safe_id(user_id), exc)
+        self._typing_cache.failed(user_id)
         return None
 
     def _split_text(self, content: str) -> list[str]:
@@ -966,9 +1153,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._rate_limit_circuit_until = max(self._rate_limit_circuit_until, time.monotonic() + self._rate_limit_circuit_open_seconds)
         return self._rate_limit_cooldown_remaining() > 0
 
-    async def _send_text_chunk(self, *, chat_id: str, chunk: str, context_token: Optional[str], client_id: str) -> None:
-        """Send one text chunk with retry/backoff under the adapter-wide text gate. A stale-session response (``-14``,
-        or ``-2`` with ``prepare failed``/``unknown error``) is re-sent once *without* ``context_token`` — iLink accepts
+    async def _send_text_chunk(self, *, chat_id: str, chunk: str, context_token: Optional[str], client_id: str) -> str:
+        """Send one text chunk with retry/backoff under the adapter-wide text gate. A stale context response (``-2``
+        with ``prepare failed``/``unknown error``) is re-sent once *without* ``context_token`` — iLink accepts
         tokenless sends as a degraded fallback, which keeps cron pushes working when no user message refreshed the
         session. A ``-2`` that survives that fails fast via ``_session_not_ready_error``."""
         async with self._send_text_gate:
@@ -976,6 +1163,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             retried_without_token = False
             attempt = 0  # counts real failures only — the tokenless re-send must not eat the retry budget
             while True:
+                self._assert_weixin_session_active()
                 if self._rate_limit_cooldown_remaining() > 0:
                     raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                 try:
@@ -983,6 +1171,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         self._send_session, base_url=self._base_url, token=self._token, to=chat_id, text=chunk,
                         context_token=context_token, client_id=client_id)
                     ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
+                    if SESSION_EXPIRED_ERRCODE in (ret, errcode):
+                        self._pause_weixin_session()
+                        self._assert_weixin_session_active()
                     if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
                         errmsg = resp.get("errmsg") or resp.get("msg")
                         if _is_session_expired(resp, ret, errcode) and not retried_without_token and context_token:
@@ -1012,7 +1203,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
-                    return
+                    identifier = str((resp or {}).get("message_id") or client_id)
+                    await asyncio.to_thread(self._quote_store.put, chat_id, identifier, chunk)
+                    return identifier
+                except WeixinSessionPausedError:
+                    raise
                 except Exception as exc:
                     last_error = exc
                     if attempt >= self._send_chunk_retries:
@@ -1047,10 +1242,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 except Exception as exc:
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
+            if self._weixin_debug and chat_id in self._weixin_received_at and chunks and not (metadata or {}).get("_interim_send"):
+                chunks.append(f"⏱ 微信处理耗时: {time.monotonic() - self._weixin_received_at[chat_id]:.2f}s")
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
-                last_message_id = client_id
+                last_message_id = await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id) or client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
@@ -1166,7 +1362,15 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     self._send_session, base_url=self._base_url, token=self._token, to=chat_id, item_list=item_list,
                     context_token=context_token, client_id=last_message_id)
                 ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
+                if SESSION_EXPIRED_ERRCODE in (ret, errcode):
+                    self._pause_weixin_session()
+                    self._assert_weixin_session_active()
                 if (ret is None or ret == 0) and (errcode is None or errcode == 0):
+                    identifier = str((resp or {}).get("message_id") or last_message_id)
+                    await asyncio.to_thread(self._quote_store.put, chat_id, identifier, caption if item_list[0].get("type") == ITEM_TEXT else "",
+                                            path if item_list[0].get("type") != ITEM_TEXT else None,
+                                            "audio/silk" if media_type == MEDIA_VOICE else mimetypes.guess_type(path)[0], Path(path).name)
+                    last_message_id = identifier
                     break
                 # Same stale-session fallback as _send_text_chunk: re-send once without context_token. Clearing the
                 # token also covers the remaining item lists (caption, then media) and bounds this loop.
@@ -1195,7 +1399,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return {"name": chat_id, "type": "group" if chat_id.endswith("@chatroom") else "dm", "chat_id": chat_id}
 
     def format_message(self, content: Optional[str]) -> str:
-        return "" if content is None else _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
+        from gateway.platforms.weixin_markdown import filter_markdown
+        return "" if content is None else _wrap_copy_friendly_lines_for_weixin(filter_markdown(_normalize_markdown_blocks(content)))
 
 
 async def _deliver_direct(
@@ -1218,8 +1423,13 @@ async def _deliver_direct(
 
 async def send_weixin_direct(
     *, extra: dict[str, Any], token: Optional[str], chat_id: str, message: str, media_files: Optional[list[tuple[str, bool]]] = None,
+    account_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """One-shot send for ``send_message``/cron: reuse the live adapter's session on this loop, else a throwaway adapter."""
+    if extra.get("accounts") or account_id or "/" in chat_id:
+        from gateway.platforms.weixin_group import resolve_outbound_account
+        selected, chat_id = resolve_outbound_account(extra, token, chat_id, account_id)
+        extra, token = selected.extra, selected.token
     account_id = _extra_or_secret(extra, "account_id")
     base_url = _extra_or_secret(extra, "base_url", ILINK_BASE_URL).rstrip("/")
     cdn_base_url = _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL).rstrip("/")
@@ -1240,4 +1450,5 @@ async def send_weixin_direct(
         adapter = WeixinAdapter(PlatformConfig(enabled=True, token=resolved_token, extra=merged))
         adapter._send_session = adapter._session = session
         adapter._token_store = token_store
-        return await _deliver_direct(adapter, chat_id, message, media_files, context_token)
+        with bind_request_metadata(adapter._token, adapter._bot_agent, adapter._route_tag):
+            return await _deliver_direct(adapter, chat_id, message, media_files, context_token)

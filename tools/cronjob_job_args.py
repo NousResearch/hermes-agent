@@ -104,6 +104,7 @@ def _origin_from_env(
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
+        **({"account_id": account} if (account := get_session_env("HERMES_SESSION_ACCOUNT_ID")) else {}),
     }
 
 

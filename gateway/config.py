@@ -557,10 +557,15 @@ def _needs_extra(*keys: str) -> Callable[[PlatformConfig], bool]:
     return lambda cfg: all(cfg.extra.get(k) for k in keys)
 
 
+def _weixin_connected(config: PlatformConfig) -> bool:
+    from gateway.platforms.weixin_group import has_weixin_credentials
+    return has_weixin_credentials(config)
+
+
 # Built-in "sufficiently configured?" checks; platforms covered by the generic
 # ``token or api_key`` check (Telegram, Discord, Slack, Matrix, ...) need no entry.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.WEIXIN: lambda cfg: bool(cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))),
+    Platform.WEIXIN: _weixin_connected,
     Platform.WHATSAPP_CLOUD: _needs_extra("phone_number_id", "access_token"),
     Platform.SIGNAL: _needs_extra("http_url"),
     Platform.API_SERVER: lambda cfg: _has_usable_api_server_key(cfg.extra.get("key") if cfg else None),

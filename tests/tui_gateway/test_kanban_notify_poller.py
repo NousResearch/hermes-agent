@@ -6,12 +6,14 @@ read those rows back: the gateway notifier skips them (no "tui" messaging
 adapter) and the TUI notification poller only watched process completions.
 ``last_event_id`` stayed 0 forever and no notification was ever delivered.
 
-These tests cover the delivery half that now lives in tui_gateway/server.py:
+These tests cover the delivery half that now lives in tui_gateway/session_notifications.py:
 ``_collect_kanban_notifications`` (cursor claim + formatting + archive-only
 unsubscribe) and ``_format_kanban_event_text``.
 """
 
 from types import SimpleNamespace
+
+import pytest
 from unittest.mock import patch
 
 from hermes_cli import kanban_db as kb
@@ -300,6 +302,7 @@ class TestNotificationPollerLoopKanbanWiring:
             "session_key": SESSION_KEY,
             "history_lock": threading.Lock(),
             "running": running,
+            "agent": SimpleNamespace(),
         }
 
     def test_idle_session_gets_status_update_and_agent_turn(self, monkeypatch):
@@ -347,3 +350,53 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_rejected_dispatch_keeps_batch_for_retry(self, monkeypatch, raises):
+        """Restore the selected batch ahead of the diagnostic remainder and newer entries."""
+        import tui_gateway.server as server
+        from gateway import warning_notifications as warnings
+
+        tid = _create_subscribed_task()
+        _complete(tid, summary="retained after refusal")
+        session = self._poller_session()
+        diagnostic = warnings.DiagnosticText("diagnostic remainder")
+        session["_kanban_pending"] = ["first", diagnostic, "second"]
+        submitted = []
+        newer = "arrived during dispatch"
+
+        def refuse(_rid, _sid, current, text, **_kwargs):
+            submitted.append(text)
+            with current["history_lock"]:
+                current["_kanban_pending"].append(newer)
+            if raises:
+                raise RuntimeError("dispatch failed before turn start")
+            with current["history_lock"]:
+                current["running"] = False  # a refusing _run_prompt_submit releases the turn itself
+            return False
+
+        monkeypatch.setattr(warnings, "warning_notifications_enabled", lambda _platform: False)
+        monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(server, "_run_prompt_submit", refuse)
+        # Helpers from session_notifications are rebound to server globals by bind_module.
+        server._notif_poll_kanban("sid-kanban-reject", session)
+
+        batch = submitted[0].split("\n")
+        assert batch[:2] == ["first", "second"]
+        assert tid in submitted[0]
+        retained = session["_kanban_pending"]
+        assert retained[:2] == ["first", "second"]
+        assert tid in retained[2]
+        assert retained[3:] == [diagnostic, newer]
+        assert isinstance(retained[3], warnings.DiagnosticText)
+        assert session["running"] is False
+        assert _collect_kanban_notifications(session) == []  # cursor already advanced
+
+        accepted = []
+        monkeypatch.setattr(server, "_run_prompt_submit",
+                            lambda *_args, **_kwargs: accepted.append(_args[3]) or True)
+        # Advance past the refusal backoff without a sleep.
+        monkeypatch.setattr(server.time, "monotonic", lambda: float("inf"))
+        server._notif_poll_kanban("sid-kanban-reject", session)
+        assert accepted == [submitted[0] + "\n" + newer]
+        assert session["_kanban_pending"] == [diagnostic]

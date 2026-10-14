@@ -238,7 +238,7 @@ def test_tui_notification_poller_sweeps_under_its_session_profile(tmp_path, monk
 
 
 def _tui_session(session_key: str, home: Path) -> dict:
-    return {"history_lock": threading.RLock(), "running": False, "history": [], "session_key": session_key,
+    return {"history_lock": threading.RLock(), "running": False, "history": [], "agent": object(), "session_key": session_key,
             "profile_home": str(home), "_finalized": False, "_notification_emitted": set()}
 
 

@@ -22,7 +22,7 @@ DELEGATION = {"type": "async_delegation", "delegation_id": "deleg-1", "session_k
 
 
 def _claimed_session() -> dict:
-    session = {"history_lock": threading.RLock(), "running": False, "history": []}
+    session = {"history_lock": threading.RLock(), "running": False, "history": [], "agent": SimpleNamespace()}
     assert server._notif_claim_turn(session) is True
     return session
 
@@ -74,7 +74,7 @@ def test_a_completion_batch_that_cannot_be_prepared_hands_the_turn_back(monkeypa
         monkeypatch.setattr("tools.process_registry_notifications.ProcessNotificationBatch.render",
                             lambda self, registry: (_ for _ in ()).throw(ValueError("bad payload")))
     started = _no_turn(monkeypatch)
-    session = {"history_lock": threading.RLock(), "running": False, "history": []}
+    session = {"history_lock": threading.RLock(), "running": False, "history": [], "agent": SimpleNamespace()}
 
     server._notif_dispatch_completions("sid", session, [(e, "t") for e in events],
                                        SimpleNamespace(completion_queue=queue.Queue()), None)
@@ -126,10 +126,30 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
         stop.set()
 
     monkeypatch.setattr(server, "_notif_handle_ready", _handle_ready)
-    session = {"history_lock": threading.RLock(), "running": False, "history": []}
+    session = {"history_lock": threading.RLock(), "running": False, "history": [], "agent": SimpleNamespace()}
     worker = threading.Thread(target=server._notification_poller_scoped_loop, args=(stop, "sid", session), daemon=True)
     worker.start()
     worker.join(timeout=10)
 
     assert not worker.is_alive()
     assert handled == [1, 1], "the second event must still be dispatched after the first one raised"
+
+
+def test_a_refused_notification_does_not_release_a_turn_claimed_since(monkeypatch):
+    """_run_prompt_submit clears ``running`` itself before it returns False. A user prompt can claim
+    the session in between; the refused notification must not release that claim a second time."""
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    session = _claimed_session()
+
+    def refuse_then_user_claims(rid, sid, session_, text, **kwargs):
+        with session_["history_lock"]:
+            session_["running"] = False  # the refusal path's own release
+        with session_["history_lock"]:
+            session_["running"] = True  # a user prompt claims the free session
+        return False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", refuse_then_user_claims)
+
+    assert server._notif_submit("rid", "sid", session, "kanban update", "test dispatch") is False
+    assert session["running"] is True
+    assert session["_notification_retry_at"] > 0

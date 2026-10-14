@@ -1,50 +1,63 @@
-# nix/devShell.nix — Fast dev shell with stamp-file optimization
-{ inputs, ... }: {
-  perSystem = { pkgs, ... }:
+# nix/devShell.nix — Dev shell that delegates setup to each package
+#
+# Each npm workspace package exposes passthru.packageJsonPath (e.g.
+# "ui-tui/package.json").  This file collects them all and passes the
+# list to mkNpmDevShellHook, which stamps all package.jsons at once,
+# then runs a single `npm i --package-lock-only` if any changed and
+# `npm ci` if the lockfile changed.
+{ ... }:
+{
+  perSystem =
+    { pkgs, self', ... }:
     let
-      python = pkgs.python311;
-    in {
+      packages = builtins.attrValues self'.packages;
+      hermesNpmLib = self'.packages.default.passthru.hermesNpmLib;
+
+      # Collect all packageJsonPath values from npm workspace packages.
+      npmPackageJsonPaths = builtins.filter (p: p != null) (
+        map (p: p.passthru.packageJsonPath or null) packages
+      );
+
+      hermesAgentDevShellHook = self'.packages.default.passthru.devShellHook;
+    in
+    {
       devShells.default = pkgs.mkShell {
         packages = with pkgs; [
-          python uv nodejs_20 ripgrep git openssh ffmpeg
-        ];
-
+          (pkgs.runCommand "hermes" { } ''
+            mkdir -p $out/bin
+            install -Dm755 ${../hermes} $out/bin/hermes
+          '')
+          self'.packages.sandbox
+          uv
+          # Headless Wayland compositor for E2E tests (test:e2e:visual).
+          # cage renders a single client with no window management, so
+          # the Electron window opens at a fixed size without tiling.
+          # libglvnd provides libEGL.so.1 that cage needs on NixOS.
+          cage
+          libglvnd
+          # Graphical terminal + Wayland screenshot client for CLI/TUI UI
+          # evidence. `cage -- ghostty ...` keeps captures off the user's
+          # live compositor; grim runs inside that isolated client session.
+          ghostty
+          grim
+        ]
+        ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          echo "Hermes Agent dev shell"
+          ${hermesAgentDevShellHook}
+          ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
-          # Composite stamp: changes when nix python or uv change
-          STAMP_VALUE="${python}:${pkgs.uv}"
-          STAMP_FILE=".venv/.nix-stamp"
+          # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
+          export PATH="${pkgs.playwright-test}/bin:$PATH"
 
-          # Create venv if missing
-          if [ ! -d .venv ]; then
-            echo "Creating Python 3.11 venv..."
-            uv venv .venv --python ${python}/bin/python3
-          fi
+          # for the devshell to pick up the src
+          export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
 
-          source .venv/bin/activate
+          # Let `uv run --active --no-sync` reuse Nix's provisioned Python
+          # environment instead of creating an empty project .venv.
+          export VIRTUAL_ENV="$(dirname "$(dirname "$(readlink -f "$(command -v python)")")")"
 
-          # Only install if stamp is stale or missing
-          if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$STAMP_VALUE" ]; then
-            echo "Installing Python dependencies..."
-            uv pip install -e ".[all]"
-            if [ -d mini-swe-agent ]; then
-              uv pip install -e ./mini-swe-agent 2>/dev/null || true
-            fi
-            if [ -d tinker-atropos ]; then
-              uv pip install -e ./tinker-atropos 2>/dev/null || true
-            fi
-
-            # Install npm deps
-            if [ -f package.json ] && [ ! -d node_modules ]; then
-              echo "Installing npm dependencies..."
-              npm install
-            fi
-
-            echo "$STAMP_VALUE" > "$STAMP_FILE"
-          fi
-
-          echo "Ready. Run 'hermes' to start."
+          echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
+          echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';
       };
     };

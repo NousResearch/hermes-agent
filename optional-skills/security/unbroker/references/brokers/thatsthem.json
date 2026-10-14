@@ -1,0 +1,46 @@
+{
+  "id": "thatsthem",
+  "name": "That's Them",
+  "category": "people_search",
+  "priority": "crucial",
+  "jurisdictions": ["US"],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://thatsthem.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "by": ["name", "phone", "email", "address"],
+    "url_patterns": {
+      "name": "https://thatsthem.com/name/{First}-{Last}/{City}-{ST}",
+      "phone": "https://thatsthem.com/phone/{areacode}-{prefix}-{line}",
+      "email": "https://thatsthem.com/email/{email}",
+      "address": "https://thatsthem.com/address/{Street}-{City}-{ST}-{ZIP}"
+    },
+    "url_format_quirks": [
+      "ADDRESS path is fully hyphen-joined and joins street+city+state+ZIP with hyphens (e.g. /address/123-Main-St-Anytown-NY-12345) and REQUIRES the ZIP. The older slash form (/address/Street/City-ST) and any ZIP-less form 404.",
+      "NAME and PHONE and EMAIL paths use a slash before city/state and do NOT need a ZIP: /name/First-Last/City-ST , /phone/AAA-PPP-LLLL , /email/addr@host.",
+      "Street abbreviations are kept verbatim (Ave, Pl, St) - do NOT expand to Avenue/Place/Street; expanding 404s.",
+      "A 404 on a constructed URL means WRONG PATTERN, not 'no record present'. Treat as INCONCLUSIVE: fall back to the on-site search box (browser_type into the address/name field + submit) and read the resulting canonical URL."
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://thatsthem.com/optout",
+    "requires": {
+      "profile_url": false,
+      "email_verification": false,
+      "captcha": true,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": ["full_name", "street", "city", "state", "postal", "contact_email", "phone"],
+    "notes": "Opt-out form is gated by a Cloudflare Turnstile CAPTCHA (so tier is T2 without a captcha-clearing browser backend; T1 with Browserbase). All 7 fields are marked required by the form (Full Name, Street Address, City, State, ZIP, Email, Phone). Site sends a confirmation email and states ~72h processing (this is a completion notice, not a click-to-verify link). Least-disclosure tension: the form DEMANDS email+phone even though a public record may show less - disclose only to remove a record that is actually about the subject. Do not click the Spokeo identity-theft-protection link (paid product).",
+    "est_processing_days": 3,
+    "reappearance_risk": "low"
+  },
+  "last_verified": "2026-06-30",
+  "source": "BADBOOL"
+}

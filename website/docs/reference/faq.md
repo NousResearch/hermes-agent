@@ -6,6 +6,10 @@ description: "Frequently asked questions and solutions to common issues with Her
 
 # FAQ & Troubleshooting
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](./package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Quick answers and fixes for the most common questions and issues.
 
 ---
@@ -17,10 +21,10 @@ Quick answers and fixes for the most common questions and issues.
 Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
-- **Nous Portal** — Nous Research's own inference endpoint
-- **OpenAI** — GPT-4o, o1, o3, etc.
-- **Anthropic** — Claude models (via OpenRouter or compatible proxy)
-- **Google** — Gemini models (via OpenRouter or compatible proxy)
+- **[Nous Portal](../integrations/nous-portal.md)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
+- **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
+- **Anthropic** — Claude models (direct API, OAuth via `hermes auth add anthropic`, OpenRouter, or any compatible proxy)
+- **Google** — Gemini models (direct API via `gemini` provider, OpenRouter, or compatible proxy)
 - **z.ai / ZhipuAI** — GLM models
 - **Kimi / Moonshot AI** — Kimi models
 - **MiniMax** — global and China endpoints
@@ -28,13 +32,26 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [Environment Variables](./environment-variables.md) reference for all provider keys.
 
-### Does it work on Windows?
+### Does it work on Windows/Android/my platform??
+See **[Platform Support](../getting-started/platform-support.md)** for the full platform availability matrix.
 
-**Not natively.** Hermes Agent requires a Unix-like environment. On Windows, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes from inside it. The standard install command works perfectly in WSL2:
+### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
+Prefer an MCP bridge over `/browser connect`.
+
+Recommended pattern:
+
+- run Hermes inside WSL2
+- keep using your normal signed-in Chrome on Windows
+- add `chrome-devtools-mcp` as an MCP server through `cmd.exe` or `powershell.exe`
+- let Hermes use the resulting MCP browser tools
+
+This is more reliable than trying to force Hermes core browser transport to attach directly across the WSL2/Windows boundary.
+
+See:
+
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
 
 ### Is my data sent anywhere?
 
@@ -50,7 +67,7 @@ hermes model
 # API base URL: http://localhost:11434/v1
 # API key: ollama
 # Model name: qwen3.5:27b
-# Context length: 32768   ← set this to match your server's actual context window
+# Context length: 64000   ← Hermes minimum; set this to match your server's actual context window
 ```
 
 Or configure it directly in `config.yaml`:
@@ -67,7 +84,11 @@ Hermes persists the endpoint, provider, and base URL in `config.yaml` so it surv
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
 :::tip Ollama users
-If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 16384`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 64000`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+:::
+
+:::tip Timeouts with local models
+Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout raised from 120s to 1800s, stale stream detection disabled). If you still hit timeouts on very large contexts, set `HERMES_STREAM_READ_TIMEOUT=1800` in your `.env`. See the [Local LLM guide](../guides/local-llm-on-mac.md#timeouts) for details.
 :::
 
 ### How much does it cost?
@@ -90,9 +111,9 @@ Both persist across sessions. See [Memory](../user-guide/features/memory.md) and
 Yes. Import the `AIAgent` class and use Hermes programmatically:
 
 ```python
-from hermes.agent import AIAgent
+from run_agent import AIAgent
 
-agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
+agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")
 ```
 
@@ -127,20 +148,48 @@ ls ~/.local/bin/hermes
 The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell config, add `export PATH="$HOME/.local/bin:$PATH"` manually.
 :::
 
-#### Python version too old
+#### Unsupported Python version
 
-**Cause:** Hermes requires Python 3.11 or newer.
+Current first-party installations require **Python 3.14**, not an arbitrary
+newer version. The `>=3.11,<3.15` range in `pyproject.toml` allows older
+installations to run the updater before switching to 3.14; it does not mean
+the current runtime supports 3.11–3.13. The installer and packaged
+distributions provide their pinned interpreter.
 
-**Solution:**
-```bash
-python3 --version   # Check current version
+For a manual source environment, use the
+[development setup](../developer-guide/contributing.md#development-setup).
+Do not replace the interpreter inside an installed app or container.
+For a managed-install error, run `hermes doctor` and use that installation's
+[update method](../getting-started/updating.md).
 
-# Install a newer Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
+#### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
+
+**Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
+
+**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  shell_init_files:
+    - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
+    - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
+    - /etc/profile.d/cargo.sh      # system-wide rc files
+  # When this list is set, the default ~/.bashrc auto-source is NOT added —
+  # include it explicitly if you want both:
+  #   - ~/.bashrc
+  #   - ~/.zshrc
 ```
 
-The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
+Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
+
+Independently of the init files, every terminal command's `PATH` is completed with the standard system directories (`/usr/local/bin`, `/opt/homebrew/bin`, …), the Hermes-managed runtime dirs, and `~/.local/bin` when it exists (the `pip --user` / `pipx` / `uv tool` install target) — appended after your own entries, so precedence is unchanged. This covers backends started with a thin non-interactive PATH (systemd, GUI launchers, the Desktop SSH remote backend) without any configuration.
+
+To disable the auto-source behaviour (strict login-shell semantics only):
+
+```yaml
+terminal:
+  auto_source_bashrc: false
+```
 
 #### `uv: command not found`
 
@@ -162,12 +211,75 @@ source ~/.bashrc
 # If you previously installed with sudo, clean up:
 sudo rm /usr/local/bin/hermes
 # Then re-run the standard installer
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 ---
 
 ### Provider & Model Issues
+
+#### The agent says "Hermes policy" or "Hermes guardrails" refused my request
+
+A model cannot reliably identify why it refused a request. If the refusal appears only in the assistant's prose, its claim that a hidden Hermes runtime policy caused it may be a hallucinated explanation or a restriction applied by the selected model or provider.
+
+Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path, and an approval-required action shows an approval prompt. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
+
+To isolate the source:
+
+1. Run `/status` to confirm the active model and provider.
+2. Check whether the refusal includes an actual Hermes tool error or approval prompt. If it is prose only, do not treat the model's attribution as runtime evidence.
+3. Retry in a fresh session with another configured model or provider. A refusal that changes with the model is model/provider behavior, not a Hermes execution control.
+4. If an explicit tool error appears, use its exact text when reporting the problem.
+
+See [Security](../user-guide/security.md) for Hermes' documented execution controls and [Providers](../integrations/providers.md) for provider configuration.
+
+#### "…refused this request because of a policy on your account"
+
+**Meaning:** the provider rejected the request for an account-level reason that retrying cannot change — an aggregator's data/privacy settings excluded every endpoint for the model, or the model's upstream provider has blocked the account (for example `this user has been blocked for a previous policy violation`, which OpenRouter can relay inside an otherwise successful HTTP 200 stream). Hermes sends the request once, does not retry it or rotate credentials, and moves to your fallback chain if one is configured.
+
+**Solution:** check the account's status and data/privacy settings with the provider named in the reply, or switch to another model or provider with `/model`. `hermes fallback add` routes future blocks to a backup automatically.
+
+#### "Could not open a stream to `<host>` after N attempts (request X KB)"
+
+**Meaning:** every connect attempt to that endpoint failed before a single stream event arrived, so nothing was billed; the normal retry/fallback chain still runs afterwards. The line names the host actually contacted, how many attempts were made, and the serialized request size — the three things that separate an outage from a request-size limit.
+
+**Solution:** if the request is large (hundreds of KB — long coding sessions reach this once the context grows) and short new chats work, the endpoint or a proxy in front of it is likely rejecting bodies that size: raise its body limit, or run `/compress` to shrink the context. If the request is small, the endpoint is unreachable — check the `base_url`, then retry with `/retry`. `logs/agent.log` records the exception chain for each attempt.
+
+#### Messaging replies: "interrupted mid-request" vs "not running or is unreachable" vs "could not reach"
+
+Chat surfaces (Telegram, Discord, Slack, …) never show the raw transport exception; the gateway maps it to one of three short replies, and the difference tells you where to look:
+
+| Reply | What happened | What to do |
+|---|---|---|
+| "The connection to the AI model service was **interrupted mid-request** — usually transient." | An established connection was cut (`Connection reset by peer`, EOF, `RemoteProtocolError`). The endpoint answered the connect, so it is running. | `/retry`. If it recurs on large requests, see the "stream" entry above. |
+| "The AI model service isn't reachable right now — the configured model endpoint is **not running or is unreachable**." | Nothing accepted the connection (`Connection refused`, no route to host, DNS failure). | Start the model server / check `base_url`, then `/retry`; `hermes doctor` on the host. |
+| "Hermes **could not reach** the AI model service (no further detail from the SDK)." | The SDK reported a generic `APIConnectionError` and kept no cause; neither of the above is certain. | `/retry`; `hermes doctor` if it persists. The raw exception is in `hermes logs`. |
+
+#### `/model` only shows one provider / can't switch providers
+
+**Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
+
+**Solution:** Exit your session and use `hermes model` from your terminal to add new providers:
+
+```bash
+# Exit the Hermes chat session first (Ctrl+C or /quit)
+
+# Run the full provider setup wizard
+hermes model
+
+# This lets you: add providers, run OAuth, enter API keys, configure endpoints
+```
+
+After adding a new provider via `hermes model`, start a new chat session — `/model` will now show all your configured providers.
+
+:::tip Quick reference
+| Want to... | Use |
+|-----------|-----|
+| Add a new provider | `hermes model` (from terminal) |
+| Enter/change API keys | `hermes model` (from terminal) |
+| Switch model mid-session | `/model <name>` (inside session) |
+| Switch to different configured provider | `/model provider:model` (inside session) |
+:::
 
 #### API key not working
 
@@ -199,7 +311,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
+hermes config set model.default anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -227,12 +339,16 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 hermes chat
 
 # Use a model with a larger context window
-hermes chat --model openrouter/google/gemini-2.0-flash-001
+hermes chat --model openrouter/google/gemini-3-flash-preview
 ```
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
 
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
+
+**Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
+
+**"The model server rejected this request as too large, but this conversation is only about N tokens…":** a local server (localhost, LAN, Tailscale) said "context exceeded" without quoting any measurement, while Hermes's own estimate of the request is far below the window it knows for the model — so it does **not** compress or blame the conversation, and the turn stays retryable. On single-slot local servers (LM Studio, Ollama) this is almost always another request holding the server's context at that moment — typically a background memory review from an earlier session (`thread=bg-review` in `logs/agent.log`). Wait a moment and `/retry`. If it recurs with no other Hermes process running, the server is loading the model with a smaller window than Hermes assumes: raise the server's context setting or lower `model.context_length` to match it. Hosted providers never get this message: they have no shared slot to wait out, so the same rejection there means the route's real window is smaller than Hermes assumes, and Hermes compresses and retries instead.
 
 To fix context detection, set it explicitly:
 
@@ -243,18 +359,20 @@ model:
   context_length: 131072  # your model's actual context window
 ```
 
-Or for custom endpoints, add it per-model:
+Or for custom endpoints, add it per-model on the provider entry:
 
 ```yaml
-custom_providers:
-  - name: "My Server"
-    base_url: "http://localhost:11434/v1"
+providers:
+  my-server:
+    api: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:
-        context_length: 32768
+        context_length: 64000
 ```
 
-See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for how auto-detection works and all override options.
+(Older configs use the legacy `custom_providers:` list — still supported and auto-migrated to `providers:`.)
+
+See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
 ---
 
@@ -347,14 +465,67 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 
 **Solution:**
 ```bash
-# Install messaging dependencies
-pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
+# Install core messaging gateway dependencies
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
 
 # Verify configuration
 hermes config show
+```
+
+#### WSL: Gateway keeps disconnecting or `hermes gateway start` fails
+
+**Cause:** WSL's systemd support is unreliable. Many WSL2 installations don't have systemd enabled, and even when enabled, services may not survive WSL restarts or Windows idle shutdowns.
+
+**Solution:** Use foreground mode instead of the systemd service:
+
+```bash
+# Option 1: Direct foreground (simplest)
+hermes gateway run
+
+# Option 2: Persistent via tmux (survives terminal close)
+tmux new -s hermes 'hermes gateway run'
+# Reattach later: tmux attach -t hermes
+
+# Option 3: Background via nohup
+nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
+```
+
+If you want to try systemd anyway, make sure it's enabled:
+
+1. Open `/etc/wsl.conf` (create it if it doesn't exist)
+2. Add:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+3. From PowerShell: `wsl --shutdown`
+4. Reopen your WSL terminal
+5. Verify: `systemctl is-system-running` should say "running" or "degraded"
+
+:::tip Auto-start on Windows boot
+For reliable auto-start, use Windows Task Scheduler to launch WSL + the gateway on login:
+1. Create a task that runs `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
+2. Set it to trigger on user logon
+:::
+
+#### macOS: Node.js / ffmpeg / other tools not found by gateway
+
+**Cause:** launchd services inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include Homebrew, nvm, cargo, or other user-installed tool directories. This commonly breaks the WhatsApp bridge (`node not found`) or voice transcription (`ffmpeg not found`).
+
+**Solution:** The gateway captures your shell PATH when you run `hermes gateway install`. If you installed tools after setting up the gateway, re-run the install to capture the updated PATH:
+
+```bash
+hermes gateway install    # Re-snapshots your current PATH
+hermes gateway start      # Detects the updated plist and reloads
+```
+
+You can verify the plist has the correct PATH:
+```bash
+/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" \
+  ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
 ---
@@ -377,12 +548,18 @@ hermes config show
 
 **Solution:**
 ```bash
+# See exactly what the fixed prompt costs — breakdown by block
+# (system prompt, skills index, memory, tool schemas). Runs offline.
+hermes prompt-size
+
 # Compress the conversation to reduce tokens
 /compress
 
 # Check session token usage
 /usage
 ```
+
+If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](./cli-commands.md#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
 
 :::tip
 Use `/compress` regularly during long sessions. It summarizes the conversation history and reduces token usage significantly while preserving context.
@@ -415,14 +592,14 @@ hermes chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 # For npm-based servers, ensure Node.js is available
 node --version
 npx --version
 
 # Test the server manually
-npx -y @modelcontextprotocol/server-filesystem /tmp
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
 ```
 
 Verify your `~/.hermes/config.yaml` MCP configuration:
@@ -453,9 +630,9 @@ hermes chat
 ```
 
 See also:
-- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-- [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)
-- [MCP Config Reference](/docs/reference/mcp-config-reference)
+- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md)
+- [MCP Config Reference](./mcp-config-reference.md)
 
 #### MCP timeout errors
 
@@ -469,6 +646,277 @@ See also:
 :::warning
 If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
 :::
+
+---
+
+### Skills Issues
+
+#### The Skills Hub page won't load in the desktop app (403 / blocked)
+
+**Cause:** The docs site (`hermes-agent.nousresearch.com`) is served through Vercel, whose WAF denies some residential IP ranges it considers flagged. If your network is on such a range, every request to the domain returns a 403 block page.
+
+**Solution:** The Skills Hub picker probes the primary domain and automatically falls back to the equivalent GitHub Pages deployment (`nousresearch.github.io/hermes-agent`), which serves the same catalog. If the page still fails on both origins, check whether a proxy, DNS filter, or firewall is blocking both hosts — and report the affected range to the maintainers so it can be reviewed on the deployment side.
+
+---
+
+## Profiles
+
+### How do profiles differ from just setting HERMES_HOME?
+
+Profiles are a managed layer on top of `HERMES_HOME`. You *could* manually set `HERMES_HOME=/some/path` before every command, but profiles handle all the plumbing for you: creating the directory structure, generating shell aliases (`hermes-work`), tracking the active profile in `~/.hermes/active_profile`, and syncing skill updates across all profiles automatically. They also integrate with tab completion so you don't have to remember paths.
+
+### Can two profiles share the same bot token?
+
+No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access to a bot token. If two profiles try to use the same token simultaneously, the second gateway will fail to connect. Create a separate bot per profile — for Telegram, talk to [@BotFather](https://t.me/BotFather) to make additional bots.
+
+### Do profiles share memory or sessions?
+
+No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile, or add `--clone-from <profile>` to copy from a specific source profile.
+
+This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](../user-guide/features/memory-providers.md).
+
+### What happens when I run `hermes update`?
+
+`hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
+
+
+### How many profiles can I run?
+
+There is no hard limit. Each profile is a directory under `~/.hermes/profiles/` that carries at least one identity file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`); a bare directory without one (a leftover from a log rotation or cron tick) is not a profile — it is not listed or served, `-p <name>` reports it as missing, and `hermes profile create <name>` refuses to overwrite it until you move or remove it. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
+
+---
+
+## Workflows & Patterns
+
+### Using different models for different tasks (multi-model workflows)
+
+**Scenario:** You use GPT-5.4 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
+
+**Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.hermes/config.yaml`:
+
+```yaml
+delegation:
+  model: "google/gemini-3-flash-preview"   # subagents use this model
+  provider: "openrouter"                    # provider for subagents
+```
+
+Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+
+You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
+
+For one-off model switches without delegation, use `/model` in the CLI:
+
+```bash
+/model google/gemini-3-flash-preview    # switch for this session
+# ... write your content ...
+/model openai/gpt-5.4                   # switch back
+```
+
+:::warning
+Each `/model` switch resets the prompt cache — the cache key includes the model, so the first message after every switch re-reads the whole conversation at full input price. On long sessions, prefer delegation (subagents get their own fresh context) or a new session over repeated back-and-forth switching.
+:::
+
+See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
+
+### Running multiple agents on one WhatsApp number (per-chat binding)
+
+**Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Hermes do this?
+
+**Current limitation:** Hermes profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the WhatsApp bridge (Baileys) uses one authenticated session per number.
+
+**Workarounds:**
+
+1. **Use a single profile with personality switching.** Create different `AGENTS.md` context files or use the `/personality` command to change behavior per chat. The agent sees which chat it's in and can adapt.
+
+2. **Use cron jobs for specialized tasks.** For a shopping list tracker, set up a cron job that monitors a specific chat and manages the list — no separate agent needed.
+
+3. **Use separate numbers.** If you need truly independent agents, pair each profile with its own WhatsApp number. Virtual numbers from services like Google Voice work for this.
+
+4. **Use Telegram or Discord instead.** These platforms support per-chat binding more naturally — each Telegram group or Discord channel gets its own session, and you can run multiple bot tokens (one per profile) on the same account.
+
+See [Profiles](../user-guide/profiles.md) and [WhatsApp setup](../user-guide/messaging/whatsapp.md) for more details.
+
+### Controlling what shows up in Telegram (hiding logs and reasoning)
+
+**Scenario:** You see gateway exec logs, Hermes reasoning, and tool call details in Telegram instead of just the final output.
+
+**Solution:** The `display.tool_progress` setting in `config.yaml` controls how much tool activity is shown:
+
+```yaml
+display:
+  tool_progress: "off"   # options: off, new, all, verbose
+```
+
+- **`off`** — Only the final response. No tool calls, no reasoning, no logs.
+- **`new`** — Shows new tool calls as they happen (brief one-liners).
+- **`all`** — Shows all tool activity including results.
+- **`verbose`** — Full detail including tool arguments and outputs.
+
+For messaging platforms, `off` or `new` is usually what you want. After editing `config.yaml`, restart the gateway for changes to take effect.
+
+You can also toggle this per-session with the `/verbose` command (if enabled):
+
+```yaml
+display:
+  tool_progress_command: true   # enables /verbose in the gateway
+```
+
+### Managing skills on Telegram (slash command limit)
+
+**Scenario:** Telegram has a 100 slash command limit, and your skills are pushing past it. You want to disable skills you don't need on Telegram, but `hermes skills config` settings don't seem to take effect.
+
+**Solution:** Use `hermes skills config` to disable skills per-platform. This writes to `config.yaml`:
+
+```yaml
+skills:
+  disabled: []                    # globally disabled skills
+  platform_disabled:
+    telegram: [skill-a, skill-b]  # disabled only on telegram
+```
+
+After changing this, **restart the gateway** (`hermes gateway restart` or kill and relaunch). The Telegram bot command menu rebuilds on startup.
+
+:::tip
+Skills with very long descriptions are truncated to 40 characters in the Telegram menu to stay within payload size limits. If skills aren't appearing, it may be a total payload size issue rather than the 100 command count limit — disabling unused skills helps with both.
+:::
+
+### Shared thread sessions (multiple users, one conversation)
+
+**Scenario:** You have a Telegram or Discord thread where multiple people mention the bot. You want all mentions in that thread to be part of one shared conversation, not separate per-user sessions.
+
+**Current behavior:** Hermes creates sessions keyed by user ID on most platforms, so each person gets their own conversation context. This is by design for privacy and context isolation.
+
+**Workarounds:**
+
+1. **Use Slack.** Slack sessions are keyed by thread, not by user. Multiple users in the same thread share one conversation — exactly the behavior you're describing. This is the most natural fit.
+
+2. **Use a group chat with a single user.** If one person is the designated "operator" who relays questions, the session stays unified. Others can read along.
+
+3. **Use a Discord channel.** Discord sessions are keyed by channel, so all users in the same channel share context. Use a dedicated channel for the shared conversation.
+
+### Exporting Hermes to another machine
+
+**Scenario:** You've built up skills, cron jobs, and memories on one machine and want to move everything to a new dedicated Linux box.
+
+**Solution:**
+
+1. Install Hermes Agent on the new machine:
+   ```bash
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+   ```
+
+2. On the **source machine**, create a full backup:
+   ```bash
+   hermes backup
+   ```
+   This saves a zip archive at `~/hermes-backup-<timestamp>.zip`.
+   The full backup covers configuration, credentials, memories, skills, sessions,
+   and profiles under the Hermes data root. It is not an application or runtime image.
+
+3. Copy the zip to the new machine and import it:
+   ```bash
+   # On the source machine
+   scp ~/hermes-backup-<timestamp>.zip newmachine:~/
+
+   # On the new machine
+   hermes import ~/hermes-backup-<timestamp>.zip
+   ```
+
+4. On the new machine, run `hermes setup` to verify API keys and provider config are working.
+
+### Moving a single profile to another machine
+
+**Scenario:** You want to move or share one specific profile — not your full installation.
+
+```bash
+# On the source machine
+hermes profile export work ./work-backup.tar.gz
+
+# Copy the file to the target machine, then:
+hermes profile import ./work-backup.tar.gz work
+```
+
+The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
+
+### `hermes backup` vs `hermes profile export` {#hermes-backup-vs-hermes-profile-export}
+
+| Feature | `hermes backup` | `hermes profile export` |
+| :--- | :--- | :--- |
+| **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
+| **Scope** | Hermes data root, with the exclusions listed below | Single profile directory |
+| **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
+| **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
+| **Format** | `.zip` | `.tar.gz` |
+
+The full backup excludes:
+
+- The source checkout, dependency environments, and downloaded tools, models, and runtimes.
+- Build caches, checkpoints, previous backups, and quick snapshots.
+- Browser profiles, including copies of real-browser credentials.
+- Bytecode, SQLite sidecars, `gateway.pid`, `cron.pid`, and `.backup.lock`.
+
+`hermes backup --quick` saves selected state files instead of a full archive.
+It is not a replacement for the full backup before a machine migration.
+
+Full backups report files that fail to copy. An archive can therefore exist
+with missing data. Review the skipped-file report before you remove the source installation.
+Restored package declarations let PM download dependencies again. Bytecode and
+SQLite sidecars regenerate locally. The exclusions do not remove `.env` or
+`auth.json` from the full backup.
+
+**Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
+```bash
+rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+```
+
+:::tip
+`hermes backup` produces a consistent snapshot even while Hermes is actively running. The restored archive excludes machine-local runtime files like `gateway.pid` and `cron.pid`.
+:::
+
+### Permission denied when reloading shell after install
+
+**Scenario:** After running the Hermes installer, `source ~/.zshrc` gives a permission denied error.
+
+**Cause:** This usually happens when `~/.zshrc` (or `~/.bashrc`) has incorrect file permissions, or when the installer couldn't write to it cleanly. It's not a Hermes-specific issue — it's a shell config permissions problem.
+
+**Solution:**
+```bash
+# Check permissions
+ls -la ~/.zshrc
+
+# Fix if needed (should be -rw-r--r-- or 644)
+chmod 644 ~/.zshrc
+
+# Then reload
+source ~/.zshrc
+
+# Or just open a new terminal window — it picks up PATH changes automatically
+```
+
+If the installer added the PATH line but permissions are wrong, you can add it manually:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+### Error 400 on first agent run
+
+**Scenario:** Setup completes fine, but the first chat attempt fails with HTTP 400.
+
+**Cause:** Usually a model name mismatch — the configured model doesn't exist on your provider, or the API key doesn't have access to it.
+
+**Solution:**
+```bash
+# Check what model and provider are configured
+hermes config show | head -20
+
+# Re-run model selection
+hermes model
+
+# Or test with a known-good model
+hermes chat -q "hello" --model anthropic/claude-opus-4.7
+```
+
+If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter often means the model requires a paid plan or the model ID has a typo.
 
 ---
 

@@ -9,6 +9,10 @@ sidebar_position: 7
 
 Hermes Agent supports **multimodal vision** — you can paste images from your clipboard directly into the CLI and ask the agent to analyze, describe, or work with them. Images are sent to the model as base64-encoded content blocks, so any vision-capable model can process them.
 
+:::tip
+Portal subscribers get vision-capable models (Claude, GPT-5, Gemini) in the same catalog — no extra credentials needed. See [Nous Portal](../../integrations/nous-portal.md).
+:::
+
 ## How It Works
 
 1. Copy an image to your clipboard (screenshot, browser image, etc.)
@@ -27,50 +31,52 @@ How you attach an image depends on your terminal environment. Not all methods wo
 
 ### `/paste` Command
 
-**The most reliable method. Works everywhere.**
+**The most reliable explicit image-attach fallback.**
 
 ```
 /paste
 ```
 
-Type `/paste` and press Enter. Hermes checks your clipboard for an image and attaches it. This works in every environment because it explicitly calls the clipboard backend — no terminal keybinding interception to worry about.
+Type `/paste` and press Enter. Hermes checks your clipboard for an image and attaches it. This is the safest option when your terminal rewrites `Cmd+V`/`Ctrl+V`, or when you copied only an image and there is no bracketed-paste text payload to inspect.
 
-### Ctrl+V / Cmd+V (Bracketed Paste)
+### Ctrl+V / Cmd+V
 
-When you paste text that's on the clipboard alongside an image, Hermes automatically checks for an image too. This works when:
-- Your clipboard contains **both text and an image** (some apps put both on the clipboard when you copy)
-- Your terminal supports bracketed paste (most modern terminals do)
+Hermes now treats paste as a layered flow:
+- normal text paste first
+- native clipboard / OSC52 text fallback if the terminal did not deliver text cleanly
+- image attach when the clipboard or pasted payload resolves to an image or image path
+
+This means pasted macOS screenshot temp paths and `file://...` image URIs can attach immediately instead of sitting in the composer as raw text.
 
 :::warning
-If your clipboard has **only an image** (no text), Ctrl+V does nothing in most terminals. Terminals can only paste text — there's no standard mechanism to paste binary image data. Use `/paste` or Alt+V instead.
+If your clipboard has **only an image** (no text), terminals still cannot send binary image bytes directly. Use `/paste` as the explicit image-attach fallback.
 :::
 
-### Alt+V
+### `/terminal-setup` for VS Code / Cursor / Windsurf
 
-Alt key combinations pass through most terminal emulators (they're sent as ESC + key rather than being intercepted). Press `Alt+V` to check the clipboard for an image.
+If you run the TUI inside a local VS Code-family integrated terminal on macOS, Hermes can install the recommended `workbench.action.terminal.sendSequence` bindings for better multiline and undo/redo parity:
 
-:::caution
-**Does not work in VSCode's integrated terminal.** VSCode intercepts many Alt+key combos for its own UI. Use `/paste` instead.
-:::
+```text
+/terminal-setup
+```
 
-### Ctrl+V (Raw — Linux Only)
-
-On Linux desktop terminals (GNOME Terminal, Konsole, Alacritty, etc.), `Ctrl+V` is **not** the paste shortcut — `Ctrl+Shift+V` is. So `Ctrl+V` sends a raw byte to the application, and Hermes catches it to check the clipboard. This only works on Linux desktop terminals with X11 or Wayland clipboard access.
+This is especially useful when `Cmd+Enter`, `Cmd+Z`, or `Shift+Cmd+Z` are being intercepted by the IDE. Run it on the local machine only — not inside an SSH session.
 
 ## Platform Compatibility
 
-| Environment | `/paste` | Ctrl+V text+image | Alt+V | Notes |
+| Environment | `/paste` | Cmd/Ctrl+V | `/terminal-setup` | Notes |
 |---|:---:|:---:|:---:|---|
-| **macOS Terminal / iTerm2** | ✅ | ✅ | ✅ | Best experience — `osascript` always available |
-| **Linux X11 desktop** | ✅ | ✅ | ✅ | Requires `xclip` (`apt install xclip`) |
-| **Linux Wayland desktop** | ✅ | ✅ | ✅ | Requires `wl-paste` (`apt install wl-clipboard`) |
-| **WSL2 (Windows Terminal)** | ✅ | ✅¹ | ✅ | Uses `powershell.exe` — no extra install needed |
-| **VSCode Terminal (local)** | ✅ | ✅¹ | ❌ | VSCode intercepts Alt+key |
-| **VSCode Terminal (SSH)** | ❌² | ❌² | ❌ | Remote clipboard not accessible |
-| **SSH terminal (any)** | ❌² | ❌² | ❌² | Remote clipboard not accessible |
+| **macOS Terminal / iTerm2** | ✅ | ✅ | n/a | Best experience — native clipboard + screenshot-path recovery |
+| **Apple Terminal** | ✅ | ✅ | n/a | If Cmd+←/→/⌫ gets rewritten, use Ctrl+A / Ctrl+E / Ctrl+U fallbacks |
+| **Linux X11 desktop** | ✅ | ✅ | n/a | Requires `xclip` (`apt install xclip`) |
+| **Linux Wayland desktop** | ✅ | ✅ | n/a | Requires `wl-paste` (`apt install wl-clipboard`) |
+| **WSL2 (Windows Terminal)** | ✅ | ✅ | n/a | Uses `powershell.exe` — no extra install needed |
+| **VS Code / Cursor / Windsurf (local)** | ✅ | ✅ | ✅ | Recommended for better Cmd+Enter / undo / redo parity |
+| **VS Code / Cursor / Windsurf (SSH)** | ❌² | ❌² | ❌³ | Run `/terminal-setup` on the local machine instead |
+| **SSH terminal (any)** | ❌² | ❌² | n/a | Remote clipboard not accessible |
 
-¹ Only when clipboard has both text and an image (image-only clipboard = nothing happens)
 ² See [SSH & Remote Sessions](#ssh--remote-sessions) below
+³ The command writes local IDE keybindings and should not be run from the remote host
 
 ## Platform-Specific Setup
 
@@ -145,7 +151,9 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 ## SSH & Remote Sessions
 
-**Clipboard paste does not work over SSH.** When you SSH into a remote machine, the Hermes CLI runs on the remote host. All clipboard tools (`xclip`, `wl-paste`, `powershell.exe`, `osascript`) read the clipboard of the machine they run on — which is the remote server, not your local machine. Your local clipboard is inaccessible from the remote side.
+**Clipboard image paste does not fully work over SSH.** When you SSH into a remote machine, the Hermes CLI runs on the remote host. Clipboard tools (`xclip`, `wl-paste`, `powershell.exe`, `osascript`) read the clipboard of the machine they run on — which is the remote server, not your local machine. Your local clipboard image is therefore inaccessible from the remote side.
+
+Text can sometimes still bridge through terminal paste or OSC52, but image clipboard access and local screenshot temp paths remain tied to the machine running Hermes.
 
 ### Workarounds for SSH
 
@@ -185,3 +193,51 @@ Image paste works with any vision-capable model. The image is sent as a base64-e
 ```
 
 Most modern models support this format, including GPT-4 Vision, Claude (with vision), Gemini, and open-source multimodal models served through OpenRouter.
+
+## Image Routing (Vision-Capable vs Text-Only Models)
+
+When a user attaches an image — from the CLI clipboard, the gateway (Telegram/Discord photo), or any other entry point — Hermes routes it based on whether your current model actually supports vision:
+
+| Your model | What happens to the image |
+|---|---|
+| **Vision-capable** (GPT-4V, Claude with vision, Gemini, Qwen-VL, MiMo-VL, DeepSeek Flash / V4.1-Flash, etc.) | Sent as **real pixels** using the provider's native image content format above. No text summary layer. |
+| **Text-only** (DeepSeek V4 Pro, DeepSeek V3, smaller open-source models, older chat-only endpoints) | Routed through the `vision_analyze` auxiliary tool — an auxiliary vision model describes the image, and the text description is injected into the conversation. |
+
+You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
+
+To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Native pixels when the model reports vision support, `vision_analyze` description otherwise. Configuring an explicit `auxiliary.vision` backend (a `provider` other than `auto`, or a `model` / `base_url`) also selects the description path, even for a vision-capable main model. |
+| `native` | Always attach pixels, even when the catalog says the model is text-only. |
+| `text` | Always route images through the `vision_analyze` describer, never attach pixels to the main request. |
+
+This is the knob to reach for when a backend accepts text but rejects native image input (for example an `openai-codex` account whose backend answers image requests with `server_error`): keep your main model and point `auxiliary.vision` at a different vision-capable provider and model (with `auxiliary.vision.provider: auto` the describer would auto-detect the same main model again). That alone switches images to the description path in `auto` mode; `agent.image_input_mode: text` makes the same choice explicit.
+
+Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](../configuration.md#auxiliary-models).
+
+### `vision_analyze` has the same dual behavior
+
+The `vision_analyze` tool itself follows the same routing. When the active main model is vision-capable **and** its provider supports image content inside tool results (currently the Anthropic, OpenAI, Azure-OpenAI, and Gemini 3.x stacks), `vision_analyze` short-circuits the auxiliary describer and returns the raw image pixels as a multimodal tool-result envelope. The main model sees the image natively on its next turn — no aux call, no text-summary information loss, no extra latency. One exception: an image that is already attached natively to the current user message is not re-embedded — `vision_analyze` on that same path returns a short text result saying the image is already in context (pass a `region` to zoom into part of it, which does embed the crop).
+
+For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
+
+Every other tool that hands the model an image uses this same decision: browser screenshots, `computer_use` captures (which are described by the auxiliary vision model when the main model can't take them natively), and [MCP image results](mcp.md#image-results). `agent.image_input_mode: text` therefore keeps pixels out of all of them.
+
+### SVG and other non-raster images on Responses backends
+
+Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.
+
+### Native embeds ride the session: `vision.embed_target_bytes` and `vision.max_calls_per_image`
+
+A native `vision_analyze` result bakes the image into the tool result, and that result is re-sent on every later API call of the session. Two `config.yaml` keys bound the recurring cost:
+
+```yaml
+vision:
+  embed_target_bytes: 262144   # per-embed byte budget; clamped 64 KiB..4 MiB (default 256 KB)
+  max_calls_per_image: 3       # unset = 3 inside delegated subagents, unlimited for the main agent
+```
+
+- **`embed_target_bytes`** — images above the budget (or wider than 1568 px) are downscaled to a JPEG that fits. 256 KB keeps ordinary screenshots cheap; dense phone screenshots of tables can come out unreadable at that size, so raise it (say `1048576`) when the model keeps calling figures "unreadable". Browser screenshots delivered natively use the same budget.
+- **`max_calls_per_image`** — how often the *same* image (region crops of it included; local paths compare by resolved path) may be embedded per session. Once the cap is hit the tool returns `"vision_analyze refused: this image has already been loaded into context N time(s) …"` instead of another embed, so the model answers from what it already sees. Left unset, only delegated `delegate_task` subagents are capped (at 3): they run unattended and cannot be steered mid-loop from the CLI, and a re-load loop there once burned 158 calls on five files. Set a number to cap every session, or `0` for unlimited everywhere.

@@ -1,8 +1,51 @@
 name: Supply Chain Audit
 
+# Narrow, high-signal scanner. Only fires on critical indicators of supply
+# chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
+# (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
+# Actions version unpinning, outbound POST/PUT) were intentionally
+# removed — they fired on nearly every PR and trained reviewers to ignore
+# the scanner. Keep this file's checks ruthlessly narrow: if you find
+# yourself adding WARNING-tier patterns here again, make a separate
+# advisory-only workflow instead.
+#
+# Path-gating is handled centrally by the ``ci.yml`` orchestrator's
+# ``detect`` job. The orchestrator passes ``scan`` / ``deps`` booleans as
+# inputs; this workflow's jobs gate on those inputs instead of re-computing
+# the diff. Files that run at install/startup (.pth, setup.py, ...) and the
+# MCP catalog are not scanned here: .github/CODEOWNERS requires a maintainer
+# review for them.
+#
+# Outputs:
+#   review_status  — JSON array of status objects consumed by the review
+#                    comment assembler (scripts/ci/assemble_review_comment.py).
+#                    Each job (``scan``, ``dep-bounds``) emits its own
+#                    array; an ``aggregate`` job merges them into the
+#                    workflow-level output.
+
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      event_name:
+        description: The event name from the calling orchestrator.
+        type: string
+        required: true
+      scan:
+        description: Whether supply-chain-relevant files changed.
+        type: boolean
+        required: true
+      deps:
+        description: Whether pyproject.toml changed.
+        type: boolean
+        required: true
+    outputs:
+      review_status:
+        description: JSON array of review status objects for the review comment assembler.
+        value: ${{ jobs.aggregate.outputs.review_status }}
 
 permissions:
   pull-requests: write
@@ -10,52 +53,43 @@ permissions:
 
 jobs:
   scan:
-    name: Scan PR for supply chain risks
+    name: Scan PR for critical supply chain risks
+    if: inputs.scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0
 
-      - name: Scan diff for suspicious patterns
+      - name: Scan diff for critical patterns
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
-          # Get the full diff (added lines only)
-          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          # Added lines only, excluding lockfiles.
+          # Three-point diff (base...head) diffs from the merge base to HEAD,
+          # so only changes introduced by this PR are included — not changes
+          # that landed on main after the PR branched off.
+          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
 
           FINDINGS=""
-          CRITICAL=false
 
-          # --- .pth files (auto-execute on Python startup) ---
-          PTH_FILES=$(git diff --name-only "$BASE".."$HEAD" | grep '\.pth$' || true)
-          if [ -n "$PTH_FILES" ]; then
-            CRITICAL=true
-            FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: .pth file added or modified
-          Python \`.pth\` files in \`site-packages/\` execute automatically when the interpreter starts — no import required. This is the exact mechanism used in the [litellm supply chain attack](https://github.com/BerriAI/litellm/issues/24512).
-
-          **Files:**
-          \`\`\`
-          ${PTH_FILES}
-          \`\`\`
-          "
-          fi
-
-          # --- base64 + exec/eval combo (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
           if [ -n "$B64_EXEC_HITS" ]; then
-            CRITICAL=true
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: base64 decode + exec/eval combo
-          This is the exact pattern used in the [litellm supply chain attack](https://github.com/BerriAI/litellm/issues/24512) — base64-decoded strings passed to exec/eval to hide credential-stealing payloads.
+          Base64-decoded strings passed directly to exec/eval — the signature of hidden credential-stealing payloads.
 
           **Matches:**
           \`\`\`
@@ -64,41 +98,12 @@ jobs:
           "
           fi
 
-          # --- base64 decode/encode (alone — legitimate uses exist) ---
-          B64_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|b64encode|decodebytes|encodebytes|urlsafe_b64decode)|atob\(|btoa\(|Buffer\.from\(.*base64' | head -20 || true)
-          if [ -n "$B64_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: base64 encoding/decoding detected
-          Base64 has legitimate uses (images, JWT, etc.) but is also commonly used to obfuscate malicious payloads. Verify the usage is appropriate.
-
-          **Matches (first 20):**
-          \`\`\`
-          ${B64_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- exec/eval with string arguments ---
-          EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E '(exec|eval)\s*\(' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|assert\|# ' | head -20 || true)
-          if [ -n "$EXEC_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: exec() or eval() usage
-          Dynamic code execution can hide malicious behavior, especially when combined with base64 or network fetches.
-
-          **Matches (first 20):**
-          \`\`\`
-          ${EXEC_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- subprocess with encoded/obfuscated commands ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|decode|encode|\\x|chr\(' | head -10 || true)
+          # --- subprocess with encoded/obfuscated command argument ---
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
-            CRITICAL=true
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
-          Subprocess calls with encoded arguments are a strong indicator of payload execution.
+          Subprocess calls whose command strings are base64- or hex-encoded are a strong indicator of payload execution.
 
           **Matches:**
           \`\`\`
@@ -107,86 +112,174 @@ jobs:
           "
           fi
 
-          # --- Network calls to non-standard domains ---
-          EXFIL_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'requests\.(post|put)\(|httpx\.(post|put)\(|urllib\.request\.urlopen' | grep -v '^\+\s*#' | grep -v 'test_\|mock\|assert' | head -10 || true)
-          if [ -n "$EXFIL_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: Outbound network calls (POST/PUT)
-          Outbound POST/PUT requests in new code could be data exfiltration. Verify the destination URLs are legitimate.
-
-          **Matches (first 10):**
-          \`\`\`
-          ${EXFIL_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- setup.py / setup.cfg install hooks ---
-          SETUP_HITS=$(git diff --name-only "$BASE".."$HEAD" | grep -E '(setup\.py|setup\.cfg|__init__\.pth|sitecustomize\.py|usercustomize\.py)$' || true)
-          if [ -n "$SETUP_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: Install hook files modified
-          These files can execute code during package installation or interpreter startup.
-
-          **Files:**
-          \`\`\`
-          ${SETUP_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- Compile/marshal/pickle (code object injection) ---
-          MARSHAL_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'marshal\.loads|pickle\.loads|compile\(' | grep -v '^\+\s*#' | grep -v 'test_\|re\.compile\|ast\.compile' | head -10 || true)
-          if [ -n "$MARSHAL_HITS" ]; then
-            FINDINGS="${FINDINGS}
-          ### ⚠️ WARNING: marshal/pickle/compile usage
-          These can deserialize or construct executable code objects.
-
-          **Matches:**
-          \`\`\`
-          ${MARSHAL_HITS}
-          \`\`\`
-          "
-          fi
-
-          # --- Output results ---
           if [ -n "$FINDINGS" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
-            if [ "$CRITICAL" = true ]; then
-              echo "critical=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "critical=false" >> "$GITHUB_OUTPUT"
-            fi
-            # Write findings to a file (multiline env vars are fragile)
             echo "$FINDINGS" > /tmp/findings.md
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "critical=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Post warning comment
-        if: steps.scan.outputs.found == 'true'
+      - name: Emit review_status
+        id: emit-status
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FOUND: ${{ steps.scan.outputs.found }}
         run: |
-          SEVERITY="⚠️ Supply Chain Risk Detected"
-          if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
-            SEVERITY="🚨 CRITICAL Supply Chain Risk Detected"
-          fi
+          python3 - <<'PYEOF'
+          import json, os
 
-          BODY="## ${SEVERITY}
+          found = os.environ.get("FOUND", "") == "true"
 
-          This PR contains patterns commonly associated with supply chain attacks. This does **not** mean the PR is malicious — but these patterns require careful human review before merging.
+          if found:
+              with open("/tmp/findings.md", encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Critical supply chain risk",
+                      "summary": "Critical supply chain risk patterns detected in this PR.",
+                      "detail": detail,
+                      "how_to_fix": "Review the flagged code carefully. If it is a false positive, narrow the pattern in .github/workflows/supply-chain-audit.yml."
+                  }]
+              }]
+          else:
+              status = []
 
-          $(cat /tmp/findings.md)
-
-          ---
-          *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
-
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
 
       - name: Fail on critical findings
-        if: steps.scan.outputs.critical == 'true'
+        if: steps.scan.outputs.found == 'true'
         run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
           exit 1
+
+  dep-bounds:
+    name: Check PyPI dependency upper bounds
+    if: inputs.deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.emit-status.outputs.review_status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+
+      - name: Check for unbounded PyPI deps
+        id: bounds
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Only check added lines in pyproject.toml
+          ADDED=$(git diff "$BASE"..."$HEAD" -- pyproject.toml | grep '^+' | grep -v '^+++' || true)
+
+          if [ -z "$ADDED" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Match PyPI dep specs that have >= and no < ceiling.
+          # Pattern: "package>=version" without a following ",<" bound.
+          # Excludes git+ URLs (which use commit SHAs) and comments.
+          UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
+
+          if [ -n "$UNBOUNDED" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$UNBOUNDED" > /tmp/unbounded.txt
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit review_status
+        id: emit-status
+        if: always()
+        env:
+          FOUND: ${{ steps.bounds.outputs.found }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          found = os.environ.get("FOUND", "") == "true"
+
+          if found:
+              with open("/tmp/unbounded.txt", encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Unbounded PyPI dependencies",
+                      "summary": "This PR adds PyPI dependencies without upper bounds.",
+                      "detail": detail,
+                      "how_to_fix": 'Add a `<next_major` upper bound, e.g. `"package>=1.2.0,<2"`. See CONTRIBUTING.md dependency pinning policy.'
+                  }]
+              }]
+          else:
+              status = []
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(status)}\n")
+          PYEOF
+
+      - name: Fail on unbounded deps
+        if: steps.bounds.outputs.found == 'true'
+        run: |
+          echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
+          exit 1
+
+  aggregate:
+    name: Aggregate review statuses
+    needs: [scan, dep-bounds]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.merge.outputs.review_status }}
+    steps:
+      - name: Merge review statuses
+        id: merge
+        env:
+          SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
+          DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          merged = []
+          for key in ("SCAN_STATUS", "DEP_STATUS"):
+              raw = os.environ.get(key, "")
+              if not raw:
+                  continue
+              try:
+                  data = json.loads(raw)
+              except (json.JSONDecodeError, TypeError):
+                  continue
+              if isinstance(data, list):
+                  merged.extend(data)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
+
+          # Write review-status.json for the live comment poller artifact.
+          with open("review-status.json", "w", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
+          PYEOF
+
+      - name: Upload review status artifact
+        if: always() && steps.merge.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-supply-chain
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore

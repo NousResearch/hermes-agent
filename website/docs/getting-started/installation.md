@@ -1,28 +1,120 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, or WSL2"
+description: "Install Hermes Agent with desktop bundles, source installers, Docker, Nix, or the Termux APT package"
 ---
 
 # Installation
 
-Get Hermes Agent up and running in under two minutes with the one-line installer, or follow the manual steps for full control.
+Get Hermes Agent up and running in under two minutes!
 
-## Quick Install
-
-### Linux / macOS / WSL2
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
-```
-
-:::warning Windows
-Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
+:::tip Platform Support
+For the full platform support matrix (which OSes, distribution methods, and
+platform-gated features are supported), see **[Platform Support](./platform-support.md)**.
 :::
 
-### What the Installer Does
+## Quick Install
+### Desktop packages on macOS or Windows
 
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
+Download the package for your platform from the
+[Hermes website](https://hermes-agent.nousresearch.com/).
+
+- **Windows:** open the `.appinstaller` download with Windows App Installer.
+  It installs the signed MSIX bundle and records its update source.
+  Microsoft Store packages have separate Store ownership.
+- **macOS:** open the DMG, then copy `Hermes.app` to Applications. The ZIP
+  artifact carries the signed app used by the automatic updater.
+
+Bundled packages contain the agent, Python, supported dependencies, and prebuilt
+interfaces. First launch does not build that base runtime. Provider access and
+optional integrations can still require network access.
+
+A `Hermes-Setup` bootstrap installer is different: it downloads a source
+installation and builds the desktop app. See [Hermes Desktop](../user-guide/desktop.md).
+
+There is no separate remote-only Desktop download. To use Desktop with a Hermes
+backend on another machine, install one of the packages above and connect it
+from **Settings → Gateways**; see
+[Connecting to a remote backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
+
+:::note
+The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+:::
+
+### Without Hermes Desktop:
+For a command-line only install without Hermes Desktop, run:
+
+#### Linux / macOS / WSL2
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+#### Windows (native)
+
+Run in powershell:
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
+```
+
+If you want to install & run Hermes Desktop after a command-line only install, simply run
+```bash
+hermes desktop
+```
+
+### Android / Termux
+
+Use the [Termux APT package](./termux.md) on aarch64 Android devices.
+Configure its signed repository before running `pkg install hermes-agent`.
+The desktop/server scripts are not the Termux installation path.
+
+### What the source installer does
+
+The scripts clone the source, bootstrap uv, and delegate dependency preparation
+to PM. PM provides pinned Python, Node.js, npm, ripgrep, and FFmpeg. The source
+installation selects the `all` Python extra, not every optional extra.
+PM also installs the browser and computer-use tools by default: `agent-browser`
+and its pinned Chromium, and `cua-driver` (the computer-use driver, on macOS,
+Windows and glibc Linux). If a download fails, the install still completes and
+prints the command to retry. The default browser driver (browser-harness, the
+engine of the Browser Use CLI) is a regular Python dependency, so every install,
+the Desktop app included, already has it.
+Other optional tools use their feature-specific installation paths.
+
+To leave the browser tools out, pass `--skip-browser` on POSIX or `-SkipBrowser`
+on Windows; for the computer-use driver, `--skip-computer-use` /
+`-SkipComputerUse`. Hermes remembers these choices: later installs and
+`hermes update` do not add them back. Run `hermes pm install agent-browser` or
+`hermes pm install cua-driver` to install them and undo the choice.
+
+The scripts create a launcher and prepare the data directory. Interactive runs
+also invoke setup and gateway configuration. `--non-interactive` on POSIX, or
+`-NonInteractive` on Windows, skips stages that need input. The optional
+`--include-desktop` / `-IncludeDesktop` stage builds the desktop from source.
+
+On a terminal the scripts show one status line per step and write the output
+of git, uv and the builds to `logs/install.log` under the Hermes data
+directory; a failed step prints its last lines and the log path. CI (`CI` or
+`GITHUB_ACTIONS` set), redirected output, `--verbose` / `-Verbose` or
+`HERMES_INSTALL_VERBOSE=1` stream everything instead.
+
+#### Install layout
+
+| Method | Code | CLI entry point | Default user data |
+|---|---|---|---|
+| POSIX source script | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` wrapper | `~/.hermes/` |
+| Windows source script | `%LOCALAPPDATA%\hermes\hermes-agent\` | `%LOCALAPPDATA%\hermes\bin\` | `%LOCALAPPDATA%\hermes\` |
+| Desktop bundle | Inside the installed app package | Packaged launchers; Windows execution aliases | Platform default Hermes data directory |
+| Docker | `/opt/hermes/` | Image entrypoint and `hermes` shim | Mounted `/opt/data/` |
+| Termux APT | `$PREFIX/lib/hermes-agent/` | Symlinks in `$PREFIX/bin/` | `~/.hermes/` |
+
+`HERMES_HOME` selects user data. The POSIX script's `--dir` selects its source
+checkout independently. Windows provides `-HermesHome` and `-InstallDir`.
+Running the POSIX script as root does not select an automatic FHS layout:
+it uses root's home unless you provide an explicit source path.
+
+PM's tool store and per-install Python generations have separate lifetimes.
+See [Package management](../reference/package-management.md) for their locations.
+Do not remove the data root to repair an application installation.
 
 ### After Installation
 
@@ -40,222 +132,103 @@ hermes model          # Choose your LLM provider and model
 hermes tools          # Configure which tools are enabled
 hermes gateway setup  # Set up messaging platforms
 hermes config set     # Set individual config values
+hermes config get     # Inspect individual config values
 hermes setup          # Or run the full setup wizard to configure everything at once
 ```
+
+:::tip Fastest path: Nous Portal
+One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
+
+```bash
+hermes setup --portal
+```
+
+That logs you in, sets Nous as your provider, and turns on the Tool Gateway in one command.
+:::
+
+:::tip Already running Hermes on another machine?
+You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](../reference/faq.md#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](../reference/faq.md#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](../reference/faq.md#hermes-backup-vs-hermes-profile-export) explains which to use.
+:::
 
 ---
 
 ## Prerequisites
 
-The only prerequisite is **Git**. The installer automatically handles everything else:
+For the POSIX source script, provide Git, curl, tar, and SHA-256 utilities.
+Windows can bootstrap its pinned Git for Windows archive when Git is absent.
+The script always downloads its verified uv pin; a uv already on your PATH is never used.
 
-- **uv** (fast Python package manager)
-- **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
-- **ripgrep** (fast file search)
-- **ffmpeg** (audio format conversion for TTS)
+Current first-party installations run on **Python 3.14**. The broader
+`>=3.11,<3.15` range in `pyproject.toml` lets older Python installations
+run the updater before PM switches them to 3.14; it does not promise current
+runtime support on 3.11–3.13. PM selects the managed tool versions from
+`pm/lock.json`; it does not adopt arbitrary system Node versions as the
+installed runtime.
 
-:::info
-You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`).
-:::
+Source builds can require a native compiler and platform development libraries.
+Building Electron from source adds Node native-module requirements. These
+build prerequisites do not apply to installing a complete desktop package.
+Linux Chromium also requires system libraries supplied by the distribution.
+
+On glibc Linux, the managed Node.js links `libatomic.so.1`, which minimal
+Debian, Ubuntu and RHEL-family images do not ship. When the library is
+missing, the installer and `hermes update` install the distro package
+(`libatomic1` on apt and zypper, `libatomic` on dnf/yum and apk, `gcc-libs`
+on pacman). They run the package manager directly as root, or as
+`sudo -n` otherwise. An interactive run asks for your sudo password once,
+before installing dependencies. `--non-interactive` runs never prompt. If
+the install cannot run, the error names the exact command for the package
+manager it found.
 
 :::tip Nix users
-If you use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
+Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
 :::
 
 ---
 
-## Manual Installation
+## Manual / Developer Installation
 
-If you prefer full control over the installation process, follow these steps.
-
-### Step 1: Clone the Repository
-
-Clone with `--recurse-submodules` to pull the required submodules:
-
-```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-```
-
-If you already cloned without `--recurse-submodules`:
-```bash
-git submodule update --init --recursive
-```
-
-### Step 2: Install uv & Create Virtual Environment
-
-```bash
-# Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create venv with Python 3.11 (uv downloads it if not present — no sudo needed)
-uv venv venv --python 3.11
-```
-
-:::tip
-You do **not** need to activate the venv to use `hermes`. The entry point has a hardcoded shebang pointing to the venv Python, so it works globally once symlinked.
-:::
-
-### Step 3: Install Python Dependencies
-
-```bash
-# Tell uv which venv to install into
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Install with all extras
-uv pip install -e ".[all]"
-```
-
-If you only want the core agent (no Telegram/Discord/cron support):
-```bash
-uv pip install -e "."
-```
-
-<details>
-<summary><strong>Optional extras breakdown</strong></summary>
-
-| Extra | What it adds | Install command |
-|-------|-------------|-----------------|
-| `all` | Everything below | `uv pip install -e ".[all]"` |
-| `messaging` | Telegram & Discord gateway | `uv pip install -e ".[messaging]"` |
-| `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
-| `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
-| `modal` | Modal cloud execution backend | `uv pip install -e ".[modal]"` |
-| `tts-premium` | ElevenLabs premium voices | `uv pip install -e ".[tts-premium]"` |
-| `voice` | CLI microphone input + audio playback | `uv pip install -e ".[voice]"` |
-| `pty` | PTY terminal support | `uv pip install -e ".[pty]"` |
-| `honcho` | AI-native memory (Honcho integration) | `uv pip install -e ".[honcho]"` |
-| `mcp` | Model Context Protocol support | `uv pip install -e ".[mcp]"` |
-| `homeassistant` | Home Assistant integration | `uv pip install -e ".[homeassistant]"` |
-| `acp` | ACP editor integration support | `uv pip install -e ".[acp]"` |
-| `slack` | Slack messaging | `uv pip install -e ".[slack]"` |
-| `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
-
-You can combine extras: `uv pip install -e ".[messaging,cron]"`
-
-</details>
-
-### Step 4: Install Optional Submodules (if needed)
-
-```bash
-# RL training backend (optional)
-uv pip install -e "./tinker-atropos"
-```
-
-Both are optional — if you skip them, the corresponding toolsets simply won't be available.
-
-### Step 5: Install Node.js Dependencies (Optional)
-
-Only needed for **browser automation** (Browserbase-powered) and **WhatsApp bridge**:
-
-```bash
-npm install
-```
-
-### Step 6: Create the Configuration Directory
-
-```bash
-# Create the directory structure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
-
-# Copy the example config file
-cp cli-config.yaml.example ~/.hermes/config.yaml
-
-# Create an empty .env file for API keys
-touch ~/.hermes/.env
-```
-
-### Step 7: Add Your API Keys
-
-Open `~/.hermes/.env` and add at minimum an LLM provider key:
-
-```bash
-# Required — at least one LLM provider:
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-
-# Optional — enable additional tools:
-FIRECRAWL_API_KEY=fc-your-key          # Web search & scraping (or self-host, see docs)
-FAL_KEY=your-fal-key                   # Image generation (FLUX)
-```
-
-Or set them via the CLI:
-```bash
-hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
-```
-
-### Step 8: Add `hermes` to Your PATH
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
-
-If `~/.local/bin` isn't on your PATH, add it to your shell config:
-
-```bash
-# Bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-
-# Zsh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-
-# Fish
-fish_add_path $HOME/.local/bin
-```
-
-### Step 9: Configure Your Provider
-
-```bash
-hermes model       # Select your LLM provider and model
-```
-
-### Step 10: Verify the Installation
-
-```bash
-hermes version    # Check that the command is available
-hermes doctor     # Run diagnostics to verify everything is working
-hermes status     # Check your configuration
-hermes chat -q "Hello! What tools do you have available?"
-```
+For a source checkout, start with the
+[PM developer workflow](../reference/package-management.md#developer-workflow).
+It covers activation, daily commands, dependency refresh, and current bootstrap limits.
+[Development Setup](../developer-guide/contributing.md#development-setup) covers the separate test environment and checks.
 
 ---
 
-## Quick-Reference: Manual Install (Condensed)
+## Non-Sudo / System Service User Installs
 
-For those who just want the commands:
+Run the source installer as the intended service user. Its home, tool store,
+configuration, and launcher must belong to that user.
 
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
+1. As an administrator, install the source-build prerequisites and any Linux
+   libraries needed by the selected browser backend.
+2. As the service user, run the regular installer:
 
-# Clone & enter
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+   ```bash
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+   ```
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
+3. Add the actual launcher directory to the service user's shell environment:
 
-# Install everything
-uv pip install -e ".[all]"
-uv pip install -e "./tinker-atropos"
-npm install  # optional, for browser tools and WhatsApp
+   ```bash
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
 
-# Configure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+4. Run `hermes doctor` from that account. Use the installed wrapper, not a
+   hardcoded `venv/bin/hermes` path.
+5. For a Linux user service that must survive logout, enable lingering as an administrator:
 
-# Make hermes available globally
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+   ```bash
+   sudo loginctl enable-linger SERVICE_USER
+   ```
 
-# Verify
-hermes doctor
-hermes
-```
+The current source installer does not run Playwright's `--with-deps` step.
+Apart from Node.js's `libatomic` (see Prerequisites), it does not install
+system packages. PM manages tool binaries; the administrator supplies system
+libraries. A service user without sudo gets the exact `libatomic` command to
+ask an administrator to run. See
+[Browser automation](../user-guide/features/browser.md) and
+[Messaging Gateway](../user-guide/messaging/index.md).
 
 ---
 
@@ -268,3 +241,31 @@ hermes
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
+
+### Symlinked home directories and external storage
+
+Hermes supports a symlinked `HERMES_HOME` and symlinked home subdirectories,
+including `hooks`, `skills`, `sessions`, and `logs`. During home initialization,
+existing directory links are preserved, and permissions on linked directories
+(and descendants such as `logs/curator`) are left to their owner.
+
+If a link target is missing, inaccessible, or not a directory, initialization
+stops with a storage error naming the path and link target. Hermes does **not**
+replace the link or create its missing target: doing so could write data onto
+the local disk while an external or NAS volume is unmounted. Check the reported
+link, restore the mount or correct its target, and verify access permissions
+before retrying. For a deliberately new dotfiles target, create it yourself only
+after confirming the intended storage is available.
+
+`hermes doctor` reports these failures as storage problems, not invalid YAML.
+Keep your existing `config.yaml`; running `hermes setup` is not the repair for an
+unavailable directory. This is a directory-availability check, not a mount monitor:
+an existing directory cannot establish that the intended volume is mounted.
+
+## Install method auto-detection
+
+The update owner depends on the running installation, not only its data home.
+Source checkouts use the managed Git update path. Desktop bundles, Docker,
+Nix, and Termux packages retain their package owner's update mechanism.
+`hermes doctor` reports installation provenance. See
+[Updating & Uninstalling](./updating.md) before changing package-owned files.

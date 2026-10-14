@@ -1,21 +1,22 @@
 """Daytona cloud execution environment.
 
-Uses the Daytona Python SDK to run commands in cloud sandboxes.
-Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
-and resumed on next creation, preserving the filesystem across sessions.
+Runs commands in Daytona cloud sandboxes via the Python SDK. Persistent mode stops
+the sandbox on cleanup and resumes it next time, preserving the filesystem.
 """
 
+import contextlib
 import logging
-import time
 import math
+import os
 import shlex
 import threading
-import uuid
-import warnings
-from typing import Optional
+from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.environments.base_output import _ThreadedProcessHandle
+from tools.environments.file_sync import (
+    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+from tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
 
@@ -23,225 +24,181 @@ logger = logging.getLogger(__name__)
 class DaytonaEnvironment(BaseEnvironment):
     """Daytona cloud sandbox execution backend.
 
-    Uses stopped/started sandbox lifecycle for filesystem persistence
-    instead of snapshots, making it faster and stateless on the host.
+    Spawn-per-call via _ThreadedProcessHandle wrapping blocking SDK calls; cancel_fn
+    is wired to sandbox.stop() for interrupts. Shell timeout wrapper kept (SDK timeout unreliable).
     """
 
-    def __init__(
-        self,
-        image: str,
-        cwd: str = "/home/daytona",
-        timeout: int = 60,
-        cpu: int = 1,
-        memory: int = 5120,       # MB (hermes convention)
-        disk: int = 10240,        # MB (Daytona platform max is 10GB)
-        persistent_filesystem: bool = True,
-        task_id: str = "default",
-    ):
-        self._requested_cwd = cwd
+    _stdin_mode = "payload"
+
+    def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
+                 memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
+                 task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
+        ensure_lazy_dep("daytona")
+        from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
 
-        from daytona import (
-            Daytona,
-            CreateSandboxFromImageParams,
-            DaytonaError,
-            Resources,
-            SandboxState,
-        )
-
-        self._persistent = persistent_filesystem
-        self._task_id = task_id
-        self._SandboxState = SandboxState
+        self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()
 
-        memory_gib = max(1, math.ceil(memory / 1024))
-        disk_gib = max(1, math.ceil(disk / 1024))
+        memory_gib, disk_gib = max(1, math.ceil(memory / 1024)), max(1, math.ceil(disk / 1024))
         if disk_gib > 10:
-            warnings.warn(
-                f"Daytona: requested disk ({disk_gib}GB) exceeds platform limit (10GB). "
-                f"Capping to 10GB. Set container_disk: 10240 in config to silence this.",
-                stacklevel=2,
-            )
+            logger.warning("Daytona: requested disk (%dGB) exceeds platform limit (10GB). "
+                           "Capping to 10GB.", disk_gib)
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
+        labels, sandbox_name = {"hermes_task_id": task_id}, f"hermes-{task_id}"
 
-        labels = {"hermes_task_id": task_id}
-        sandbox_name = f"hermes-{task_id}"
-
-        # Try to resume an existing sandbox for this task
         if self._persistent:
-            # 1. Try name-based lookup (new path)
             try:
                 self._sandbox = self._daytona.get(sandbox_name)
                 self._sandbox.start()
-                logger.info("Daytona: resumed sandbox %s for task %s",
-                            self._sandbox.id, task_id)
-            except DaytonaError:
-                self._sandbox = None
+                logger.info("Daytona: resumed sandbox %s for task %s", self._sandbox.id, task_id)
             except Exception as e:
-                logger.warning("Daytona: failed to resume sandbox for task %s: %s",
-                               task_id, e)
+                if not isinstance(e, DaytonaError):  # DaytonaError == not found: silently fall through
+                    logger.warning("Daytona: failed to resume sandbox for task %s: %s", task_id, e)
                 self._sandbox = None
-
-            # 2. Legacy fallback: find sandbox created before the naming migration
             if self._sandbox is None:
                 try:
-                    page = self._daytona.list(labels=labels, page=1, limit=1)
-                    if page.items:
-                        self._sandbox = page.items[0]
+                    # SDK list() is a cursor-paginated iterator (offset pagination is gone).
+                    self._sandbox = next(iter(self._daytona.list(labels=labels, limit=1)), None)
+                    if self._sandbox is not None:
                         self._sandbox.start()
-                        logger.info("Daytona: resumed legacy sandbox %s for task %s",
-                                    self._sandbox.id, task_id)
+                        logger.info("Daytona: resumed legacy sandbox %s for task %s", self._sandbox.id, task_id)
                 except Exception as e:
-                    logger.debug("Daytona: no legacy sandbox found for task %s: %s",
-                                 task_id, e)
+                    logger.debug("Daytona: no legacy sandbox found for task %s: %s", task_id, e)
                     self._sandbox = None
-
-        # Create a fresh sandbox if we don't have one
         if self._sandbox is None:
-            self._sandbox = self._daytona.create(
-                CreateSandboxFromImageParams(
-                    image=image,
-                    name=sandbox_name,
-                    labels=labels,
-                    auto_stop_interval=0,
-                    resources=resources,
-                )
-            )
-            logger.info("Daytona: created sandbox %s for task %s",
-                        self._sandbox.id, task_id)
+            self._sandbox = self._daytona.create(CreateSandboxFromImageParams(
+                image=image, name=sandbox_name, labels=labels, auto_stop_interval=0, resources=resources))
+            logger.info("Daytona: created sandbox %s for task %s", self._sandbox.id, task_id)
 
-        # Resolve cwd: detect actual home dir inside the sandbox
-        if self._requested_cwd in ("~", "/home/daytona"):
-            try:
-                home = self._sandbox.process.exec("echo $HOME").result.strip()
-                if home:
+        self._remote_home = "/root"
+        with contextlib.suppress(Exception):
+            home = self._sandbox.process.exec("echo $HOME").result.strip()
+            if home:
+                self._remote_home = home
+                if cwd in {"~", "/home/daytona"}:
                     self.cwd = home
-            except Exception:
-                pass  # leave cwd as-is; sandbox will use its own default
-            logger.info("Daytona: resolved cwd to %s", self.cwd)
+        logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
-    def _ensure_sandbox_ready(self):
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            upload_fn=self._daytona_upload, delete_fn=self._daytona_delete,
+            bulk_upload_fn=self._daytona_bulk_upload, bulk_download_fn=self._daytona_bulk_download)
+        self._sync_manager.sync(force=True)
+        self.init_session()
+
+    def _daytona_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via Daytona SDK."""
+        # remote_path is a POSIX path on the sandbox; never run it through the
+        # host's Path (Windows would mangle the separators into backslashes).
+        parent = str(PurePosixPath(remote_path).parent)
+        self._sandbox.process.exec(quoted_mkdir_command([parent]))
+        self._sandbox.fs.upload_file(host_path, remote_path)
+
+    def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in one multipart POST via ``sandbox.fs.upload_files()``."""
+        from daytona.common.filesystem import FileUpload
+
+        if not files:
+            return
+        parents = unique_parent_dirs(files)
+        if parents:
+            self._sandbox.process.exec(quoted_mkdir_command(parents))
+        self._sandbox.fs.upload_files(
+            [FileUpload(source=host_path, destination=remote_path) for host_path, remote_path in files])
+
+    def _daytona_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive."""
+        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        # PID-suffixed remote temp path avoids collisions if sync_back runs concurrently.
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+        self._sandbox.process.exec(
+            f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(rel_base)}")
+        self._sandbox.fs.download_file(remote_tar, str(dest))
+        with contextlib.suppress(Exception):  # best-effort cleanup
+            self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
+
+    def _daytona_delete(self, remote_paths: list[str]) -> None:
+        self._sandbox.process.exec(quoted_rm_command(remote_paths))
+
+    def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
-        if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
+        if self._sandbox.state in {self._SandboxState.STOPPED, self._SandboxState.ARCHIVED}:
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
-    def _exec_in_thread(self, exec_command: str, cwd: Optional[str], timeout: int) -> dict:
-        """Run exec in a background thread with interrupt polling.
-
-        The Daytona SDK's exec(timeout=...) parameter is unreliable (the
-        server-side timeout is not enforced and the SDK has no client-side
-        fallback), so we wrap the command with the shell ``timeout`` utility
-        which reliably kills the process and returns exit code 124.
-        """
-        # Wrap with shell `timeout` to enforce the deadline reliably.
-        # Add a small buffer so the shell timeout fires before any SDK-level
-        # timeout would, giving us a clean exit code 124.
-        timed_command = f"timeout {timeout} sh -c {shlex.quote(exec_command)}"
-
-        result_holder: dict = {"value": None, "error": None}
-
-        def _run():
-            try:
-                response = self._sandbox.process.exec(
-                    timed_command, cwd=cwd,
-                )
-                result_holder["value"] = {
-                    "output": response.result or "",
-                    "returncode": response.exit_code,
-                }
-            except Exception as e:
-                result_holder["error"] = e
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        # Wait for timeout + generous buffer for network/SDK overhead
-        deadline = time.monotonic() + timeout + 10
-        while t.is_alive():
-            t.join(timeout=0.2)
-            if is_interrupted():
-                with self._lock:
-                    try:
-                        self._sandbox.stop()
-                    except Exception:
-                        pass
-                return {
-                    "output": "[Command interrupted - Daytona sandbox stopped]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                # Shell timeout didn't fire and SDK is hung — force stop
-                with self._lock:
-                    try:
-                        self._sandbox.stop()
-                    except Exception:
-                        pass
-                return self._timeout_result(timeout)
-
-        if result_holder["error"]:
-            return {"error": result_holder["error"]}
-        return result_holder["value"]
-
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: Optional[int] = None,
-                stdin_data: Optional[str] = None) -> dict:
+    def _before_execute(self) -> None:
         with self._lock:
             self._ensure_sandbox_ready()
+        self._sync_manager.sync()
 
-        if stdin_data is not None:
-            marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-            while marker in stdin_data:
-                marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-            command = f"{command} << '{marker}'\n{stdin_data}\n{marker}"
+    def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
+                  stdin_data: str | None = None):
+        sandbox, lock = self._sandbox, self._lock
+        # Guarded by ``lock`` so cancel() and dispatch agree on whether the shell
+        # has taken ownership of (opened + unlinked) the staged stdin file.
+        state = {"cancelled": False, "staged": None, "dispatched": False}
 
-        exec_command, sudo_stdin = self._prepare_command(command)
+        def scrub_staged():  # caller holds ``lock``
+            if state["staged"] and not state["dispatched"]:
+                # Uploaded but never dispatched: nothing else will unlink it.
+                # Once dispatched the user shell rm's it before running cmd.
+                with contextlib.suppress(Exception):
+                    sandbox.fs.delete_file(state["staged"])
+                state["staged"] = None
 
-        # Daytona sandboxes execute commands via the Daytona SDK and cannot
-        # pipe subprocess stdin directly the way a local Popen can.  When a
-        # sudo password is present, use a shell-level pipe from printf so that
-        # the password feeds sudo -S without appearing as an echo argument
-        # embedded in the shell string.  The password is still visible in the
-        # remote sandbox's command line, but it is not exposed on the user's
-        # local machine — which is the primary threat being mitigated.
-        if sudo_stdin is not None:
-            import shlex
-            exec_command = (
-                f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
-            )
-        effective_cwd = cwd or self.cwd or None
-        effective_timeout = timeout or self.timeout
+        def cancel():
+            with lock:
+                state["cancelled"] = True
+                scrub_staged()
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
 
-        result = self._exec_in_thread(exec_command, effective_cwd, effective_timeout)
+        def exec_fn() -> tuple[str, int]:
+            command = cmd_string
+            if stdin_data:  # empty stdin == no stdin, as on base (heredoc skipped it)
+                with lock:
+                    if state["cancelled"]:
+                        return ("", 130)
+                remote_stdin = self._staged_stdin_path()
+                sandbox.fs.upload_file(stdin_data.encode("utf-8", "surrogateescape"), remote_stdin)
+                with lock:
+                    state["staged"] = remote_stdin
+                sandbox.fs.set_file_permissions(remote_stdin, mode="600")
+                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+            shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
+            with lock:
+                if state["cancelled"]:
+                    # cancel() may have run mid-upload, before ``staged`` was set.
+                    scrub_staged()
+                    return ("", 130)
+                state["dispatched"] = True
+            response = sandbox.process.exec(shell_cmd, timeout=timeout)
+            return (response.result or "", response.exit_code)
 
-        if "error" in result:
-            from daytona import DaytonaError
-            err = result["error"]
-            if isinstance(err, DaytonaError):
-                with self._lock:
-                    try:
-                        self._ensure_sandbox_ready()
-                    except Exception:
-                        return {"output": f"Daytona execution error: {err}", "returncode": 1}
-                result = self._exec_in_thread(exec_command, effective_cwd, effective_timeout)
-                if "error" not in result:
-                    return result
-            return {"output": f"Daytona execution error: {err}", "returncode": 1}
-
-        return result
+        return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):
         with self._lock:
             if self._sandbox is None:
                 return
+            # sync_back runs inside the lock and after the None guard so an
+            # already-cleaned-up env can't trigger a 3-attempt retry storm on a nil sandbox.
+            if self._sync_manager:
+                logger.info("Daytona: syncing files from sandbox...")
+                try:
+                    self._sync_manager.sync_back()
+                except Exception as e:
+                    logger.warning("Daytona: sync_back failed: %s", e)
             try:
                 if self._persistent:
                     self._sandbox.stop()
-                    logger.info("Daytona: stopped sandbox %s (filesystem preserved)",
-                                self._sandbox.id)
+                    logger.info("Daytona: stopped sandbox %s (filesystem preserved)", self._sandbox.id)
                 else:
                     self._daytona.delete(self._sandbox)
                     logger.info("Daytona: deleted sandbox %s", self._sandbox.id)

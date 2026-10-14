@@ -1,0 +1,69 @@
+{
+  "_comment": "Wan 2.1 text-to-video. Cloud: confirmed available. Local: download wan2.1_t2v_1.3B_fp16.safetensors → models/diffusion_models/ (or models/unet/), umt5_xxl_fp16.safetensors → models/text_encoders/ (or models/clip/), wan_2.1_vae.safetensors → models/vae/. Output: MP4. Large model — only on cloud or 24 GB+ local GPU.",
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Prompt"},
+    "inputs": {
+      "text": "a graceful crane taking flight from a misty lake at dawn, slow motion, 4k",
+      "clip": ["38", 0]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative Prompt"},
+    "inputs": {
+      "text": "static, blurry, watermark, low quality",
+      "clip": ["38", 0]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"},
+    "inputs": {"samples": ["3", 0], "vae": ["39", 0]}
+  },
+  "37": {
+    "class_type": "UNETLoader",
+    "_meta": {"title": "Wan UNET"},
+    "inputs": {"unet_name": "wan2.1_t2v_1.3B_fp16.safetensors", "weight_dtype": "default"}
+  },
+  "38": {
+    "class_type": "CLIPLoader",
+    "_meta": {"title": "Wan CLIP"},
+    "inputs": {"clip_name": "umt5_xxl_fp16.safetensors", "type": "wan"}
+  },
+  "39": {
+    "class_type": "VAELoader",
+    "_meta": {"title": "Wan VAE"},
+    "inputs": {"vae_name": "wan_2.1_vae.safetensors"}
+  },
+  "3": {
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"},
+    "inputs": {
+      "seed": 42, "steps": 30, "cfg": 6.0,
+      "sampler_name": "uni_pc", "scheduler": "simple", "denoise": 1.0,
+      "model": ["37", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["40", 0]
+    }
+  },
+  "40": {
+    "class_type": "EmptyHunyuanLatentVideo",
+    "_meta": {"title": "Latent Video (33 frames)"},
+    "inputs": {"width": 832, "height": 480, "length": 33, "batch_size": 1}
+  },
+  "9": {
+    "class_type": "VHS_VideoCombine",
+    "_meta": {"title": "Video Combine"},
+    "inputs": {
+      "frame_rate": 16.0,
+      "loop_count": 0,
+      "filename_prefix": "wan_t2v",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "images": ["8", 0]
+    }
+  }
+}

@@ -1,14 +1,13 @@
 """Tests for gateway /verbose command (config-gated tool progress cycling)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -63,7 +62,7 @@ class TestVerboseCommand:
 
     @pytest.mark.asyncio
     async def test_enabled_cycles_mode(self, tmp_path, monkeypatch):
-        """When enabled, /verbose cycles tool_progress mode."""
+        """When enabled, /verbose cycles tool_progress mode per-platform."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -79,41 +78,20 @@ class TestVerboseCommand:
 
         # all -> verbose
         assert "VERBOSE" in result
+        assert "telegram" in result.lower()  # per-platform feedback
 
-        # Verify config was saved
+        # Verify config was saved to display.platforms.telegram
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["tool_progress"] == "verbose"
+        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
 
     @pytest.mark.asyncio
-    async def test_cycles_through_all_modes(self, tmp_path, monkeypatch):
-        """Calling /verbose repeatedly cycles through all four modes."""
+    async def test_quoted_false_keeps_command_disabled(self, tmp_path, monkeypatch):
+        """Quoted false must not enable the /verbose gateway command."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
         config_path.write_text(
-            "display:\n  tool_progress_command: true\n  tool_progress: 'off'\n",
-            encoding="utf-8",
-        )
-
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        runner = _make_runner()
-
-        # off -> new -> all -> verbose -> off
-        expected = ["new", "all", "verbose", "off"]
-        for mode in expected:
-            result = await runner._handle_verbose_command(_make_event())
-            saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            assert saved["display"]["tool_progress"] == mode, \
-                f"Expected {mode}, got {saved['display']['tool_progress']}"
-
-    @pytest.mark.asyncio
-    async def test_defaults_to_all_when_no_tool_progress_set(self, tmp_path, monkeypatch):
-        """When tool_progress is not in config, defaults to 'all' then cycles to verbose."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text(
-            "display:\n  tool_progress_command: true\n",
+            'display:\n  tool_progress_command: "false"\n  tool_progress: all\n',
             encoding="utf-8",
         )
 
@@ -122,25 +100,7 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # default "all" -> verbose
-        assert "VERBOSE" in result
-        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["tool_progress"] == "verbose"
-
-    @pytest.mark.asyncio
-    async def test_no_config_file_returns_disabled(self, tmp_path, monkeypatch):
-        """When config.yaml doesn't exist, command reports disabled."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        # No config.yaml
-
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-
-        runner = _make_runner()
-        result = await runner._handle_verbose_command(_make_event())
         assert "not enabled" in result.lower()
+        assert "tool_progress_command" in result
 
-    def test_verbose_is_in_gateway_known_commands(self):
-        """The /verbose command is recognized by the gateway dispatch."""
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
-        assert "verbose" in GATEWAY_KNOWN_COMMANDS
+

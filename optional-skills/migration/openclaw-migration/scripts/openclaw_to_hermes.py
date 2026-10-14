@@ -9,18 +9,20 @@ reports exactly what was skipped and why.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import yaml
+    from ruamel import yaml
 except Exception:  # pragma: no cover - handled at runtime
     yaml = None
 
@@ -42,7 +44,7 @@ SUPPORTED_SECRET_TARGETS={
     "VOICE_TOOLS_OPENAI_KEY",
 }
 WORKSPACE_INSTRUCTIONS_FILENAME = "AGENTS" + ".md"
-MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
+MIGRATION_OPTION_METADATA: dict[str, dict[str, str]] = {
     "soul": {
         "label": "SOUL.md",
         "description": "Import the OpenClaw persona file into Hermes.",
@@ -145,7 +147,7 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
     },
     "session-config": {
         "label": "Session configuration",
-        "description": "Import session reset policies (daily/idle) into Hermes session_reset config.",
+        "description": "Archive advanced session settings; automatic reset timers are not imported.",
     },
     "full-providers": {
         "label": "Full model provider definitions",
@@ -184,7 +186,7 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "description": "Archive OpenClaw logging and diagnostics configuration.",
     },
 }
-MIGRATION_PRESETS: Dict[str, set[str]] = {
+MIGRATION_PRESETS: dict[str, set[str]] = {
     "user-data": {
         "soul",
         "workspace-agents",
@@ -224,6 +226,24 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
 }
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Item shape constants — kept stable for downstream consumers of report.json.
+# Inspired by OpenClaw's src/plugin-sdk/migration.ts so both sides speak the
+# same vocabulary.  Values intentionally match the strings already produced
+# by this script (migrated/archived/skipped/conflict/error) so the addition
+# is backward-compatible.
+# ───────────────────────────────────────────────────────────────────────
+STATUS_MIGRATED = "migrated"
+STATUS_ARCHIVED = "archived"
+STATUS_SKIPPED = "skipped"
+STATUS_CONFLICT = "conflict"
+STATUS_ERROR = "error"
+STATUS_PLANNED = "planned"
+
+REASON_TARGET_EXISTS = "Target exists and overwrite is disabled"
+REASON_BLOCKED_BY_APPLY_CONFLICT = "blocked by earlier apply conflict"
+
+
 @dataclass
 class ItemResult:
     kind: str
@@ -231,11 +251,12 @@ class ItemResult:
     destination: Optional[str]
     status: str
     reason: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+    sensitive: bool = False
 
 
-def parse_selection_values(values: Optional[Sequence[str]]) -> List[str]:
-    parsed: List[str] = []
+def parse_selection_values(values: Optional[Sequence[str]]) -> list[str]:
+    parsed: list[str] = []
     for value in values or ():
         for part in str(value).split(","):
             part = part.strip().lower()
@@ -293,7 +314,7 @@ def sha256_file(path: Path) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def normalize_text(text: str) -> str:
@@ -304,28 +325,164 @@ def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def load_yaml_file(path: Path) -> Dict[str, Any]:
+def resolve_secret_input(value: Any, env: Optional[dict[str, str]] = None) -> Optional[str]:
+    """Resolve an OpenClaw SecretInput value to a plain string.
+
+    SecretInput can be:
+    - A plain string: "sk-..."
+    - An env template: "${OPENROUTER_API_KEY}"
+    - A SecretRef object: {"source": "env", "id": "OPENROUTER_API_KEY"}
+    """
+    if isinstance(value, str):
+        # Check for env template: "${VAR_NAME}"
+        m = re.match(r"^\$\{(\w+)\}$", value.strip())
+        if m and env:
+            return env.get(m.group(1), "").strip() or None
+        return value.strip() or None
+    if isinstance(value, dict):
+        source = value.get("source", "")
+        ref_id = value.get("id", "")
+        if source == "env" and ref_id and env:
+            return env.get(ref_id, "").strip() or None
+        # File/exec sources can't be resolved here — return None
+    return None
+
+
+class ConfigReadError(RuntimeError):
+    """An existing config file is present but cannot be read or parsed.
+
+    Signals that a read-modify-write round trip must be abandoned: the caller
+    has no idea what the file holds, so writing a merged result back would
+    replace real settings with only the keys it merged.
+    """
+
+
+def load_yaml_file(path: Path) -> dict[str, Any]:
+    """Load a YAML mapping, distinguishing "absent" from "unreadable".
+
+    Every config.yaml caller here reads the file, merges a section into it and
+    writes the whole mapping straight back.  Collapsing a present-but-unreadable
+    file to ``{}`` therefore destroys it: a YAML syntax error, a permission
+    problem or a broken mount would make the migration replace every setting
+    the user had with only the section it merged, and still report ``migrated``.
+
+    - Absent, or present but empty -> ``{}``; first-time creation still works.
+    - Present but unreadable, unparseable, or not a mapping -> raise
+      :class:`ConfigReadError` so the caller refuses and leaves the file
+      byte-identical.
+
+    ``yaml is None`` (ruamel.yaml not installed) still yields ``{}``: nothing can be
+    written in that state either, since :func:`dump_yaml_file` raises.
+    """
     if yaml is None or not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else {}
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    try:
+        reader = yaml.YAML(typ="safe")
+        reader.version = (1, 1)  # Match Hermes' existing config scalar semantics.
+        data = reader.load(raw)
+    except yaml.YAMLError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file is not valid YAML "
+            f"({exc}). Fix it with `hermes config edit` (or move it aside), then "
+            f"re-run the migration."
+        ) from exc
+    # An empty file parses to None — a legitimate state with nothing to lose.
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: expected the existing file to hold a "
+            f"YAML mapping but found {type(data).__name__}. Fix it with "
+            f"`hermes config edit` (or move it aside), then re-run the migration."
+        )
+    return data
 
 
-def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
+def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
+    """Write ``data`` as YAML via temp file + fsync + atomic rename.
+
+    Only ever reached after :func:`load_yaml_file` has successfully read the
+    same path, so the mapping being written is the real file's content plus the
+    merged section — never a silently-empty stand-in.  Writing atomically means
+    an interrupted migration cannot leave a truncated config.yaml behind.
+
+    Inlined rather than importing ``utils.atomic_write_text``: this script is
+    standalone and runs with only the stdlib on its path.  The symlink and
+    cross-device handling mirrors ``utils.atomic_replace``: a plain
+    ``os.replace`` onto a symlinked config.yaml would replace the *link* with a
+    regular file, silently detaching managed deployments that symlink
+    ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
+    """
     if yaml is None:
-        raise RuntimeError("PyYAML is required to update Hermes config.yaml")
+        raise RuntimeError("ruamel.yaml is required to update Hermes config.yaml")
     ensure_parent(path)
-    path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
-        encoding="utf-8",
+    target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(target) or ".", prefix=".tmp_", suffix=".yaml"
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            # The C emitter leaves YAML 1.1 boolean-like strings unquoted.
+            writer = yaml.YAML(typ="safe", pure=True)
+            writer.version = (1, 1)
+            writer.default_flow_style = False
+            writer.sort_base_mapping_type_on_output = False
+            writer.allow_unicode = False
+            writer.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(tmp_path, target)
+        except OSError as exc:
+            # Cross-device or bind-mount deployments cannot rename into place.
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            shutil.copyfile(tmp_path, target)
+            try:
+                shutil.copystat(tmp_path, target)
+            except OSError:
+                pass
+            # fsync the copied target so the durability claim holds on the
+            # cross-device path too (mirrors utils.atomic_replace, including
+            # its swallow — a failed fsync must not report the already-copied
+            # write as failed).
+            try:
+                target_fd = os.open(target, os.O_RDONLY)
+                try:
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+            except OSError:
+                pass
+            os.unlink(tmp_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
-def parse_env_file(path: Path) -> Dict[str, str]:
+def parse_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
-    data: Dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    data: dict[str, str] = {}
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -334,7 +491,7 @@ def parse_env_file(path: Path) -> Dict[str, str]:
     return data
 
 
-def save_env_file(path: Path, data: Dict[str, str]) -> None:
+def save_env_file(path: Path, data: dict[str, str]) -> None:
     ensure_parent(path)
     lines = [f"{key}={value}" for key, value in data.items()]
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -353,24 +510,74 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
     return dest
 
 
-def parse_existing_memory_entries(path: Path) -> List[str]:
+# ── Brand rewriting ─────────────────────────────────────────
+# Replace OpenClaw brand names with Hermes in migrated text so that
+# memory entries, user profiles, SOUL.md, and workspace instructions
+# read as self-referential to the new agent identity.
+#
+# Case-preserving: ``OpenClaw`` → ``Hermes`` (prose), but lowercase matches
+# like ``openclaw`` → ``hermes`` (so filesystem paths like ``~/.openclaw``
+# become ``~/.hermes`` — the real Hermes home — not the broken ``~/.Hermes``).
+_REBRAND_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
+    (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
+    (re.compile(r'\bMoltBot\b', re.IGNORECASE), 'Hermes'),
+]
+
+
+def _case_preserving_replacement(replacement: str):
+    """Return a re.sub replacement fn that lowercases the result when the
+    matched text was all-lowercase.
+
+    Keeps ``OpenClaw`` → ``Hermes`` but maps ``openclaw`` → ``hermes`` so a
+    filesystem path like ``~/.openclaw/config.yaml`` rewrites to
+    ``~/.hermes/config.yaml`` (the real Hermes home) instead of the broken
+    ``~/.Hermes/config.yaml``.
+    """
+    def _sub(match: re.Match[str]) -> str:
+        matched = match.group(0)
+        if matched and matched.islower():
+            return replacement.lower()
+        return replacement
+    return _sub
+
+
+def rebrand_text(text: str) -> str:
+    """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes.
+
+    Preserves case so filesystem-path matches (lowercase) don't become
+    capitalized directory names that don't exist.
+    """
+    for pattern, replacement in _REBRAND_PATTERNS:
+        text = pattern.sub(_case_preserving_replacement(replacement), text)
+    return text
+
+
+def parse_existing_memory_entries(path: Path) -> list[str]:
+    """Parse a DESTINATION Hermes memory store (memories/MEMORY.md, USER.md).
+
+    Splits on ``ENTRY_DELIMITER`` only, matching ``MemoryStore._parse_entries``
+    in ``tools/memory_tool.py``: a store with no delimiter is ONE intact entry.
+    Do NOT fall back to :func:`extract_markdown_entries` — it is the *source*
+    parser (workspace/MEMORY.md and friends), it drops fenced code blocks and
+    table rows and splits a block into one entry per bullet, and the merged
+    result is written back over the destination.
+    """
     if not path.exists():
         return []
     raw = read_text(path)
     if not raw.strip():
         return []
-    if ENTRY_DELIMITER in raw:
-        return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-    return extract_markdown_entries(raw)
+    return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
 
 
-def extract_markdown_entries(text: str) -> List[str]:
-    entries: List[str] = []
-    headings: List[str] = []
-    paragraph_lines: List[str] = []
+def extract_markdown_entries(text: str) -> list[str]:
+    entries: list[str] = []
+    headings: list[str] = []
+    paragraph_lines: list[str] = []
 
     def context_prefix() -> str:
-        filtered = [h for h in headings if h and not re.search(r"\b(MEMORY|USER|SOUL|AGENTS|TOOLS|IDENTITY)\.md\b", h, re.I)]
+        filtered = [h for h in headings if h and not re.search(r"\b(MEMORY|USER|SOUL|AGENTS|TOOLS|IDENTITY)\.md\b", h, re.IGNORECASE)]
         return " > ".join(filtered)
 
     def flush_paragraph() -> None:
@@ -429,7 +636,7 @@ def extract_markdown_entries(text: str) -> List[str]:
 
     flush_paragraph()
 
-    deduped: List[str] = []
+    deduped: list[str] = []
     seen = set()
     for entry in entries:
         normalized = normalize_text(entry)
@@ -444,11 +651,11 @@ def merge_entries(
     existing: Sequence[str],
     incoming: Sequence[str],
     limit: int,
-) -> Tuple[List[str], Dict[str, int], List[str]]:
+) -> tuple[list[str], dict[str, int], list[str]]:
     merged = list(existing)
     seen = {normalize_text(entry) for entry in existing if entry.strip()}
     stats = {"existing": len(existing), "added": 0, "duplicates": 0, "overflowed": 0}
-    overflowed: List[str] = []
+    overflowed: list[str] = []
 
     current_len = len(ENTRY_DELIMITER.join(merged)) if merged else 0
 
@@ -481,31 +688,127 @@ def relative_label(path: Path, root: Path) -> str:
         return str(path)
 
 
-def write_report(output_dir: Path, report: Dict[str, Any]) -> None:
+# ───────────────────────────────────────────────────────────────────────
+# Secret redaction for migration reports.
+#
+# The report JSON persists to disk inside the migration output directory and
+# frequently ends up in bug reports or support channels.  Anything that looks
+# like a credential — by key name or by value shape — is replaced with
+# "[redacted]" before the report is written.
+#
+# Modelled on OpenClaw's src/plugin-sdk/migration.ts so both migration tools
+# redact consistently.  Pure function — safe to call on any plain-data dict.
+# ───────────────────────────────────────────────────────────────────────
+REDACTED_MIGRATION_VALUE = "[redacted]"
+
+_SECRET_KEY_MARKERS = (
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+)
+
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]+"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{8,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{12,}\b"),
+)
+
+
+def _normalize_secret_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def _is_secret_key(key: str) -> bool:
+    normalized = _normalize_secret_key(key)
+    if normalized == "token" or normalized.endswith("token"):
+        return True
+    if normalized in {"auth", "authorization"}:
+        return True
+    return any(marker in normalized for marker in _SECRET_KEY_MARKERS)
+
+
+def _redact_string(value: str) -> str:
+    for pattern in _SECRET_VALUE_PATTERNS:
+        value = pattern.sub(REDACTED_MIGRATION_VALUE, value)
+    return value
+
+
+def redact_migration_value(value: Any) -> Any:
+    """Return a deep copy of ``value`` with secret-looking content replaced.
+
+    Applied to every report written to disk.  Keys whose normalized form
+    matches a credential marker get their value replaced wholesale.  Strings
+    anywhere in the tree are scanned for common token patterns (sk-..., ghp_...,
+    xox*-, AIza*, Bearer ...) and those substrings are replaced inline.
+    """
+    return _redact_internal(value, set())
+
+
+def _redact_internal(value: Any, seen: set) -> Any:
+    if isinstance(value, str):
+        return _redact_string(value)
+    if isinstance(value, (list, tuple)):
+        return [_redact_internal(entry, seen) for entry in value]
+    if isinstance(value, dict):
+        obj_id = id(value)
+        if obj_id in seen:
+            return REDACTED_MIGRATION_VALUE
+        seen.add(obj_id)
+        out: dict[str, Any] = {}
+        for key, entry in value.items():
+            if isinstance(key, str) and _is_secret_key(key):
+                out[key] = REDACTED_MIGRATION_VALUE
+            else:
+                out[key] = _redact_internal(entry, seen)
+        return out
+    return value
+
+
+def write_report(output_dir: Path, report: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Always redact before persisting.  Callers who need the raw object
+    # (in-process) still get it back from build_report(); only the on-disk
+    # copy is redacted.
+    redacted = redact_migration_value(report)
     (output_dir / "report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(redacted, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for item in report["items"]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in redacted["items"]:
         grouped.setdefault(item["status"], []).append(item)
 
     lines = [
         "# OpenClaw -> Hermes Migration Report",
         "",
-        f"- Timestamp: {report['timestamp']}",
-        f"- Mode: {report['mode']}",
-        f"- Source: `{report['source_root']}`",
-        f"- Target: `{report['target_root']}`",
+        f"- Timestamp: {redacted['timestamp']}",
+        f"- Mode: {redacted['mode']}",
+        f"- Source: `{redacted['source_root']}`",
+        f"- Target: `{redacted['target_root']}`",
         "",
         "## Summary",
         "",
     ]
 
-    for key, value in report["summary"].items():
+    for key, value in redacted["summary"].items():
         lines.append(f"- {key}: {value}")
+
+    warnings = redacted.get("warnings") or []
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
 
     lines.extend(["", "## What Was Not Fully Brought Over", ""])
     skipped = grouped.get("skipped", []) + grouped.get("conflict", []) + grouped.get("error", [])
@@ -517,6 +820,12 @@ def write_report(output_dir: Path, report: Dict[str, Any]) -> None:
             dest = item["destination"] or "(n/a)"
             reason = item["reason"] or item["status"]
             lines.append(f"- `{source}` -> `{dest}`: {reason}")
+
+    next_steps = redacted.get("next_steps") or []
+    if next_steps:
+        lines.extend(["", "## Next Steps", ""])
+        for step in next_steps:
+            lines.append(f"- {step}")
 
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -551,9 +860,41 @@ class Migrator:
         self.archive_dir = self.output_dir / "archive" if self.output_dir else None
         self.backup_dir = self.output_dir / "backups" if self.output_dir else None
         self.overflow_dir = self.output_dir / "overflow" if self.output_dir else None
-        self.items: List[ItemResult] = []
+        self.items: list[ItemResult] = []
+        # Once a config.yaml write hits conflict/error mid-run, later
+        # config.yaml writes are deliberately short-circuited to avoid
+        # leaving config in a partially-written state.  Modelled on
+        # OpenClaw's extensions/migrate-hermes/apply.ts "blocked by earlier
+        # apply conflict" sequencing.
+        self._config_apply_blocked: bool = False
 
-        config = load_yaml_file(self.target_root / "config.yaml")
+        # Resolve the configured workspace directory from openclaw.json.
+        # Many users (especially those who started before the OpenClaw rebrand)
+        # have a custom workspace path (e.g. ~/clawd/) that differs from the
+        # default ~/.openclaw/workspace/.  Reading agents.defaults.workspace
+        # lets source_candidate() find files in the actual workspace.
+        self._custom_workspace: Optional[Path] = None
+        oc_config = self.load_openclaw_config()
+        ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
+        if ws:
+            ws_path = Path(ws).expanduser().resolve()
+            # Only use it if it exists and is outside the source_root tree
+            # (otherwise the standard relative-path logic already covers it).
+            if ws_path.is_dir():
+                try:
+                    ws_path.relative_to(self.source_root)
+                except ValueError:
+                    # ws_path is outside source_root — use it as custom workspace
+                    self._custom_workspace = ws_path
+
+        # Read-only probe for the memory limits, during construction — nothing
+        # is written from here, so an unreadable config just falls back to the
+        # defaults.  Every path that WRITES config.yaml refuses separately (see
+        # run_if_selected), so this cannot become a silent overwrite.
+        try:
+            config = load_yaml_file(self.target_root / "config.yaml")
+        except ConfigReadError:
+            config = {}
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
         self.user_limit = int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT))
@@ -569,6 +910,31 @@ class Migrator:
     def is_selected(self, option_id: str) -> bool:
         return option_id in self.selected_options
 
+    # Option ids that mutate the Hermes config.yaml file.  Once any one of
+    # them records a conflict/error on config.yaml, subsequent ones are
+    # short-circuited to avoid partial writes.  Keep in sync with methods
+    # that call load_yaml_file(target_root / "config.yaml") + dump_yaml_file.
+    _CONFIG_MUTATING_OPTIONS = frozenset({
+        "model-config",
+        "tts-config",
+        "mcp-servers",
+        "plugins-config",
+        "cron-jobs",
+        "hooks-config",
+        "agent-config",
+        "gateway-config",
+        "full-providers",
+        "deep-channels",
+        "browser-config",
+        "tools-config",
+        "approvals-config",
+        "memory-backend",
+        "skills-config",
+        "ui-identity",
+        "logging-config",
+        "command-allowlist",
+    })
+
     def record(
         self,
         kind: str,
@@ -578,6 +944,7 @@ class Migrator:
         reason: str = "",
         **details: Any,
     ) -> None:
+        sensitive = bool(details.pop("sensitive", False))
         self.items.append(
             ItemResult(
                 kind=kind,
@@ -586,14 +953,52 @@ class Migrator:
                 status=status,
                 reason=reason,
                 details=details,
+                sensitive=sensitive,
             )
         )
+        # Flip the config-block flag when a conflict/error occurs on a
+        # config.yaml write.  Later config-mutating options will skip rather
+        # than attempting a partial write.
+        if status in {STATUS_CONFLICT, STATUS_ERROR} and destination is not None:
+            dest_str = str(destination)
+            if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
+                self._config_apply_blocked = True
 
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:
         for rel in relative_paths:
             candidate = self.source_root / rel
             if candidate.exists():
                 return candidate
+            # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
+            # for multi-agent).  Try the new path as a fallback.
+            if rel.startswith("workspace/"):
+                suffix = rel[len("workspace/"):]
+                for variant in ("workspace-main", "workspace-assistant"):
+                    alt = self.source_root / variant / suffix
+                    if alt.exists():
+                        return alt
+            elif rel.startswith("workspace.default/"):
+                suffix = rel[len("workspace.default/"):]
+                alt = self.source_root / "workspace-main" / suffix
+                if alt.exists():
+                    return alt
+
+        # Final fallback: check the configured workspace directory from
+        # agents.defaults.workspace in openclaw.json.  Users who started
+        # before the OpenClaw rebrand (when the project was named clawd /
+        # clawdbot) often have a custom workspace path outside ~/.openclaw/.
+        if self._custom_workspace:
+            for rel in relative_paths:
+                # Strip the leading "workspace/" or "workspace.default/"
+                # prefix to get the bare filename/subpath.
+                for prefix in ("workspace/", "workspace.default/"):
+                    if rel.startswith(prefix):
+                        suffix = rel[len(prefix):]
+                        alt = self._custom_workspace / suffix
+                        if alt.exists():
+                            return alt
+                        break
+
         return None
 
     def resolve_skill_destination(self, destination: Path) -> Path:
@@ -608,7 +1013,7 @@ class Migrator:
             counter += 1
         return candidate
 
-    def migrate(self) -> Dict[str, Any]:
+    def migrate(self) -> dict[str, Any]:
         if not self.source_root.exists():
             self.record("source", self.source_root, None, "error", "OpenClaw directory does not exist")
             return self.build_report()
@@ -683,14 +1088,50 @@ class Migrator:
         return self.build_report()
 
     def run_if_selected(self, option_id: str, func) -> None:
-        if self.is_selected(option_id):
-            func()
+        if not self.is_selected(option_id):
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(option_id, None, None, "skipped", "Not selected for this run", option_label=meta["label"])
             return
-        meta = MIGRATION_OPTION_METADATA[option_id]
-        self.record(option_id, None, None, "skipped", "Not selected for this run", option_label=meta["label"])
+        # If a previous config.yaml write hit a conflict/error during apply,
+        # skip remaining config-mutating options rather than risk a partial
+        # write.  Dry-run mode never blocks — the user needs the full preview
+        # to decide how to proceed (re-run with --overwrite, etc.).
+        if (
+            self.execute
+            and self._config_apply_blocked
+            and option_id in self._CONFIG_MUTATING_OPTIONS
+        ):
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(
+                option_id,
+                None,
+                None,
+                STATUS_SKIPPED,
+                REASON_BLOCKED_BY_APPLY_CONFLICT,
+                option_label=meta["label"],
+            )
+            return
+        try:
+            func()
+        except ConfigReadError as exc:
+            # The destination config.yaml is present but unreadable, so this
+            # step cannot merge into it.  Record the refusal against the
+            # config path — record() then flips _config_apply_blocked, and the
+            # remaining config-mutating options short-circuit above instead of
+            # each rediscovering the same unreadable file.  The file itself is
+            # left byte-identical.
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(
+                option_id,
+                None,
+                self.target_root / "config.yaml",
+                STATUS_ERROR,
+                str(exc),
+                option_label=meta["label"],
+            )
 
-    def build_report(self) -> Dict[str, Any]:
-        summary: Dict[str, int] = {
+    def build_report(self) -> dict[str, Any]:
+        summary: dict[str, int] = {
             "migrated": 0,
             "archived": 0,
             "skipped": 0,
@@ -725,12 +1166,75 @@ class Migrator:
             },
             "summary": summary,
             "items": [asdict(item) for item in self.items],
+            "warnings": self._build_warnings(summary),
+            "next_steps": self._build_next_steps(summary),
         }
 
         if self.output_dir:
             write_report(self.output_dir, report)
 
         return report
+
+    def _build_warnings(self, summary: dict[str, int]) -> list[str]:
+        """Structured warnings surfaced on the report for downstream consumers.
+
+        Modelled on OpenClaw's extensions/migrate-hermes/plan.ts warnings[].
+        Keep the messages actionable — they show up in summary.md and the
+        JSON report.
+        """
+        warnings: list[str] = []
+        if summary.get("conflict", 0) > 0:
+            warnings.append(
+                "Conflicts were found. Re-run with --overwrite to replace conflicting "
+                "targets after item-level backups."
+            )
+        if summary.get("error", 0) > 0:
+            warnings.append(
+                "One or more items failed. Inspect the report and re-run after fixing "
+                "the underlying cause."
+            )
+        if self._config_apply_blocked and self.execute:
+            warnings.append(
+                "A config.yaml write hit a conflict or error mid-apply; later config "
+                "items were skipped to avoid a partial write."
+            )
+        # Detect whether secrets were detected but not migrated.
+        provider_keys_skipped = any(
+            item.kind == "provider-keys" and item.status == STATUS_SKIPPED
+            for item in self.items
+        )
+        if provider_keys_skipped and not self.migrate_secrets:
+            warnings.append(
+                "API keys and other credentials were detected but not imported. "
+                "Re-run with --migrate-secrets to copy supported keys into the "
+                "Hermes env file."
+            )
+        return warnings
+
+    def _build_next_steps(self, summary: dict[str, int]) -> list[str]:
+        """Human-readable next-step guidance baked into the report."""
+        if not self.execute:
+            return [
+                "Re-run without --dry-run to apply the migration.",
+                "Pass --overwrite to resolve conflicts, or --migrate-secrets to "
+                "include API keys.",
+            ]
+        steps: list[str] = []
+        if summary.get("migrated", 0) > 0:
+            steps.append(
+                "Review the migration report at "
+                f"{self.output_dir}/summary.md"
+                if self.output_dir
+                else "Review the migration report."
+            )
+            steps.append(
+                "Start a new Hermes session (or /reset) to pick up the imported config."
+            )
+        if summary.get("conflict", 0) > 0:
+            steps.append(
+                "Re-run with --overwrite to apply items that were blocked by conflicts."
+            )
+        return steps
 
     def maybe_backup(self, path: Path) -> Optional[Path]:
         if not self.execute or not self.backup_dir or not path.exists():
@@ -746,12 +1250,13 @@ class Migrator:
         path.write_text("\n".join(entries) + "\n", encoding="utf-8")
         return path
 
-    def copy_file(self, source: Path, destination: Path, kind: str) -> None:
+    def copy_file(self, source: Path, destination: Path, kind: str,
+                  transform: Optional[Any] = None) -> None:
         if not source or not source.exists():
             return
 
         if destination.exists():
-            if sha256_file(source) == sha256_file(destination):
+            if not transform and sha256_file(source) == sha256_file(destination):
                 self.record(kind, source, destination, "skipped", "Target already matches source")
                 return
             if not self.overwrite:
@@ -761,7 +1266,13 @@ class Migrator:
         if self.execute:
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            shutil.copy2(source, destination)
+            if transform:
+                content = read_text(source)
+                content = transform(content)
+                destination.write_text(content, encoding="utf-8")
+                shutil.copystat(source, destination)
+            else:
+                shutil.copy2(source, destination)
             self.record(kind, source, destination, "migrated", backup=str(backup_path) if backup_path else None)
         else:
             self.record(kind, source, destination, "migrated", "Would copy")
@@ -771,7 +1282,7 @@ class Migrator:
         if not source:
             self.record("soul", None, self.target_root / "SOUL.md", "skipped", "No OpenClaw SOUL.md found")
             return
-        self.copy_file(source, self.target_root / "SOUL.md", kind="soul")
+        self.copy_file(source, self.target_root / "SOUL.md", kind="soul", transform=rebrand_text)
 
     def migrate_workspace_agents(self) -> None:
         source = self.source_candidate(
@@ -785,7 +1296,7 @@ class Migrator:
             self.record("workspace-agents", source, None, "skipped", "No workspace target was provided")
             return
         destination = self.workspace_target / WORKSPACE_INSTRUCTIONS_FILENAME
-        self.copy_file(source, destination, kind="workspace-agents")
+        self.copy_file(source, destination, kind="workspace-agents", transform=rebrand_text)
 
     def migrate_memory(self, source: Optional[Path], destination: Path, limit: int, kind: str) -> None:
         if not source or not source.exists():
@@ -796,6 +1307,7 @@ class Migrator:
         if not incoming:
             self.record(kind, source, destination, "skipped", "No importable entries found")
             return
+        incoming = [rebrand_text(entry) for entry in incoming]
 
         existing = parse_existing_memory_entries(destination)
         merged, stats, overflowed = merge_entries(existing, incoming, limit)
@@ -837,16 +1349,19 @@ class Migrator:
             self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
             return
         if yaml is None:
-            self.record("command-allowlist", source, destination, "error", "PyYAML is not available")
+            self.record("command-allowlist", source, destination, "error", "ruamel.yaml is not available")
             return
 
         try:
-            data = json.loads(source.read_text(encoding="utf-8"))
+            data = json.loads(source.read_text(encoding="utf-8", errors="replace"))
         except json.JSONDecodeError as exc:
             self.record("command-allowlist", source, destination, "error", f"Invalid JSON: {exc}")
             return
+        except OSError as exc:
+            self.record("command-allowlist", source, destination, "error", f"Could not read file: {exc}")
+            return
 
-        patterns: List[str] = []
+        patterns: list[str] = []
         agents = data.get("agents", {})
         if isinstance(agents, dict):
             for agent_data in agents.values():
@@ -889,21 +1404,29 @@ class Migrator:
         else:
             self.record("command-allowlist", source, destination, "migrated", "Would merge patterns", added_patterns=added)
 
-    def load_openclaw_config(self) -> Dict[str, Any]:
-        config_path = self.source_root / "openclaw.json"
-        if not config_path.exists():
-            return {}
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except json.JSONDecodeError:
-            return {}
+    def load_openclaw_config(self) -> dict[str, Any]:
+        # Check current name and legacy config filenames
+        for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
+            config_path = self.source_root / name
+            if config_path.exists():
+                try:
+                    # errors="replace" means read_text() cannot raise
+                    # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                    data = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))
+                    return data if isinstance(data, dict) else {}
+                except (json.JSONDecodeError, OSError):
+                    continue
+        return {}
 
-    def merge_env_values(self, additions: Dict[str, str], kind: str, source: Path) -> None:
+    def load_openclaw_env(self) -> dict[str, str]:
+        """Load the OpenClaw .env file for secrets that live there instead of config."""
+        return parse_env_file(self.source_root / ".env")
+
+    def merge_env_values(self, additions: dict[str, str], kind: str, source: Path) -> None:
         destination = self.target_root / ".env"
         env_data = parse_env_file(destination)
-        added: Dict[str, str] = {}
-        conflicts: List[str] = []
+        added: dict[str, str] = {}
+        conflicts: list[str] = []
 
         for key, value in additions.items():
             current = env_data.get(key)
@@ -945,9 +1468,9 @@ class Migrator:
                 conflicting_keys=conflicts,
             )
 
-    def migrate_messaging_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_messaging_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
-        additions: Dict[str, str] = {}
+        additions: dict[str, str] = {}
 
         workspace = (
             config.get("agents", {})
@@ -955,14 +1478,26 @@ class Migrator:
             .get("workspace")
         )
         if isinstance(workspace, str) and workspace.strip():
-            additions["MESSAGING_CWD"] = workspace.strip()
+            ws_path = workspace.strip()
+            # Skip if the workspace points inside the OpenClaw source directory —
+            # that path will be stale after migration and would cause the Hermes
+            # gateway to use the old OpenClaw workspace as its cwd, picking up
+            # OpenClaw's AGENTS.md, MEMORY.md, etc.
+            try:
+                inside_source = Path(ws_path).resolve().is_relative_to(self.source_root.resolve())
+            except (ValueError, OSError):
+                inside_source = False
+            if not inside_source:
+                additions["MESSAGING_CWD"] = ws_path
 
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():
             try:
-                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8"))
+                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8", errors="replace"))
             except json.JSONDecodeError:
                 self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", "Invalid JSON in Telegram allowlist file")
+            except OSError as exc:
+                self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", f"Could not read Telegram allowlist file: {exc}")
             else:
                 allow_from = allow_data.get("allowFrom", [])
                 if isinstance(allow_from, list):
@@ -975,7 +1510,7 @@ class Migrator:
         else:
             self.record("messaging-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Hermes-compatible messaging settings found")
 
-    def handle_secret_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def handle_secret_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         if self.migrate_secrets:
             self.migrate_secret_settings(config)
@@ -1001,14 +1536,11 @@ class Migrator:
                 supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
             )
 
-    def migrate_secret_settings(self, config: Dict[str, Any]) -> None:
-        secret_additions: Dict[str, str] = {}
+    def migrate_secret_settings(self, config: dict[str, Any]) -> None:
+        secret_additions: dict[str, str] = {}
 
-        telegram_token = (
-            config.get("channels", {})
-            .get("telegram", {})
-            .get("botToken")
-        )
+        tg_cfg = config.get("channels", {}).get("telegram", {})
+        telegram_token = self._get_channel_field(tg_cfg, "botToken") if isinstance(tg_cfg, dict) else None
         if isinstance(telegram_token, str) and telegram_token.strip():
             secret_additions["TELEGRAM_BOT_TOKEN"] = telegram_token.strip()
 
@@ -1024,15 +1556,32 @@ class Migrator:
                 supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
             )
 
-    def migrate_discord_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def _resolve_channel_secret(self, value: Any) -> Optional[str]:
+        """Resolve a channel config value that may be a SecretRef."""
+        return resolve_secret_input(value, self.load_openclaw_env())
+
+    @staticmethod
+    def _get_channel_field(ch_cfg: dict[str, Any], field: str) -> Any:
+        """Get a field from channel config, checking both flat and accounts.default layout."""
+        val = ch_cfg.get(field)
+        if val is not None:
+            return val
+        accounts = ch_cfg.get("accounts")
+        if isinstance(accounts, dict):
+            default = accounts.get("default")
+            if isinstance(default, dict):
+                return default.get(field)
+        return None
+
+    def migrate_discord_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
-        additions: Dict[str, str] = {}
+        additions: dict[str, str] = {}
         discord = config.get("channels", {}).get("discord", {})
         if isinstance(discord, dict):
-            token = discord.get("token")
+            token = self._get_channel_field(discord, "token")
             if isinstance(token, str) and token.strip():
                 additions["DISCORD_BOT_TOKEN"] = token.strip()
-            allow_from = discord.get("allowFrom", [])
+            allow_from = self._get_channel_field(discord, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1042,18 +1591,18 @@ class Migrator:
         else:
             self.record("discord-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Discord settings found")
 
-    def migrate_slack_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_slack_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
-        additions: Dict[str, str] = {}
+        additions: dict[str, str] = {}
         slack = config.get("channels", {}).get("slack", {})
         if isinstance(slack, dict):
-            bot_token = slack.get("botToken")
+            bot_token = self._get_channel_field(slack, "botToken")
             if isinstance(bot_token, str) and bot_token.strip():
                 additions["SLACK_BOT_TOKEN"] = bot_token.strip()
-            app_token = slack.get("appToken")
+            app_token = self._get_channel_field(slack, "appToken")
             if isinstance(app_token, str) and app_token.strip():
                 additions["SLACK_APP_TOKEN"] = app_token.strip()
-            allow_from = slack.get("allowFrom", [])
+            allow_from = self._get_channel_field(slack, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1063,12 +1612,12 @@ class Migrator:
         else:
             self.record("slack-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Slack settings found")
 
-    def migrate_whatsapp_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_whatsapp_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
-        additions: Dict[str, str] = {}
+        additions: dict[str, str] = {}
         whatsapp = config.get("channels", {}).get("whatsapp", {})
         if isinstance(whatsapp, dict):
-            allow_from = whatsapp.get("allowFrom", [])
+            allow_from = self._get_channel_field(whatsapp, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1078,18 +1627,18 @@ class Migrator:
         else:
             self.record("whatsapp-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No WhatsApp settings found")
 
-    def migrate_signal_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_signal_settings(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
-        additions: Dict[str, str] = {}
+        additions: dict[str, str] = {}
         signal = config.get("channels", {}).get("signal", {})
         if isinstance(signal, dict):
-            account = signal.get("account")
+            account = self._get_channel_field(signal, "account")
             if isinstance(account, str) and account.strip():
                 additions["SIGNAL_ACCOUNT"] = account.strip()
-            http_url = signal.get("httpUrl")
+            http_url = self._get_channel_field(signal, "httpUrl")
             if isinstance(http_url, str) and http_url.strip():
                 additions["SIGNAL_HTTP_URL"] = http_url.strip()
-            allow_from = signal.get("allowFrom", [])
+            allow_from = self._get_channel_field(signal, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1099,7 +1648,7 @@ class Migrator:
         else:
             self.record("signal-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No Signal settings found")
 
-    def handle_provider_keys(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def handle_provider_keys(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         if not self.migrate_secrets:
             config_path = self.source_root / "openclaw.json"
@@ -1114,19 +1663,31 @@ class Migrator:
             return
         self.migrate_provider_keys(config)
 
-    def migrate_provider_keys(self, config: Dict[str, Any]) -> None:
-        secret_additions: Dict[str, str] = {}
+    def migrate_provider_keys(self, config: dict[str, Any]) -> None:
+        secret_additions: dict[str, str] = {}
 
         # Extract provider API keys from models.providers
+        # Note: apiKey values can be strings, env templates, or SecretRef objects
+        openclaw_env = self.load_openclaw_env()
         providers = config.get("models", {}).get("providers", {})
         if isinstance(providers, dict):
             for provider_name, provider_cfg in providers.items():
                 if not isinstance(provider_cfg, dict):
                     continue
-                api_key = provider_cfg.get("apiKey")
-                if not isinstance(api_key, str) or not api_key.strip():
+                raw_key = provider_cfg.get("apiKey")
+                api_key = resolve_secret_input(raw_key, openclaw_env)
+                if not api_key:
+                    # Warn if a SecretRef with file/exec source was silently unresolvable
+                    if isinstance(raw_key, dict) and raw_key.get("source") in {"file", "exec"}:
+                        self.record(
+                            "provider-keys",
+                            self.source_root / "openclaw.json",
+                            None,
+                            "skipped",
+                            f"Provider '{provider_name}' uses a {raw_key['source']}-backed SecretRef "
+                            f"that cannot be auto-migrated. Add this key manually via: hermes config set",
+                        )
                     continue
-                api_key = api_key.strip()
 
                 base_url = provider_cfg.get("baseUrl", "")
                 api_type = provider_cfg.get("api", "")
@@ -1170,6 +1731,65 @@ class Migrator:
                 if isinstance(oai_key, str) and oai_key.strip():
                     secret_additions["VOICE_TOOLS_OPENAI_KEY"] = oai_key.strip()
 
+        # Also check the OpenClaw .env file — many users store keys there
+        # instead of inline in openclaw.json
+        openclaw_env = self.load_openclaw_env()
+        env_key_mapping = {
+            "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+            "ELEVENLABS_API_KEY": "ELEVENLABS_API_KEY",
+            "TELEGRAM_BOT_TOKEN": "TELEGRAM_BOT_TOKEN",
+            "DEEPSEEK_API_KEY": "DEEPSEEK_API_KEY",
+            "GEMINI_API_KEY": "GEMINI_API_KEY",
+            "ZAI_API_KEY": "ZAI_API_KEY",
+            "MINIMAX_API_KEY": "MINIMAX_API_KEY",
+        }
+        for oc_key, hermes_key in env_key_mapping.items():
+            val = openclaw_env.get(oc_key, "").strip()
+            if val and hermes_key not in secret_additions:
+                secret_additions[hermes_key] = val
+
+        # Check the openclaw.json "env" sub-object — some OpenClaw setups
+        # store API keys here instead of in a separate .env file.
+        # Keys can be at env.<KEY> or env.vars.<KEY>.
+        json_env = config.get("env")
+        if isinstance(json_env, dict):
+            env_vars = json_env.get("vars")
+            sources = [json_env]
+            if isinstance(env_vars, dict):
+                sources.append(env_vars)
+            for src in sources:
+                for oc_key, hermes_key in env_key_mapping.items():
+                    val = src.get(oc_key)
+                    if isinstance(val, str) and val.strip() and hermes_key not in secret_additions:
+                        secret_additions[hermes_key] = val.strip()
+
+        # Check per-agent auth-profiles.json for additional credentials
+        auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
+        if auth_profiles_path.exists():
+            try:
+                profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(profiles, dict):
+                    # auth-profiles.json wraps profiles in a "profiles" key
+                    profile_entries = profiles.get("profiles", profiles) if isinstance(profiles.get("profiles"), dict) else profiles
+                    for profile_name, profile_data in profile_entries.items():
+                        if not isinstance(profile_data, dict):
+                            continue
+                        # Canonical field is "key", "apiKey" is accepted as alias
+                        api_key = profile_data.get("key", "") or profile_data.get("apiKey", "")
+                        if not isinstance(api_key, str) or not api_key.strip():
+                            continue
+                        name_lower = profile_name.lower()
+                        if "openrouter" in name_lower and "OPENROUTER_API_KEY" not in secret_additions:
+                            secret_additions["OPENROUTER_API_KEY"] = api_key.strip()
+                        elif "openai" in name_lower and "OPENAI_API_KEY" not in secret_additions:
+                            secret_additions["OPENAI_API_KEY"] = api_key.strip()
+                        elif "anthropic" in name_lower and "ANTHROPIC_API_KEY" not in secret_additions:
+                            secret_additions["ANTHROPIC_API_KEY"] = api_key.strip()
+            except (json.JSONDecodeError, OSError):
+                pass
+
         if secret_additions:
             self.merge_env_values(secret_additions, "provider-keys", self.source_root / "openclaw.json")
         else:
@@ -1182,7 +1802,7 @@ class Migrator:
                 supported_targets=sorted(SUPPORTED_SECRET_TARGETS),
             )
 
-    def migrate_model_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_model_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         destination = self.target_root / "config.yaml"
         source_path = self.source_root / "openclaw.json"
@@ -1203,8 +1823,31 @@ class Migrator:
 
         model_str = model_str.strip()
 
+        # Resolve a model alias against the OpenClaw model catalog.
+        # OpenClaw stores agents.defaults.model as either a bare string or
+        # {"primary": "<value>"}, and that value can be either:
+        #   - a full provider/model API ID (e.g. "anthropic/claude-opus-4-6"), or
+        #   - a display alias (e.g. "Claude Opus 4.6") that maps to one.
+        # The catalog at agents.defaults.models is keyed by the full
+        # provider/model API ID with an "alias" field on the value, e.g.:
+        #   {"anthropic/claude-opus-4-6": {"alias": "Claude Opus 4.6"}}
+        # If model_str matches an alias in the catalog, rewrite it to the
+        # catalog key (the real API ID).  If it's already an API ID or has
+        # no catalog match, leave it alone and let downstream pass it through.
+        model_catalog = config.get("agents", {}).get("defaults", {}).get("models", {})
+        if isinstance(model_catalog, dict) and model_str not in model_catalog:
+            for api_id, entry in model_catalog.items():
+                if not isinstance(api_id, str):
+                    continue
+                if isinstance(entry, dict) and entry.get("alias") == model_str:
+                    model_str = api_id
+                    break
+                if isinstance(entry, str) and entry == model_str:
+                    model_str = api_id
+                    break
+
         if yaml is None:
-            self.record("model-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("model-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         hermes_config = load_yaml_file(destination)
@@ -1218,13 +1861,17 @@ class Migrator:
 
         if self.execute:
             backup_path = self.maybe_backup(destination)
-            hermes_config["model"] = model_str
+            existing_model = hermes_config.get("model")
+            if isinstance(existing_model, dict):
+                existing_model["default"] = model_str
+            else:
+                hermes_config["model"] = {"default": model_str}
             dump_yaml_file(destination, hermes_config)
             self.record("model-config", source_path, destination, "migrated", backup=str(backup_path) if backup_path else "", model=model_str)
         else:
             self.record("model-config", source_path, destination, "migrated", "Would set model", model=model_str)
 
-    def migrate_tts_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_tts_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         destination = self.target_root / "config.yaml"
         source_path = self.source_root / "openclaw.json"
@@ -1235,31 +1882,54 @@ class Migrator:
             return
 
         if yaml is None:
-            self.record("tts-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("tts-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
-        tts_data: Dict[str, Any] = {}
+        tts_data: dict[str, Any] = {}
 
         provider = tts.get("provider")
-        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge"):
-            tts_data["provider"] = provider
+        if isinstance(provider, str) and provider in {"elevenlabs", "openai", "edge", "microsoft"}:
+            # OpenClaw renamed "edge" to "microsoft"; Hermes still uses "edge"
+            tts_data["provider"] = "edge" if provider == "microsoft" else provider
 
-        elevenlabs = tts.get("elevenlabs", {})
+        # TTS provider settings live under messages.tts.providers.{provider}
+        # in OpenClaw (not messages.tts.elevenlabs directly)
+        providers = tts.get("providers") or {}
+
+        # Also check the top-level "talk" config which has provider settings too
+        talk_cfg = (config or self.load_openclaw_config()).get("talk") or {}
+        talk_providers = talk_cfg.get("providers") or {}
+
+        # Merge: messages.tts.providers takes priority, then talk.providers,
+        # then legacy flat keys (messages.tts.elevenlabs, etc.)
+        elevenlabs = (
+            (providers.get("elevenlabs") or {})
+            if isinstance(providers.get("elevenlabs"), dict) else
+            (talk_providers.get("elevenlabs") or {})
+            if isinstance(talk_providers.get("elevenlabs"), dict) else
+            (tts.get("elevenlabs") or {})
+        )
         if isinstance(elevenlabs, dict):
-            el_settings: Dict[str, str] = {}
-            voice_id = elevenlabs.get("voiceId")
+            el_settings: dict[str, str] = {}
+            voice_id = elevenlabs.get("voiceId") or talk_cfg.get("voiceId")
             if isinstance(voice_id, str) and voice_id.strip():
                 el_settings["voice_id"] = voice_id.strip()
-            model_id = elevenlabs.get("modelId")
+            model_id = elevenlabs.get("modelId") or talk_cfg.get("modelId")
             if isinstance(model_id, str) and model_id.strip():
                 el_settings["model_id"] = model_id.strip()
             if el_settings:
                 tts_data["elevenlabs"] = el_settings
 
-        openai_tts = tts.get("openai", {})
+        openai_tts = (
+            (providers.get("openai") or {})
+            if isinstance(providers.get("openai"), dict) else
+            (talk_providers.get("openai") or {})
+            if isinstance(talk_providers.get("openai"), dict) else
+            (tts.get("openai") or {})
+        )
         if isinstance(openai_tts, dict):
-            oai_settings: Dict[str, str] = {}
-            oai_model = openai_tts.get("model")
+            oai_settings: dict[str, str] = {}
+            oai_model = openai_tts.get("model") or openai_tts.get("modelId")
             if isinstance(oai_model, str) and oai_model.strip():
                 oai_settings["model"] = oai_model.strip()
             oai_voice = openai_tts.get("voice")
@@ -1268,7 +1938,11 @@ class Migrator:
             if oai_settings:
                 tts_data["openai"] = oai_settings
 
-        edge_tts = tts.get("edge", {})
+        edge_tts = (
+            (providers.get("edge") or providers.get("microsoft") or {})
+            if isinstance(providers.get("edge"), dict) or isinstance(providers.get("microsoft"), dict) else
+            (tts.get("edge") or tts.get("microsoft") or {})
+        )
         if isinstance(edge_tts, dict):
             edge_voice = edge_tts.get("voice")
             if isinstance(edge_voice, str) and edge_voice.strip():
@@ -1298,15 +1972,29 @@ class Migrator:
             self.record("tts-config", source_path, destination, "migrated", "Would set TTS config", settings=list(tts_data.keys()))
 
     def migrate_shared_skills(self) -> None:
-        source_root = self.source_root / "skills"
+        # Check all OpenClaw skill sources: managed, personal, project-level
+        skill_sources = [
+            (self.source_root / "skills", "shared-skills", "managed skills"),
+            (Path.home() / ".agents" / "skills", "personal-skills", "personal cross-project skills"),
+            (self.source_root / "workspace" / ".agents" / "skills", "project-skills", "project-level shared skills"),
+            (self.source_root / "workspace.default" / ".agents" / "skills", "project-skills", "project-level shared skills"),
+        ]
+        found_any = False
+        for source_root, kind_label, desc in skill_sources:
+            if source_root.exists():
+                found_any = True
+                self._import_skill_directory(source_root, kind_label, desc)
+        if not found_any:
+            destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
+            self.record("shared-skills", None, destination_root, "skipped", "No shared OpenClaw skills directories found")
+
+    def _import_skill_directory(self, source_root: Path, kind_label: str, desc: str) -> None:
+        """Import skills from a single source directory into openclaw-imports."""
         destination_root = self.target_root / "skills" / SKILL_CATEGORY_DIRNAME
-        if not source_root.exists():
-            self.record("shared-skills", None, destination_root, "skipped", "No shared OpenClaw skills directory found")
-            return
 
         skill_dirs = [p for p in sorted(source_root.iterdir()) if p.is_dir() and (p / "SKILL.md").exists()]
         if not skill_dirs:
-            self.record("shared-skills", source_root, destination_root, "skipped", "No shared skills with SKILL.md found")
+            self.record(kind_label, source_root, destination_root, "skipped", f"No skills with SKILL.md found in {desc}")
             return
 
         for skill_dir in skill_dirs:
@@ -1314,7 +2002,7 @@ class Migrator:
             final_destination = destination
             if destination.exists():
                 if self.skill_conflict_mode == "skip":
-                    self.record("shared-skill", skill_dir, destination, "conflict", "Destination skill already exists")
+                    self.record(kind_label, skill_dir, destination, "conflict", "Destination skill already exists")
                     continue
                 if self.skill_conflict_mode == "rename":
                     final_destination = self.resolve_skill_destination(destination)
@@ -1326,22 +2014,22 @@ class Migrator:
                 if final_destination == destination and destination.exists():
                     shutil.rmtree(destination)
                 shutil.copytree(skill_dir, final_destination)
-                details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
+                details: dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
                 if final_destination != destination:
                     details["renamed_from"] = str(destination)
-                self.record("shared-skill", skill_dir, final_destination, "migrated", **details)
+                self.record(kind_label, skill_dir, final_destination, "migrated", **details)
             else:
                 if final_destination != destination:
                     self.record(
-                        "shared-skill",
+                        kind_label,
                         skill_dir,
                         final_destination,
                         "migrated",
-                        "Would copy shared skill directory under a renamed folder",
+                        f"Would copy {desc} directory under a renamed folder",
                         renamed_from=str(destination),
                     )
                 else:
-                    self.record("shared-skill", skill_dir, final_destination, "migrated", "Would copy shared skill directory")
+                    self.record(kind_label, skill_dir, final_destination, "migrated", f"Would copy {desc} directory")
 
         desc_path = destination_root / "DESCRIPTION.md"
         if self.execute:
@@ -1363,14 +2051,20 @@ class Migrator:
             self.record("daily-memory", source_dir, destination, "skipped", "No .md files found in workspace/memory/")
             return
 
-        all_incoming: List[str] = []
+        all_incoming: list[str] = []
         for md_file in md_files:
-            entries = extract_markdown_entries(read_text(md_file))
+            try:
+                # read_text() uses errors="replace" so it cannot raise
+                # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                entries = extract_markdown_entries(read_text(md_file))
+            except OSError:
+                continue
             all_incoming.extend(entries)
 
         if not all_incoming:
             self.record("daily-memory", source_dir, destination, "skipped", "No importable entries found in daily memory files")
             return
+        all_incoming = [rebrand_text(entry) for entry in all_incoming]
 
         existing = parse_existing_memory_entries(destination)
         merged, stats, overflowed = merge_entries(existing, all_incoming, self.memory_limit)
@@ -1435,7 +2129,7 @@ class Migrator:
                 if final_destination == destination and destination.exists():
                     shutil.rmtree(destination)
                 shutil.copytree(skill_dir, final_destination)
-                details: Dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
+                details: dict[str, Any] = {"backup": str(backup_path) if backup_path else ""}
                 if final_destination != destination:
                     details["renamed_from"] = str(destination)
                 self.record("skill", skill_dir, final_destination, "migrated", **details)
@@ -1518,6 +2212,7 @@ class Migrator:
             self.source_candidate("workspace/IDENTITY.md", "workspace.default/IDENTITY.md"),
             self.source_candidate("workspace/TOOLS.md", "workspace.default/TOOLS.md"),
             self.source_candidate("workspace/HEARTBEAT.md", "workspace.default/HEARTBEAT.md"),
+            self.source_candidate("workspace/BOOTSTRAP.md", "workspace.default/BOOTSTRAP.md"),
         ]
         for candidate in candidates:
             if candidate:
@@ -1562,7 +2257,7 @@ class Migrator:
             self.record("archive", source, destination, "archived", reason)
 
     # ── MCP servers ─────────────────────────────────────────────
-    def migrate_mcp_servers(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_mcp_servers(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         mcp_raw = (config.get("mcp") or {}).get("servers") or {}
         if not mcp_raw:
@@ -1582,7 +2277,7 @@ class Migrator:
                             "MCP server already exists in Hermes config")
                 continue
 
-            hermes_srv: Dict[str, Any] = {}
+            hermes_srv: dict[str, Any] = {}
             # STDIO transport
             if srv.get("command"):
                 hermes_srv["command"] = srv["command"]
@@ -1638,7 +2333,7 @@ class Migrator:
             dump_yaml_file(hermes_cfg_path, hermes_cfg)
 
     # ── Plugins ───────────────────────────────────────────────
-    def migrate_plugins_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_plugins_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         plugins = config.get("plugins") or {}
         if not plugins:
@@ -1669,42 +2364,45 @@ class Migrator:
         entries = plugins.get("entries") or {}
         for plugin_name, plugin_cfg in entries.items():
             if isinstance(plugin_cfg, dict):
-                env_vars = plugin_cfg.get("env") or {}
                 api_key = plugin_cfg.get("apiKey")
                 if api_key and self.migrate_secrets:
                     env_key = f"PLUGIN_{plugin_name.upper().replace('-', '_')}_API_KEY"
                     self._set_env_var(env_key, api_key, f"plugins.entries.{plugin_name}.apiKey")
 
     # ── Cron jobs ─────────────────────────────────────────────
-    def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_cron_jobs(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         cron = config.get("cron") or {}
-        if not cron:
-            self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
-            return
-
-        # Archive the full cron config
-        if self.archive_dir and self.execute:
-            self.archive_dir.mkdir(parents=True, exist_ok=True)
-            dest = self.archive_dir / "cron-config.json"
-            dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            self.record("cron-jobs", "openclaw.json cron.*", str(dest), "archived",
-                        "Cron config archived. Use 'hermes cron' to recreate jobs manually.")
-        else:
-            self.record("cron-jobs", "openclaw.json cron.*", "archive/cron-config.json",
-                        "archived", "Would archive cron config")
-
-        # Also check for cron store files
         cron_store = self.source_root / "cron"
+        found_any = False
+
+        # Archive the full cron config when present
+        if cron:
+            found_any = True
+            if self.archive_dir and self.execute:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+                dest = self.archive_dir / "cron-config.json"
+                dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                self.record("cron-jobs", "openclaw.json cron.*", str(dest), "archived",
+                            "Cron config archived. Use 'hermes cron' to recreate jobs manually.")
+            else:
+                self.record("cron-jobs", "openclaw.json cron.*", "archive/cron-config.json",
+                            "archived", "Would archive cron config")
+
+        # Also check for cron store files even when config.cron is missing
         if cron_store.is_dir() and self.archive_dir:
+            found_any = True
             dest_cron = self.archive_dir / "cron-store"
             if self.execute:
                 shutil.copytree(cron_store, dest_cron, dirs_exist_ok=True)
             self.record("cron-jobs", str(cron_store), str(dest_cron), "archived",
                         "Cron job store archived")
 
+        if not found_any:
+            self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
+
     # ── Hooks ─────────────────────────────────────────────────
-    def migrate_hooks_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_hooks_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         hooks = config.get("hooks") or {}
         if not hooks:
@@ -1734,7 +2432,7 @@ class Migrator:
                 break
 
     # ── Agent config ──────────────────────────────────────────
-    def migrate_agent_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_agent_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         agents = config.get("agents") or {}
         defaults = agents.get("defaults") or {}
@@ -1762,11 +2460,11 @@ class Migrator:
         if defaults.get("thinkingDefault"):
             # Map OpenClaw thinking -> Hermes reasoning_effort
             thinking = defaults["thinkingDefault"]
-            if thinking in ("always", "high"):
+            if thinking in {"always", "high", "xhigh"}:
                 agent_cfg["reasoning_effort"] = "high"
-            elif thinking in ("auto", "medium"):
+            elif thinking in {"auto", "medium", "adaptive"}:
                 agent_cfg["reasoning_effort"] = "medium"
-            elif thinking in ("off", "low", "none"):
+            elif thinking in {"off", "low", "none", "minimal"}:
                 agent_cfg["reasoning_effort"] = "low"
             changes = True
 
@@ -1781,7 +2479,9 @@ class Migrator:
             if compaction.get("timeout"):
                 pass  # No direct mapping
             if compaction.get("model"):
-                compression["summary_model"] = compaction["model"]
+                aux = hermes_cfg.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                aux_comp["model"] = compaction["model"]
             hermes_cfg["compression"] = compression
             changes = True
 
@@ -1789,8 +2489,9 @@ class Migrator:
         human_delay = defaults.get("humanDelay") or {}
         if human_delay:
             hd = hermes_cfg.get("human_delay") or {}
-            if human_delay.get("enabled"):
-                hd["mode"] = "natural"
+            hd_mode = human_delay.get("mode") or ("natural" if human_delay.get("enabled") else None)
+            if hd_mode and hd_mode != "off":
+                hd["mode"] = hd_mode
             if human_delay.get("minMs"):
                 hd["min_ms"] = human_delay["minMs"]
             if human_delay.get("maxMs"):
@@ -1804,11 +2505,11 @@ class Migrator:
             changes = True
 
         # Map terminal/exec settings
-        exec_cfg = defaults.get("exec") or (config.get("tools") or {}).get("exec") or {}
+        exec_cfg = (config.get("tools") or {}).get("exec") or {}
         if exec_cfg:
             terminal_cfg = hermes_cfg.get("terminal") or {}
-            if exec_cfg.get("timeout"):
-                terminal_cfg["timeout"] = exec_cfg["timeout"]
+            if exec_cfg.get("timeoutSec") or exec_cfg.get("timeout"):
+                terminal_cfg["timeout"] = exec_cfg.get("timeoutSec") or exec_cfg.get("timeout")
                 changes = True
             hermes_cfg["terminal"] = terminal_cfg
 
@@ -1850,7 +2551,7 @@ class Migrator:
                         "archived", f"Agent routing bindings ({len(bindings)} rules) archived")
 
     # ── Gateway config ────────────────────────────────────────
-    def migrate_gateway_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_gateway_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         gateway = config.get("gateway") or {}
         if not gateway:
@@ -1871,45 +2572,16 @@ class Migrator:
             self._set_env_var("HERMES_GATEWAY_TOKEN", auth["token"], "gateway.auth.token")
 
     # ── Session config ────────────────────────────────────────
-    def migrate_session_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_session_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         session = config.get("session") or {}
         if not session:
             self.record("session-config", None, None, "skipped", "No session configuration found")
             return
 
-        hermes_cfg_path = self.target_root / "config.yaml"
-        hermes_cfg = load_yaml_file(hermes_cfg_path)
-        sr = hermes_cfg.get("session_reset") or {}
-        changes = False
-
-        reset_triggers = session.get("resetTriggers") or session.get("reset_triggers") or {}
-        if reset_triggers:
-            daily = reset_triggers.get("daily") or {}
-            idle = reset_triggers.get("idle") or {}
-
-            if daily.get("enabled") and idle.get("enabled"):
-                sr["mode"] = "both"
-            elif daily.get("enabled"):
-                sr["mode"] = "daily"
-            elif idle.get("enabled"):
-                sr["mode"] = "idle"
-            else:
-                sr["mode"] = "none"
-
-            if daily.get("hour") is not None:
-                sr["at_hour"] = daily["hour"]
-            if idle.get("minutes") or idle.get("timeoutMinutes"):
-                sr["idle_minutes"] = idle.get("minutes") or idle.get("timeoutMinutes")
-            changes = True
-
-        if changes:
-            hermes_cfg["session_reset"] = sr
-            if self.execute:
-                self.maybe_backup(hermes_cfg_path)
-                dump_yaml_file(hermes_cfg_path, hermes_cfg)
-            self.record("session-config", "openclaw.json session.resetTriggers",
-                        "config.yaml session_reset", "migrated")
+        if session.get("reset") or session.get("resetTriggers") or session.get("reset_triggers"):
+            self.record("session-config", "session reset timers", None, "skipped",
+                        "Hermes conversations do not reset on idle or daily timers")
 
         # Archive full session config (identity links, thread bindings, etc.)
         complex_keys = {"identityLinks", "threadBindings", "maintenance", "scope", "sendPolicy"}
@@ -1924,7 +2596,7 @@ class Migrator:
                         "Advanced session settings archived (identity links, thread bindings, etc.)")
 
     # ── Full model providers ──────────────────────────────────
-    def migrate_full_providers(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_full_providers(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         models = config.get("models") or {}
         providers = models.get("providers") or {}
@@ -1960,10 +2632,14 @@ class Migrator:
                                 f"Provider '{prov_name}' already exists")
                     continue
 
-                api_type = prov_cfg.get("apiType") or prov_cfg.get("type") or "openai"
+                api_type = prov_cfg.get("apiType") or prov_cfg.get("api") or prov_cfg.get("type") or "openai"
                 api_mode_map = {
                     "openai": "chat_completions",
+                    "openai-completions": "chat_completions",
+                    "openai-responses": "chat_completions",
                     "anthropic": "anthropic_messages",
+                    "anthropic-messages": "anthropic_messages",
+                    "google-generative-ai": "chat_completions",
                     "cohere": "chat_completions",
                 }
                 entry = {
@@ -1994,7 +2670,7 @@ class Migrator:
                         "archived", f"Model aliases/catalog ({len(model_aliases)} entries) archived")
 
     # ── Deep channel config ───────────────────────────────────
-    def migrate_deep_channels(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_deep_channels(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         channels = config.get("channels") or {}
         if not channels:
@@ -2003,7 +2679,7 @@ class Migrator:
 
         # Extended channel token/allowlist mapping
         CHANNEL_ENV_MAP = {
-            "matrix": {"token": "MATRIX_ACCESS_TOKEN", "allowFrom": "MATRIX_ALLOWED_USERS",
+            "matrix": {"token": "MATRIX...OKEN", "tokenField": "accessToken", "allowFrom": "MATRIX_ALLOWED_USERS",
                         "extras": {"homeserverUrl": "MATRIX_HOMESERVER_URL", "userId": "MATRIX_USER_ID"}},
             "mattermost": {"token": "MATTERMOST_BOT_TOKEN", "allowFrom": "MATTERMOST_ALLOWED_USERS",
                            "extras": {"url": "MATTERMOST_URL", "teamId": "MATTERMOST_TEAM_ID"}},
@@ -2021,19 +2697,21 @@ class Migrator:
             if not ch_cfg:
                 continue
 
-            # Extract tokens
-            if ch_mapping.get("token") and ch_cfg.get("botToken") and self.migrate_secrets:
-                self._set_env_var(ch_mapping["token"], ch_cfg["botToken"],
-                                  f"channels.{ch_name}.botToken")
-            if ch_mapping.get("allowFrom") and ch_cfg.get("allowFrom"):
-                allow_val = ch_cfg["allowFrom"]
+            # Extract tokens (check flat path, then accounts.default)
+            token_field = ch_mapping.get("tokenField", "botToken")
+            bot_token = self._get_channel_field(ch_cfg, token_field)
+            if ch_mapping.get("token") and bot_token and self.migrate_secrets:
+                self._set_env_var(ch_mapping["token"], str(bot_token),
+                                  f"channels.{ch_name}.{token_field}")
+            allow_val = self._get_channel_field(ch_cfg, "allowFrom")
+            if ch_mapping.get("allowFrom") and allow_val:
                 if isinstance(allow_val, list):
                     allow_val = ",".join(str(x) for x in allow_val)
                 self._set_env_var(ch_mapping["allowFrom"], str(allow_val),
                                   f"channels.{ch_name}.allowFrom")
             # Extra fields
             for oc_key, env_key in (ch_mapping.get("extras") or {}).items():
-                val = ch_cfg.get(oc_key)
+                val = self._get_channel_field(ch_cfg, oc_key)
                 if val:
                     if isinstance(val, list):
                         val = ",".join(str(x) for x in val)
@@ -2065,8 +2743,8 @@ class Migrator:
             if not isinstance(ch_cfg, dict):
                 continue
             complex_keys = {k: v for k, v in ch_cfg.items()
-                          if k not in ("botToken", "appToken", "allowFrom", "enabled")
-                          and v and k not in ("requireMention", "autoThread")}
+                          if k not in {"botToken", "appToken", "allowFrom", "enabled"}
+                          and v and k not in {"requireMention", "autoThread"}}
             if complex_keys:
                 complex_archive[ch_name] = complex_keys
 
@@ -2080,7 +2758,7 @@ class Migrator:
                         f"Deep channel config for {len(complex_archive)} channels archived")
 
     # ── Browser config ────────────────────────────────────────
-    def migrate_browser_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_browser_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         browser = config.get("browser") or {}
         if not browser:
@@ -2092,11 +2770,12 @@ class Migrator:
         browser_hermes = hermes_cfg.get("browser") or {}
         changed = False
 
-        if browser.get("inactivityTimeoutMs"):
-            browser_hermes["inactivity_timeout"] = browser["inactivityTimeoutMs"] // 1000
+        # Map fields that have Hermes equivalents
+        if browser.get("cdpUrl"):
+            browser_hermes["cdp_url"] = browser["cdpUrl"]
             changed = True
-        if browser.get("commandTimeoutMs"):
-            browser_hermes["command_timeout"] = browser["commandTimeoutMs"] // 1000
+        if browser.get("headless") is not None:
+            browser_hermes["headless"] = browser["headless"]
             changed = True
 
         if changed:
@@ -2107,9 +2786,9 @@ class Migrator:
             self.record("browser-config", "openclaw.json browser.*", "config.yaml browser",
                         "migrated")
 
-        # Archive advanced browser settings
+        # Archive remaining browser settings
         advanced = {k: v for k, v in browser.items()
-                   if k not in ("inactivityTimeoutMs", "commandTimeoutMs") and v}
+                   if k not in {"cdpUrl", "headless"} and v}
         if advanced and self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -2119,7 +2798,7 @@ class Migrator:
                         "archive/browser-config.json", "archived")
 
     # ── Tools config ──────────────────────────────────────────
-    def migrate_tools_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_tools_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         tools = config.get("tools") or {}
         if not tools:
@@ -2130,18 +2809,22 @@ class Migrator:
         hermes_cfg = load_yaml_file(hermes_cfg_path)
         changed = False
 
-        # Map exec timeout -> terminal timeout
+        # Map exec timeout -> terminal timeout (field is timeoutSec in OpenClaw)
         exec_cfg = tools.get("exec") or {}
-        if exec_cfg.get("timeout"):
+        timeout_val = exec_cfg.get("timeoutSec") or exec_cfg.get("timeout")
+        if timeout_val:
             terminal_cfg = hermes_cfg.get("terminal") or {}
-            terminal_cfg["timeout"] = exec_cfg["timeout"]
+            terminal_cfg["timeout"] = timeout_val
             hermes_cfg["terminal"] = terminal_cfg
             changed = True
 
-        # Map web search API key
-        web_cfg = tools.get("webSearch") or tools.get("web") or {}
-        if web_cfg.get("braveApiKey") and self.migrate_secrets:
-            self._set_env_var("BRAVE_API_KEY", web_cfg["braveApiKey"], "tools.webSearch.braveApiKey")
+        # Map web search API key (path: tools.web.search.brave.apiKey in OpenClaw)
+        web_cfg = tools.get("web") or tools.get("webSearch") or {}
+        search_cfg = web_cfg.get("search") or web_cfg if not web_cfg.get("search") else web_cfg["search"]
+        brave_cfg = search_cfg.get("brave") or {}
+        brave_key = brave_cfg.get("apiKey") or search_cfg.get("braveApiKey") or web_cfg.get("braveApiKey")
+        if brave_key and isinstance(brave_key, str) and self.migrate_secrets:
+            self._set_env_var("BRAVE_API_KEY", brave_key, "tools.web.search.brave.apiKey")
 
         if changed and self.execute:
             self.maybe_backup(hermes_cfg_path)
@@ -2159,7 +2842,7 @@ class Migrator:
                         "archived", "Full tools config archived for reference")
 
     # ── Approvals config ──────────────────────────────────────
-    def migrate_approvals_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_approvals_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         approvals = config.get("approvals") or {}
         if not approvals:
@@ -2169,8 +2852,9 @@ class Migrator:
         hermes_cfg_path = self.target_root / "config.yaml"
         hermes_cfg = load_yaml_file(hermes_cfg_path)
 
-        # Map approval mode
-        mode = approvals.get("mode") or approvals.get("defaultMode")
+        # Map approval mode (nested under approvals.exec.mode in OpenClaw)
+        exec_approvals = approvals.get("exec") or {}
+        mode = (exec_approvals.get("mode") if isinstance(exec_approvals, dict) else None) or approvals.get("mode") or approvals.get("defaultMode")
         if mode:
             mode_map = {"auto": "off", "always": "manual", "smart": "smart", "manual": "manual"}
             hermes_mode = mode_map.get(mode, "manual")
@@ -2191,7 +2875,7 @@ class Migrator:
                         "archive/approvals-config.json", "archived")
 
     # ── Memory backend ────────────────────────────────────────
-    def migrate_memory_backend(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_memory_backend(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         memory = config.get("memory") or {}
         if not memory:
@@ -2206,7 +2890,7 @@ class Migrator:
                     "archived", "Memory backend config (QMD, vector search, citations) archived for manual review")
 
     # ── Skills config ─────────────────────────────────────────
-    def migrate_skills_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_skills_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         skills = config.get("skills") or {}
         entries = skills.get("entries") or {}
@@ -2222,7 +2906,7 @@ class Migrator:
                     "archived", f"Skills registry config ({len(entries)} entries) archived")
 
     # ── UI / Identity ─────────────────────────────────────────
-    def migrate_ui_identity(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_ui_identity(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         ui = config.get("ui") or {}
         if not ui:
@@ -2237,7 +2921,7 @@ class Migrator:
                     "archived", "UI theme and identity settings archived")
 
     # ── Logging / Diagnostics ─────────────────────────────────
-    def migrate_logging_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def migrate_logging_config(self, config: Optional[dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         logging_cfg = config.get("logging") or {}
         diagnostics = config.get("diagnostics") or {}
@@ -2313,13 +2997,71 @@ class Migrator:
                 notes.append(f"- **{item.kind}**: {item.reason}")
             notes.append("")
 
+        has_cron_config_archive = any(
+            i.kind == "cron-jobs" and i.status == "archived" and i.destination and i.destination.endswith("cron-config.json")
+            for i in self.items
+        )
+        has_cron_store_archive = any(
+            i.kind == "cron-jobs" and i.status == "archived" and i.destination and i.destination.endswith("cron-store")
+            for i in self.items
+        )
+
         notes.extend([
+            "## IMPORTANT: Archive the OpenClaw Directory",
+            "",
+            "After migration, your OpenClaw directory still exists on disk with workspace",
+            "state files (todo.json, sessions, logs). If the Hermes agent discovers these",
+            "directories, it may read/write to them instead of the Hermes state, causing",
+            "confusion (e.g., cron jobs reading a different todo list than interactive sessions).",
+            "",
+            "**Strongly recommended:** Run `hermes claw cleanup` to rename the OpenClaw",
+            "directory to `.openclaw.pre-migration`. This prevents the agent from finding it.",
+            "The directory is renamed, not deleted — you can undo this at any time.",
+            "",
+            "If you skip this step and notice the agent getting confused about workspaces",
+            "or todo lists, run `hermes claw cleanup` to fix it.",
+            "",
             "## Hermes-Specific Setup",
             "",
             "After migration, you may want to:",
+            "- Run `hermes claw cleanup` to archive the OpenClaw directory (prevents state confusion)",
             "- Run `hermes setup` to configure any remaining settings",
             "- Run `hermes mcp list` to verify MCP servers were imported correctly",
-            "- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)",
+        ])
+
+        if has_cron_config_archive:
+            notes.append("- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)")
+        elif has_cron_store_archive:
+            notes.append("- Run `hermes cron` to recreate scheduled tasks (see archived cron-store)")
+
+        # Check if skills were imported
+        has_skills = any(i.kind == "skills" and i.status == "migrated" for i in self.items)
+        if has_skills:
+            notes.extend([
+                "",
+                "## Imported Skills",
+                "",
+                "Imported skills require a new session to take effect. After migration,",
+                "restart your agent or start a new chat session, then run `/skills`",
+                "to verify they loaded correctly.",
+                "",
+            ])
+
+        # Check if WhatsApp was detected
+        has_whatsapp = any(i.kind == "whatsapp-settings" and i.status == "migrated" for i in self.items)
+        if has_whatsapp:
+            notes.extend([
+                "",
+                "## WhatsApp Requires Re-Pairing",
+                "",
+                "WhatsApp uses QR-code pairing, not token-based auth. Your allowlist",
+                "was migrated, but you must re-pair the device by running:",
+                "",
+                "    hermes whatsapp",
+                "",
+            ])
+
+        notes.extend([
             "- Run `hermes gateway install` if you need the gateway service",
             "- Review `~/.hermes/config.yaml` for any adjustments",
             "",
@@ -2335,7 +3077,7 @@ class Migrator:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into Hermes Agent.")
     parser.add_argument("--source", default=str(Path.home() / ".openclaw"), help="OpenClaw home directory")
-    parser.add_argument("--target", default=str(Path.home() / ".hermes"), help="Hermes home directory")
+    parser.add_argument("--target", default=os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes"), help="Hermes home directory")
     parser.add_argument(
         "--workspace-target",
         help="Optional workspace root where the workspace instructions file should be copied",
@@ -2373,6 +3115,13 @@ def parse_args() -> argparse.Namespace:
              f"Valid ids: {', '.join(sorted(MIGRATION_OPTION_METADATA))}",
     )
     parser.add_argument("--output-dir", help="Where to write report, backups, and archived docs")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the migration report as JSON on stdout (redacted). "
+             "Combine with no --execute for a safe plan-only machine-readable preview.",
+    )
     return parser.parse_args()
 
 
@@ -2397,6 +3146,13 @@ def main() -> int:
     )
     report = migrator.migrate()
 
+    # ── Machine-readable JSON mode ────────────────────────────
+    # When --json is set, print the redacted report to stdout and skip the
+    # human-readable terminal recap.  Useful for CI and scripted wrappers.
+    if getattr(args, "json_output", False):
+        print(json.dumps(redact_migration_value(report), indent=2, ensure_ascii=False))
+        return 0
+
     # ── Human-readable terminal recap ─────────────────────────
     s = report["summary"]
     items = report["items"]
@@ -2404,16 +3160,16 @@ def main() -> int:
     total = sum(s.values())
 
     print()
-    print(f"  ╔══════════════════════════════════════════════════════╗")
+    print("  ╔══════════════════════════════════════════════════════╗")
     print(f"  ║   OpenClaw -> Hermes Migration   [{mode_label:>8s}]   ║")
-    print(f"  ╠══════════════════════════════════════════════════════╣")
+    print("  ╠══════════════════════════════════════════════════════╣")
     print(f"  ║  Source:  {str(report['source_root'])[:42]:<42s}  ║")
     print(f"  ║  Target:  {str(report['target_root'])[:42]:<42s}  ║")
-    print(f"  ╠══════════════════════════════════════════════════════╣")
+    print("  ╠══════════════════════════════════════════════════════╣")
     print(f"  ║  ✔ Migrated:  {s.get('migrated', 0):>3d}    ◆ Archived:  {s.get('archived', 0):>3d}        ║")
     print(f"  ║  ⊘ Skipped:   {s.get('skipped', 0):>3d}    ⚠ Conflicts: {s.get('conflict', 0):>3d}        ║")
     print(f"  ║  ✖ Errors:    {s.get('error', 0):>3d}    Total:       {total:>3d}        ║")
-    print(f"  ╚══════════════════════════════════════════════════════╝")
+    print("  ╚══════════════════════════════════════════════════════╝")
 
     # Show what was migrated
     migrated = [i for i in items if i["status"] == "migrated"]

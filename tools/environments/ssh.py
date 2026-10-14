@@ -1,232 +1,302 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
+import contextlib
+import hashlib
 import logging
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
-import threading
-import time
 from pathlib import Path
+from typing import Iterable
 
-from tools.environments.base import BaseEnvironment
-from tools.environments.persistent_shell import PersistentShellMixin
-from tools.interrupt import is_interrupted
+from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
+from tools.environments.base_output import _popen_bash
+from tools.environments.file_sync import (
+    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+from tools.environments.remote_common import (
+    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
+
+# Windows OpenSSH has no Unix-socket ControlMaster: ControlPath/ControlMaster options
+# fail the connection outright ('getsockname failed: Not a socket'). Skip multiplexing there.
+# Skip multiplexing there; each command pays a fresh connection but the backend works. See #73927.
+_SSH_MULTIPLEX = os.name != "nt"
+
+# Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
+_load_hermes_env_vars = load_hermes_env_vars
 
 
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
-    if not shutil.which("ssh"):
-        raise RuntimeError(
-            "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
-        )
+    for tool in ("ssh", "scp"):
+        if not shutil.which(tool):
+            raise RuntimeError(f"{tool.upper()} is not installed or not in PATH. "
+                               "Install OpenSSH client: apt install openssh-client")
 
 
-class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
+def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
+    return EnvironmentConnectionError(
+        reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
+
+
+class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
-    Uses SSH ControlMaster for connection persistence so subsequent
-    commands are fast. Security benefit: the agent cannot modify its
-    own code since execution happens on a separate machine.
-
-    Foreground commands are interruptible: the local ssh process is killed
-    and a remote kill is attempted over the ControlMaster socket.
-
-    When ``persistent=True``, a single long-lived bash shell is kept alive
-    over SSH and state (cwd, env vars, shell variables) persists across
-    ``execute()`` calls.  Output capture uses file-based IPC on the remote
-    host (stdout/stderr/exit-code written to temp files, polled via fast
-    ControlMaster one-shot reads).
+    Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
+    Session snapshot preserves exported env vars across calls (unless
+    ``persistent=False``); CWD persists via in-band
+    stdout markers. Uses SSH ControlMaster for connection reuse.
     """
+
+    # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
+    # they stay out of the remote snapshot under multiplex.
+    _profile_scoped_passthrough = True
+    _sudo_nopasswd_probe_supported = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
-                 persistent: bool = False):
-        super().__init__(cwd=cwd, timeout=timeout)
-        self.host = host
-        self.user = user
-        self.port = port
-        self.key_path = key_path
-        self.persistent = persistent
-
+                 probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
+        super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
+        self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
-        self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
+        # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
+        # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
+        # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
+        # per-instance socket so its cleanup() can never close the agent's shared master.
+        socket_key = f"{user}@{host}:{port}"
+        if probe_only:
+            socket_key = f"{socket_key}:probe:{self._session_id}"
+        _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
+        self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()
         self._establish_connection()
+        if probe_only:
+            self._sync_manager = None
+            return
+        self._remote_home_detected = False
+        self._remote_home = self._detect_remote_home()
+        self._sync_manager = None
+        if sync_files:
+            self._ensure_remote_dirs()
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+            self._sync_manager.sync(force=True)
+        self.init_session()
 
-        if self.persistent:
-            self._init_persistent_shell()
+    def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:
+        """One ControlMaster per SendEnv name-set, beside the plain target socket: a mux master only
+        relays the env names it was itself started with and silently drops the rest, so a passthrough
+        command must ride a master that knows its names. scp/sync/probes keep the plain socket."""
+        plain = Path(self.control_socket)
+        if not send_env:
+            return plain
+        # <target-id[:8]><names-hash[:8]>.sock: same length as the plain socket (macOS's 104-byte
+        # sun_path cap) and prefix-globbable so cleanup() finds every sibling without extra state.
+        digest = hashlib.sha256(" ".join(send_env).encode()).hexdigest()[:8]
+        return plain.with_name(f"{plain.stem[:8]}{digest}.sock")
 
-    def _build_ssh_command(self, extra_args: list | None = None) -> list:
+    def _control_sockets(self) -> list[Path]:
+        """The plain socket plus every SendEnv-set sibling (shared 8-char target prefix)."""
+        plain = Path(self.control_socket)
+        siblings = sorted(plain.parent.glob(f"{plain.stem[:8]}*.sock")) if plain.parent.is_dir() else []
+        return [plain, *(s for s in siblings if s != plain)]
+
+    def _target_flags(self, port_flag: str) -> list:
+        """Port/key flags shared by ssh (``-p``) and scp (``-P``)."""
+        flags = [port_flag, str(self.port)] if self.port != 22 else []
+        return flags + (["-i", self.key_path] if self.key_path else [])
+
+    def _build_ssh_command(self, extra_args: list | None = None, send_env: Iterable[str] = ()) -> list:
+        send_env = tuple(sorted(send_env))
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
-        cmd.extend(["-o", "BatchMode=yes"])
-        cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
-        cmd.extend(["-o", "ConnectTimeout=10"])
-        if self.port != 22:
-            cmd.extend(["-p", str(self.port)])
-        if self.key_path:
-            cmd.extend(["-i", self.key_path])
-        if extra_args:
-            cmd.extend(extra_args)
+        if _SSH_MULTIPLEX:
+            cmd.extend(["-o", f"ControlPath={self._control_socket_for(send_env)}",
+                        "-o", "ControlMaster=auto", "-o", "ControlPersist=300"])
+        cmd.extend(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"])
+        # Names only; values ride the ssh client's own environment (never the remote command text).
+        cmd.extend(arg for name in send_env for arg in ("-o", f"SendEnv={name}"))
+        cmd.extend(self._target_flags("-p"))
+        cmd.extend(extra_args or [])
         cmd.append(f"{self.user}@{self.host}")
         return cmd
 
+    def _run_ssh(self, remote_cmd: str, timeout: float) -> subprocess.CompletedProcess:
+        """Run one remote shell command over the multiplexed connection, capturing output."""
+        return run_capture(self._build_ssh_command() + [remote_cmd], timeout=timeout)
+
+    def _run_ssh_checked(self, remote_cmd: str, timeout: float, reason: str, subject: str) -> None:
+        result = self._run_ssh(remote_cmd, timeout=timeout)
+        if result.returncode != 0:
+            raise _sync_error(f"{reason}: {result.stderr.strip()}", subject)
+
     def _establish_connection(self):
-        cmd = self._build_ssh_command()
-        cmd.append("echo 'SSH connection established'")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or result.stdout.strip()
-                raise RuntimeError(f"SSH connection failed: {error_msg}")
+            result = self._run_ssh("echo 'SSH connection established'", timeout=15)
         except subprocess.TimeoutExpired:
-            raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
+            raise EnvironmentConnectionError(
+                f"SSH connection to {self.user}@{self.host} timed out",
+                retry_hint=(f"Check that {self.host} is up and reachable on port {self.port} "
+                            "and that sshd is running, then retry."))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or result.stdout.strip()
+            raise EnvironmentConnectionError(
+                f"SSH connection failed: {error_msg}",
+                retry_hint=(f"Check that {self.host} is up, sshd is running on port {self.port}, and "
+                            f"{self.user} can log in with the configured key, then retry — "
+                            "the connection is re-established automatically."))
 
-    _poll_interval_start: float = 0.15  # SSH: higher initial interval (150ms) for network latency
+    def _detect_remote_home(self) -> str:
+        """Detect the remote user's home directory."""
+        with contextlib.suppress(Exception):
+            result = self._run_ssh("echo $HOME", timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                logger.debug("SSH: remote home = %s", result.stdout.strip())
+                self._remote_home_detected = True
+                return result.stdout.strip()
+        return "/root" if self.user == "root" else f"/home/{self.user}"
 
-    @property
-    def _temp_prefix(self) -> str:
-        return f"/tmp/hermes-ssh-{self._session_id}"
+    def _ensure_remote_dirs(self) -> None:
+        """Create base ~/.hermes directory tree on remote in one SSH call."""
+        base = f"{self._remote_home}/.hermes"
+        self._run_ssh(quoted_mkdir_command([base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]),
+                      timeout=10)
 
-    def _spawn_shell_process(self) -> subprocess.Popen:
-        cmd = self._build_ssh_command()
-        cmd.append("bash -l")
-        return subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
+    def _scp_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via scp over ControlMaster."""
+        self._run_ssh(f"mkdir -p {shlex.quote(str(Path(remote_path).parent))}", timeout=10)
+        scp_cmd = ["scp"] + (["-o", f"ControlPath={self.control_socket}"] if _SSH_MULTIPLEX else [])
+        scp_cmd += self._target_flags("-P") + [host_path, f"{self.user}@{self.host}:{remote_path}"]
+        result = run_capture(scp_cmd, timeout=30)
+        if result.returncode != 0:
+            raise _sync_error(f"scp failed: {result.stderr.strip()}", f"File sync to {self.user}@{self.host}")
 
-    def _read_temp_files(self, *paths: str) -> list[str]:
-        if len(paths) == 1:
-            cmd = self._build_ssh_command()
-            cmd.append(f"cat {paths[0]} 2>/dev/null")
-            try:
-                result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=10,
-                )
-                return [result.stdout]
-            except (subprocess.TimeoutExpired, OSError):
-                return [""]
-
-        delim = f"__HERMES_SEP_{self._session_id}__"
-        script = "; ".join(
-            f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths
-        )
-        cmd = self._build_ssh_command()
-        cmd.append(script)
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10,
-            )
-            parts = result.stdout.split(delim + "\n")
-            return [parts[i] if i < len(parts) else "" for i in range(len(paths))]
-        except (subprocess.TimeoutExpired, OSError):
-            return [""] * len(paths)
-
-    def _kill_shell_children(self):
-        if self._shell_pid is None:
+    def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in one tar-over-SSH stream: local ``tar c`` piped through one SSH
+        connection to remote ``tar x``, after a single batched ``mkdir -p``."""
+        if not files:
             return
-        cmd = self._build_ssh_command()
-        cmd.append(f"pkill -P {self._shell_pid} 2>/dev/null; true")
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        base = f"{self._remote_home}/.hermes"
+        parents = unique_parent_dirs(files)
+        if parents:
+            self._run_ssh_checked(quoted_mkdir_command(parents), 30, "remote mkdir failed",
+                                  f"Remote directory setup on {self.host}")
 
-    def _cleanup_temp_files(self):
-        cmd = self._build_ssh_command()
-        cmd.append(f"rm -f {self._temp_prefix}-*")
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    def _execute_oneshot(self, command: str, cwd: str = "", *,
-                         timeout: int | None = None,
-                         stdin_data: str | None = None) -> dict:
-        work_dir = cwd or self.cwd
-        exec_command, sudo_stdin = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
-        effective_timeout = timeout or self.timeout
-
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
-
-        cmd = self._build_ssh_command()
-        cmd.append(wrapped)
-
-        kwargs = self._build_run_kwargs(timeout, effective_stdin)
-        kwargs.pop("timeout", None)
-        _output_chunks = []
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
-            text=True,
-        )
-
-        if effective_stdin:
-            try:
-                proc.stdin.write(effective_stdin)
-                proc.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
-
-        def _drain():
-            try:
-                for line in proc.stdout:
-                    _output_chunks.append(line)
-            except Exception:
-                pass
-
-        reader = threading.Thread(target=_drain, daemon=True)
-        reader.start()
-        deadline = time.monotonic() + effective_timeout
-
-        while proc.poll() is None:
-            if is_interrupted():
-                proc.terminate()
+        # Symlink staging avoids fragile GNU tar --transform rules. On Windows
+        # without Developer Mode symlink creation raises OSError winerror 1314;
+        # only that case falls back to a plain copy, other OSErrors re-raise.
+        with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            for host_path, remote_path in files:
                 try:
-                    proc.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                reader.join(timeout=2)
-                return {
-                    "output": "".join(_output_chunks) + "\n[Command interrupted]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                proc.kill()
-                reader.join(timeout=2)
-                return self._timeout_result(effective_timeout)
-            time.sleep(0.2)
+                    rel_remote = os.path.relpath(remote_path, base)
+                except ValueError as exc:
+                    raise RuntimeError(f"remote path {remote_path!r} is not under sync base {base!r}") from exc
+                if rel_remote == "." or rel_remote.startswith("../"):
+                    raise RuntimeError(f"remote path {remote_path!r} escapes sync base {base!r}")
+                staged = os.path.join(staging, rel_remote)
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                try:
+                    os.symlink(os.path.abspath(host_path), staged)
+                except OSError as e:
+                    if getattr(e, "winerror", None) != 1314:
+                        raise
+                    shutil.copy2(host_path, staged)
 
-        reader.join(timeout=5)
-        return {"output": "".join(_output_chunks), "returncode": proc.returncode}
+            # --no-overwrite-dir keeps tar from stamping the staging dir's mode onto
+            # existing dirs (e.g. /home/<user>); a umask-002 0775 home breaks sshd StrictModes.
+            ssh_cmd = self._build_ssh_command() + [f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}"]
+            tar_proc = subprocess.Popen(["tar", "-chf", "-", "-C", staging, "."], stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                ssh_proc = subprocess.Popen(ssh_cmd, stdin=tar_proc.stdout,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except Exception:
+                tar_proc.kill()
+                tar_proc.wait()
+                raise
+            tar_proc.stdout.close()  # let tar_proc receive SIGPIPE if ssh_proc exits early
+            try:
+                _, ssh_stderr = ssh_proc.communicate(timeout=120)
+                # communicate() (not wait()) drains stderr so tar can't deadlock on >PIPE_BUF errors.
+                if tar_proc.poll() is None:
+                    _, tar_stderr_raw = tar_proc.communicate(timeout=10)
+                else:
+                    tar_stderr_raw = tar_proc.stderr.read() if tar_proc.stderr else b""
+            except subprocess.TimeoutExpired:
+                for proc in (tar_proc, ssh_proc):
+                    proc.kill()
+                for proc in (tar_proc, ssh_proc):
+                    proc.wait()  # kill both first, then reap: never wait on one while the other blocks
+                raise EnvironmentConnectionError(
+                    "SSH bulk upload timed out",
+                    retry_hint=f"Bulk file sync to {self.host} timed out — check the connection and retry.")
+            if tar_proc.returncode != 0:
+                raise RuntimeError(f"tar create failed (rc={tar_proc.returncode}): "
+                                   f"{tar_stderr_raw.decode(errors='replace').strip()}")
+            if ssh_proc.returncode != 0:
+                raise _sync_error(f"tar extract over SSH failed (rc={ssh_proc.returncode}): "
+                                  f"{ssh_stderr.decode(errors='replace').strip()}",
+                                  f"File sync over SSH to {self.host}", what="the connection")
+        logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _ssh_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive."""
+        # Tar from / with the full path so archive entries keep absolute paths
+        # (home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
+        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
+        # "socket ignored" and some builds exit 2, which failed every sync-back and left a
+        # multi-GB temp tar behind on each retry. Exclude them up front.
+        ssh_cmd = self._build_ssh_command() + [
+            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
+        with open(dest, "wb") as f:
+            result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace").strip()
+            # A socket not named *.sock is the only rc=2 we knowingly accept, and only when
+            # nothing else was reported — anchored to the diagnostic suffix so a filename merely
+            # containing "socket ignored" cannot sneak through. Every other status still fails.
+            diagnostic_lines = [line for line in stderr.splitlines() if line.strip()]
+            tolerated = result.returncode == 2 and bool(diagnostic_lines) and all(
+                line.endswith(": socket ignored") for line in diagnostic_lines)
+            if not tolerated:
+                raise _sync_error(f"SSH bulk download failed: {stderr}",
+                                  f"File sync from {self.host}")
+
+    def _ssh_delete(self, remote_paths: list[str]) -> None:
+        self._run_ssh_checked(quoted_rm_command(remote_paths), 10, "remote rm failed",
+                              f"Remote file cleanup on {self.host}")
+
+    def _before_execute(self) -> None:
+        if self._sync_manager is not None:
+            self._sync_manager.sync()  # rate-limited internally
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        """Forward the passthrough allowlist (skill ``required_environment_variables`` +
+        ``terminal.env_passthrough``) the way docker does: ``SendEnv`` carries the names, the ssh
+        client's env carries the values, so secrets never enter the remote ``bash -c`` argv. The
+        remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
+        scope are unset remotely so a shared host cannot serve another profile's value."""
+        values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
+        cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
+        client_env = client_env_with(values)
+        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
-        super().cleanup()
-        if self.control_socket.exists():
-            try:
-                cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
-                       "-O", "exit", f"{self.user}@{self.host}"]
-                subprocess.run(cmd, capture_output=True, timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                pass
-            try:
-                self.control_socket.unlink()
-            except OSError:
-                pass
+        if self._sync_manager:
+            logger.info("SSH: syncing files from sandbox...")
+            self._sync_manager.sync_back()
+        for socket in self._control_sockets():
+            if not socket.exists():
+                continue
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
+                subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
+            with contextlib.suppress(OSError):
+                socket.unlink()

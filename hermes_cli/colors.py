@@ -1,6 +1,14 @@
 """Shared ANSI color utilities for Hermes CLI modules."""
 
+import os
 import sys
+
+
+def should_use_color() -> bool:
+    """Return True when colored output is appropriate."""
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("TERM") == "dumb":
+        return False
+    return bool(sys.stdout.isatty())
 
 
 class Colors:
@@ -16,7 +24,7 @@ class Colors:
 
 
 def color(text: str, *codes) -> str:
-    """Apply color codes to text (only when output is a TTY)."""
-    if not sys.stdout.isatty():
+    """Apply color codes to text (only when color output is appropriate)."""
+    if not should_use_color():
         return text
     return "".join(codes) + text + Colors.RESET

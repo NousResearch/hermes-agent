@@ -235,3 +235,66 @@ def test_tool_is_never_deferrable():
     # Core names short-circuit before the toolset check, so listing
     # "connections" in _DIRECT_SURFACE_TOOLSETS would be redundant.
     assert is_deferrable_tool_name("manage_connections") is False
+
+def test_status_reports_hosted_and_local_mcp_separately_without_claiming_account_auth():
+    """An unconnected hosted Calendar does not hide an enabled Google MCP."""
+    from unittest.mock import patch
+
+    client = FakeClient()
+    with patch("tools.connectors.tool._local_mcp_status", return_value=[{
+        "name": "google_workspace", "enabled": True, "status": "configured",
+        "transport_connected": False, "tools": 0,
+    }, {
+        "name": "cloudflare_api", "enabled": False, "status": "disabled",
+        "transport_connected": False, "tools": 0,
+    }]):
+        out = json.loads(manage_connections({"action": "status"}, client_factory=lambda: client))
+
+    assert out["connectors"][0]["connector"] == "gmail"
+    assert out["connectors"][0]["connected"] is False
+    assert out["mcp_servers"][0]["name"] == "google_workspace"
+    assert out["mcp_servers"][0]["status"] == "configured"
+    assert out["mcp_servers"][0]["transport_connected"] is False
+    assert out["mcp_servers"][1]["enabled"] is False
+    assert "does NOT" in out["hint"]
+    assert "separately configured MCP" in out["hint"]
+    assert out["connection_sources"]["connectors"].startswith("hosted")
+    assert "OAuth" in out["connection_sources"]["mcp_servers"]
+
+
+def test_status_local_mcp_projection_never_discloses_secrets():
+    from tools.connectors.tool import _local_mcp_status
+
+    with patch("tools.mcp_tool_discovery.get_mcp_status", return_value=[{
+        "name": "google_workspace",
+        "disabled": False,
+        "status": "connected",
+        "connected": True,
+        "tools": 119,
+        "url": "https://example.invalid?token=private",
+        "error": "Sensitive OAuth credentials",
+    }]):
+        out = _local_mcp_status()
+    assert out == [{"name": "google_workspace", "enabled": True,
+                    "status": "connected", "transport_connected": True, "tools": 119}]
+    assert "private" not in json.dumps(out)
+    assert "credentials" not in json.dumps(out).lower()
+
+
+def test_unavailable_mcp_status_never_falsely_reports_a_connection():
+    with patch("tools.connectors.tool._local_mcp_status", side_effect=RuntimeError("bad status")):
+        out = json.loads(manage_connections({"action": "status"}, client_factory=FakeClient))
+    assert out["mcp_status_available"] is False
+    assert out["mcp_servers"] == []
+    assert out["connectors"][0]["connected"] is False
+
+
+def test_display_fallback_includes_local_mcp_status_but_does_not_reauthorize():
+    with patch("tools.connectors.tool._local_mcp_status", return_value=[{
+        "name": "google_workspace", "enabled": True, "status": "lazy",
+        "transport_connected": False, "tools": 119,
+    }]):
+        out = json.loads(manage_connections({"action": "display"}, client_factory=FakeClient))
+    assert out["mcp_servers"][0]["name"] == "google_workspace"
+    assert out["mcp_servers"][0]["tools"] == 119
+    assert "desktop" in out["note"]

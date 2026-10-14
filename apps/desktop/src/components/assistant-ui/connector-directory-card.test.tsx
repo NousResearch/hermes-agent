@@ -34,7 +34,15 @@ const REPLIES = new Map<string, object>([
       connectors: [row('gmail', true), row('linear', false), row('notion', false), row('slack', false)]
     }
   ],
-  ['connectors.policy.get', { layers: [] }]
+  ['connectors.policy.get', { layers: [] }],
+  ['mcp.servers.list', { servers: [
+    { name: 'google_workspace', enabled: true },
+    { name: 'cloudflare_api', enabled: false }
+  ] }],
+  ['mcp.servers.status', { servers: [
+    { name: 'google_workspace', status: 'connected' },
+    { name: 'cloudflare_api', status: 'disabled' }
+  ], checked_at: 0 }]
 ])
 
 function gateway() {
@@ -107,6 +115,17 @@ describe('ConnectorDirectoryCard', () => {
       newly_connected: [],
       suggested: ['slack', 'linear']
     })
+  })
+
+  it('shows the separate local MCP section without inventing managed account authorization', async () => {
+    gateway()
+    inChat(<ConnectorDirectoryCard onContinue={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByText('google_workspace')).toBeTruthy())
+    expect(screen.getByText('Transport connected')).toBeTruthy()
+    expect(screen.getByText('cloudflare_api')).toBeTruthy()
+    expect(screen.getByText('Disabled')).toBeTruthy()
+    expect(screen.getByText('MCP transport state does not confirm access to a Google account.')).toBeTruthy()
   })
 
   it('collapses to one receipt line naming what the user connected once the call returns', () => {

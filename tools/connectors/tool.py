@@ -4,6 +4,7 @@
 Disconnecting accounts remains a portal-only user decision.
 """
 
+import json
 from typing import Any, Callable, Dict, Optional
 
 from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
@@ -12,6 +13,51 @@ from tools.connectors.managed import run_managed_action
 from tools.connectors.mcp import run_mcp_operation
 from tools.connectors.targets import ALIAS_PATTERN, ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
 from tools.registry import registry, tool_error
+
+
+def _local_mcp_status() -> list[dict[str, Any]]:
+    """Read the current profile's MCP status without connecting or disclosing credentials.
+
+    Runtime 'connected' means the MCP transport is connected in THIS process,
+    NOT that every underlying SaaS account has been authorized.
+    """
+    from tools.mcp_tool_discovery import get_mcp_status
+
+    return [{
+        "name": row["name"],
+        "enabled": not row["disabled"],
+        "status": row["status"],
+        "transport_connected": row["connected"],
+        "tools": row["tools"],
+    } for row in get_mcp_status()]
+
+
+def _with_local_mcp_status(result: str, *, action: str) -> str:
+    """Annotate hosted results rather than treating MCP as hosted authorization."""
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(payload, dict) or "error" in payload:
+        return result
+    try:
+        payload["mcp_servers"] = _local_mcp_status()
+    except Exception:
+        # An unavailable local status must not misreport the connector account.
+        payload["mcp_servers"] = []
+        payload["mcp_status_available"] = False
+    payload["connection_sources"] = {
+        "connectors": "hosted accounts (managed gateway authorization)",
+        "mcp_servers": "locally configured MCP transports (not a per-account OAuth check)",
+    }
+    if action == "status":
+        payload["hint"] = (
+            str(payload.get("hint") or "") + " The hosted 'connected=false' field does NOT "
+            "mean that a separately configured MCP cannot serve the same app. "
+            "Inspect mcp_servers and available MCP tools, and verify account access with "
+            "a read-only MCP call before claiming a service is unavailable."
+        )
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def manage_connections(
@@ -40,12 +86,17 @@ def manage_connections(
             connection_callback=connection_callback, session_id=session_id, tool_call_id=tool_call_id,
         )
 
-    return run_managed_action(
+    result = run_managed_action(
         action, managed, args,
         client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         connection_callback=connection_callback, connectors_available=connectors_available,
         card_surface=card_surface,
     )
+    # The interactive display card has a strict result contract. Its UI reads
+    # local MCP state separately; only status and the non-card fallback are enriched.
+    return (_with_local_mcp_status(result, action=action)
+            if action == "status" or (action == "display" and not card_surface)
+            else result)
 
 
 MANAGE_CONNECTIONS_SCHEMA = {
@@ -63,7 +114,10 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "Hosted actions: 'display' (desktop only; elsewhere returns status) shows every connector and "
         "waits for Continue (300 s); put slugs to suggest in 'connectors'. Returns connected/newly_connected "
         "(+timed_out); the user saw the list, so do not repeat it. 'connect' is for an app the user names. "
-        "'status' lists connectors and whether each is connected; 'connect' "
+        "'status' lists hosted connectors AND separately lists configured MCP servers "
+        "in mcp_servers, with distinct meanings. Hosted connected=false NEVER means "
+        "a local MCP is unavailable; inspect mcp_servers and perform a read-only MCP "
+        "call before telling the user a service is disconnected. 'connect' "
         "starts an authorization for the given connectors; 'reconnect' checks each one and "
         "repairs only what is not connected ('force': true restarts even a working one, for an "
         "account switch). A second account of one app is 'connect' with a new 'alias': pick a short "

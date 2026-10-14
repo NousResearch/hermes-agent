@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
 import {
@@ -10,6 +11,7 @@ import {
 } from '@/app/capabilities/connectors/data/account-operations'
 import { useHostedActions } from '@/app/capabilities/connectors/data/hosted-actions'
 import { useHostedConnectors } from '@/app/capabilities/connectors/data/queries'
+import { listMcpServers, mcpServerStatus } from '@/app/capabilities/connectors/data/rpc'
 import { deriveCards, forgetAbandoned } from '@/app/capabilities/connectors/derive'
 import { HostedNotice } from '@/app/capabilities/connectors/hosted-notice'
 import type { ConnectorCardModel } from '@/app/capabilities/connectors/types'
@@ -107,6 +109,25 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
   const { t } = useI18n()
   const copy = t.connectors
   const hosted = useHostedConnectors(owner)
+
+  // These are independent connection systems. Transport status must never
+  // claim an individual SaaS account has been authorized.
+  const localMcp = useQuery({
+    queryKey: ['connector-directory-local-mcp', JSON.stringify(owner)],
+    queryFn: async () => {
+      const [registered, runtime] = await Promise.all([listMcpServers(owner), mcpServerStatus(owner)])
+      const states = new Map(runtime.servers.map(row => [row.name, row.status]))
+
+      return registered.servers.map(server => ({
+        name: server.name,
+        enabled: server.enabled,
+        status: states.get(server.name) ?? 'configured'
+      }))
+    },
+    staleTime: 30_000,
+    retry: false
+  })
+
   const abandoned = useStore($abandonedConnects)
   const operations = useStore($accountOperations)
   const freeTier = useStore($freeTierStatus)
@@ -257,6 +278,34 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
             {nothingMatches ? <p className="text-xs text-(--ui-text-tertiary)">{copy.empty}</p> : null}
           </>
         )}
+
+        <section aria-label="Local MCP servers" className="grid gap-2 border-t border-border/40 pt-3" data-mcp-directory>
+          <span className={LABEL_CLASS}>Local MCP servers (separate from managed accounts)</span>
+          {localMcp.isError ? (
+            <p className={LABEL_CLASS}>MCP server status unavailable</p>
+          ) : localMcp.isPending ? (
+            <p className={LABEL_CLASS}>Checking MCP servers…</p>
+          ) : (
+            <div className="grid gap-1.5">
+              {localMcp.data.map(server => (
+                <div className="flex justify-between gap-2 text-xs" key={server.name}>
+                  <span className="min-w-0 truncate">{server.name}</span>
+                  <span className="shrink-0 text-(--ui-text-tertiary)">
+                    {!server.enabled
+                      ? 'Disabled'
+                      : server.status === 'connected'
+                        ? 'Transport connected'
+                        : server.status === 'failed'
+                          ? 'Connection failed'
+                          : 'Enabled · not verified'}
+                  </span>
+                </div>
+              ))}
+              {localMcp.data.length === 0 ? <p className={LABEL_CLASS}>No local MCP servers configured</p> : null}
+            </div>
+          )}
+          <p className={LABEL_CLASS}>MCP transport state does not confirm access to a Google account.</p>
+        </section>
       </div>
       <div className="px-3.5">
         <Button onClick={finish} size="xs" variant="textStrong">

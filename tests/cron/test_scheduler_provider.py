@@ -586,6 +586,67 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_ticker_resolves_primary_routes_once_per_cycle(tmp_path):
+    """Satellite profiles share ONE primary-route resolution per cycle (#138105).
+
+    ``_primary_profile_routes_for_current_home`` re-parses the primary home's config.yaml, and
+    resolving it per satellite profile made ticker cost scale with profile count — 71 profiles
+    spent ~2s of pure-Python parsing per 60s cycle, starving the Discord heartbeat under the
+    GIL. Per cycle the answer cannot change, so the second and later satellites in a cycle must
+    reuse the first one's resolution.
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron import scheduler_preflight
+
+    homes = []
+    for name in ("default", "home-ops", "media"):
+        home = tmp_path / name
+        (home / "cron").mkdir(parents=True)
+        homes.append((name, home))
+
+    routes_calls: list[int] = []
+    tick_count: list[int] = []
+
+    def _tracking_tick(*args, **kwargs):
+        tick_count.append(1)
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None), \
+         patch.object(
+             scheduler_preflight, "_primary_profile_routes_for_current_home",
+             side_effect=lambda: routes_calls.append(1) or [],
+         ):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                # One full cycle, then the thread parks in stop_event.wait until torn down —
+                # the assertions below see exactly the first cycle.
+                "interval": 3600,
+                "profile_homes": homes,
+                # Non-empty adapters so every satellite rides SharedRouteAdapters (no profile
+                # of its own), which is the path that consults the primary routes.
+                "adapters": {"telegram": object()},
+            },
+            daemon=True,
+        )
+        t.start()
+        _wait_until(lambda: len(tick_count) >= len(homes))
+        time.sleep(0.2)  # let the cycle's heartbeat tail finish before stopping
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert len(tick_count) == len(homes), f"expected exactly one cycle, got {len(tick_count)} ticks"
+    assert len(routes_calls) == 1, (
+        f"primary routes resolved {len(routes_calls)}x for {len(homes)} satellites in one cycle"
+    )
+
+
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
     """A stale profile_homes entry must not recreate a deleted profile."""
     from cron import jobs

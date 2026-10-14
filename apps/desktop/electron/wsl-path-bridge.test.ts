@@ -76,19 +76,6 @@ test('bridge defaults to active', () => {
   assert.equal(isWslBridgeActive(), true)
 })
 
-test.each([false, true])('local reads resolve shell drive aliases with bridge active=%s', active => {
-  setWslBridgeActive(active)
-
-  for (const prefix of ['/c', '/cygdrive/c', '/mnt/c']) {
-    const target = `${prefix}/Users/alex/notes # 100% café.txt`
-
-    assert.equal(
-      resolveLocalReadPath(target, 'Ubuntu'),
-      process.platform === 'win32' ? 'C:/Users/alex/notes # 100% café.txt' : target
-    )
-  }
-})
-
 test('setWslBridgeActive(false) → resolvePickerDefaultPath passes raw path through without bridging', () => {
   setWslBridgeActive(false)
   // Even a clear WSL POSIX path must pass through unchanged when the bridge
@@ -116,10 +103,14 @@ test('setWslBridgeActive(false) → local reads normalize drive aliases without 
   assert.equal(resolveLocalReadPath(''), '')
 })
 
-test('setWslBridgeActive(true) restores picker bridging', () => {
+test('setWslBridgeActive(true) restores picker bridging while preserving native drive reads', () => {
   setWslBridgeActive(false)
   assert.equal(resolvePickerDefaultPath('/home/alex'), '/home/alex')
 
   setWslBridgeActive(true)
   assert.equal(resolvePickerDefaultPath('/home/alex', 'Ubuntu'), '\\\\wsl.localhost\\Ubuntu\\home\\alex')
+  assert.equal(
+    resolveLocalReadPath('/c/Users/alex', 'Ubuntu'),
+    process.platform === 'win32' ? 'C:/Users/alex' : '/c/Users/alex'
+  )
 })

@@ -33,15 +33,7 @@ export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
   let offset = 0
 
   while (true) {
-    const page = await listAllProfileSessions(
-      ARCHIVED_FETCH_PAGE_SIZE,
-      0,
-      'only',
-      'recent',
-      'all',
-      {},
-      offset
-    )
+    const page = await listAllProfileSessions(ARCHIVED_FETCH_PAGE_SIZE, 0, 'only', 'recent', 'all', {}, offset)
 
     for (const session of page.sessions) {
       if (!seen.has(session.id)) {

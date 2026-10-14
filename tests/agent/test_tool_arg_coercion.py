@@ -8,7 +8,7 @@ against the tool's JSON Schema before dispatch.
 
 from unittest.mock import patch
 
-import model_tools  # noqa: F401 — populates the tool registry the "real schema" tests read
+import model_tools
 from tools.arg_coercion import (
     coerce_tool_args,
     _coerce_value,

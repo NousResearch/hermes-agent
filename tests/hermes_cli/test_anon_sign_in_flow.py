@@ -14,7 +14,7 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_file_path
-from tests.hermes_cli.test_anon_upgrade import (  # noqa: F401  (fixtures used by name)
+from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, PORTAL, WELCOME, _shared_store, _write_model_config, free_account, portal)
 
 __all__ = ["free_account", "portal"]

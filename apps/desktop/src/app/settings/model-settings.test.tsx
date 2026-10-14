@@ -91,6 +91,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // A success toast arms a 5 s auto-dismiss timer; left running, it fires after this file's
+  // jsdom window is gone and vitest reports "window is not defined" as an unhandled error.
+  clearNotifications()
   vi.clearAllMocks()
   profileSwitchHandler = null
 })
@@ -420,9 +423,13 @@ describe('ModelSettings', () => {
 
     fireEvent.click(follow[0])
     await waitFor(() =>
-      expect(setModelAssignment).toHaveBeenCalledWith(
-        { model: '', provider: 'auto', reasoning_effort: null, scope: 'auxiliary', task: 'pinned_task' }
-      )
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: '',
+        provider: 'auto',
+        reasoning_effort: null,
+        scope: 'auxiliary',
+        task: 'pinned_task'
+      })
     )
   })
 
@@ -650,6 +657,92 @@ describe('ModelSettings', () => {
     expect(await screen.findByText(/1 auxiliary task \(/)).toBeTruthy()
     // The row shows where the pinned task actually points.
     expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
+  })
+})
+
+describe('ModelSettings provider switch', () => {
+  // #59063: a provider's model list is per-provider. Switching must not carry
+  // the previous provider's model over (ModelSelect's withActive() would keep
+  // painting it), and an empty freshly-selected custom provider must be probed
+  // via a refresh-scoped options fetch rather than left at 0 models.
+  it('clears the selected model when the user switches provider', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Custom endpoint',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: ['gemma-4-12b-omni'],
+          authenticated: true
+        }
+      ]
+    })
+
+    renderModelSettings()
+    await screen.findAllByRole('combobox')
+
+    // The model select paints the current provider's model.
+    expect(await screen.findByText('hermes-4')).toBeTruthy()
+
+    // Switch provider through the main selector (first combobox opens the
+    // provider dropdown).
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Custom endpoint/ }))
+
+    // The previous provider's model must not carry over.
+    await waitFor(() => expect(screen.queryByText('hermes-4')).toBeNull())
+  })
+
+  it('probes an empty custom provider with a refresh-scoped options fetch on switch', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Lab',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: [],
+          authenticated: true
+        }
+      ]
+    })
+
+    renderModelSettings()
+    await screen.findAllByRole('combobox')
+
+    // The refresh-scoped fetch repopulates the empty provider's models.
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        { name: 'Nous', slug: 'nous', models: ['hermes-4'], authenticated: true },
+        {
+          name: 'Lab',
+          slug: 'custom:lab',
+          api_url: 'http://10.0.0.2:8080/v1',
+          is_user_defined: true,
+          source: 'user-config',
+          models: ['gemma-4-12b-omni'],
+          authenticated: true
+        }
+      ]
+    })
+
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /Lab/ }))
+
+    await waitFor(() => {
+      // refresh-scoped, not the plain read the mount effect already made
+      expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }, undefined)
+    })
+
+    // The refreshed catalog repopulates the empty provider's models: open the
+    // model select and the discovered model is offered.
+    fireEvent.click(screen.getAllByRole('combobox')[1])
+    expect(await screen.findByRole('option', { name: 'gemma-4-12b-omni' })).toBeTruthy()
   })
 })
 

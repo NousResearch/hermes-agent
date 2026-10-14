@@ -15,7 +15,7 @@ from tools.connectors.gateway.errors import (
     ToolGatewayError,
     parse_gateway_error,
 )
-from tools.connectors.gateway.wire import ConnectorAccountsResponse, RemovedConnectorAccount
+from tools.connectors.gateway.wire import ConnectorAccount, ConnectorAccountsResponse, RemovedConnectorAccount
 from tools.connectors.portal.errors import InvalidConnectorSlug, PortalConnectorUnavailable, PortalToolsUnavailable
 from tools.connectors.portal.wire import (
     ConnectorCatalogResponse,
@@ -127,6 +127,12 @@ class PortalConnectorClient:
         response, status = self._request("GET", "/api/v1/connectors/accounts")
         inventory = self._parse(ConnectorAccountsResponse, response, status, PortalConnectorUnavailable, "portal accounts unavailable")
         return [account.model_dump(by_alias=True) for account in inventory.accounts]
+
+    def rename_account(self, connection_id: str, alias: str) -> dict[str, Any]:
+        path = f"/api/v1/connectors/accounts/{quote(connection_id, safe='')}"
+        response, status = self._request("PATCH", path, {"alias": alias})
+        account = self._parse(ConnectorAccount, response, status, PortalConnectorUnavailable, "portal accounts unavailable")
+        return account.model_dump(by_alias=True)
 
     def delete_account(self, connection_id: str) -> dict[str, Any]:
         path = f"/api/v1/connectors/accounts/{quote(connection_id, safe='')}"

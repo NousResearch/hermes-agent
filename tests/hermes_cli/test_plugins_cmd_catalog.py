@@ -15,7 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
-from tests.pm._fixtures import client, isolated_python  # noqa: F401
+from tests.pm._fixtures import client, isolated_python
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -81,7 +81,7 @@ def world(client, tmp_path, monkeypatch):
 
 
 def _head(path: Path) -> str:
-    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
+    return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False).stdout.strip()
 
 
 def test_catalog_platform_mismatch_refuses_before_install(world):
@@ -134,6 +134,32 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
                                   cat.resolved_removed_entries()) == "malware"
 
 
+def test_the_catalog_name_you_installed_with_works_for_every_later_verb(world, tmp_path):
+    """17 catalog entries install under a different manifest name (`hermes-memory-wiki` lands as
+    `plugins/memory-wiki`). Every later verb must accept the name the user typed at install, resolved
+    through the installer's own record; a URL install shipping a forged sidecar must not claim it."""
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: renamed-plugin\nversion: 1.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "manifest name differs from catalog name")
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert pc._find_plugin_entry("cat-plugin") is None
+
+    pc.cmd_install("cat-plugin", enable=False)
+    target = world["plugins_dir"] / "renamed-plugin"
+    assert target.is_dir() and pc._get_enabled_set() == set()
+
+    pc.cmd_enable("cat-plugin")
+    assert pc._get_enabled_set() == {"renamed-plugin"}
+    pc.cmd_show("cat-plugin")
+    pc.cmd_capabilities("cat-plugin")
+    pc.cmd_disable("cat-plugin")
+    assert pc._get_disabled_set() == {"renamed-plugin"}
+    assert pc.dashboard_set_agent_plugin_enabled("cat-plugin", enabled=True)["name"] == "renamed-plugin"
+    assert pc.dashboard_update_user_plugin("cat-plugin")["ok"] is True
+    assert pc.dashboard_remove_user_plugin("cat-plugin")["ok"] is True
+    assert not target.exists()
+    assert "renamed-plugin" not in pc._get_enabled_set()
 
 
 def test_custom_install_records_an_anonymous_extension_install_and_reinstall_none(world, monkeypatch):
@@ -180,6 +206,25 @@ def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     # Control: a real catalog install is still recognised through the metadata record.
     real, _m, _n = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)
     assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
+
+
+def test_url_install_of_an_archived_handoff_repo_is_repinned_to_its_catalog_entry(world, tmp_path, monkeypatch):
+    """A provider that left core was first handed off through a Nous repo that is now archived; a URL install of
+    it has no catalog record, so `update` would keep pulling the archive. It is adopted as the catalog entry that
+    superseded it, and `update` re-pins it to the maintained repo at the reviewed sha."""
+    archived = tmp_path / "archived"
+    target = _install_url(archived, "cat-plugin", {"ARCHIVED.md": "moved\n"})
+    assert cat.read_catalog_sidecar(target) is None  # control: an unknown repo stays a plain URL install
+    monkeypatch.setitem(cat._HANDOFF_REPOS, pc_cat._normalize_repo(archived.as_uri()), "cat-plugin")
+    assert cat.read_catalog_sidecar(target)["catalog_name"] == "cat-plugin"
+    seen = {}
+    real_scan = pc._scan_plugin_tree
+    monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: seen.update(k) or real_scan(*a, **k))
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["ok"] and result["unchanged"] is False and _head(target) == world["sha1"]
+    assert seen["reviewed_pin"] is True  # the re-pinned tree IS the reviewed sha: caution findings don't block it
+    record = pc._read_install_metadata()["cat-plugin"]
+    assert record["source"] == world["repo"].as_uri() and record["catalog"]["repo"] == world["repo"].as_uri()
 
 
 def test_ref_install_records_installed_sha_so_update_is_offered(world):

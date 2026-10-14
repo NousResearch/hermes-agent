@@ -55,6 +55,12 @@ on:
         type: boolean
         required: false
         default: true
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -189,6 +195,13 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
+
   install-update-e2e:
     # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
     # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
@@ -197,6 +210,8 @@ jobs:
     name: Windows install + update E2E
     if: inputs.e2e_upgrade
     uses: ./.github/workflows/windows-install-update-e2e.yml
+    with:
+      strict_acceptance: ${{ inputs.strict_acceptance }}
 
   e2e-windows:
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
@@ -236,6 +251,7 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           HERMES_TEST_WORKERS: '6'
           HERMES_TEST_FILE_TIMEOUT: '900'
           HERMES_TEST_FILE_RETRIES: '0'
@@ -262,3 +278,9 @@ jobs:
             "::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)"
           }
           exit 1
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

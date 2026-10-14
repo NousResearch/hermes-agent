@@ -1,3 +1,4 @@
+import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -506,10 +507,17 @@ export const arSettings = {
         'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
-      updates: 'التحديثات'
+      updates: 'التحديثات',
+      channel: arUpdateChannel
     },
 
     config: {
+      developerTitle: 'المطوّر',
+      resetOnboardingTitle: 'إعادة تعيين الإعداد الأولي',
+      resetOnboardingDesc:
+        'حذف محادثات الإعداد، وإعادة بناء ملف الإعداد الشخصي، وتشغيل الإعداد الأولي مرة أخرى. تبقى ملفاتك الشخصية ومحادثاتك وإضافاتك كما هي.',
+      resetOnboardingAction: 'إعادة تعيين',
+      resetOnboardingFailed: 'تعذّر إعادة تعيين الإعداد الأولي',
       minimizeToTrayTitle: 'التصغير إلى علبة النظام',
       minimizeToTrayDesc:
         'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
@@ -776,6 +784,7 @@ export const arSettings = {
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
+        voice_chat: { label: 'دردشة صوتية', hint: 'ردود الوضع الصوتي' },
         triage_specifier: {
           label: 'محدد الفرز',
           hint: 'توضيح مواصفات كانبان'

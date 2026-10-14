@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
   answerSharedMetricsOffer,
   type SharedMetricsChoice,
@@ -28,12 +29,10 @@ export function SharedMetricsConsentStrip() {
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const profile = normalizeProfileKey(useStore($activeGatewayProfile))
+  const reask = useStore($sharedMetricsConsent)?.reask === true
   const [saving, setSaving] = useState(false)
 
-  const scopedRequest = useMemo(
-    () => sharedMetricsProfileRequester(requestGateway, profile),
-    [profile, requestGateway]
-  )
+  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
 
   const choose = async (choice: SharedMetricsChoice) => {
     setSaving(true)
@@ -80,7 +79,7 @@ export function SharedMetricsConsentStrip() {
     >
       <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">
         <span className="font-medium">{copy.consentTitle}</span>
-        <span className="text-muted-foreground/80"> {copy.stripBody}</span>
+        <span className="text-muted-foreground/80"> {reask ? copy.stripReaskBody : copy.stripBody}</span>
       </span>
     </StatusRow>
   )

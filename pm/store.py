@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
-from pm.filesystem import is_junction, retry_held
+from pm.filesystem import is_junction, long_root, retry_held
 
 
 
@@ -348,7 +348,7 @@ class Store:
     Hash-keyed archives survive failed installs. Publication releases them."""
 
     def __init__(self, root: Path):
-        self.root = root
+        self.root = long_root(root)
 
     def entry(self, name: str) -> Path:
         return self.root / name

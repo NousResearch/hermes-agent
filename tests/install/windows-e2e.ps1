@@ -1139,7 +1139,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $node $driver $desktopExe $proof (Read-State).old 2>&1 |
+            & $node $driver $desktopExe $proof (Read-State).old $TargetSha 2>&1 |
                 ForEach-Object { Write-Host "  $_" }
             $driveExit = $LASTEXITCODE
         } finally {
@@ -1572,6 +1572,7 @@ function Invoke-PhaseUpdate {
     if ($Route -in @('open-app-update', 'hermes-desktop-app-update', 'desktop-installer@latest')) {
         Start-JourneyChat
     }
+    Set-SourceMainChannel $InstallDir
     # Snapshot every plugin tree BEFORE the upgrade moves anything.
     Invoke-PreserveSnapshot
     # ... and the user's own durable state, produced by the install phase

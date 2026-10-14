@@ -61,8 +61,8 @@ class OverflowVerdict:
     fields are the loop locals the handler may have rebound."""
 
     action: str
-    result: Optional[Dict[str, Any]]
-    messages: List[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Any
     conversation_history: Any
     approx_tokens: int
@@ -83,12 +83,13 @@ class _Recovery(OverflowVerdict):
     effective_task_id: Any
     api_call_count: int
     max_compression_attempts: int
+    overflow_reason: Optional[str] = None  # the classifier's reason, recorded on each compression attempt
     action: str = "fallthrough"
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     provider_overflow_recovery_pending: bool = False
     is_context_length_error: bool = False
 
-    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> OverflowVerdict:
+    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> OverflowVerdict:
         self.action, self.result = action, result
         return self
 
@@ -162,6 +163,7 @@ class _Recovery(OverflowVerdict):
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
             task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
+            overflow_reason=self.overflow_reason,
         )
         if self.messages is before:
             deferred = None
@@ -186,7 +188,7 @@ class _Recovery(OverflowVerdict):
 
     def compress_scored_by_tokens(
         self, request_tokens: int, *, fail_on_timeout: bool = False,
-    ) -> Tuple[Optional[OverflowVerdict], bool, int]:
+    ) -> tuple[Optional[OverflowVerdict], bool, int]:
         """``compress`` scored in message count / tokens (context-overflow errors ARE
         token-budget errors). Same-message-count compression (tool-result pruning,
         in-place summarization) can shrink the request, so re-estimate rather than trust
@@ -461,7 +463,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 def recover_from_overflow(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_msg: str, wrapped_output_cap_budget: Optional[int],
-    messages: List[Dict[str, Any]], api_messages: Any, system_message: Any,
+    messages: list[dict[str, Any]], api_messages: Any, system_message: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: int,
     compression_attempts: int, max_compression_attempts: int, api_call_count: int,
     effective_task_id: Any,
@@ -478,6 +480,7 @@ def recover_from_overflow(
         max_compression_attempts=max_compression_attempts, messages=messages,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         approx_tokens=approx_tokens, compression_attempts=compression_attempts,
+        overflow_reason=getattr(classified.reason, "value", None),
     )
 
     # GitHub Models free tier caps requests at 8K tokens, under the system prompt +

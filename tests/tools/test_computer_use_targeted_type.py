@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.computer_use_tool  # noqa: F401 — register the public tool
+import tools.computer_use_tool  # register the public tool
 from tools.computer_use import backend as interface, cua_backend, cua_backend_input, tool
 from tools.computer_use.backend import ActionResult
 from tools.computer_use.cua_backend_session import _CuaDriverSession
@@ -58,7 +58,7 @@ def harness(monkeypatch, grant_computer_use_approvals):
         return backend
 
     monkeypatch.setattr(tool, "_new_backend", new_backend)
-    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+    monkeypatch.setattr(cua_backend, "_computer_use_cfg", dict)
 
     def invoke(action, sid="owner", **args):
         return json.loads(registry.dispatch("computer_use", {"action": action, **args}, session_id=sid))
@@ -264,11 +264,11 @@ _PUBLIC_ELEMENT_ACTIONS = [
 
 def _discover_strict_contract(driver, contract):
     schemas = {
-        name: {"type": "object", "properties": dict.fromkeys(properties.split(), {}),
+        name: {"type": "object", "properties": {prop: {} for prop in properties.split()},
                "required": required, "additionalProperties": False}
         for name, (properties, required) in _ELEMENT_INPUTS.items()
     }
-    schemas["bring_to_front"] = {"properties": dict.fromkeys(("pid", "window_id"), {}),
+    schemas["bring_to_front"] = {"properties": {name: {} for name in ("pid", "window_id")},
                                  "additionalProperties": False}
     for schema in schemas.values():
         if contract == "legacy":

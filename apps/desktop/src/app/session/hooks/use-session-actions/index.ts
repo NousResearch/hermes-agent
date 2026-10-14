@@ -22,6 +22,7 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
+  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
@@ -38,7 +39,6 @@ import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
-  $gateway,
   isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -67,7 +67,7 @@ import {
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
-import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { clearAllPrompts } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -83,9 +83,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
-  forgetSessionOwnerHintsForSession,
   getCurrentModelSource,
-  getSessionOwnerHint,
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -161,14 +159,22 @@ import type {
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
-import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
+import {
+  pinStoredSessionForOwner,
+  releaseStoredSessionPins,
+  resumeRouteStillCurrent,
+  sessionContextDrift
+} from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
+import { rememberedOwnerForResume } from './remembered-owner'
+import { restorePendingApproval } from './restore-pending-approval'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import { createGatewaySession } from './session-create-request'
@@ -244,42 +250,6 @@ export interface BranchLoadedSessionOptions {
   messages: ChatMessage[]
   runtimeId: null | string
   storedSessionId: null | string
-}
-
-const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
-  JSON.stringify(messages.map(({ content, role }) => [role, content]))
-
-// Identity of one branch create, so a re-entered branch action (a retried
-// renderer transition, a double right-click) rides the create already in
-// flight instead of minting a second child. The OWNER is part of the identity:
-// the same parent id served by two connections is two different sessions.
-function branchCreateKey({
-  branchCount,
-  branchMessages,
-  cwd,
-  ownerRoute,
-  parentStoredId,
-  profile,
-  sourceSessionId
-}: {
-  branchCount?: number
-  branchMessages: BranchMessage[]
-  cwd?: string
-  ownerRoute?: SessionOwnerRoute
-  parentStoredId: null | string
-  profile?: null | string
-  sourceSessionId: null | string
-}): string {
-  return JSON.stringify({
-    branchCount: branchCount ?? null,
-    connectionId: ownerRoute?.connectionId || null,
-    cwd: cwd?.trim() || null,
-    messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
-    ownerProfile: ownerRoute?.profile || null,
-    parentStoredId,
-    profile: profile?.trim() || null,
-    sourceSessionId
-  })
 }
 
 // How long we keep creatingSessionRef after create/fork navigate before giving up
@@ -420,7 +390,7 @@ function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: strin
       part =>
         !(
           part.type === 'tool-call' &&
-          part.toolName === 'clarify' &&
+          QUESTION_CARD_TOOLS.has(part.toolName) &&
           part.result === undefined &&
           part.toolCallId === requestId
         )
@@ -449,30 +419,6 @@ function livePromptStreamId(
   const live = projections.find(Boolean)
 
   return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
-}
-
-function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
-  const pending = response.pending_approval
-
-  if (!pending) {
-    return false
-  }
-
-  // The live `approval` server request (re-delivered from `open_requests`
-  // before this ran) already parked itself with the same queue id; don't
-  // clobber it with a copy that can only answer through the RPC fallback.
-  void receiveApprovalRequest(null, {
-    allowPermanent: pending.allow_permanent !== false,
-    choices: pending.choices,
-    command: pending.command ?? '',
-    description: pending.description ?? 'dangerous command',
-    requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
-    sessionId,
-    smartDenied: pending.smart_denied === true
-  })
-  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
-
-  return true
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -1321,7 +1267,7 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
-        getRouteToken() === routeToken
+        resumeRouteStillCurrent(routeToken, getRouteToken(), storedSessionId)
 
       // A reconnect re-resumes the runtime this view is streaming. Let its
       // replay land while that runtime still owns the view. Otherwise the REST
@@ -1433,35 +1379,9 @@ export function useSessionActions({
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
       //
-      // A persisted owner hint is only trustworthy when it agrees with the
-      // best cached row for the session — the same predicate the click path
-      // (openStoredSession) and the boot auto-restore (repairOwnerHintsForRestore)
-      // use, so a session is not repaired on one path and destroyed on
-      // another. Comparing against the live foreground socket (the original
-      // #97809 draft) is wrong in exactly the case the hint exists for: hints are
-      // minted from the AMBIENT connection at create/open time (sdk openSession),
-      // which in the all-profiles view is not the foreground, and resumeSession
-      // itself moves the foreground below — so "names a connection that isn't
-      // active" is true for correct hints. The row is the authority: a
-      // connection-tagged row pins the hint's route (older builds persisted
-      // `local` for rows that actually live on a remote primary — the legacy
-      // #97809 repro), and an untagged or absent row leaves no basis to trust an
-      // explicit persisted hint, so it is dropped rather than dialed.
-      //
-      // An explicitly captured owner (requestSessionResume with a row route,
-      // a plugin open) is authoritative as given; only the REMEMBERED hint
-      // is validated, never the caller's capture.
-      const rememberedHint = capturedOwner ? undefined : getSessionOwnerHint(storedSessionId)
-      const rowOwnerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
-
-      const rememberedOwner =
-        rememberedHint && rowOwnerRoute && rememberedHint.connectionId === rowOwnerRoute.connectionId
-          ? rememberedHint
-          : undefined
-
-      if (rememberedHint && !rememberedOwner) {
-        forgetSessionOwnerHintsForSession(storedSessionId)
-      }
+      // Only the REMEMBERED hint is validated (remembered-owner.ts); an explicitly captured owner
+      // (requestSessionResume with a row route, a plugin open) is authoritative as given.
+      const rememberedOwner = capturedOwner ? undefined : rememberedOwnerForResume(storedSessionId)
 
       // An explicit capture outranks the remembered hint; the hint only
       // fills in when the caller had no route to give.

@@ -160,7 +160,7 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_one_broken_profile_does_not_starve_the_rest(multiplex_runner, monkeypatch):
     """A profile whose transport resolution raises is skipped; the fan-out continues."""
-    runner, marker = multiplex_runner
+    runner, _marker = multiplex_runner
     runner.adapters[Platform.DISCORD] = _adapter()
     ok = _adapter()
     runner._profile_configs = {

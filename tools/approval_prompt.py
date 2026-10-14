@@ -23,8 +23,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
                               title: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
-    allow_permanent=False hides [a]lways (tirith warnings present: broad permanent
-    allowlisting is wrong for content-level findings). allow_session=False hides
+    allow_permanent=False hides [a]lways. allow_session=False hides
     [s]ession too — the caller grants one operation and re-asks next time (the
     protected agent-instruction gate in ``tools/file_tools.py``); offering a scope
     the caller discards makes every later write re-prompt and reads as broken.

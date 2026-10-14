@@ -59,7 +59,6 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
-| `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
 | `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
@@ -247,6 +246,10 @@ agent_name = "Hermes Agent"
 model_name = "unknown"
 output_directory = "/home/you/.hermes/telemetry/nemo-relay/atif"
 filename_template = "trajectory-{session_id}.json"
+
+[components.config.opentelemetry]
+enabled = false
+endpoints = []
 
 [components.config.policy]
 unknown_component = "warn"

@@ -12,7 +12,7 @@ from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_loop as loop
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tests.hermes_cli.test_relay_shared_metrics_runtime import direct_runtime  # noqa: F401
+from tests.hermes_cli.test_relay_shared_metrics_runtime import direct_runtime
 
 _LOOP_METRICS = {
     "hermes.memory.op.count", "hermes.curator.run.count", "hermes.delegation.run.count",
@@ -30,7 +30,7 @@ def _rows(home: Path, metric: str) -> list[tuple[dict, int]]:
 
 
 @pytest.fixture
-def home(direct_runtime, tmp_path):  # noqa: F811
+def home(direct_runtime, tmp_path):
     path = tmp_path / "hermes-home"
     path.mkdir(parents=True, exist_ok=True)
     return path

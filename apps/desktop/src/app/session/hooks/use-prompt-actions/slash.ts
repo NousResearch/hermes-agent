@@ -168,6 +168,19 @@ interface SlashCommandDeps {
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */
+type CommandDispatch = NonNullable<ReturnType<typeof parseCommandDispatch>>
+
+function dispatchDisplayText(dispatch: CommandDispatch, message: string): string | undefined {
+  const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
+
+  return projected || skillInvocationText(message) || undefined
+}
+
+const BUSY_KICKOFF_TEXT = {
+  queued: 'session busy — message queued to send when the current turn finishes',
+  busy: 'session busy — stop the current reply first (Stop button or Esc), then send this command'
+} as const
+
 export function useSlashCommand(deps: SlashCommandDeps) {
   const {
     activeSessionIdRef,
@@ -193,7 +206,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
+    async (
+      rawCommand: string,
+      options?: { hidden?: boolean; sessionId?: string; recordInput?: boolean; typed?: boolean }
+    ) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -358,8 +374,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // model-facing scaffolding. Never render it; the bubble shows the
           // invocation the gateway projected, or one read from the payload
           // when the backend is older than this app.
-          const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
-          const displayText = projected || skillInvocationText(message) || undefined
+          const displayText = dispatchDisplayText(dispatch, message)
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
@@ -379,11 +394,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           if (queued !== 'idle') {
-            renderSlashOutput(
-              queued === 'queued'
-                ? 'session busy — message queued to send when the current turn finishes'
-                : 'session busy — stop the current reply first (Stop button or Esc), then send this command'
-            )
+            renderSlashOutput(BUSY_KICKOFF_TEXT[queued])
 
             return
           }
@@ -396,7 +407,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
+          // or after a reload.
+          await submitPromptText(message, {
+            sessionId,
+            storedSessionId,
+            displayText,
+            ...(options?.hidden && { displayKind: 'hidden' as const })
+          })
         }
 
         try {

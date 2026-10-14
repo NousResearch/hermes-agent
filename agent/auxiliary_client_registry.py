@@ -116,11 +116,19 @@ def _resolve_minimax_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
     return _route_client(req, client, final_model)
 
 
+def _resolve_plugin_oauth_arm(req: _ResolveRequest) -> _ResolveResult:
+    from agent.auxiliary_plugin_oauth import resolve_plugin_oauth_client
+    return resolve_plugin_oauth_client(req)
+
+
 # ``api_key`` / ``external_process`` arms stay on the facade (they share its credential
 # resolvers); the table maps the auth types whose arms are build-and-route one-liners
 # or live here as topical arms.
-REGISTRY_AUTHTYPE_ARMS: Dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
+REGISTRY_AUTHTYPE_ARMS: dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "vertex": _resolve_vertex_arm,
     "aws_sdk": _resolve_bedrock_arm,
     "oauth_minimax": _resolve_minimax_oauth_arm,
+    # Plugin OAuth: nous / openai-codex / xai-oauth returned from their explicit branches.
+    "oauth_device_code": _resolve_plugin_oauth_arm,
+    "oauth_external": _resolve_plugin_oauth_arm,
 }

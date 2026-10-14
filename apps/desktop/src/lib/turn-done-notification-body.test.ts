@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  TURN_DONE_BODY_FALLBACK,
-  TURN_DONE_BODY_MAX,
-  turnDoneNotificationBody
-} from './turn-done-notification-body'
+import { TURN_DONE_BODY_FALLBACK, TURN_DONE_BODY_MAX, turnDoneNotificationBody } from './turn-done-notification-body'
 
 // Mirrors the minified 0.20.0 Studio bundle helper quoted in #88488:
 //   Xn(n?.content || e.title || "Message complete.", 140)

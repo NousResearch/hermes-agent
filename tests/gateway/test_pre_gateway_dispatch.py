@@ -78,7 +78,7 @@ async def test_internal_events_bypass_hook(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
-    runner._handle_message_with_agent = _capture  # noqa: SLF001
+    runner._handle_message_with_agent = _capture
 
     event = _make_event("hi")
     event.internal = True

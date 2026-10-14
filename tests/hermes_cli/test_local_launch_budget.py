@@ -65,7 +65,7 @@ def test_launch_budget_subtracts_other_programs_plus_headroom(monkeypatch):
 def test_launch_budget_reads_free_memory_on_a_vulkan_card(monkeypatch, tmp_path):
     """Behind Vulkan/HIP (no nvidia-smi) the engine's own device probe reports free memory, and each
     launch asks again: the cached capacity probe predates programs that started since."""
-    import hermes_cli.local_runtime.devices as devices
+    from hermes_cli.local_runtime import devices
 
     held_gib = [0.0]
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)

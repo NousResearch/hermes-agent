@@ -8,6 +8,7 @@ export const jaAuxTasks: AuxTaskCopyMap = {
   mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
   title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
   review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
+  voice_chat: { label: '音声チャット', hint: '音声モードの応答' },
   triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
   kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
   profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },

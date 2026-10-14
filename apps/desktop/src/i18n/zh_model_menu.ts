@@ -13,6 +13,11 @@ export const zhModelMenu = {
   cacheRead: '缓存读取',
   priceTitle: (input: string, output: string, cache: string) =>
     `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : ''),
+  localSetup: {
+    title: '本地运行 · 免费、私密',
+    text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,
+    action: '设置'
+  },
   limited: '已限额',
   limitedUntil: (time: string) => `限额至 ${time}`,
   limitedTip: (provider: string, time: null | string) =>

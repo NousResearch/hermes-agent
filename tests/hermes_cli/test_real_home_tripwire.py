@@ -35,7 +35,9 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    with io.open(path, encoding="utf-8"):
+    # io.open is a separate guarded entry point from builtins.open (HomeIOGuard wraps both);
+    # bare `open` would only re-exercise the builtin-open case above.
+    with io.open(path, encoding="utf-8"):  # noqa: UP020 — exercise io.open separately
         pass
 
 
@@ -142,7 +144,7 @@ def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
         original_close(fd)
         reopened.append(os.open(second, os.O_RDONLY))
 
-    guard = HomeIOGuard(lambda: [])
+    guard = HomeIOGuard(list)
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(os, "close", close_and_reopen)
@@ -223,6 +225,7 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "tests.conftest", "-p", "no:cacheprovider", "-q", str(probe)],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout

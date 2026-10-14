@@ -68,6 +68,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
+    from agent.initiate_setup_prompt import intro_resends
+    if intro_resends(marker["prompt"], _session_source(session)):
+        clear_turn_marker(home, session_key)  # the desktop intro sends /initiate-setup again itself
+        return None
     # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.
@@ -269,6 +273,8 @@ def _session_compression_in_flight(session: dict) -> bool:
     ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
     blocking reads run off the event loop so a large state.db never freezes the dispatcher.
     """
+    if session.get("_manual_compress_active"):  # held before/after the DB lock row exists (#133504)
+        return True
     agent = session.get("agent")
     sid = str(getattr(agent, "session_id", "") or "") or str(session.get("session_key") or "")
     if not sid:
@@ -411,6 +417,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
+        session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields

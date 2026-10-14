@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
@@ -103,7 +103,7 @@ def _hmac(key: bytes, msg: str) -> bytes:
 
 
 def signature(sts_text: str, secret_key: str, date: str, region: str, service: str) -> str:
-    k_date = _hmac(f"AWS4{secret_key}".encode("utf-8"), date)
+    k_date = _hmac(f"AWS4{secret_key}".encode(), date)
     k_region = _hmac(k_date, region)
     k_service = _hmac(k_region, service)
     k_signing = _hmac(k_service, "aws4_request")
@@ -150,7 +150,7 @@ def encode_key_path(key: str) -> str:
 
 
 def amz_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 class R2RequestError(Exception):
@@ -305,7 +305,7 @@ def verify_remote_artifact(
         response = fetcher(url)
         if response.status >= 400:
             raise R2RequestError("GET", urlparse(url).path, response.status)
-        data = response._body  # noqa: SLF001 — loopback-test responses are small
+        data = response._body
         hash_obj = hashlib.new(algorithm)
         hash_obj.update(data)
         size = len(data)
@@ -363,6 +363,10 @@ def read_public_receipt(base: str, key: str) -> dict:
         conn.close()
 
 
+class _TransferMismatch(ValueError):
+    """A completed download whose size or SHA256 disagrees with its receipt."""
+
+
 def download_public_object(base: str, key: str, file: Path, *, expected_size: int, expected_sha256: str) -> None:
     _download_url(public_artifact_url(base, key), file, lambda _attempt: {},
                   expected_size=expected_size, expected_sha256=expected_sha256)
@@ -393,12 +397,17 @@ def _download_url(url: str, file: Path, request_headers: Callable[[int], dict[st
                     digest.update(chunk)
                     size += len(chunk)
                     if size > expected_size:
-                        raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                        raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
                     output.write(chunk)
             if size != expected_size or digest.hexdigest() != expected_sha256:
-                raise ValueError(f"Artifact checksum mismatch: {parsed.path}")
+                raise _TransferMismatch(f"Artifact checksum mismatch: {parsed.path}")
             temporary.replace(file)
             return
+        except _TransferMismatch:
+            # The receipt is the authority: a body that disagrees with it is a bad transfer, so
+            # fetch again; a stored object that really differs fails the same way three times.
+            if attempt == 3:
+                raise
         except R2RequestError as error:
             if error.status not in _RETRYABLE_STATUSES or attempt == 3:
                 raise
@@ -692,12 +701,13 @@ def put_object(
     print(f"OK r2: {key} ({size} bytes)")
 
 
-def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None) -> None:
+def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
+             arches: tuple[str, ...] | None = None) -> None:
     """Lazy re-export of the Darwin finalize so callers can treat
     scripts.releases.r2 as the single transport surface."""
     from . import darwin as darwin_module
 
-    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive)
+    darwin_module.finalize(tag=tag, dir=dir, variant=variant, archive=archive, arches=arches)
 
 
 def put(
@@ -737,12 +747,12 @@ def parse_list_xml(xml: str) -> dict:
         if "." in text:
             return int(
                 datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%fZ")
-                .replace(tzinfo=timezone.utc)
+                .replace(tzinfo=UTC)
                 .timestamp()
             )
         return int(
             datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
-            .replace(tzinfo=timezone.utc)
+            .replace(tzinfo=UTC)
             .timestamp()
         )
 
@@ -864,7 +874,7 @@ def _feed_bundle_uris(appinstaller_xml: str | None) -> list[str]:
     if len(elements) != 1:
         return []
     uri_match = re.search(r"\bUri=\"([^\"]+)\"", elements[0])
-    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.I):
+    if uri_match and re.search(r"\.(?:msixbundle|msix)$", uri_match.group(1), re.IGNORECASE):
         return [uri_match.group(1)]
     return []
 
@@ -900,7 +910,7 @@ def stale_feed_bundle_keys(
         for key in keys:
             if not key.startswith(prefix):
                 continue
-            if not re.search(r"\.(?:msixbundle|msix)$", key, re.I):
+            if not re.search(r"\.(?:msixbundle|msix)$", key, re.IGNORECASE):
                 continue  # pointers + metadata stay
             if key[len(prefix):] in referenced:
                 continue

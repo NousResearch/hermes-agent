@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.computer_use_tool  # noqa: F401 -- register the public dispatch entry point
+import tools.computer_use_tool  # register the public dispatch entry point
 from tools.bot_desktop import lease
 from tools.computer_use import cua_backend, tool
 from tools.computer_use.cua_backend_session import _CuaDriverSession
@@ -25,7 +25,7 @@ class RecordingSession(_CuaDriverSession):
         self.negotiate("token_only")
 
     def negotiate(self, contract):
-        properties = dict.fromkeys(("text", "pid", "window_id", "session", "delivery_mode"), {})
+        properties = {name: {} for name in ("text", "pid", "window_id", "session", "delivery_mode")}
         if contract != "unsupported":
             properties["element_token"] = {}
         if contract == "legacy":
@@ -33,9 +33,9 @@ class RecordingSession(_CuaDriverSession):
         schemas = {
             "type_text": {"properties": properties, "required": ["text", "pid", "window_id", "session"],
                           "additionalProperties": False},
-            "bring_to_front": {"properties": dict.fromkeys(("pid", "window_id"), {}),
+            "bring_to_front": {"properties": {name: {} for name in ("pid", "window_id")},
                                "additionalProperties": False},
-            "get_window_state": {"properties": dict.fromkeys(("pid", "window_id", "session", "max_elements"), {})},
+            "get_window_state": {"properties": {name: {} for name in ("pid", "window_id", "session", "max_elements")}},
         }
 
         class Transport:
@@ -174,7 +174,7 @@ def test_selected_cua_provider_rearms_only_fresh_capture_after_reset(selected_cu
 
 @pytest.mark.parametrize("gate", ["approval", "lease", "fence"])
 def test_selected_cua_provider_retains_input_gates(selected_cua, gate):
-    invoke, backend, driver = selected_cua
+    invoke, _backend, driver = selected_cua
     if gate == "lease":
         lease.acquire("human")
     elif gate == "approval":
@@ -199,7 +199,7 @@ def test_selected_cua_provider_retains_input_gates(selected_cua, gate):
 def test_selected_legacy_provider_refuses_targeted_type_without_cua_fallback(selected_cua):
     from hermes_constants import get_hermes_home
 
-    invoke, backend, driver = selected_cua
+    invoke, _backend, driver = selected_cua
     tool.reset_backend_for_tests()
     plugin = get_hermes_home() / "plugins" / "cu-legacy-targeted-test"
     plugin.mkdir(parents=True)

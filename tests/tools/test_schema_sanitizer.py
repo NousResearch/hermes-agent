@@ -618,7 +618,7 @@ def test_clarify_schema_has_no_unbounded_repetition_keyword():
 
 def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
     """No built-in tool may ship a length/count bound of 2000+ (llama.cpp rejects the whole request)."""
-    import model_tools  # noqa: F401 — registers built-in tools
+    import model_tools
     from tools.registry import registry
     offenders = []
     for name in registry.get_all_tool_names():

@@ -194,7 +194,7 @@ class SessionUsageMixin:
                 self._token_queue.clear()
             self._apply_claimed_batch(batch)
 
-    def _apply_token_batch(self, batch: List[Tuple[str, Dict[str, Any]]]) -> None:
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
         """Apply queued deltas in order, coalescing where safe. Never raises."""
         try:
             coalesced = self._coalesce_token_deltas(batch)
@@ -209,10 +209,10 @@ class SessionUsageMixin:
                 # Accounting loss is logged, never raised into a turn.
                 logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
 
-    def _coalesce_token_deltas(self, batch: List[Tuple[str, Dict[str, Any]]]) -> List[Tuple[str, Dict[str, Any]]]:
+    def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
         sessions and /model switches is preserved exactly. absolute=True never merges."""
-        groups: List[Tuple[Optional[tuple], str, Dict[str, Any]]] = []
+        groups: list[tuple[Optional[tuple], str, dict[str, Any]]] = []
         for session_id, kwargs in batch:
             key = None
             if not kwargs.get("absolute"):
@@ -271,17 +271,19 @@ class SessionUsageMixin:
             self._stop_token_writer()
 
     def update_token_counts(
-        self, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str=None, cache_read_tokens: int=0,
+        self, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
-        source: Optional[str]=None,
+        source: Optional[str]=None, task: str = "",
     ) -> None:
         """Update token counters and backfill model if unset. *absolute*=False increments
         (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
         where the cached agent holds cumulative totals). ``source`` is the session's real surface
-        for the row-existence guard; callers that don't know it leave the placeholder."""
+        for the row-existence guard; callers that don't know it leave the placeholder. ``task`` names a
+        per-turn route (``voice_chat``): its calls count in the session totals and land in
+        ``session_model_usage`` under that task, but never become the session's recorded route."""
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
         # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
@@ -320,7 +322,7 @@ class SessionUsageMixin:
             # and fallback succeeds, the first accounted usage is the authoritative route;
             # after that keep the row as is (one row cannot represent mixed usage).
             first_accounted_route = (
-                int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+                not task and int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
                 and bool(billing_provider)
                 and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
             )
@@ -331,7 +333,7 @@ class SessionUsageMixin:
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
             conn.execute(sql, params)
             if record_model_usage:
-                self._record_model_usage(conn, session_id, **usage)
+                self._record_model_usage(conn, session_id, task=task, **usage)
         self._execute_write(_do)
 
     def _record_model_usage(
@@ -388,7 +390,7 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
-    def auxiliary_usage_by_task(self, session_id: str) -> Dict[str, Dict[str, float]]:
+    def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed
         over the session's compression lineage. Aux calls bill to the id the turn STARTED with while
         compression mints child ids mid-turn, so a single-id read misses rows (#112848)."""
@@ -417,11 +419,11 @@ class SessionUsageMixin:
         )
         return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
 
-    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
+    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""
         where = ["parent_session_id IS NULL", "message_count >= ?"]
-        params: List[Any] = [min_message_count]
+        params: list[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")
         row = self._read_one(f"""

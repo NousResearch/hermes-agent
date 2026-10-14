@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-import tools.bot_mode_dm as bot_mode_dm
-import tools.bot_relay as bot_relay
+from tools import bot_mode_dm
+from tools import bot_relay
 import pytest
 
 

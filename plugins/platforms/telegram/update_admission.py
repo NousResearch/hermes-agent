@@ -179,7 +179,7 @@ def build_update_processor(extra, name: str) -> PerChatUpdateProcessor:
 
 
 class TelegramApplication(Application):
-    __slots__ = ("adapter", "_current_claim")
+    __slots__ = ("_current_claim", "adapter")
 
     def __init__(self, *, adapter, **kwargs):
         super().__init__(**kwargs)

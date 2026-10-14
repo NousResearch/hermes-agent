@@ -2667,7 +2667,7 @@ describe('resumeSession failure recovery', () => {
     expect(getSessionOwnerHint('stored-1')).toBeUndefined()
   })
 
-  it('keeps a current owner hint that agrees with the row\'s connection tag', async () => {
+  it("keeps a current owner hint that agrees with the row's connection tag", async () => {
     _resetSessionOwnerHintsForTests({ storage: true })
     setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
     // A connection-tagged row is the authority: the hint naming the same
@@ -2698,7 +2698,7 @@ describe('resumeSession failure recovery', () => {
     expect(getSessionOwnerHint('stored-1')).toMatchObject({ connectionId: 'ssh-proxmox' })
   })
 
-  it('drops a remembered hint whose connection disagrees with the row\'s tag', async () => {
+  it("drops a remembered hint whose connection disagrees with the row's tag", async () => {
     _resetSessionOwnerHintsForTests({ storage: true })
     // The hint names a different connection than the row: the row wins.
     setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })

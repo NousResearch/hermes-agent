@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
@@ -49,7 +50,7 @@ class FinalResponseVerdict:
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
     api_call_count: int
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def finish_text_response(
@@ -70,7 +71,7 @@ def finish_text_response(
         _join_truncated_parts
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
         return FinalResponseVerdict(
             action=action, active_system_prompt=active_system_prompt, final_response=final_response,
             _turn_exit_reason=_turn_exit_reason,
@@ -84,12 +85,10 @@ def finish_text_response(
             result=result,
         )
 
-    # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
-    # prompt tokens) file the whole answer as reasoning when the model omits the closing
-    # delimiter. ``finish_reason == "stop"`` means the provider considers generation
-    # complete, so the empty-response ladder would only re-bill the same input to arrive
-    # at a truncated preview of this text; promote the reasoning to the visible answer
-    # BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
+    # Reasoning-only clean stop on a trusted route (elsewhere reasoning is private and takes the
+    # ladder): some parsers (vLLM nemotron_v3 past ~500K prompt tokens) file the whole answer as
+    # reasoning when the closing delimiter is missing; ``stop`` means generation is complete, so
+    # promote it BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path.
     # The promoted text is RETURNED as the answer but never written into the assistant
     # row's ``content``: chain-of-thought stored as ordinary content is indistinguishable
     # from a real reply on every history surface (#111761). The row keeps ``content``
@@ -111,6 +110,7 @@ def finish_text_response(
             )
             for d in getattr(assistant_message, "reasoning_details", None) or ()
         )
+        and answer_in_reasoning_capability(agent)
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:

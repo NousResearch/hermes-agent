@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react'
+
 import { selectableClass } from '@/components/onboarding-chat/chip'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -6,7 +8,7 @@ import { cn } from '@/lib/utils'
 import type { InterfaceMode } from '@/store/interface-mode'
 import { readableInk } from '@/themes/color'
 
-export const CONNECTOR_LEAD_ORDER = [
+const CONNECTOR_LEAD_ORDER = [
   'gmail',
   'googlecalendar',
   'googledrive',
@@ -21,7 +23,7 @@ export const CONNECTOR_LEAD_ORDER = [
   'todoist'
 ]
 
-export const CONNECTOR_PICKER_HIDDEN = new Set(['discord', 'discordbot', 'microsoft_teams'])
+const CONNECTOR_PICKER_HIDDEN = new Set(['discord', 'discordbot', 'microsoft_teams'])
 
 export function orderConnectorPicks<T extends { connector: string; enabled?: boolean }>(rows: T[]): T[] {
   const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
@@ -101,9 +103,9 @@ export function AccentSwatch({
   )
 }
 
-export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
+type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
 
-export const ELITE_LAYOUT_ID = 'terminal-deck'
+const ELITE_LAYOUT_ID = 'terminal-deck'
 
 export const LAYOUTS: Array<{ description: string; id: string; mode: InterfaceMode; name: string; tree: MiniNode }> = [
   {
@@ -126,7 +128,7 @@ export const LAYOUTS: Array<{ description: string; id: string; mode: InterfaceMo
   }
 ]
 
-export function MiniTree({ node }: { node: MiniNode }) {
+function MiniTree({ node }: { node: MiniNode }) {
   if (node === 1) {
     return <div className="min-h-0 min-w-0 flex-1 rounded-[3px] bg-foreground/15" />
   }
@@ -170,17 +172,22 @@ export function LayoutPreviewCard({
   description,
   name,
   onSelect,
+  previewStyle,
   tree
 }: {
   active: boolean
   description?: string
   name: string
   onSelect: () => void
+  previewStyle?: CSSProperties
   tree: MiniNode
 }) {
   return (
     <button aria-pressed={active} className="group flex flex-col items-center gap-2" onClick={onSelect} type="button">
-      <span className={cn('flex aspect-[10/7] w-full flex-col gap-1.5 rounded-[8px] p-2', selectableClass(active))}>
+      <span
+        className={cn('flex aspect-[10/7] w-full flex-col gap-1.5 rounded-[8px] p-2', selectableClass(active))}
+        style={previewStyle}
+      >
         <MiniWindowButtons />
         <span className="flex min-h-0 flex-1">
           <MiniTree node={tree} />

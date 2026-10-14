@@ -14,7 +14,7 @@ import {
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
-import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
+import { useSetupChatView } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -26,13 +26,13 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -54,7 +54,7 @@ import {
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
-import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
+import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -77,6 +77,7 @@ import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
+import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -149,42 +150,8 @@ export function ChatBar({
     workspaceTransfer: hudWindowing?.workspaceTransfer === true
   })
 
-  // Typed stop phrase during an active voice conversation ends it — same
-  // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
-  // end control. Populated after useComposerVoice below (the submit wrapper
-  // is created first); render-time assignment keeps the ref current.
-  const voiceStopRef = useRef<{ active: boolean; end: () => void }>({ active: false, end: () => {} })
-
-  // Every send (typed, queued, voice) passes through the contributed
-  // middleware chain first — rewrite / pass-through / cancel. Empty chain =
-  // exact pass-through, so surfaces without contributions are byte-identical.
-  const onSubmit = useCallback<ChatBarProps['onSubmit']>(
-    async (value, options) => {
-      // Bare stop phrase typed while the voice conversation is live: end the
-      // conversation (mic off, pill dismissed) instead of sending "stop" to
-      // the agent. Spoken transcripts are already stop-checked inside
-      // use-voice-conversation, so this only catches typed/queued sends.
-      // Outside a voice conversation, typed "stop" is a normal message.
-      const voiceStop = voiceStopRef.current
-
-      if (interceptsTypedVoiceStop(voiceStop.active, value, options?.attachments?.length ?? 0)) {
-        voiceStop.end()
-
-        // Consumed (not rejected): report accepted so the submit engine
-        // clears the draft instead of restoring "stop" into the composer.
-        return true
-      }
-
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
-
-      if (!draft) {
-        return false
-      }
-
-      return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
-    },
-    [onSubmitProp]
-  )
+  // Voice-stop interception + contributed middleware wrap every send.
+  const { onSubmit, voiceStopRef } = useMiddlewareSubmit(onSubmitProp)
 
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
@@ -218,10 +185,10 @@ export function ChatBar({
 
   // The guide uses the setup profile's inference route; the model pill and
   // git controls would expose settings unrelated to its conversational steps.
-  // Solo covers startup before the guide's session ids are known.
-  const onboardingThreadIds = useStore($chatOnboardingThreadIds)
+  // Solo covers startup before the guide's session ids are known. Once the intro has ended the setup
+  // chat is a normal chat again.
+  const guidedChat = useSetupChatView()
   const chatOnboardingSolo = useStore($chatOnboardingSolo)
-  const guidedChat = chatOnboardingSolo || (sessionId != null && onboardingThreadIds.includes(sessionId))
   // The git row (branch / worktree / PR / review) is the coding instrument the
   // guide already hides; Simple mode hides it for the same reason, everywhere.
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
@@ -1157,7 +1124,7 @@ export function ChatBar({
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
       hideModelPill={guidedChat}
-      minimal={minimal}
+      minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
@@ -1307,7 +1274,7 @@ export function ChatBar({
             them out here is what makes that impossible rather than excluded. */}
         <div
           className={cn(
-            'z-30 flex flex-col',
+            'group/composer-dock z-30 flex flex-col',
             poppedOut ? 'fixed max-w-[calc(100vw-1.5rem)]' : 'absolute bottom-0 left-1/2 max-w-full -translate-x-1/2'
           )}
           data-popped-out={poppedOut ? '' : undefined}
@@ -1514,7 +1481,7 @@ export function ChatBar({
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
                     scrolledUp
-                      ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
+                      ? 'opacity-30 group-hover/composer-dock:opacity-100 group-focus-within/composer-dock:opacity-100'
                       : 'opacity-100'
                   )}
                   data-slot="composer-fade"

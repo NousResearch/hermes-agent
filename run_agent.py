@@ -130,6 +130,7 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.provider_problem_sensors import record_provider_request_result
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -880,7 +881,7 @@ class AIAgent:
     """
 
     _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
-        "[hermes-agent: tool call arguments were corrupted in this session and "
+        "[agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
@@ -1571,6 +1572,14 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = getattr(self, "_fallback_activated", False)
+        # Immediate-fallback mode — latched by _try_activate_fallback() when
+        # either raw Claude usage sensor (5h or 7d) is >= 99%.
+        # While latched, per-turn primary restore is skipped so we stay on the
+        # fallback until both sensors drop back below threshold.
+        self._immediate_fallback_mode = getattr(self, "_immediate_fallback_mode", False)
+        self._immediate_fallback_sensor_cache = getattr(
+            self, "_immediate_fallback_sensor_cache", None,
+        )
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -2036,7 +2045,7 @@ class AIAgent:
             raise ValueError(
                 f"Model {self.model} has a context window of {_ctx:,} tokens, "
                 f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-                f"by Hermes Agent.  Choose a model with at least "
+                f"by this agent. Choose a model with at least"
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
                 f"model.context_length in config.yaml to override."
             )
@@ -2672,7 +2681,7 @@ class AIAgent:
                 raise ValueError(
                     f"Auxiliary compression model {aux_model} has a context "
                     f"window of {aux_context:,} tokens, which is below the "
-                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by the agent "
                     f"Agent.  Choose a compression model with at least "
                     f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
                     f"auxiliary.compression.model in config.yaml), or set "
@@ -4172,6 +4181,46 @@ class AIAgent:
 
         return context
 
+    @staticmethod
+    def _extract_all_providers_limit(error: Exception, error_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract the unified proxy's aggregate subscription-limit signal.
+
+        Returns a dict with ``reset_epoch`` (float) and ``providers`` (list[str])
+        when *every* eligible Claude Code / Codex subscription is blocked, or
+        None if this is any other kind of error.
+        """
+        body = getattr(error, "body", None)
+        payload = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else body
+        message = str((payload or {}).get("message", "")) if isinstance(payload, dict) else str(error)
+        code = (payload or {}).get("code") if isinstance(payload, dict) else None
+        if (
+            code != "all_providers_rate_limited"
+            and "all eligible providers are subscription-limited" not in message.lower()
+        ):
+            return None
+        reset_value = (payload or {}).get("resets_at") if isinstance(payload, dict) else None
+        if reset_value in (None, ""):
+            reset_value = error_context.get("reset_at")
+        try:
+            if isinstance(reset_value, (int, float)):
+                reset_epoch = float(reset_value)
+                if reset_epoch > 10_000_000_000:
+                    reset_epoch /= 1000.0
+            else:
+                reset_epoch = datetime.fromisoformat(
+                    str(reset_value).replace("Z", "+00:00")
+                ).timestamp()
+        except Exception:
+            return None
+        providers = (payload or {}).get("providers", []) if isinstance(payload, dict) else []
+        names: list[str] = []
+        for detail in (providers if isinstance(providers, list) else []):
+            if isinstance(detail, dict):
+                name = detail.get("subscription") or detail.get("provider")
+                if name and str(name) not in names:
+                    names.append(str(name))
+        return {"reset_epoch": reset_epoch, "providers": names}
+
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
         if response is None:
@@ -5364,7 +5413,6 @@ class AIAgent:
 
         Returns the repaired name if found in valid_tool_names, else None.
         """
-        import re
         from difflib import get_close_matches
 
         if not tool_name:
@@ -5390,6 +5438,22 @@ class AIAgent:
         normalized = _norm(tool_name)
         if normalized in self.valid_tool_names:
             return normalized
+
+        # Strip MCP-style prefixes that leak in when running behind an
+        # OAuth-impersonating proxy. The proxy adds `mcp_` (capitalizing the
+        # first letter of the bare name) so `todo` goes out as `mcp_Todo`.
+        # The response-side strip can fail when SSE chunks split mid-token,
+        # leaving the model to resend a doubly-prefixed `mcp_Mcp_todo` from
+        # cache. Strip any number of leading `mcp_` segments (case-insensitive)
+        # before fuzzy matching.
+        mcp_stripped = tool_name
+        while mcp_stripped.lower().startswith("mcp_") and len(mcp_stripped) > 4:
+            rest = mcp_stripped[4:]
+            mcp_stripped = rest[0].lower() + rest[1:] if rest else rest
+        if mcp_stripped != tool_name and mcp_stripped in self.valid_tool_names:
+            return mcp_stripped
+        if mcp_stripped != tool_name and mcp_stripped.lower() in self.valid_tool_names:
+            return mcp_stripped.lower()
 
         # Build the full candidate set for class-like emissions.
         cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
@@ -7526,6 +7590,61 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    def _check_immediate_fallback_sensors(self) -> bool:
+        """Return True if either raw Claude usage sensor is >= 99%.
+
+        Polls sensor.claude_5h_utilization and sensor.claude_7d_utilization via
+        the HA REST API and compares their numeric states directly against 99.0.
+        This intentionally does not use the derived over-threshold binary
+        sensors, so the cutoff lives here and cannot drift with HA template
+        logic.
+
+        Result is cached for 30 s to avoid hammering HA on every turn/tick.
+        Any failure (missing token, network error, malformed response) returns
+        False so failover behavior degrades to the vanilla per-turn restore.
+        """
+        try:
+            now = time.monotonic()
+            cached = getattr(self, "_immediate_fallback_sensor_cache", None)
+            if cached is not None and (now - cached[0]) < 30.0:
+                return cached[1]
+
+            hass_url = os.getenv("HASS_URL", "http://homeassistant.local:8123").rstrip("/")
+            hass_token = os.getenv("HASS_TOKEN", "").strip()
+            if not hass_token:
+                self._immediate_fallback_sensor_cache = (now, False)
+                return False
+
+            import urllib.request
+            import urllib.error
+
+            def _get_usage_percent(entity_id: str) -> float:
+                req = urllib.request.Request(
+                    f"{hass_url}/api/states/{entity_id}",
+                    headers={"Authorization": f"Bearer {hass_token}",
+                             "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                state = str(payload.get("state", "")).strip()
+                match = re.search(r"[-+]?\d+(?:\.\d+)?", state)
+                if not match:
+                    raise ValueError(f"{entity_id} has non-numeric state {state!r}")
+                return float(match.group(0))
+
+            usage_5h = _get_usage_percent("sensor.claude_5h_utilization")
+            usage_7d = _get_usage_percent("sensor.claude_7d_utilization")
+            over_limit = usage_5h >= 99.0 or usage_7d >= 99.0
+            self._immediate_fallback_sensor_cache = (now, over_limit)
+            return over_limit
+        except Exception as e:
+            logging.debug("immediate-fallback sensor check failed: %s", e)
+            try:
+                self._immediate_fallback_sensor_cache = (time.monotonic(), False)
+            except Exception:
+                pass
+            return False
+
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -7717,6 +7836,22 @@ class AIAgent:
                 "Fallback activated: %s → %s (%s)",
                 old_model, fb_model, fb_provider,
             )
+
+            # Immediate-fallback mode: if either raw HA usage sensor (5h or 7d)
+            # is at/over 99% at fallback time, latch the mode so future turns
+            # skip the primary-restore step until both sensors drop below
+            # threshold. Cheap HA REST poll with 30s cache — failures degrade
+            # gracefully.
+            try:
+                if self._check_immediate_fallback_sensors():
+                    self._immediate_fallback_mode = True
+                    logging.info(
+                        "Immediate-fallback mode ENABLED "
+                        "(sensor.claude_5h_utilization or sensor.claude_7d_utilization >= 99%%)"
+                    )
+            except Exception:
+                pass
+
             return True
         except Exception as e:
             logging.error("Failed to activate fallback %s: %s", fb_model, e)
@@ -7737,6 +7872,26 @@ class AIAgent:
         """
         if not self._fallback_activated:
             return False
+
+        # Immediate-fallback mode: while either raw HA usage sensor remains
+        # at/over 99%, skip the primary restore and stay on the fallback
+        # provider. When both sensors drop back below 99%, clear the flag and
+        # fall through to the normal restore path.
+        if getattr(self, "_immediate_fallback_mode", False):
+            try:
+                still_over = self._check_immediate_fallback_sensors()
+            except Exception:
+                still_over = False
+            if still_over:
+                logging.debug(
+                    "Immediate-fallback mode active — skipping primary restore this turn"
+                )
+                return False
+            self._immediate_fallback_mode = False
+            logging.info(
+                "Immediate-fallback mode DISABLED (usage sensors dropped below threshold) "
+                "— restoring primary runtime"
+            )
 
         if getattr(self, "_rate_limited_until", 0) > time.monotonic():
             return False  # primary still in rate-limit cooldown, stay on fallback
@@ -7837,6 +7992,16 @@ class AIAgent:
             return False
         provider_lower = (self.provider or "").strip().lower()
         if provider_lower in ("nous", "nous-research"):
+            return False
+
+        # Skip extra recovery hop for local proxy endpoints. They already sit
+        # behind their own retry/failover logic, and one more rebuilt client
+        # only adds user-visible delay before fallback.
+        base_url_lower = (self.base_url or "").strip().lower()
+        if any(host in base_url_lower for host in (
+            "localhost:28080", "127.0.0.1:28080",
+            "localhost:28090", "127.0.0.1:28090",
+        )):
             return False
 
         try:
@@ -10482,6 +10647,29 @@ class AIAgent:
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
         self._restore_primary_runtime()
 
+        # Immediate-fallback proactive kick: if either raw usage sensor is
+        # already >= 99% at turn start, pre-emptively switch to fallback. This
+        # avoids one doomed primary API call + retries before failover kicks in,
+        # including on fresh agent instances where no latch exists yet.
+        if (
+            not self._fallback_activated
+            and self._fallback_chain
+        ):
+            try:
+                if self._check_immediate_fallback_sensors():
+                    self._immediate_fallback_mode = True
+                    logging.info(
+                        "Immediate-fallback mode: pre-emptively activating fallback "
+                        "at turn start (raw Claude usage sensor >= 99%%)"
+                    )
+                    # Reset chain index so we try the first fallback in the chain.
+                    self._fallback_index = 0
+                    self._try_activate_fallback()
+                else:
+                    self._immediate_fallback_mode = False
+            except Exception as e:
+                logging.debug("Immediate-fallback preemptive activation failed: %s", e)
+
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
         # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
@@ -11363,6 +11551,17 @@ class AIAgent:
                         # Invalid response — could be rate limiting, provider timeout,
                         # upstream server error, or malformed response.
                         retry_count += 1
+                        try:
+                            record_provider_request_result(
+                                provider=self.provider,
+                                success=False,
+                                model=self.model,
+                                api_mode=self.api_mode,
+                                base_url=self.base_url,
+                                error=f"Invalid API response: {', '.join(error_details)}",
+                            )
+                        except Exception:
+                            pass
                         
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
@@ -11820,6 +12019,17 @@ class AIAgent:
                                 f"({hit_pct:.0f}% hit, {written:,} written)"
                             )
                     
+                    try:
+                        record_provider_request_result(
+                            provider=self.provider,
+                            success=True,
+                            model=self.model,
+                            api_mode=self.api_mode,
+                            base_url=self.base_url,
+                        )
+                    except Exception:
+                        pass
+
                     has_retried_429 = False  # Reset on success
                     # Clear Nous rate limit state on successful request —
                     # proves the limit has reset and other sessions can
@@ -12038,6 +12248,18 @@ class AIAgent:
                         classified.retryable, classified.should_compress,
                         classified.should_rotate_credential, classified.should_fallback,
                     )
+                    try:
+                        record_provider_request_result(
+                            provider=self.provider,
+                            success=False,
+                            model=self.model,
+                            api_mode=self.api_mode,
+                            base_url=self.base_url,
+                            error=self._summarize_api_error(api_error),
+                            status_code=status_code,
+                        )
+                    except Exception:
+                        pass
 
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
@@ -12205,6 +12427,39 @@ class AIAgent:
                             self.log_prefix, len(messages),
                         )
                         continue
+
+                    # ── Aggregate subscription limit (proxy 429) ───────────────────
+                    # The unified proxy only emits this signal when *every* eligible
+                    # Claude Code / Codex subscription is blocked.  Sleep until the
+                    # earliest window resets, checking for interrupts every second,
+                    # without burning any of the normal transient-error retry budget.
+                    _all_blocked = self._extract_all_providers_limit(api_error, error_context)
+                    if _all_blocked is not None:
+                        _margin = max(0.0, float(os.getenv("HERMES_PROVIDER_RESET_SAFETY_SECONDS", "15")))
+                        _resume_at = max(time.time(), float(_all_blocked["reset_epoch"]) + _margin)
+                        _resume_text = datetime.fromtimestamp(_resume_at).astimezone().isoformat(timespec="seconds")
+                        _blocked_names = ", ".join(_all_blocked.get("providers") or ["Claude Code/Codex"])
+                        self._emit_status(
+                            f"Provider limit: {_blocked_names} blocked. Waiting until {_resume_text} before resuming."
+                        )
+                        logger.warning(
+                            "All eligible providers blocked; waiting until %s (safety_margin=%.1fs)",
+                            _resume_text, _margin,
+                        )
+                        while time.time() < _resume_at:
+                            if self._interrupt_requested:
+                                self._persist_session(messages, conversation_history)
+                                self.clear_interrupt()
+                                return {
+                                    "final_response": "Operation interrupted while waiting for provider limits to reset.",
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            self._touch_activity("waiting for provider subscription limit reset")
+                            time.sleep(min(1.0, max(0.0, _resume_at - time.time())))
+                        continue  # retry without incrementing retry_count
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -12434,8 +12689,61 @@ class AIAgent:
                     )
 
                     if is_payload_too_large:
+                        # Quota preflight: Anthropic sometimes returns 413 as a
+                        # misleading proxy for "out of tokens" when the account
+                        # hits its 5h/7d usage caps. If HA reports either raw
+                        # utilization sensor at >=99%, treat the 413 as a quota
+                        # event and go straight to fallback — compression is useless.
+                        try:
+                            _ha_url = os.getenv("HASS_URL", "").rstrip("/")
+                            _ha_tok = os.getenv("HASS_TOKEN", "").strip()
+                            if _ha_url and _ha_tok and self._fallback_index < len(self._fallback_chain):
+                                import urllib.request, urllib.error
+                                _capped = False
+                                _which = None
+                                _capped_value = None
+                                for _sensor in ("sensor.claude_5h_utilization", "sensor.claude_7d_utilization"):
+                                    try:
+                                        _req = urllib.request.Request(
+                                            f"{_ha_url}/api/states/{_sensor}",
+                                            headers={"Authorization": f"Bearer {_ha_tok}"},
+                                        )
+                                        with urllib.request.urlopen(_req, timeout=3) as _r:
+                                            _js = json.loads(_r.read().decode("utf-8"))
+                                            _state = str(_js.get("state", "")).strip()
+                                            _match = re.search(r"[-+]?\d+(?:\.\d+)?", _state)
+                                            if not _match:
+                                                continue
+                                            _val = float(_match.group(0))
+                                            if _val >= 99.0:
+                                                _capped = True
+                                                _which = _sensor
+                                                _capped_value = _val
+                                                break
+                                    except Exception:
+                                        pass
+                                if _capped:
+                                    self._emit_status(f"⚠️ 413 + {_which}={_capped_value:.1f}% — quota cap, skipping compression, failing over...")
+                                    if self._try_activate_fallback(reason=FailoverReason.payload_too_large):
+                                        retry_count = 0
+                                        compression_attempts = 0
+                                        primary_recovery_attempted = False
+                                        continue
+                        except Exception:
+                            pass
+
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
+                            # Try fallback provider before aborting — a
+                            # provider with a larger context window may
+                            # accept the payload that our primary rejected.
+                            if self._fallback_index < len(self._fallback_chain):
+                                self._emit_status("⚠️ 413 compression exhausted — switching to fallback provider...")
+                                if self._try_activate_fallback(reason=FailoverReason.payload_too_large):
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    primary_recovery_attempted = False
+                                    continue
                             self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
@@ -12467,6 +12775,16 @@ class AIAgent:
                             restart_with_compressed_messages = True
                             break
                         else:
+                            # Try fallback provider before aborting — a
+                            # provider with a larger context window may
+                            # accept the payload that our primary rejected.
+                            if self._fallback_index < len(self._fallback_chain):
+                                self._emit_status("⚠️ 413 cannot compress further — switching to fallback provider...")
+                                if self._try_activate_fallback(reason=FailoverReason.payload_too_large):
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    primary_recovery_attempted = False
+                                    continue
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")

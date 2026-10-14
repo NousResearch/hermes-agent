@@ -23,6 +23,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
+import { bridgedHubOpenUrl } from '@/lib/hub-picker-bridge'
 import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
@@ -618,6 +619,19 @@ export const PluginsTab = memo(function PluginsTab({
         return
       }
 
+      // A link inside the picker (card title, repo / docs / stars / pin) posts
+      // its URL here instead of calling window.open — the main process injects
+      // the bridge into this frame after verifying its origin, and the origin
+      // check just above is the entire trust decision (#135315). See
+      // electron/hub-picker-bridge.ts.
+      const bridgedUrl = bridgedHubOpenUrl(event.data)
+
+      if (bridgedUrl) {
+        void window.hermesDesktop?.openExternal?.(bridgedUrl)
+
+        return
+      }
+
       const data = event.data as null | PluginPickMessage
 
       if (!data || data.type !== 'hermes-plugin-pick' || !data.name || !data.repo) {
@@ -866,6 +880,17 @@ export const PluginsTab = memo(function PluginsTab({
               }}
             >
               <iframe
+                // The catalog's links reach the OS browser through the picker
+                // open-bridge, not through window.open (#135315): main injects
+                // a bridge into this frame only after verifying the frame's own
+                // origin off the committed navigation, and the renderer acts on
+                // its message only when Chromium sets the origin to the hub.
+                // So this frame needs no allow-popups — that would only move
+                // the block from the renderer to a handler that cannot prove
+                // the opener — while clipboard-write is what unblocks the
+                // "Copy install command" control. The will-frame-navigate guard
+                // in main keeps this frame pinned to the picker URL.
+                allow="clipboard-write"
                 sandbox="allow-scripts allow-same-origin"
                 src={CATALOG_PICKER_URL}
                 style={{

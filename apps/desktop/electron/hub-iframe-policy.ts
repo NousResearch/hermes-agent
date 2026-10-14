@@ -32,6 +32,43 @@ export function isHermesHubOrigin(origin: string | null | undefined): boolean {
 const HUB_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
 
 /**
+ * The picker paths of the docs site. Both the embedded Skills Hub picker and
+ * the plugin catalog live on one of these; every other path is the full,
+ * un-embeddable docs site.
+ */
+const HUB_PICKER_PATHS = new Set([
+  '/hermes-agent/docs/skills',
+  '/docs/skills',
+  '/hermes-agent/docs/plugins',
+  '/docs/plugins'
+])
+
+/** Is this URL one of the hub's embeddable picker pages (exact origin AND path)? */
+export function isHermesHubPickerUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+
+    return HUB_ORIGINS.has(parsed.origin) && HUB_PICKER_PATHS.has(parsed.pathname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * May the desktop inject the picker open-bridge into a frame that just
+ * committed `url` from `frameOrigin`?
+ *
+ * Both halves must hold. The origin comes off the LIVE frame object (URL
+ * parsing of the real guest origin), never from a string we hold — so a
+ * sandboxed artifact frame (opaque origin `null`) or any other guest can never
+ * be bridged, and a frame that merely *claims* a picker URL in a message is
+ * irrelevant here (this is a committed-navigation check).
+ */
+export function isBridgedPickerNavigation(url: string, frameOrigin: string | null | undefined): boolean {
+  return isHermesHubOrigin(frameOrigin) && isHermesHubPickerUrl(url)
+}
+
+/**
  * May a trusted-origin window.open request be handed to the audited external
  * opener? http/https/mailto only — the same allowlist `openExternalUrl` in
  * external-open.ts enforces; anything else (file:, javascript:, custom

@@ -287,6 +287,45 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
   })
 
+  // #135315: the Skills hub picker is the same cross-origin embed family as the
+  // plugins catalog, so it carries the same fix: clipboard-write for its Copy
+  // controls, and its external links go through the injected open-bridge rather
+  // than window.open — which needs no popup permission, because allowing popups
+  // only moves the block to a window-open handler that cannot prove the opener.
+  it('pins the skills hub picker frame to its sandbox and clipboard posture (#135315)', async () => {
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
+
+    const { container } = render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+
+    const frame = container.querySelector('iframe')
+
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+    expect(frame?.getAttribute('allow')).toBe('clipboard-write')
+  })
+
+  it('opens a bridged picker link from the skills hub through the audited external opener', async () => {
+    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
+
+    const openExternal = vi.fn(async () => undefined)
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { openExternal }
+
+    render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hermes-hub-open', url: 'https://hermes-agent.nousresearch.com/docs/skills' },
+        origin: 'https://hermes-agent.nousresearch.com'
+      })
+    )
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/skills')
+    })
+
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
   it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
     // On a non-Skills tab the docs-site iframe must not exist at all — an
     // eagerly mounted hub is exactly the Capabilities lag bug.

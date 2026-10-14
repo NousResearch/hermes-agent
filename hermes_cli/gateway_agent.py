@@ -161,6 +161,9 @@ class GatewayAgent:
             self.reasoning_config = reasoning_config
         else:
             self._reasoning_config = reasoning_config
+        # Main's /moa rebuilds its agent on the MoA virtual provider for one turn (the session's info
+        # below then overwrites ``model``): that preset rides the turn's submit as its model_override.
+        self._moa_preset = model if provider == "moa" else None
         self._apply_info(self._state().info)
         self.reasoning_callback = reasoning_callback
         self.service_tier = service_tier
@@ -212,6 +215,33 @@ class GatewayAgent:
             info["reasoning_effort"] = effort
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)
+
+    def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None):
+        """Main's in-place swap (``/model``, ``/model --once`` and its restore, /new's reset to the config
+        default, /resume) as ``session.mutate model``: the gateway resolves the target with the same
+        switch pipeline and commits it to the session's policy, so the next turn runs on it; keys and
+        endpoints stay gateway-side. Main's caller already confirmed a guarded target
+        (``_confirm_expensive_model_switch``), so the owner's ``confirmation_required`` is answered once
+        with its token. A refusal raises: main's callers roll their own fields back."""
+        if new_model == self.model and (not new_provider or new_provider == self.provider):
+            return
+        from hermes_cli.gateway_mutations import model_refusal_text
+        payload = {"model": new_model, **({"provider": new_provider} if new_provider else {})}
+        snapshot = self.connection.call("session.resume", session_id=self.session_id)
+        fence = dict(session_id=self.session_id, operation="model", expected_revision=snapshot["revision"],
+                     expected_generation=snapshot["execution_generation"])
+        result = self.connection.call("session.mutate", request_id=uuid.uuid4().hex, payload=payload, **fence) or {}
+        if result.get("status") == "confirmation_required":
+            # The refusal wrote nothing: the same fence is re-sent with the owner's token.
+            result = self.connection.call("session.mutate", request_id=uuid.uuid4().hex,
+                                          payload={**payload, "confirm": result["confirm"]}, **fence) or {}
+            if result.get("status") == "confirmation_required":
+                raise GatewayClientError(model_refusal_text(result, confirmed=True))
+        state = self._state()
+        state.adopt_snapshot(self.connection.call("session.resume", session_id=self.session_id))
+        # A rebuilt stand-in reads the session's info: it must show the committed model.
+        state.info.update(model=result.get("model") or new_model, **({"provider": new_provider} if new_provider else {}))
+        self._apply_info(state.info)
 
     # -- session identity ----------------------------------------------------------------------
     @property
@@ -488,6 +518,9 @@ class GatewayAgent:
         if self.clarify_callback is not None:
             # Main's batch panel answers the clarify tool's whole question set (one ``clarify`` request).
             params["clarify_batch"] = True
+        if self._moa_preset and (self._state().info or {}).get("provider") != "moa":
+            # /moa one-shot: this admission alone runs the preset; the session's route is untouched.
+            params["model_override"] = {"model": self._moa_preset, "provider": "moa"}
         return params
 
     def _stage_content_parts(self, parts):

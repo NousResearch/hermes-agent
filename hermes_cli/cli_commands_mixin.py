@@ -752,9 +752,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if not 1 <= idx <= len(snaps):
                 return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
             snap_id = snaps[idx - 1]["id"]
-        # Close our SessionDB first so the restore doesn't contend with this process's live connection.
+        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
         local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None:
+        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None

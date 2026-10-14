@@ -29,9 +29,12 @@ class FakeClient:
         self.result = result if result is not None else {}
         self.usage = usage or {}
         self.on_interrupt = None
+        self.mutate_replies = []
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
+        if method == "session.mutate" and self.mutate_replies:
+            return self.mutate_replies.pop(0)
         if method == "prompt.submit":
             asyncio.get_running_loop().call_soon(lambda: asyncio.ensure_future(self._play()))
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
@@ -707,3 +710,57 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
     result = submit_against(GatewayClientError(DISCONNECTED))
     assert result["failed"] is True and result["error"] == DISCONNECTED
     assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
+
+
+def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
+    """/model, /model --once and /new's reset to the config default call main's
+    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
+    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
+    next turn reads the committed model from the session, not the old one."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
+                       base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
+    mutations = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mutations) == 1
+    assert mutations[0]["operation"] == "model"
+    assert mutations[0]["payload"] == {"model": "new-model", "provider": "anthropic"}
+    assert (mutations[0]["expected_revision"], mutations[0]["expected_generation"]) == (1, 7)
+    assert (agent.model, agent.provider) == ("new-model", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("new-model", "anthropic")
+
+
+def test_a_guarded_model_target_is_confirmed_once_with_the_owners_token(make_agent):
+    """Main asked before calling switch_model (``_confirm_expensive_model_switch``); the owner's own
+    guard refusal is answered with its token once. A second refusal (the session moved) raises, so
+    main rolls its fields back and the agent keeps the old model."""
+    refusal = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Expensive model"}
+    agent, client = make_agent([], model="old-model")
+    client.mutate_replies = [refusal, {"status": "committed", "model": "pricey-model"}]
+    agent.switch_model(new_model="pricey-model", new_provider="openrouter")
+    sent = [p["payload"] for m, p in client.calls if m == "session.mutate"]
+    assert sent == [{"model": "pricey-model", "provider": "openrouter"},
+                    {"model": "pricey-model", "provider": "openrouter", "confirm": "tok-1"}]
+    assert agent.model == "pricey-model"
+    other, other_client = make_agent([], model="old-model")
+    other_client.mutate_replies = [refusal, dict(refusal, confirm="tok-2")]
+    with pytest.raises(GatewayClientError, match="Model not switched"):
+        other.switch_model(new_model="pricey-model", new_provider="openrouter")
+    assert other.model == "old-model"
+
+
+def test_moa_one_shot_preset_rides_this_turns_submit_as_its_model_override(make_agent):
+    """``/moa <prompt>`` (#134889 CLI-18): main rebuilds its agent on the MoA virtual provider for
+    one turn, but the session's info names the session's own model. The preset must reach the turn
+    as its admission's ``model_override``; a regular rebuild sends none."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="claude-sonnet", provider="anthropic")
+    moa = GatewayAgent(connection=agent.connection, session_id=SID, model="default", provider="moa")
+    moa.run_conversation("compare these designs")
+    submit = dict(client.calls)["prompt.submit"]
+    assert submit["model_override"] == {"model": "default", "provider": "moa"}
+    client.calls.clear()
+    regular = GatewayAgent(connection=agent.connection, session_id=SID, model="claude-sonnet", provider="anthropic")
+    regular.run_conversation("next")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]

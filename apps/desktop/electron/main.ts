@@ -478,6 +478,7 @@ import {
   decideProfileDeleteAction,
   dispatchConnectionScopedProfileDelete,
   localProfilePoolKeys,
+  namedProfileIsLive,
   ProfileDeletionGate,
   profileNameFromDeleteRequest,
   resolveRouteProfile
@@ -12216,9 +12217,24 @@ async function runPoolBackendStart(
   // here, and logging "Starting" first left an orphaned line with no READY
   // and no exit — the exact undiagnosable burst signature in remote-gateway
   // user bundles (Aug 2026, Dash's report).
-  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
-    directoryExists(path.join(HERMES_HOME, 'profiles', key))
-  )
+  assertLocalProfileCanStart(profile, profileDeletionGate, key => {
+    const profileHome = path.join(HERMES_HOME, 'profiles', key)
+
+    return namedProfileIsLive(
+      profileHome,
+      path.join(HERMES_HOME, 'profiles', '.deleted', key),
+      candidate => fs.existsSync(candidate),
+      candidate => {
+        try {
+          const stat = fs.lstatSync(candidate)
+
+          return stat.isFile() || stat.isSymbolicLink()
+        } catch {
+          return false
+        }
+      }
+    )
+  })
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const parentStartMarker = await desktopParentStartMarker()

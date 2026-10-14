@@ -176,15 +176,34 @@ export class ProfileDeletionGate {
   }
 }
 
+const PROFILE_IDENTITY_MARKERS = ['config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db']
+
+/**
+ * Match the backend's named_profile_is_live predicate before spawning a local
+ * child. Runtime logging can recreate an otherwise removed profile directory,
+ * so a directory alone is not proof that it can be served.
+ */
+export function namedProfileIsLive(
+  profileHome: string,
+  tombstonePath: string,
+  pathExists: (path: string) => boolean,
+  fileOrSymlinkExists: (path: string) => boolean
+): boolean {
+  return (
+    !pathExists(tombstonePath) &&
+    PROFILE_IDENTITY_MARKERS.some(marker => fileOrSymlinkExists(`${profileHome}/${marker}`))
+  )
+}
+
 /**
  * Validate the final boundary before spawning a local profile backend. The
- * deletion gate closes the in-flight race; the directory check rejects a
+ * deletion gate closes the in-flight race; the identity check rejects a
  * delayed renderer retry after the DELETE request has already completed.
  */
 export function assertLocalProfileCanStart(
   profile: unknown,
   gate: ProfileDeletionGate,
-  profileDirectoryExists: (profile: string) => boolean
+  profileIsLive: (profile: string) => boolean
 ): void {
   const key = String(profile ?? '')
     .trim()
@@ -192,7 +211,7 @@ export function assertLocalProfileCanStart(
 
   gate.assertCanStart(key)
 
-  if (key && key !== 'default' && !profileDirectoryExists(key)) {
+  if (key && key !== 'default' && !profileIsLive(key)) {
     throw new Error(`Profile "${key}" no longer exists.`)
   }
 }

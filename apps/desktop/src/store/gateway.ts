@@ -1084,7 +1084,11 @@ function isMissingConnectionError(error: unknown): boolean {
 function isMissingProfileError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return message.includes('no longer exists') || message.includes('is being deleted')
+  return (
+    message.includes('no longer exists') ||
+    message.includes('is being deleted') ||
+    /\bProfile ['"][^'"]+['"] does not exist\./.test(message)
+  )
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {

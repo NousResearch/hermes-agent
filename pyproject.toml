@@ -359,6 +359,11 @@ wake-porcupine = ["pvporcupine==4.0.3"]
 google-chat = [
   "google-cloud-pubsub==2.39.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
+# Holographic catalog memory provider's HRR algebra needs NumPy. The plugin pins
+# NumPy itself, but plugin deps lazy-install into /opt/data/installs, which an
+# offline sealed container cannot reach -> silent FTS-only fallback (#136707).
+# Baked into the Docker image like matrix/google-chat; lazy on source installs.
+holographic = ["numpy==2.4.3"]
 # Document extraction (read_file anydoc converter self-heal) — core already
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.

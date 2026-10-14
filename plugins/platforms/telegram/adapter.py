@@ -6613,8 +6613,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
         """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
-        existing = pending.setdefault(key, event)
-        if existing is event:
+        if (existing := pending.get(key)) is None:
+            pending[key] = event
             return
         existing.absorb_reply_expected(event)
         existing.media_urls.extend(event.media_urls)

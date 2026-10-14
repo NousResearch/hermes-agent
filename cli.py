@@ -1674,6 +1674,7 @@ def main(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     output_format: str = "text",
+    cache_scope: str | None = None,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -1687,6 +1688,7 @@ def main(
         q: Shorthand for --query
         oneshot: With -q: force the legacy answer-and-exit single-query mode
             even on a TTY.
+        cache_scope: Opt-in cache routing label for fresh single-query calls only.
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
@@ -1715,6 +1717,9 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    query = query or q
+    from hermes_cli.cli_cache_scope import configure_cli_cache_scope, validate_cli_cache_scope
+    cache_scope = validate_cli_cache_scope(cache_scope, query, quiet or output_format == "stream-json", oneshot, resume)
     # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
     with suppress(Exception):
         from hermes_cli.stdio import configure_windows_stdio
@@ -1736,7 +1741,6 @@ def main(
             print(_t("cli.startup.warning", warning=warning), file=sys.stderr)
 
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
-    query = query or q
     # ``hermes chat`` already validated this; the direct Fire entry point gets the same contract.
     if output_format == "stream-json":
         if not query:
@@ -1744,6 +1748,7 @@ def main(
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    configure_cli_cache_scope(cli, cache_scope)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

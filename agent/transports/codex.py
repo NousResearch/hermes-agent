@@ -707,7 +707,7 @@ class ResponsesApiTransport(ProviderTransport):
         """Build Responses API kwargs (calls convert_messages/convert_tools internally).
 
         params: instructions, reasoning_config ({effort, enabled}), session_id (transcript id;
-        Codex header; cache-scope fallback), cache_scope_id (rotation-stable scope for the
+        Codex header unless cache_affinity_id overrides it), cache_scope_id (rotation-stable scope for the
         cache key / xAI conv header), max_tokens, timeout, request_overrides, provider, base_url,
         is_github_responses, is_codex_backend, is_xai_responses, github_reasoning_extra,
         context_management, replay_encrypted_reasoning.
@@ -845,10 +845,10 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.pop("timeout", None)
 
         if is_codex_backend:
-            # SDK kwarg -> HTTP headers. ``session_id`` = raw physical id (transcript
-            # identity); ``x-client-request-id`` mirrors the body cache key so both agree.
+            # Default: physical id. A fresh CLI run may explicitly share cache affinity
+            # without changing its transcript id; x-client-request-id mirrors the body key.
             headers = {
-                "session_id": str(session_id) if session_id else None,
+                "session_id": params.get("cache_affinity_id") or (str(session_id) if session_id else None),
                 "x-client-request-id": kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope),
             }
             headers = {k: v for k, v in headers.items() if v}

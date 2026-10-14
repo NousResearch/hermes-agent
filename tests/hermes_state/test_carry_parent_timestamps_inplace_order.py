@@ -70,8 +70,12 @@ def test_rebuilt_copies_adopt_durable_timestamps_tail_rewind(db):
 
 def test_rebuilt_copies_adopt_durable_timestamps_proved_coverage(db):
     """Proved-coverage branch (_archive_named_rows): same ordering requirement."""
-    active_ids = [row[0] for row in db._conn.execute(
-        "SELECT id FROM messages WHERE session_id = 's' AND active = 1 ORDER BY id").fetchall()]
+    active_ids = [
+        row[0]
+        for row in db._conn.execute(
+            "SELECT id FROM messages WHERE session_id = 's' AND active = 1 ORDER BY id"
+        ).fetchall()
+    ]
     db.archive_and_compact("s", _rebuilt(), covered_ids=active_ids, tail_count=2)
 
     assert [m["content"] for m in _visible(db)] == [text for _, text, _ in ROWS]

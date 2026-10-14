@@ -2155,8 +2155,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 )
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
-            self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
-            self._exit_reason = self._exit_reason or "Gateway restart requested"
+            if getattr(self, '_exit75_allowed', True):
+                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+                self._exit_reason = self._exit_reason or "Gateway restart requested"
+            else:
+                logger.info(
+                    "Suppressed exit 75 (adapter-failure stop, not an admin restart)."
+                )
         self._draining = False
         # Terminal gateway_state: "stopped", or "running" on an UNEXPECTED signal (docker restart,
         # OOM) — container_boot.py only auto-starts gateways last seen "running".

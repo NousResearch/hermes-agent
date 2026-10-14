@@ -310,3 +310,50 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+def test_new_session_model_reset_stamps_route_on_new_session_not_outgoing(tmp_path):
+    """/new must rotate the live agent onto the fresh session id BEFORE the
+    config-default model reset: the reset's switch_model persists the billing
+    route, and with the agent still on the outgoing session that write stamped
+    the config-default provider onto a row whose accounted usage ran on a
+    mid-session-switched route (frozen there: the usage-based reconciliation
+    only ran while api_call_count == 0)."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    # The outgoing session's accounted usage ran on a route other than the
+    # config default (a mid-session /model switch).
+    cli._session_db.update_token_counts(
+        old_session_id, input_tokens=100, model="claude-max-route",
+        billing_provider="claude-subscription-route",
+        billing_base_url="process://sub", api_call_count=1, estimated_cost_usd=0.01,
+    )
+    cli.model = "claude-max-route"
+    cli.provider = "claude-subscription-route"
+
+    stamped = []
+
+    def _fake_agent_switch_model(**kwargs):
+        # Mirror the real AIAgent.switch_model's route persistence: it stamps
+        # the billing route of the session the agent is CURRENTLY on.
+        cli._session_db.update_session_billing_route(
+            cli.agent.session_id, provider=kwargs["new_provider"],
+            base_url=kwargs.get("base_url") or "",
+        )
+        stamped.append(cli.agent.session_id)
+
+    cli.agent.switch_model = _fake_agent_switch_model
+    cli.process_command("/new")
+
+    # The reset's route write targeted the NEW session (whose row does not
+    # exist yet at reset time — a no-op there), never the outgoing row.
+    assert stamped and stamped[0] != old_session_id
+    assert stamped[0] == cli.session_id
+    with cli._session_db._lock:
+        row = cli._session_db._conn.execute(
+            "SELECT model, billing_provider FROM sessions WHERE id = ?",
+            (old_session_id,),
+        ).fetchone()
+    assert row["billing_provider"] == "claude-subscription-route"
+    assert row["model"] == "claude-max-route"
+    assert cli._session_db.get_session(cli.session_id) is not None
+
+

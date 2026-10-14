@@ -229,7 +229,7 @@ def _list_block(items: list[tuple[int, bool, str]]) -> Block:
 
 
 def _section_block(text: str) -> Block:
-    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}, "expand": True}
 
 
 # ----------------------------------------------------------------------------

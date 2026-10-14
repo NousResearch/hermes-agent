@@ -1,0 +1,5 @@
+name: meta-oauth-provider
+kind: model-provider
+version: 1.0.0
+description: Meta Model API via Muse Code subscription (OAuth) — Muse Spark family
+author: am423

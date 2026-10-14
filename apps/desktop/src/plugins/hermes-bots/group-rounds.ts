@@ -118,7 +118,7 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     }
   }
 
-  for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {
+  for (const match of source.matchAll(/@([\p{L}\p{N}][\p{L}\p{N}._-]*)/giu)) {
     const handle = match[1].toLowerCase()
 
     if (handle === 'everyone' || handle === 'all') {

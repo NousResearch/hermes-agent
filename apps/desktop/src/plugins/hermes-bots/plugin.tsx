@@ -800,7 +800,7 @@ export default {
             }
           }
 
-          if (!/(^|\s)@[a-z0-9][a-z0-9_-]*/i.test(text)) {
+          if (!/(^|\s)@[\p{L}\p{N}][\p{L}\p{N}._-]*/iu.test(text)) {
             return draft
           }
 

@@ -1190,11 +1190,11 @@ export function mentionNameForms(value: null | string | undefined): string[] {
     return []
   }
 
-  const slug = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
-  const collapsed = name.replace(/[^a-z0-9_-]+/g, '')
+  const slug = name.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '')
+  const collapsed = name.replace(/[^\p{L}\p{N}_-]+/gu, '')
 
   return [...new Set([slug, collapsed])].filter(
-    form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
+    form => /^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
   )
 }
 
@@ -1410,7 +1410,7 @@ export function resolveRosterMentions(
   // `@tag@connection` is the form the picker inserts when a bare tag is
   // ambiguous (two remote defaults both titled "CoS Bot"): the suffix pins
   // the row to one connection, so a colliding tag still resolves exactly.
-  for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)(?:@([a-z0-9][a-z0-9_-]*))?/gi)) {
+  for (const match of prose.matchAll(/(^|\s)@([\p{L}\p{N}][\p{L}\p{N}_-]*)(?:@([\p{L}\p{N}][\p{L}\p{N}_-]*))?/giu)) {
     let token = match[2].toLowerCase()
     const connection = (match[3] || '').toLowerCase()
 

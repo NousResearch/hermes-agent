@@ -18,7 +18,7 @@ import type { GroupMember } from './types'
 
 export type GroupMentionKind = 'agent' | 'broadcast' | 'human'
 
-const MENTION = /@([a-z0-9][a-z0-9._-]*)/gi
+const MENTION = /@([\p{L}\p{N}][\p{L}\p{N}._-]*)/giu
 
 /** What a lone `@token` means in this room, or null when routing ignores it. */
 export function classifyGroupMention(token: string, members: GroupMember[]): GroupMentionKind | null {

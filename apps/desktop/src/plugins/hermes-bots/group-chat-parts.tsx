@@ -137,7 +137,7 @@ interface MentionToken {
  *  word) up to the caret, or null when the caret isn't inside a mention. */
 function mentionTokenAt(text: string, caret: number): MentionToken | null {
   const upto = String(text || '').slice(0, caret)
-  const match = /(^|\s)@([a-z0-9._-]*)$/i.exec(upto)
+  const match = /(^|\s)@([\p{L}\p{N}._-]*)$/iu.exec(upto)
 
   if (!match) {
     return null

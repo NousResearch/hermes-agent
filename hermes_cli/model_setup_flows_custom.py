@@ -93,6 +93,22 @@ def _pick_detected_model(detected_models: list) -> str:
     return line_input(manual).strip()
 
 
+def _custom_endpoint_key_identity(base_url: str, display_name: str = "") -> str:
+    """Identity ``custom_endpoint_key_env`` slugs for a CLI-configured custom endpoint's ``.env``
+    slot. The display name wins when set: it is the endpoint's scope identity, so two credentials
+    for one provider (same host, ``OpenCode Zen (work)`` vs ``(personal)``) land in two slots
+    instead of sharing one host-keyed variable. ``host[_{port}]`` is the fallback for an endpoint
+    saved without a name (local servers keep their per-machine slot)."""
+    name = str(display_name or "").strip()
+    if name:
+        return name
+    parsed = urllib.parse.urlparse(base_url)
+    identity = parsed.hostname or ""
+    if parsed.port:
+        identity = f"{identity}_{parsed.port}"
+    return identity
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name; also saved to ``custom_providers`` so
     it appears in the provider menu on subsequent runs."""
@@ -161,16 +177,14 @@ def _model_flow_custom(config):
     if context_length is None and model_name:
         _report_context_length_detection(model_name, effective_url, effective_key)
 
-    # The key goes to .env and config.yaml only references it. Keyed on host:port
-    # so two servers on one machine keep separate credentials.
-    # See #69449.
+    # The key goes to .env and config.yaml only references it. Keyed on the endpoint's identity —
+    # its display name, so two scopes of one provider (``OpenCode Zen (work)`` / ``(personal)``)
+    # keep separate credentials instead of sharing one host-keyed slot; host:port is the fallback
+    # when no display name is set.
+    # See #69449, #118285.
     custom_key_env = ""
     if effective_key:
-        _parsed = urllib.parse.urlparse(effective_url)
-        _identity = _parsed.hostname or ""
-        if _parsed.port:
-            _identity = f"{_identity}_{_parsed.port}"
-        custom_key_env = custom_endpoint_key_env(_identity)
+        custom_key_env = custom_endpoint_key_env(_custom_endpoint_key_identity(effective_url, display_name))
         save_env_value(custom_key_env, effective_key)
         print(f"  API key saved to .env as {custom_key_env}")
 
@@ -430,7 +444,9 @@ def _model_flow_named_custom(config, provider_info):
             cfg["providers"] = providers_cfg
             save_config(cfg)
     else:
-        # Save model name to the custom_providers entry for next time
-        _save_custom_provider(base_url, config_api_key, model_name, api_mode=api_mode)
+        # Save model name to the custom_providers entry for next time. Pass the display name:
+        # it is the entry's identity, so a re-run updates that entry rather than adding another
+        # scope next to it (#118285).
+        _save_custom_provider(base_url, config_api_key, model_name, name=name, api_mode=api_mode, key_env="")
 
     _say(f"\n✅ Model set to: {model_name}", f"   Provider: {name} ({base_url})")

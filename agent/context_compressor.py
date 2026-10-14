@@ -34,7 +34,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
-from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub
+from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -884,12 +884,7 @@ def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
     """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
     ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
     from agent.skill_commands import skills_loaded_by_scaffold
-    call_id_to_skill: dict[str, str] = {}
-    for idx, skill in _skill_view_call_sites(turns):
-        for tc in turns[idx].get("tool_calls") or []:
-            cid = _tc_get(tc, "id")
-            if cid and _tc_get(_tc_get(tc, "function", {}), "name") == "skill_view":
-                call_id_to_skill[cid] = skill
+    call_id_to_skill = skill_view_names_by_call_id(turns)
     names: list[str] = []
     for msg in turns:
         content = msg.get("content")
@@ -1727,8 +1722,10 @@ def _sum_execute_code(name, args, content, content_len, line_count):
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
     # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
-    failed = _result_failure_suffix(content)
-    marker = "" if skill == "?" or failed else " " + _skill_pruned_marker(str(skill))
+    failed = _result_failure_suffix(content) or (" FAILED" if _skill_view_failed(content) else "")
+    # Re-summarizing a stub (fallback summary) keeps that stub's own verdict instead of re-deciding blind.
+    keep = SKILL_PRUNED_MARKER_PREFIX in content if _is_summary_stub(content) else not failed
+    marker = " " + _skill_pruned_marker(str(skill)) if skill != "?" and keep else ""
     return f"[skill_view] name={skill}{failed} ({content_len:,} chars)" + marker
 
 
@@ -3559,7 +3556,8 @@ class ContextCompressor(
                     _collect_paths_from_jsonish(parsed, relevant_files)
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            text = _compact_fallback_turn(msg.get("content"))
+            content = msg.get("content")
+            text = _compact_fallback_turn(_typed_user_text(content) if role == "user" and isinstance(content, str) else content)
             _collect_path_mentions(text, relevant_files)
             synthetic_user = role == "user" and self._is_synthetic_compression_user_turn(msg)
             tool_names = [_extract_tool_call_name_and_args(tc)[0] for tc in (msg.get("tool_calls") or [])] if role == "assistant" else []

@@ -30,7 +30,7 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
     )
 
 
-def _skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
+def skill_view_names_by_call_id(messages: list[dict[str, Any]]) -> dict[str, str]:
     """Map each ``skill_view`` tool-call id to the skill name it loaded."""
     from agent.context_compressor import _json_dict, _tc_get
 
@@ -77,7 +77,7 @@ def demote_stale_tail_tools(
         if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
             continue
         stub = _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id)
-        skills = _skill_view_names_by_call_id(messages) if skills is None else skills
+        skills = skill_view_names_by_call_id(messages) if skills is None else skills
         if (skill := skills.get(str(msg.get("tool_call_id") or ""))) and not _result_failure_suffix(content):
             stub += " " + _skill_pruned_marker(skill)
         result[i] = _rewritten(msg, stub)

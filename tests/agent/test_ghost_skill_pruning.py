@@ -87,11 +87,16 @@ class TestSkillPrunedMarkerEmit:
         failed = json.dumps({"success": False, "error": "Skill 'nope' not found. " + "Available: a, b. " * 30})
         failed_stub = _summarize_tool_result("skill_view", '{"name":"nope"}', failed)
         assert SKILL_PRUNED_MARKER_PREFIX not in failed_stub
-        # Neither the raw failure nor its stub is listed for reload at a later compaction.
+        # Neither the raw failure nor its stub is listed for reload later, by the collector or the fallback summary.
         for content in (failed, failed_stub):
             turns = _skill_view_pair("call_nope", "nope")
             turns[1]["content"] = content
             assert _collect_ghosted_skill_names(turns) == []
+            assert "skill_view(name='nope')" not in _make_compressor()._build_static_fallback_summary(turns)
+        # Parallel loads on one assistant row are each listed under their own name.
+        pair_one, pair_two = _skill_view_pair("call_1", "one", 300), _skill_view_pair("call_2", "two", 300)
+        row = {**pair_one[0], "tool_calls": pair_one[0]["tool_calls"] + pair_two[0]["tool_calls"]}
+        assert _collect_ghosted_skill_names([row, pair_one[1], pair_two[1]]) == ["one", "two"]
 
     def test_marker_extractor_round_trips_the_emitted_marker(self):
         """Emit and check sides share one canonical string.
@@ -270,7 +275,8 @@ class TestMarkerSurvivesRealCompress:
                                           user_instruction="remember PLUM-77")
         # A gateway auto-load turn whose skill lists supporting files: the request follows those blocks.
         auto = _build_skill_message(
-            {"name": "gw-skill", "content": "gateway skill body", "linked_files": {"references": ["references/gw.md"]}},
+            {"name": "gw-skill", "content": "gateway skill body", "linked_files": {"references": ["references/gw.md"]},
+             "setup_needed": True, "setup_note": "First setup step.\nSecond setup step."},
             Path("/skills/gw-skill"),
             '[IMPORTANT: The "gw-skill" skill is auto-loaded. Follow its instructions for this session.]',
         ) + "\n\nhello from the gateway"

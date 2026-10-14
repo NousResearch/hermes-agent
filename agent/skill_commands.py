@@ -330,7 +330,7 @@ _SKILL_DIR_NOTE = (
 # Closing text of the optional blocks _build_skill_message appends after the directory note; the
 # auto-load describer skips them so they are never read as the user's typed request.
 _SUPPORTING_FILES_END = "/scripts/foo.js`)."
-_TRAILING_BLOCK_ENDS = (("[Skill config (", "\n]"), ("[Skill setup note: ", "\n"),
+_TRAILING_BLOCK_ENDS = (("[Skill config (", "\n]"), ("[Skill setup note: ", "]\n\n"),
                         ("[This skill has supporting files", _SUPPORTING_FILES_END))
 _SETUP_SKIPPED_NOTE = (
     "Required environment setup was skipped. Continue loading the skill "

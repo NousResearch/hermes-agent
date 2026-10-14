@@ -897,6 +897,53 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert payload["reason"] == "target_busy"
 
 
+def test_run_delivery_does_not_clone_an_open_unadvertised_bot_chat(tmp_path, monkeypatch, capsys):
+    """#128996: an unadvertised owner parks the DM (no CLI clone); the lapsed budget
+    ends status=queued + target_pending_live_consumer with the receipt retained."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setattr(bot_mode_dm, "_local_delivery_home", lambda argv: home)
+    monkeypatch.setattr(bot_mode_dm, "_DEFER_POLL_SECONDS", 0)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0)
+    monkeypatch.setattr(
+        "tools.bot_live_delivery.find_canonical_owner",
+        lambda profile_home: {"profile_home": str(home), "session_id": "s", "lease_id": "l"},
+    )
+    monkeypatch.setattr(bot_mode_dm, "_run_local_turn", lambda *args, **kwargs: pytest.fail("CLI clone spawned"))
+
+    assert bot_mode_dm._run_delivery(["hermes", "-p", "researcher"], str(dm_file), stdin_file=False) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "target_pending_live_consumer"
+    assert result["status"] == "queued"
+    # The parked record is the durable copy the later drain executes.
+    from tools import bot_dm_pending
+
+    parked = bot_dm_pending.pending_records_for_home(home)
+    assert [r["id"] for r in parked] == [result["delivery_id"]]
+    assert parked[0]["message"] == "hello"
+
+
+def test_run_delivery_uses_advertised_live_owner(tmp_path, monkeypatch):
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    home = tmp_path / "profile"
+    home.mkdir()
+    owner = {"profile_home": str(home), "session_id": "s", "lease_id": "l"}
+    monkeypatch.setattr(bot_mode_dm, "_local_delivery_home", lambda argv: home)
+    monkeypatch.setattr("tools.bot_live_delivery.find_canonical_owner", lambda profile_home: owner)
+    monkeypatch.setattr("tools.bot_live_delivery.find_canonical_live_owner", lambda profile_home: owner)
+    monkeypatch.setattr(
+        bot_mode_dm, "_admit_live_dm",
+        lambda *args, **kwargs: {"profile_home": str(home), "delivery_id": "delivery-1", "status": "queued"},
+    )
+    monkeypatch.setattr(bot_mode_dm, "_wait_live_dm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(bot_mode_dm, "_run_local_turn", lambda *args, **kwargs: pytest.fail("CLI clone spawned"))
+
+    assert bot_mode_dm._run_delivery(["hermes", "-p", "researcher"], str(dm_file), stdin_file=False) == 0
+
+
 def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
     """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
     silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""

@@ -65,16 +65,15 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
 })
 
 test('redactSecrets masks a credential glued into an ssh target string', () => {
-  // Real incident: password typed into the host field surfaced verbatim in
-  // desktop.log and a public debug share.
-  const line = 'connecting (no-mux) to root@100.84.204.123:Luisclawy2026:22'
+  // Synthetic fixture for a password typed into the host field.
+  const line = 'connecting (no-mux) to root@100.84.204.123:dummy-test-password:22'
   const out = redactSecrets(line)
-  assert.ok(!out.includes('Luisclawy2026'), 'credential must be masked')
+  assert.ok(!out.includes('dummy-test-password'), 'credential must be masked')
   assert.match(out, /root@100\.84\.204\.123:<redacted>:22/)
 
   // Comma-mangled IP variant from the same incident.
-  const mangled = redactSecrets('connecting (no-mux) to root@100,84,204,123:Luisclawy2026:22')
-  assert.ok(!mangled.includes('Luisclawy2026'))
+  const mangled = redactSecrets('connecting (no-mux) to root@100,84,204,123:dummy-test-password:22')
+  assert.ok(!mangled.includes('dummy-test-password'))
 })
 
 test('redactSecrets leaves legitimate ssh target logging untouched', () => {
@@ -910,6 +909,41 @@ test('no-mux: an unrelated listener cannot mask a delayed bind failure', async (
   srv.close()
 })
 
+test('no-mux: tunnel stderr preserves UTF-8 split across chunks in the failure diagnostic', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {}
+
+    if (args.includes('-N')) {
+      setTimeout(() => {
+        const payload = Buffer.from(`bind [127.0.0.1]:${localPort}: conexión café`, 'utf8')
+        child.stderr.emit('data', payload.subarray(0, payload.length - 1))
+        child.stderr.emit('data', payload.subarray(payload.length - 1))
+        child.exitCode = 255
+        child.emit('exit', 255)
+      }, 20)
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false, forwardTimeoutMs: 1000 })
+  await assert.rejects(conn.forward(localPort, 9119), (err: any) => {
+    assert.match(err.message, /café/, 'split multibyte must survive the no-mux tunnel stderr')
+
+    return true
+  })
+  srv.close()
+})
+
 test('no-mux: tunnel death after readiness triggers a bounded restart, then unhealthy', async () => {
   const net = await import('node:net')
   const srv = net.createServer()
@@ -1209,6 +1243,66 @@ test('runSsh delivers stdinData to the child and does not log it', async () => {
 
   await runSsh(['host', 'cat'], { timeoutMs: 5000, spawnFn, stdinData: 'secret-token-value' })
   assert.equal(stdinWritten, 'secret-token-value', 'stdinData must be written to child.stdin')
+})
+
+test('runSsh preserves UTF-8 characters split across stdout and stderr chunks', async () => {
+  const spawnFn: any = () => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+
+    child.kill = () => {}
+
+    process.nextTick(() => {
+      const stdout = Buffer.from('José', 'utf8')
+      const stderr = Buffer.from('café', 'utf8')
+      child.stdout.emit('data', stdout.subarray(0, 4))
+      child.stdout.emit('data', stdout.subarray(4))
+      child.stderr.emit('data', stderr.subarray(0, 4))
+      child.stderr.emit('data', stderr.subarray(4))
+      child.emit('close', 0)
+    })
+
+    return child
+  }
+
+  const result = (await runSsh(['host', 'unicode'], { timeoutMs: 5000, spawnFn })) as {
+    stdout: string
+    stderr: string
+  }
+
+  assert.equal(result.stdout, 'José')
+  assert.equal(result.stderr, 'café')
+})
+
+test('runSsh flushes a trailing incomplete UTF-8 sequence as a replacement character on close', async () => {
+  const spawnFn: any = () => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+
+    child.kill = () => {}
+
+    process.nextTick(() => {
+      const stdout = Buffer.from('Jos', 'utf8')
+      const stderr = Buffer.from('caf', 'utf8')
+      child.stdout.emit('data', stdout)
+      child.stdout.emit('data', Buffer.from([0xc3]))
+      child.stderr.emit('data', stderr)
+      child.stderr.emit('data', Buffer.from([0xc3]))
+      child.emit('close', 0)
+    })
+
+    return child
+  }
+
+  const result = (await runSsh(['host', 'trailing'], { timeoutMs: 5000, spawnFn })) as {
+    stdout: string
+    stderr: string
+  }
+
+  assert.equal(result.stdout, 'Jos�', 'decoder.end() must flush buffered bytes as U+FFFD')
+  assert.equal(result.stderr, 'caf�')
 })
 
 test.runIf(process.platform !== 'win32')('open() rejects a control-dir that is a symlink', async () => {

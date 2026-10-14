@@ -1087,27 +1087,112 @@ def _aggregator_catalog_match(new_model: str, catalog: list) -> str | None:
         (mid for mid in catalog if "/" in mid and mid.split("/", 1)[1].lower() == wanted), None)
 
 
-def _model_default_declares_model(new_model: str, target_provider: str) -> bool:
+def _normalize_route_url(url: str) -> str:
+    """Comparable form of an endpoint: case and a trailing slash are not route changes."""
+    return str(url or "").strip().rstrip("/").casefold()
+
+
+def _provider_route_identities(name: str) -> frozenset[str]:
+    """Every spelling one provider name answers to: the raw form, the registry-canonical form
+    (``fw`` -> ``fireworks``), and the ``custom:<slug>``/bare-slug pair."""
+    from hermes_cli.providers import ALIASES, custom_provider_aliases
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return frozenset()
+    return frozenset({raw, ALIASES.get(raw, raw)} | set(custom_provider_aliases(raw, raw)))
+
+
+def _resolve_declared_endpoint(declared_provider: str, user_providers, custom_providers) -> str:
+    """The endpoint a provider declaration routes through when it carries no ``base_url`` of its
+    own: the user's named ``providers:``/``custom_providers:`` block, else the registry default.
+    A bare ``custom`` resolves nowhere — the first-entry fallback exists to heal corrupt saved
+    state, not to let a bare declaration borrow a named endpoint."""
+    raw = str(declared_provider or "").strip().lower()
+    if not raw:
+        return ""
+    if user_providers:
+        cfg = user_providers.get(raw)
+        if isinstance(cfg, dict):
+            url = str(cfg.get("base_url") or "").strip()
+            if url:
+                return url
+    if custom_providers and raw != "custom":
+        for entry in _custom_entries(custom_providers):
+            if raw in _entry_aliases(entry):
+                url = str(entry.get("base_url") or "").strip()
+                if url:
+                    return url
+    from hermes_cli.providers import ALIASES, get_provider
+    pdef = get_provider(ALIASES.get(raw, raw), allow_network=False)
+    return str(pdef.base_url or "").strip() if pdef else ""
+
+
+def _declared_default_route() -> Optional[tuple[str, str, str]]:
+    """``model.default`` resolved into its route ``(model_id, provider, base_url)``, or None.
+
+    Read from the USER'S raw config: merged application defaults must not masquerade as a
+    declaration, and an unreadable file fails closed (the merged loader would serve a
+    last-known-good copy and re-authorize the override). Raw reads also skip the load/save
+    normalization, so the precedence rules are mirrored here: ``default`` > ``model`` > ``name``,
+    a dict-shaped value flattens (nested provider wins over an empty/``auto`` outer one), and
+    ``api_base`` aliases ``base_url``. A direct-alias name expands to the alias's own route — the
+    alias, not the surrounding keys, carries the identity."""
+    from hermes_cli.config import FailedConfigRead, read_raw_config_readonly, split_model_config_default
+    try:
+        cfg = read_raw_config_readonly()
+    except Exception:  # health: allow BLE001 -- tri-state read: any raw-config failure means "not declared"
+        return None
+    if isinstance(cfg, FailedConfigRead) or not isinstance(cfg, dict):
+        return None
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, str):
+        model_cfg = {"default": model_cfg}
+    if not isinstance(model_cfg, dict):
+        return None
+    for key in ("default", "model", "name"):
+        raw_value = model_cfg.get(key)
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            continue
+        declared_id, nested_provider = split_model_config_default(raw_value)
+        if not declared_id:
+            continue
+        outer_provider = str(model_cfg.get("provider") or "").strip()
+        declared_provider = (
+            nested_provider if nested_provider and (not outer_provider or outer_provider.lower() == "auto")
+            else outer_provider)
+        declared_base = str(model_cfg.get("base_url") or model_cfg.get("api_base") or "").strip()
+        _ensure_direct_aliases()
+        direct = DIRECT_ALIASES.get(declared_id.lower()) if declared_id else None
+        if direct is not None:
+            declared_id = direct.model
+            declared_provider = direct.provider or declared_provider
+            declared_base = direct.base_url or declared_base
+        return declared_id, declared_provider, declared_base
+    return None
+
+
+def _model_default_declares_model(
+    new_model: str, target_provider: str, base_url: str, user_providers, custom_providers) -> bool:
     """``model.default`` is the most explicit declaration a user can make: the runtime serves the
     id and the picker renders it as current, so the switch validator must not reject it just
-    because no remote/curated listing carries the id (account-level router ids; #138261). Scoped
-    by the paired ``model.provider`` so the declaration never widens to other providers."""
-    try:
-        from hermes_cli.config import load_config, split_model_config_default
-        model_cfg = load_config().get("model")
-    except Exception:  # health: allow BLE001 -- tri-state read: any config-load failure means "not declared", the listing validation stands
+    because no remote/curated listing carries the id (account-level router ids; #138261). The
+    declaration is scoped to its whole route: the model id, the provider (by any of its
+    spellings), and — so an endpoint-A declaration cannot wave an endpoint-B listing rejection
+    through — the endpoint the declaration resolves to, matched against the actual ``base_url``.
+    A bare ``model.default`` without a provider, or one on ``auto``, routes via the resolver
+    instead and stays rejected; the override is not simply weakened."""
+    declared_id, declared_provider, declared_base = _declared_default_route() or ("", "", "")
+    if not new_model or not declared_id or declared_id != new_model:
         return False
-    if not isinstance(model_cfg, dict) or not new_model:
+    if not declared_provider or declared_provider.strip().lower() == "auto":
         return False
-    declared_id, declared_provider = split_model_config_default(model_cfg.get("default"))
-    if not declared_provider:
-        # Canonical layout keeps the pair as sibling keys (``model.default`` + ``model.provider``);
-        # the split helper only carries a provider out of a dict-shaped ``default`` value.
-        declared_provider = str(model_cfg.get("provider") or "").strip()
-    return (
-        bool(declared_id) and declared_id == new_model
-        and bool(declared_provider)
-        and declared_provider.strip().lower() == target_provider.strip().lower())
+    if not (_provider_route_identities(declared_provider) & _provider_route_identities(target_provider)):
+        return False
+    declared_endpoint = declared_base or _resolve_declared_endpoint(
+        declared_provider, user_providers, custom_providers)
+    if not declared_endpoint or not str(base_url or "").strip():
+        return False
+    return _normalize_route_url(declared_endpoint) == _normalize_route_url(base_url)
 
 
 def _config_declares_model(
@@ -1115,7 +1200,7 @@ def _config_declares_model(
     """A model declared in the user's ``providers:``/``custom_providers:`` config — or named by
     ``model.default`` — is accepted even when the remote /v1/models does not list it
     (cloud/aliased models). Custom entries match by slug alias or by base_url."""
-    if _model_default_declares_model(new_model, target_provider):
+    if _model_default_declares_model(new_model, target_provider, base_url, user_providers, custom_providers):
         return True
     if user_providers:
         from hermes_cli.config import is_provider_enabled

@@ -116,6 +116,17 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # the next Hello. 4009 (connection timeout) is deliberately absent: it is
     # resumable per the QQ protocol and must keep session state.
     _SESSION_INVALID_CLOSE_CODES = {4006, 4007} | set(range(4900, 4914))
+    # Closes the protocol itself schedules: the server ends the connection at its
+    # own session lifetime (~1h, 4009 "Session timed out") and expects a Resume.
+    # The reconnect is the normal continuation, not a fault, so these log at INFO
+    # once the connection has lived a full session lifetime — a close repeating
+    # faster than that, or one that fails to recover, keeps the WARNING (#128022:
+    # one WARNING per hour, 478/month on a healthy install, drowning real ones).
+    _ROUTINE_CLOSE_CODES = {4009}
+    # How long a connection must live before a scheduled close counts as routine.
+    # The server's session lifetime is ~1h; a 4009 cycling faster than this floor
+    # (e.g. every minute) is a broken install and must not be silenced.
+    _ROUTINE_MIN_SESSION_SECONDS = 600.0
 
     @property
     def _log_tag(self) -> str:
@@ -322,7 +333,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _listen_loop(self) -> None:
         """Read WebSocket events and reconnect on errors. Close codes: 4004 → refresh
         token; 4006/4007/49xx → clear session and re-identify; 4008 → rate limited,
-        back off; _FATAL_CLOSE_CODES → stop."""
+        back off; 4009 → server-side session lifetime, INFO once it lived a full
+        session, WARNING when it repeats faster; _FATAL_CLOSE_CODES → stop."""
         backoff_idx = 0
         connect_time = 0.0
         quick_disconnect_count = 0
@@ -345,10 +357,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if not self._running:
                     return
                 code = exc.code
-                logger.warning("[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason)
+                duration = time.monotonic() - connect_time
+                # A scheduled close is only routine after a full session lifetime;
+                # a 4009 repeating faster than _ROUTINE_MIN_SESSION_SECONDS is a
+                # broken install and keeps the WARNING.
+                routine = (
+                    code in self._ROUTINE_CLOSE_CODES
+                    and duration >= self._ROUTINE_MIN_SESSION_SECONDS
+                )
+                close_log = logger.info if routine else logger.warning
+                close_log("[%s] WebSocket closed: code=%s reason=%s", self._log_tag, code, exc.reason)
 
                 # Quick disconnect detection (permission issues, misconfiguration)
-                duration = time.monotonic() - connect_time
                 if duration < QUICK_DISCONNECT_THRESHOLD and connect_time > 0:
                     quick_disconnect_count += 1
                     logger.info(

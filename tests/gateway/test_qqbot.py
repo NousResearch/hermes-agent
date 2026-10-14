@@ -1,6 +1,8 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
+import contextlib
+import logging
 import os
 from types import SimpleNamespace
 from unittest import mock
@@ -9,6 +11,7 @@ import httpx
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.qqbot.adapter import QQCloseError
 
 
 # ---------------------------------------------------------------------------
@@ -1252,4 +1255,80 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = SimpleNamespace(closed=True)
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestRoutineCloseLogging:
+    """#128022: the server ends the connection at its own ~1h session lifetime
+    (4009 "Session timed out") and the adapter Resumes — messaging keeps working.
+    A close that has lived a full session lifetime is routine and logs at INFO;
+    a 4009 repeating faster than _ROUTINE_MIN_SESSION_SECONDS (broken install)
+    and an unclassified close code keep the WARNING so real faults stand out
+    (478 WARNINGs/month on a healthy install drowned them before)."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @staticmethod
+    def _fake_monotonic(*ticks):
+        """Yield the given ticks for the first calls (connect, then close), then
+        fall back to the real clock so unrelated code keeps working."""
+        from gateway.platforms.qqbot import adapter as adapter_module
+        real = adapter_module.time.monotonic
+        calls = iter(ticks)
+
+        def now():
+            return next(calls, real())
+
+        return mock.patch.object(adapter_module.time, "monotonic", side_effect=now)
+
+    async def _run_one_close_cycle(self, adapter, code, reason, caplog, clock=None):
+        adapter._running = True
+        adapter._session_id = "sess_keep"
+        adapter._last_seq = 7
+
+        async def fake_read_events():
+            raise QQCloseError(code, reason)
+
+        async def fake_reconnect(backoff_idx):
+            adapter._running = False  # one close→reconnect cycle is enough
+            return True
+
+        with mock.patch.object(adapter, "_read_events", fake_read_events), \
+             mock.patch.object(adapter, "_reconnect", fake_reconnect), \
+             (clock if clock is not None else contextlib.nullcontext()), \
+             caplog.at_level(logging.INFO, logger="gateway.platforms.qqbot.adapter"):
+            await adapter._listen_loop()
+        return [r for r in caplog.records if "WebSocket closed" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_session_timeout_close_logs_at_info(self, caplog):
+        adapter = self._make_adapter()
+        # Connected at t=0, closed at t=3700s: a full ~1h session lifetime.
+        clock = self._fake_monotonic(0.0, 3700.0)
+        records = await self._run_one_close_cycle(adapter, 4009, "Session timed out", caplog, clock)
+        assert records, "the close must still be logged, just not as a warning"
+        assert records[0].levelname == "INFO"
+        # 4009 is resumable: session state survives for the Resume
+        assert adapter._session_id == "sess_keep"
+        assert adapter._last_seq == 7
+
+    @pytest.mark.asyncio
+    async def test_routine_close_repeating_too_fast_still_logs_warning(self, caplog):
+        adapter = self._make_adapter()
+        # Session dying every 60s (#128022's broken-install regime): the close is
+        # a 4009 but has not lived a full session lifetime, so it must not be
+        # silenced — errors.log stays useful for a broken install.
+        clock = self._fake_monotonic(0.0, 60.0)
+        records = await self._run_one_close_cycle(adapter, 4009, "Session timed out", caplog, clock)
+        assert records
+        assert records[0].levelname == "WARNING"
+
+    @pytest.mark.asyncio
+    async def test_unclassified_close_still_logs_warning(self, caplog):
+        adapter = self._make_adapter()
+        clock = self._fake_monotonic(0.0, 3700.0)
+        records = await self._run_one_close_cycle(adapter, 4005, "server hiccup", caplog, clock)
+        assert records
+        assert records[0].levelname == "WARNING"
 

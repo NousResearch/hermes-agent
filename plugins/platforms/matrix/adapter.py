@@ -14,13 +14,9 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
-Note: any room with <=2 joined members is auto-classified as a DM (see
-``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
-clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
-therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
-and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
-MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
-add a third member so it has >2 joined members.
+DM routing follows explicit ``m.direct`` account data, including named DMs. Room membership
+and display names are diagnostics and never change conversation kind or bypass room policy.
+Previously misclassified small rooms begin a separate group lane; old DM transcripts are not merged.
 """
 
 from __future__ import annotations
@@ -1412,7 +1408,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+    async def create_handoff_thread(self, parent_chat_id: str, name: str, *, metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
         no create-thread API: a thread is the events whose ``m.relates_to``/``rel_type: m.thread``
         point at a root event (Slack-style), and ``_apply_relation_metadata`` already threads later
@@ -1431,7 +1427,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
-        return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}
+        return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group",
+                "scope_id": identity.server_name}
 
     def get_diagnostics(self) -> dict[str, Any]:
         now = time.time()
@@ -2795,7 +2792,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._room_identity_cached_at.pop(room_id, None)
 
     async def _resolve_room_identity(self, room_id: str, *, force_refresh: bool = False) -> MatrixRoomIdentity:
-        """Resolve room identity; member count is the primary DM signal (see below)."""
+        """Resolve room identity; explicit m.direct data determines conversation kind."""
         cached = self._room_identities.get(room_id)
         ttl = self._room_identity_ttl_seconds
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
@@ -2807,15 +2804,12 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # <=2 members is necessarily a DM regardless of m.direct/name (clients auto-name DMs
-        # like "Alice & Bot"); fall back to m.direct + unnamed only when the count is unknown.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (is_direct and not has_explicit_name)
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
             joined_member_count=member_count,
             is_direct_account_data=is_direct, display_name=room_name or canonical_alias or room_id,
-            has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
+            has_explicit_name=has_explicit_name, chat_type="dm" if is_direct else "room",
             conflict=bool(is_direct and has_explicit_name and (member_count is None or member_count > 2)))
         if len(self._room_identities) >= self._room_identity_cache_max:
             oldest = min(self._room_identity_cached_at, key=self._room_identity_cached_at.get, default=None)

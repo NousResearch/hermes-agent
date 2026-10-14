@@ -635,7 +635,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return SendResult(success=False, error=error)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        return {"name": chat_id, "type": "group" if chat_id and chat_id.lower().startswith("group") else "dm"}
+        # Conversation IDs do not prove kind; continuation uses the durable inbound source.
+        return {"name": chat_id, "type": "unknown"}
 
 
 _QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"

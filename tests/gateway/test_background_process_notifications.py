@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run import GatewayRunner
+from gateway.conversation import _parse_session_key
 from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
 
 

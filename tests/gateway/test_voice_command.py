@@ -353,6 +353,8 @@ class TestSendVoiceReply:
         call_kwargs = mock_adapter.send_voice.call_args.kwargs
         assert call_kwargs["reply_to"] == "462"
         assert call_kwargs["metadata"] == {
+            "platform": "telegram",
+            "user_id": "user1",
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "20197",

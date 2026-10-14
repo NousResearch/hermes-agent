@@ -63,7 +63,7 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str, *, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Proxy a chat-info lookup to the connector."""
         ...
 

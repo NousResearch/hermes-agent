@@ -1911,6 +1911,12 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
+async def _call_with_optional_metadata(fn: Callable, *args, metadata=None):
+    kwargs = {"metadata": metadata} if metadata and BasePlatformAdapter._accepts_kwarg(
+        fn, "metadata", var_kw=True, unknown=False) else {}
+    return await fn(*args, **kwargs)
+
+
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
@@ -2736,10 +2742,8 @@ class BasePlatformAdapter(ABC):
     # Surfaces needing an explicit finalize edit (DingTalk AI Cards): the consumer never skips it.
     REQUIRES_EDIT_FINALIZE: bool = False
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
-        """Create a fresh thread under ``parent_chat_id`` for a CLI→platform session handoff; its id
-        as str, or None when unsupported/failed (the watcher then uses ``parent_chat_id``
-        directly)."""
+    async def create_handoff_thread(self, parent_chat_id: str, name: str, *, metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
+        """Create a scoped handoff thread; return its id or None when unsupported/failed."""
         return None
 
     async def edit_message(
@@ -2984,18 +2988,13 @@ class BasePlatformAdapter(ABC):
             params = inspect.signature(fn).parameters
         except (TypeError, ValueError):
             return unknown
-        return name in params or (var_kw and any(
+        parameter = params.get(name)
+        return (parameter is not None and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)) or (var_kw and any(
             p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()))
 
     async def _stop_typing_with_metadata(self, chat_id: str, metadata=None) -> None:
-        """Stop typing, forwarding ``metadata`` only if ``stop_typing`` accepts it (Slack AI
-        status is per thread, so dropping metadata could clear a sibling thread; introspecting
-        keeps legacy ``stop_typing(chat_id)`` adapters working)."""
-        if metadata and self._accepts_kwarg(
-                self.stop_typing, "metadata", var_kw=True, unknown=False):
-            await self.stop_typing(chat_id, metadata=metadata)
-            return
-        await self.stop_typing(chat_id)
+        """Keep thread-scoped status metadata without breaking legacy typing callbacks."""
+        await _call_with_optional_metadata(self.stop_typing, chat_id, metadata=metadata)
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]],

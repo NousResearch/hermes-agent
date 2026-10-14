@@ -453,10 +453,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # --- Chat info ---
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        is_group = ";+;" in (chat_id or "")
-        info: dict[str, Any] = {"name": chat_id, "type": "group" if is_group else "dm"}
+        info: dict[str, Any] = {"name": chat_id, "type": "group" if ";+;" in (chat_id or "") else "dm" if ";-;" in (chat_id or "") else "unknown"}
         with suppress(Exception):
             if guid := await self._resolve_chat_guid(chat_id):
+                info["type"] = "group" if ";+;" in guid else "dm" if ";-;" in guid else "unknown"
+                info["chat_id"] = guid
                 res = await self._api_get(f"/api/v1/chat/{quote(guid, safe='')}?with=participants")
                 data = (res or {}).get("data", {})
                 info["name"] = data.get("displayName") or data.get("chatIdentifier") or chat_id

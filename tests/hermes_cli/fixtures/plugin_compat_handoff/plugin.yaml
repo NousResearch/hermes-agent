@@ -1,0 +1,5 @@
+name: legacy-handoff-fixture
+version: "0.1.0"
+description: Frozen adapter preceding optional handoff metadata
+provides_platforms:
+  - discord

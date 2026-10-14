@@ -75,7 +75,7 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
             "chat_id": "parent-channel",
             "content": "✓ Goal achieved: done",
             "reply_to": None,
-            "metadata": {"thread_id": "thread-123"},
+            "metadata": {"thread_id": "thread-123", "user_id": "user-1", "platform": "discord"},
         }
     ]
 

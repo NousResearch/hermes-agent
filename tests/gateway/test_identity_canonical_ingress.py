@@ -158,7 +158,7 @@ async def test_shared_bot_routed_chat_runs_as_satellite_and_unserved_route_is_dr
     routed = _event(rig.bot_a, "5150", "hi ops")
     key = rig.bot_a._event_session_key(routed)
     identity = identity_of(routed.source)
-    assert key == "agent:ops:telegram:dm:5150"
+    assert key == "agent:ops:telegram:dm:5150:account~:default"
     assert (identity.transport_profile, identity.runtime_profile) == ("default", "ops")
     assert identity.adapter() is rig.bot_a and identity.runtime_home == rig.home / "profiles" / "ops"
 

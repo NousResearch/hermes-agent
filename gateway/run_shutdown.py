@@ -971,13 +971,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """``(source, platform_str, chat_id, thread_id, profile)``: persisted origin > cached source >
         parsed key. ``profile`` is the owning profile from the source or the ``agent:<profile>:`` key
         namespace (``None`` = default) so the notice leaves through that profile's bot."""
-        from gateway.run import _parse_session_key
+        from gateway.conversation import _parse_session_key
         source = None
         try:
             if getattr(self, "session_store", None) is not None:
                 await self.async_session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
-                source = getattr(entry, "origin", None) if entry else None
+                source = self._restored_source(entry) if entry and entry.origin else None
         except Exception as e:
             logger.debug("Failed to load session origin for shutdown notification %s: %s", session_key, e)
         if source is None:

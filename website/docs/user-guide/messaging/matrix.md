@@ -20,10 +20,10 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. Any room with 2 or fewer joined members is treated as a DM this way too, even if it has an explicit name — Matrix clients auto-name 1:1 chats, so name alone isn't a reliable signal. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. DMs are identified by explicit `m.direct` account data, including named DMs. The number of room members does not change routing. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A room without an explicit DM declaration follows these rules even with only two members. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Explicitly declared DMs follow `MATRIX_DM_AUTO_THREAD`; other rooms follow `MATRIX_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
@@ -33,6 +33,17 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.
 :::
+
+## Existing sessions and scheduled jobs
+
+Rooms previously classified as DMs solely because they had two members now use a separate
+room session. The old DM history is retained and is never merged automatically into room history.
+A declared DM continues to use its existing DM session, including named DMs.
+
+Old cron origins without a conversation kind are resolved through the live adapter before
+continuation is seeded. If the address or participant cannot be established, the report can still
+be delivered, but Hermes logs that continuation was skipped. Recreate or repair an ambiguous job
+from the intended conversation. No bulk rewrite of jobs or transcripts runs on upgrade.
 
 ## Capability Matrix
 

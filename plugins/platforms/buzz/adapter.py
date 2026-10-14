@@ -960,7 +960,7 @@ class BuzzAdapter(BasePlatformAdapter):
             data = await self._cli_json(["channels", "get", "--channel", chat_id], {})
             if isinstance(data, dict) and data.get("name"):
                 name = self._channel_names[chat_id] = str(data["name"])
-        return {"name": name or chat_id, "type": state["chat_type"] if state else "group", "chat_id": chat_id}
+        return {"name": name or chat_id, "type": state["chat_type"] if state else "unknown", "chat_id": chat_id}
 
     # ── Inbound: WebSocket transport (NIP-42) — same _handle_event() as the poll loop ──────
 

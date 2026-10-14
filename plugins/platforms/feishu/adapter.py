@@ -1982,7 +1982,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return real chat metadata from Feishu when available."""
-        fallback = {"chat_id": chat_id, "name": chat_id, "type": "dm"}
+        fallback = {"chat_id": chat_id, "name": chat_id, "type": "unknown"}
         if not self._client:
             return fallback
         cached = self._chat_info_cache.get(chat_id)
@@ -3235,7 +3235,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return "dm"
         if any(marker in normalized for marker in ("topic", "thread", "forum")):
             return "forum"
-        return "group" if normalized == "group" else "dm"
+        return "group" if normalized == "group" else "unknown"
 
     @staticmethod
     def _resolve_source_chat_type(*, chat_info: dict[str, Any], event_chat_type: str) -> str:

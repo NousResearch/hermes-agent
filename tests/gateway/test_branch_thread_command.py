@@ -20,7 +20,7 @@ class _ThreadAdapter:
     def __init__(self, thread_id="777000", fail=False):
         self.thread_id, self.fail, self.calls = thread_id, fail, []
 
-    async def create_handoff_thread(self, parent_chat_id, name):
+    async def create_handoff_thread(self, parent_chat_id, name, *, metadata=None):
         self.calls.append((parent_chat_id, name))
         return None if self.fail else self.thread_id
 

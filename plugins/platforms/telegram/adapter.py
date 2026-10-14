@@ -2519,7 +2519,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     "[%s] Failed to create DM topic '%s' in chat %s: %s", self.name, name, chat_id, _redact_telegram_error_text(e))
             return None
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+    async def create_handoff_thread(self, parent_chat_id: str, name: str, *, metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Create a forum topic for a session handoff; ``message_thread_id`` as str, or None."""
         try:
             chat_id_int = int(parent_chat_id)
@@ -5588,14 +5588,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
-            return {"name": "Unknown", "type": "dm"}
+            return {"name": "Unknown", "type": "unknown"}
         try:
             chat = await self._bot.get_chat(normalize_telegram_chat_id(chat_id))
             chat_type = "dm"
             if chat.type == ChatType.GROUP:
                 chat_type = "group"
             elif chat.type == ChatType.SUPERGROUP:
-                chat_type = "forum" if chat.is_forum else "group"
+                chat_type = "group"  # Forum topology is reported separately, as on ingress.
             elif chat.type == ChatType.CHANNEL:
                 chat_type = "channel"
             return {

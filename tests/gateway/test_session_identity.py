@@ -93,7 +93,7 @@ def test_identity_is_one_frozen_value_that_every_reader_agrees_on(mux):
     assert mux.runner._authorization_home_for_source(routed) == mux.home
     assert mux.runner._resolve_profile_home_for_source(routed) == mux.home / "profiles" / "ops"
     assert mux.runner._transport_owner(routed) == (mux.primary, None)
-    assert mux.primary._source_session_key(routed) == "agent:ops:telegram:dm:72719239"
+    assert mux.primary._source_session_key(routed) == "agent:ops:telegram:dm:72719239:account~:default"
     assert mux.runner._session_key_for_source(routed) == mux.primary._source_session_key(routed)
 
     own = mux.team_b.build_source(chat_id="72719239", chat_type="dm", user_id="72719239")
@@ -144,4 +144,4 @@ def test_replace_source_keeps_identity_and_transport_where_dataclasses_replace_d
     assert mux.runner._transport_owner(copied) == (mux.primary, None)
     assert isinstance(copied._transport_adapter_ref, weakref.ref)
     assert Path(copied._authorization_profile_home) == mux.home
-    assert mux.primary._source_session_key(copied) == "agent:ops:telegram:dm:72719239:7"
+    assert mux.primary._source_session_key(copied) == "agent:ops:telegram:dm:72719239:7:account~:default"

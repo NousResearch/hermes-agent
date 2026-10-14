@@ -930,7 +930,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
 
         Prefer the persisted session-store origin; the active foreground event causes cross-topic bleed.
         """
-        from gateway.run import _parse_session_key
+        from gateway.conversation import _parse_session_key
         session_key = str(evt.get("session_key") or "").strip()
         derived = {}
         if session_key:
@@ -944,14 +944,15 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
+            if ":account~:" in session_key:
+                logger.warning("Synthetic event %s has no persisted bot-account origin; refusing to guess", session_key)
+                return None
             derived = _parse_session_key(session_key) or {}
         profile = derived.get("profile")
         platform_name = str(evt.get("platform") or derived.get("platform") or "").strip().lower()
         chat_type = str(evt.get("chat_type") or derived.get("chat_type") or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived.get("chat_id") or "").strip()
         if not platform_name or not chat_type or not chat_id:
-            # Raw API keys legitimately have no messaging source. Resolve persisted
-            # origins first, then leave this recognized route to the API dispatcher.
             if _raw_process_event_session_id(evt):
                 return None
             logger.warning(
@@ -979,8 +980,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
 
         scope_id = _opt("scope_id")
         if scope_id is None and chat_type not in ("dm", "thread"):
-            # Reconstructed scoped-chat source without scope_id: a relay connector's tenant guard may
-            # decline the reply. Warn, don't fail (native adapters need no scope_id).
+            # Legacy native routes need no scope; a scoped relay may decline this fallback.
             logger.warning(
                 "Synthetic event source for %s chat=%s (%s) reconstructed "
                 "without scope_id; scoped relay egress may be declined by "
@@ -1650,7 +1650,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         Such events only carry ``session_key`` (the daemon worker lacks per-message routing
         metadata). Best-effort: a CLI-origin event (empty session_key) is left as-is and won't route.
         """
-        from gateway.run import _parse_session_key
+        from gateway.conversation import _parse_session_key
         if evt.get("platform"):
             return  # already enriched
         parsed = _parse_session_key(evt.get("session_key", "") or "")

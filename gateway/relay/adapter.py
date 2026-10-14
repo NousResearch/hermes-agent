@@ -243,12 +243,10 @@ class RelayAdapter(BasePlatformAdapter):
                     or self._chat_platform(chat_id))
         return super().warning_notifications_enabled(platform)
 
-    def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
-        """The descriptor governing a specific chat. Platform caps genuinely differ
-        (Discord 2000 / Telegram 4096 / Slack 39000), so the primary's scalar cap
-        either fragments needlessly or over-sends into a platform 400. Falls back to
-        the scalar when the chat's platform is unknown (never saw inbound)."""
-        per_platform = self._negotiated_descriptor(self._platform_by_chat.get(str(chat_id)))
+    def _descriptor_for_chat(self, chat_id: str, platform: Optional[str] = None) -> CapabilityDescriptor:
+        """Use the known logical platform's limits and operations; platform caps differ.
+        Legacy peers without negotiated descriptors retain the scalar fallback."""
+        per_platform = self._negotiated_descriptor(platform or self._platform_by_chat.get(str(chat_id)))
         return per_platform if per_platform is not None else self.descriptor
 
     def max_message_length_for_chat(self, chat_id: str) -> int:
@@ -418,18 +416,17 @@ class RelayAdapter(BasePlatformAdapter):
         platform: Optional[str] = None,
         surface_declines: bool = False,
     ) -> Optional[dict[str, Any]]:
-        """Emit one best-effort, op-gated frame; None when the caller must fall back.
-
-        None covers every unavailability: op not advertised (probe the descriptor
-        instead of parsing a connector error), no transport, transport raised, or a
-        structured connector decline (logged at ``decline_level``; None = silent).
-        """
+        """Emit a frame gated by its logical platform's capabilities; None means unavailable,
+        failed or declined (logged at ``decline_level``; None = silent)."""
         op = action["op"]
-        if self._transport is None or not self.descriptor.supports_op(op):
+        metadata = action.get("metadata") or {}
+        platform = platform or metadata.get("_relay_logical_platform") or metadata.get("platform") or self._platform_by_chat.get(str(chat_id))
+        descriptor = self._descriptor_for_chat(chat_id, platform)
+        if self._transport is None or not descriptor.supports_op(op):
             return None
         try:
             result = await self._transport.send_outbound(
-                action, platform=platform or self._platform_by_chat.get(str(chat_id))
+                action, platform=platform
             )
         except Exception:
             logger.debug("relay %s transport failure", op, exc_info=True)
@@ -1080,15 +1077,14 @@ class RelayAdapter(BasePlatformAdapter):
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
-        """Outbound metadata carrying the tenant discriminators (see _capture_scope).
-        Both are attached when known and not already set; the connector tries scope_id
-        first and only falls back to user_id on a route miss, so carrying both never
-        overrides routing-table resolution."""
+        """Fill absent route anchors from inbound caches; explicit source metadata wins.
+        The connector tries scope_id before the user_id fallback (see _capture_scope)."""
         meta: dict[str, Any] = dict(metadata or {})
         # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
         for key, cache in (
             ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
             ("profile", getattr(self, "_profile_by_chat", {})),
+            ("platform", getattr(self, "_platform_by_chat", {})),
         ):
             if not meta.get(key):
                 value = cache.get(str(chat_id))
@@ -1708,12 +1704,14 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("relay %s failed for %s", lane, chat_id, exc_info=True)
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str, *, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         # Op-gated so a legacy connector (which would only answer "unsupported op")
         # gets the same local fallback without a round trip.
-        if self._transport is None or not self.descriptor.supports_op("get_chat_info"):
-            return {"name": chat_id, "type": "dm"}
-        return await self._transport.get_chat_info(chat_id)
+        metadata = self._with_scope(chat_id, metadata)
+        descriptor = self._descriptor_for_chat(chat_id, metadata.get("platform"))
+        if self._transport is None or not descriptor.supports_op("get_chat_info"):
+            return {"name": chat_id, "type": "unknown"}
+        return await self._transport.get_chat_info(chat_id, metadata=metadata)
 
     async def send_follow_up(
         self, session_key: str, kind: str, content: str, metadata: Optional[dict[str, Any]] = None,
@@ -2340,21 +2338,22 @@ class RelayAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *, metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[str]:
         """Create a thread/topic under ``parent_chat_id`` via the connector. One
-        `thread_create` op covers Discord (channel thread), Telegram (forum topic) and
-        Slack (named seed root message). None on any failure/unavailability so the
-        handoff watcher falls back to the parent."""
+        `thread_create` covers Discord, Telegram and Slack; None on failure/unavailability
+        makes the handoff watcher fall back to the parent."""
         result = await self._gated_op(
             str(parent_chat_id),
             {
                 "op": "thread_create",
                 "chat_id": str(parent_chat_id),
                 "thread_name": (str(name or "").strip() or "handoff")[:100],
-                "metadata": self._with_scope(str(parent_chat_id), None),
+                "metadata": self._with_scope(str(parent_chat_id), metadata),
             },
             decline_level=logging.INFO,
             subject=parent_chat_id,
+            platform=(metadata or {}).get("platform"),
         )
         if result is None:
             return None

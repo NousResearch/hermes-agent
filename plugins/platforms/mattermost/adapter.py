@@ -284,9 +284,9 @@ class MattermostAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")
         if not data:
-            return {"name": chat_id, "type": "channel"}
+            return {"name": chat_id, "type": "unknown"}
         return {"name": data.get("display_name") or data.get("name") or chat_id,
-                "type": _CHANNEL_TYPE_MAP.get(data.get("type", "O"), "channel")}
+                "type": _CHANNEL_TYPE_MAP.get(data.get("type"), "unknown")}
 
     # --- Optional overrides ---
 

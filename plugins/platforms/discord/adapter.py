@@ -4430,27 +4430,26 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Get information about a Discord channel."""
         if not self._client:
-            return {"name": "Unknown", "type": "dm"}
+            return {"name": "Unknown", "type": "unknown"}
         try:
             channel = await self._resolve_channel(chat_id)
             if not channel:
-                return {"name": str(chat_id), "type": "dm"}
+                return {"name": str(chat_id), "type": "unknown"}
             if isinstance(channel, discord.DMChannel):
-                chat_type = "dm"
-                name = channel.recipient.name if channel.recipient else str(chat_id)
+                chat_type, name = "dm", channel.recipient.name if channel.recipient else str(chat_id)
             elif isinstance(channel, discord.Thread):
-                chat_type = "thread"
-                name = channel.name
+                chat_type, name = "thread", channel.name
             elif isinstance(channel, discord.TextChannel):
-                chat_type = "channel"
-                name = f"#{channel.name}"
+                chat_type, name = "channel", f"#{channel.name}"
                 if channel.guild:
                     name = f"{channel.guild.name} / {name}"
             else:
-                chat_type = "channel"
-                name = getattr(channel, "name", str(chat_id))
+                chat_type, name = "channel", getattr(channel, "name", str(chat_id))
             return {
                 "name": name, "type": chat_type,
+                "chat_id": str(channel.id),
+                "parent_chat_id": str(channel.parent_id) if isinstance(channel, discord.Thread) else None,
+                "thread_id": str(channel.id) if isinstance(channel, discord.Thread) else None,
                 "guild_id": str(channel.guild.id) if hasattr(channel, "guild") and channel.guild else None,
                 "guild_name": channel.guild.name if hasattr(channel, "guild") and channel.guild else None,
             }
@@ -5612,7 +5611,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+    async def create_handoff_thread(self, parent_chat_id: str, name: str, *, metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
         Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
         if not self._client or not DISCORD_AVAILABLE:

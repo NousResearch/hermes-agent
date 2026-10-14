@@ -56,10 +56,58 @@ def _first_fire_within_thread_horizon(
     return timedelta(0) <= delta <= timedelta(minutes=_THREAD_HORIZON_MINUTES)
 
 
+def _recover_conversation_origin(session_key, origin, thread_id):
+    """Children own the runtime DB; the gateway's central routing index may live elsewhere."""
+    from gateway.config import load_gateway_config
+    from gateway.conversation import conversation_origin, persisted_session_entry
+    from gateway.session import SessionStore, build_session_key
+
+    config = load_gateway_config()
+    store = SessionStore(config.sessions_dir, config)
+    try:
+        entry = persisted_session_entry(store, session_key, origin["platform"])
+        if entry is None:
+            raise ValueError("Cannot recover the cron conversation from its durable session key")
+        source, account = entry.origin, entry.transport_profile
+        from gateway.session_context import get_session_env
+        if (source.platform.value, str(source.chat_id), source.thread_id or "") != (
+                origin["platform"], str(origin["chat_id"]), get_session_env("HERMES_SESSION_THREAD_ID")):
+            raise ValueError("Cron origin does not match the durable session address")
+        for field in ("scope_id", "parent_chat_id"):
+            if origin.get(field) and origin[field] != getattr(source, field):
+                raise ValueError("Cron origin does not match the durable session participant or scope")
+            origin[field] = getattr(source, field)
+        from dataclasses import replace
+        durable_source = source
+        if origin.get("user_id") or origin.get("user_id_alt"):
+            source = replace(source, user_id=origin["user_id"], user_id_alt=origin["user_id_alt"])
+        origin["user_id"], origin["user_id_alt"] = source.user_id, source.user_id_alt
+        untagged_key = session_key.removesuffix(f":account~:{account}") if account else session_key
+        # The inherited key proves the gateway's policy; the child's runtime config may differ.
+        profile = store._profile_from_session_key(session_key)
+        for isolated in (False, True):
+            durable_key = build_session_key(durable_source, isolated, isolated, profile=profile)
+            if durable_key == untagged_key and build_session_key(source, isolated, isolated, profile=profile) == untagged_key:
+                break
+        else:
+            raise ValueError("Cron origin does not match the inherited session isolation key")
+        captured = conversation_origin(source, thread_id=thread_id)
+        captured["address"]["account"] = account
+        # Standalone named profiles keep agent:main; only multiplex namespaces name the owner.
+        captured["address"]["profile"] = (
+            store._profile_from_session_key(session_key) if config.multiplex_profiles
+            else origin["profile"] or source.profile)
+        if config.multiplex_profiles and origin["profile"] and origin["profile"] != captured["address"]["profile"]:
+            raise ValueError("Cron origin does not match the durable session profile")
+        return captured
+    finally:
+        store.close_all_db_handles()
+
+
 def _origin_from_env(
     schedule: str | dict[str, Any] | None = None,
-) -> Optional[dict[str, str]]:
-    from gateway.session_context import async_delivery_supported, get_session_env
+) -> Optional[dict[str, Any]]:
+    from gateway.session_context import async_delivery_supported, get_session_env, get_session_source
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
@@ -96,7 +144,7 @@ def _origin_from_env(
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",
             thread_id, origin_platform, origin_chat_id)
-    return {
+    origin = {
         "platform": origin_platform, "chat_id": origin_chat_id,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
@@ -104,7 +152,21 @@ def _origin_from_env(
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
+        "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE") or None,
+        "user_id_alt": get_session_env("HERMES_SESSION_USER_ID_ALT") or None,
+        "parent_chat_id": get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None,
+        "profile": get_session_env("HERMES_SESSION_PROFILE") or None,
     }
+    source = get_session_source()
+    session_key = get_session_env("HERMES_SESSION_KEY")
+    if source is None and session_key.startswith("agent:"):
+        origin["conversation"] = _recover_conversation_origin(session_key, origin, thread_id)
+        origin["chat_id"] = origin["conversation"]["address"]["chat_id"]
+    elif source is not None:
+        from gateway.conversation import conversation_origin
+        origin["conversation"] = conversation_origin(source, thread_id=thread_id)
+        origin["chat_id"] = source.parent_chat_id or source.chat_id
+    return origin
 
 
 def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:

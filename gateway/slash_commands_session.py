@@ -156,7 +156,7 @@ class GatewaySessionCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
         source = event.source
-        session_key = self._session_key_for_source(source)
+        session_key = await self.async_session_store.prepare_session_key(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -1110,7 +1110,9 @@ class GatewaySessionCommandsMixin:
         if adapter is None:
             return None
         try:
-            thread_id = await adapter.create_handoff_thread(parent_id, title)
+            from gateway.session_context import source_route_metadata
+            from gateway.platforms.base import _call_with_optional_metadata
+            thread_id = await _call_with_optional_metadata(adapter.create_handoff_thread, parent_id, title, metadata=source_route_metadata(source, None))
         except Exception:
             logger.warning("Branch: create_handoff_thread failed on %s; branching in place",
                            source.platform.value, exc_info=True)

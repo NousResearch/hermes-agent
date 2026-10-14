@@ -574,11 +574,16 @@ class WebSocketRelayTransport:
             return None
         return next((b for p, b in self._identities if p == platform), None)
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        result = await self._request_response({"op": "get_chat_info", "chat_id": chat_id})
+    async def get_chat_info(self, chat_id: str, *, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        action = {"op": "get_chat_info", "chat_id": chat_id}
+        if metadata:
+            action["metadata"] = metadata
+        result = await self._request_response(action, platform=(metadata or {}).get("platform"))
         # The connector answers chat-info inside the outbound_result envelope.
         info = result.get("chat_info") or result
-        return {"name": info.get("name", chat_id), "type": info.get("type", "dm")}
+        if result.get("error"):
+            info = {**info, "error": result["error"]}
+        return {**info, "name": info.get("name", chat_id), "type": info.get("type") or "unknown"}
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         await self._send({"type": "interrupt", "session_key": session_key, "reason": reason})

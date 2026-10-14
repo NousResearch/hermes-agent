@@ -36,6 +36,7 @@ def _origin_user_id(entry: dict) -> str:
 def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
+    session_store=None,
 ) -> bool:
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
@@ -47,6 +48,8 @@ def mirror_to_session(
     assistant-role mirror replays as a real turn and yields assistant→assistant
     pairs that break strict-alternation providers, while a user-role mirror
     collapses safely via the consecutive-user merge.
+    With ``session_store``, append through its owning-profile and retry-queue machinery;
+    otherwise the caller's active profile owns the write.
     Returns True if mirrored, False if no matching session or error. Never raises.
 
     ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the
@@ -61,10 +64,14 @@ def mirror_to_session(
                 platform, chat_id, thread_id, user_id,
             )
             return False
-        _append_to_sqlite(session_id, {
+        message = {
             "role": role, "content": message_text, "timestamp": datetime.now().isoformat(),
             "mirror": True, "mirror_source": source_label,
-        })
+        }
+        if session_store is not None:
+            session_store.append_to_transcript(session_id, message)
+        else:
+            _append_to_sqlite(session_id, message)
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
     except Exception as e:

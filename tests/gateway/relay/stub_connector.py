@@ -97,7 +97,7 @@ class StubConnector:
             return dict(self.next_react_result)
         return {"success": True}
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str, *, metadata=None) -> dict[str, Any]:
         return self.chat_info.get(chat_id, {"name": chat_id, "type": "dm"})
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:

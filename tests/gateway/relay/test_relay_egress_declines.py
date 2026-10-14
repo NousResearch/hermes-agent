@@ -91,7 +91,7 @@ class DecliningConnector:
     ) -> dict[str, Any]:
         return dict(DECLINE)
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str, *, metadata=None) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     async def send_interrupt(self, session_key, reason=None) -> None:

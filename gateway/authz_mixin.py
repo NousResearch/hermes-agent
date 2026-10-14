@@ -277,7 +277,13 @@ class GatewayAuthorizationMixin:
         from gateway.session_identity import identity_of
         identity = identity_of(source)
         if identity is not None and identity.multiplexed:
-            return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
+            adapter = self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
+            if adapter is not None:
+                registered, owner = self._owning_profile(adapter, platform)
+                primary = getattr(self, "_primary_profile_name", None) or "default"
+                if registered and (owner or primary) == identity.transport_profile:
+                    return adapter
+            return None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None
         return None

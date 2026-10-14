@@ -1422,8 +1422,8 @@ class PhotonAdapter(BasePlatformAdapter):
     _FAIL_EMOJI = "\U0001f44e"
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        """Photon's ``space.id`` is opaque; with only the id, infer conservatively."""
-        return {"name": chat_id, "type": "dm", "id": chat_id}
+        """Photon space IDs do not prove kind; continuation uses the durable inbound source."""
+        return {"name": chat_id, "type": "unknown", "id": chat_id}
 
     def format_message(self, content: str) -> str:
         # Markdown passes through verbatim (sidecar markdown() builder); PHOTON_MARKDOWN=false strips.

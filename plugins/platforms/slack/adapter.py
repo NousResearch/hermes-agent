@@ -1878,13 +1878,13 @@ class SlackAdapter(BasePlatformAdapter):
                 "Without these, bot events are silently dropped upstream of the allow_bots "
                 "gate.", _allow_bots_cfg)
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+    async def create_handoff_thread(self, parent_chat_id: str, name: str, *, metadata: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Post a seed message and return its ``ts`` as the handoff ``thread_id``. Slack threads
         anchor to a parent message, not a channel-level object. Returns ``None`` on failure."""
         if not self._app:
             return None
         try:
-            client = self._get_client(parent_chat_id)
+            client = self._client_for(parent_chat_id, metadata)
             if client is None:
                 return None
             seed_text = t("platform.slack.handoff.seed",
@@ -1950,21 +1950,14 @@ class SlackAdapter(BasePlatformAdapter):
         return (str(team_id), str(message_id)) if team_id else str(message_id)
 
     def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
-        """Return the workspace id owning ``chat_id``.
-        ``None`` for unknown channels and for channels claimed by several workspaces (dropped from
-        the map) — no scope beats a wrong one. A channel unseen since boot (the map only fills from
-        inbound events) still resolves when exactly one workspace is authenticated: every inbound
-        reply will carry that team_id, so a caller keying a session on it must match (#111896)."""
-        team_id = chat_id and (getattr(self, "_channel_team", None) or {}).get(str(chat_id))
-        if not team_id and chat_id and str(chat_id) not in (getattr(self, "_channel_teams", None) or {}):
-            team_clients = getattr(self, "_team_clients", None) or {}
-            if len(team_clients) == 1:
-                team_id = next(iter(team_clients))
-        return str(team_id) if team_id else None
+        from plugins.platforms.slack.adapter_scope import scope_id_for_chat
+        return scope_id_for_chat(self, chat_id)
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
-        if team_id and team_id in self._team_clients:
+        if team_id:
+            if team_id not in self._team_clients:
+                raise PermissionError("The requested Slack workspace is not connected")
             return self._team_clients[team_id]
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
@@ -3534,15 +3527,15 @@ class SlackAdapter(BasePlatformAdapter):
             f"File not found: {file_path}", t("platform.shared.media.file_failed", name=display_name),
         )
 
-    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
+    async def get_chat_info(self, chat_id: str, *, scope_id: Optional[str] = None) -> dict[str, Any]:
         """Get information about a Slack channel."""
         if not self._app:
             return {"name": chat_id, "type": "unknown"}
         try:
-            result = await self._get_client(chat_id).conversations_info(channel=chat_id)
+            result = await self._get_client(chat_id, team_id=scope_id).conversations_info(channel=chat_id)
             channel = result.get("channel", {})
-            is_dm = channel.get("is_im", False)
-            return {"name": channel.get("name", chat_id), "type": "dm" if is_dm else "group"}
+            return {"name": channel.get("name", chat_id), "type": "dm" if channel.get("is_im") else "group",
+                    "scope_id": scope_id or self.scope_id_for_chat(chat_id)}
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Failed to fetch chat info for %s: %s", chat_id, e, exc_info=True)
             return {"name": chat_id, "type": "unknown"}
@@ -6728,7 +6721,7 @@ def _standalone_format_mrkdwn(text: str) -> str:
 
 async def _standalone_send(
     pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
-    caption=None):
+    caption=None, metadata=None):
     """Out-of-process delivery (``standalone_sender_fn``) for cron/tool processes not co-located
     with the gateway: text via ``chat.postMessage`` (aiohttp), media via ``files_upload_v2``."""
     del force_document  # signature parity with other standalone senders
@@ -6739,6 +6732,12 @@ async def _standalone_send(
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
         return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
+    scope_id = (metadata or {}).get("scope_id")
+    if scope_id:
+        from plugins.platforms.slack.adapter_scope import tokens_for_scope
+        tokens = await tokens_for_scope(tokens, scope_id)
+        if not tokens:
+            return send_error("Slack send failed: no configured token owns the conversation workspace")
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve

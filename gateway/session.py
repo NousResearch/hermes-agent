@@ -98,8 +98,13 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    conversation_kind: Optional[str] = None  # legacy chat_type may encode a thread's key layout
 
     def __post_init__(self) -> None:
+        if self.conversation_kind is not None:
+            from gateway.conversation import conversation_kind
+            if (conversation_kind(self.conversation_kind) == "dm") != (conversation_kind(self.chat_type) == "dm"):
+                raise ValueError("Conversation kind cannot override the source's DM isolation")
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
         if self.scope_id is None and self.guild_id is not None:
             self.scope_id = self.guild_id
@@ -125,7 +130,7 @@ class SessionSource:
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
-    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
+    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile", "conversation_kind")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
     def to_dict(self) -> dict[str, Any]:
@@ -648,9 +653,10 @@ def is_shared_multi_user_session(
 ) -> bool:
     """True when a non-DM session is shared across participants (mirrors the
     isolation rules in :func:`build_session_key`)."""
-    if source.chat_type == "dm":
+    if (source.conversation_kind or source.chat_type) in {"dm", "private", "c2c"}:
         return False
-    return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
+    from gateway.conversation import address_of
+    return not (thread_sessions_per_user if address_of(source).thread_id else group_sessions_per_user)
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:
@@ -694,6 +700,10 @@ def build_session_key(
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
     """
+    from gateway.conversation import address_of
+
+    address = address_of(source)
+    # Keep the participant layout of legacy wire kinds, alongside their existing key spelling.
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
     if is_dm and source.platform == Platform.WHATSAPP:
@@ -701,7 +711,7 @@ def build_session_key(
     # Discord auto-thread continuity: key a channel-initiating message on the thread it WILL be
     # delivered into (prospective_thread_id), and normalize the chat_type slot to "thread" so
     # in-thread follow-ups byte-match. A real thread_id always wins. DMs use thread_id only.
-    thread_id = source.thread_id or (None if is_dm else source.prospective_thread_id)
+    thread_id = address.thread_id
     chat_type_slot = "thread" if thread_id and not source.thread_id else source.chat_type
     if is_dm:
         # No chat_id: fall back to the sender id before the bare per-platform sink, or every
@@ -710,7 +720,7 @@ def build_session_key(
     else:
         # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
         # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = thread_sessions_per_user if thread_id else group_sessions_per_user
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
@@ -723,6 +733,10 @@ def build_session_key(
     user_part = [str(participant_id)] if isolate_user and participant_id else []
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
+    # A shared bot and a profile's own bot can address the same room in one runtime.
+    account = transport_profile_of(source)
+    if account and address.profile and account != address.profile:
+        parts += ["account~", account]
     return ":".join(str(part) for part in parts)
 
 
@@ -935,7 +949,7 @@ class SessionStore(
         """One routing transition for the single-flight owner. All blocking I/O (SQLite SELECTs,
         index rewrite + fsync, recovery queries) runs *outside* ``self._lock``, which protects
         only ``_entries`` / ``_loaded`` mutations."""
-        session_key = self._generate_session_key(source)
+        session_key = self.prepare_session_key(source)
         now = _now()
         if not force_new:
             self._adopt_legacy_slack_entry(source, session_key)

@@ -174,6 +174,7 @@ async def test_stop_typing_forwards_explicit_clear_with_routing_context():
         "metadata": {
             "thread_id": "thread-1",
             "scope_id": "workspace-1",
+            "platform": "slack",
         },
     }
     assert t.sent_platform == "slack"
@@ -232,7 +233,7 @@ class _ChatInfoTransport:
     def set_inbound_handler(self, h):
         self._h = h
 
-    async def get_chat_info(self, chat_id):
+    async def get_chat_info(self, chat_id, *, metadata=None):
         self.calls.append(chat_id)
         return {"name": "general", "type": "channel"}
 
@@ -247,7 +248,7 @@ async def test_get_chat_info_local_fallback_when_not_advertised():
         transport=t,
     )
     info = await a.get_chat_info("chan-1")
-    assert info == {"name": "chan-1", "type": "dm"}
+    assert info == {"name": "chan-1", "type": "unknown"}
     assert t.calls == []
 
 

@@ -1722,8 +1722,12 @@ class GatewayStartupMixin:
         # Fresh thread for the handoff's own scrollback; None when unsupported or creation failed.
         cli_title = row.get("title") or cli_session_id[:8]
         try:
-            new_thread_id = await transport.adapter.create_handoff_thread(
+            from gateway.platforms.base import _call_with_optional_metadata
+            new_thread_id = await _call_with_optional_metadata(
+                transport.adapter.create_handoff_thread,
                 home_chat_id, t("gateway.startup.handoff_thread_title", title=cli_title),
+                metadata={"platform": platform.value, "profile": profile_name if self.config.multiplex_profiles else None,
+                          "scope_id": home.scope_id},
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)

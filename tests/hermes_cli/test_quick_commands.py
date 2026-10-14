@@ -82,12 +82,10 @@ class TestGatewayQuickCommands:
         event.get_command.return_value = command
         event.get_command_args.return_value = args
         event.text = f"/{command} {args}".strip()
-        event.source = MagicMock()
-        event.source.user_id = "test_user"
-        event.source.user_name = "Test User"
-        event.source.platform.value = "telegram"
-        event.source.chat_type = "dm"
-        event.source.chat_id = "123"
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        event.source = SessionSource(Platform.TELEGRAM, "123", chat_type="dm",
+                                     user_id="test_user", user_name="Test User")
         return event
 
     @pytest.mark.asyncio

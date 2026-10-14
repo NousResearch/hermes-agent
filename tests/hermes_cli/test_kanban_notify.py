@@ -653,6 +653,8 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert subs[0]["thread_id"] == "20197"
     assert subs[0]["delivery_metadata"] == {
         "chat_type": "dm",
+        "platform": "telegram",
+        "user_id": "u1",
         "direct_messages_topic_id": "20197",
         "telegram_dm_topic_reply_fallback": True,
         "telegram_reply_to_message_id": "462",

@@ -858,7 +858,7 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
     profile literally named ``main`` produced byte-identical keys to the default and, once default
     keys were pinned to the launch store, its scoped sessions were written into the ROOT
     ``state.db``. Its namespace must differ from the default's and resolve back to ``profiles/main``."""
-    from gateway.run import _parse_session_key
+    from gateway.conversation import _parse_session_key
     from gateway.session import build_session_key
 
     root, _profile = multiplex_homes

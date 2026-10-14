@@ -557,8 +557,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        """Return basic info about a DingTalk conversation."""
-        return {"name": chat_id, "type": "group" if "group" in chat_id.lower() else "dm"}
+        """Conversation IDs do not encode kind; continuation uses the durable inbound source."""
+        return {"name": chat_id, "type": "unknown"}
 
     def _get_valid_webhook(self, chat_id: str) -> Optional[tuple[str, int]]:
         """Get a non-expired session webhook for chat_id (5-minute safety margin)."""

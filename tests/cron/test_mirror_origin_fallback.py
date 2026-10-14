@@ -159,6 +159,11 @@ class TestFallbackMirrorEndToEnd:
             "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(home))
+        from gateway.config import Platform, load_gateway_config
+        from gateway.session import SessionSource, SessionStore
+        store = SessionStore(home / "sessions", load_gateway_config())
+        sessions = {chat: store.get_or_create_session(SessionSource(Platform.SLACK, chat, scope_id="workspace"))
+                    for chat in ("D0HOME", "D0USER7", "D0AAA")}
 
         send_calls = []
 
@@ -183,18 +188,19 @@ class TestFallbackMirrorEndToEnd:
 
 
         def fake_mirror(platform, chat_id, text, source_label="cli",
-                        thread_id=None, user_id=None, role="assistant"):
+                        thread_id=None, user_id=None, role="assistant", session_id=None):
             mirror_calls.append({
                 "platform": platform, "chat_id": chat_id,
                 "thread_id": thread_id, "user_id": user_id, "role": role,
             })
-            return True
+            return real_mirror(platform, chat_id, text, source_label, thread_id, user_id, role, session_id)
 
         import gateway.mirror as mirror_mod
 
         real_mirror = mirror_mod.mirror_to_session
         monkeypatch.setattr(mirror_mod, "mirror_to_session", fake_mirror)
-        return {"send": send_calls, "mirror": mirror_calls, "real_mirror": real_mirror, "home": home}
+        return {"send": send_calls, "mirror": mirror_calls, "real_mirror": real_mirror, "home": home,
+                "store": store, "sessions": sessions}
 
     def test_origin_fallback_job_mirrors_brief(self, slack_env):
         """The field repro: managed cron, deliver=origin, no origin captured.
@@ -220,12 +226,12 @@ class TestFallbackMirrorEndToEnd:
     def test_managed_bare_platform_job_mirrors_brief(self, slack_env, monkeypatch):
         """The managed-cron shape delivers into the session a home-channel reply resumes."""
         import gateway.mirror as mirror_mod
-        from gateway.config import GatewayConfig, Platform
+        from gateway.config import Platform
         from gateway.session import SessionSource, SessionStore
 
         monkeypatch.setattr(mirror_mod, "mirror_to_session", slack_env["real_mirror"])
-        store = SessionStore(slack_env["home"] / "sessions", GatewayConfig())
-        source = SessionSource(platform=Platform.SLACK, chat_id="D0HOME", chat_type="dm")
+        store = slack_env["store"]
+        source = SessionSource(platform=Platform.SLACK, chat_id="D0HOME", chat_type="dm", scope_id="workspace")
         session = store.get_or_create_session(source)
         job = {"id": "h1", "name": "managed", "deliver": "slack", "origin": None}
         err = _deliver_result(job, "morning brief", adapters=None, loop=None)

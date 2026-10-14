@@ -107,7 +107,65 @@ class SessionRecoveryMixin:
         unscoped Slack session may be claimed by only one workspace (old key cannot tell teams)."""
         if source.platform != Platform.SLACK or not source.scope_id:
             return None
-        return self._generate_session_key(source, replace(source, scope_id=None, guild_id=None))
+        from gateway.session_identity import replace_source
+        return self._generate_session_key(source, replace_source(source, scope_id=None, guild_id=None))
+
+    def _legacy_account_session_key(self, source: SessionSource, session_key: str) -> Optional[str]:
+        from gateway.session_identity import transport_profile_of
+        account = transport_profile_of(source)
+        suffix = f":account~:{account}"
+        return session_key[:-len(suffix)] if account and session_key.endswith(suffix) else None
+
+    def prepare_session_key(self, source: SessionSource) -> str:
+        """Resolve proven legacy account ownership before a source lane is read or reset."""
+        session_key = self._generate_session_key(source)
+        self._preserve_foreign_account_entry(source, session_key)
+        self._adopt_legacy_account_entry(source, session_key)
+        return session_key
+
+    def _preserve_foreign_account_entry(self, source: SessionSource, session_key: str) -> None:
+        """The runtime's own bot must not claim a legacy key belonging to another receiver."""
+        from gateway.session_identity import transport_profile_of
+        account = transport_profile_of(source)
+        if not account or ":account~:" in session_key:
+            return
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.transport_profile in (None, account):
+                return
+            owner_key = f"{session_key}:account~:{entry.transport_profile}"
+            if owner_key in self._entries:
+                raise ValueError("Legacy conversation conflicts with its bot-account lane; explicit repair required")
+            preserved = replace(entry, session_key=owner_key)
+            self._entries[owner_key] = preserved
+            self._entries.pop(session_key)
+        self._save_entries()
+        self._record_gateway_session_peer(
+            preserved.session_id, owner_key, preserved.origin, display_name=preserved.display_name,
+            transport_profile=preserved.transport_profile)
+
+    def _adopt_legacy_account_entry(self, source: SessionSource, session_key: str) -> None:
+        """Rekey only the exact legacy lane whose persisted receiving bot is known; never merge."""
+        from gateway.session_identity import transport_profile_of
+        legacy_key = self._legacy_account_session_key(source, session_key)
+        if not legacy_key:
+            return
+        migrated = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(legacy_key)
+            if entry is not None and session_key not in self._entries:
+                if entry.transport_profile == transport_profile_of(source):
+                    migrated = replace(entry, session_key=session_key, origin=source)
+                    self._entries.pop(legacy_key)
+                    self._entries[session_key] = migrated
+                else:
+                    logger.warning("Legacy session %s has ambiguous or different bot ownership; starting a separate lane", legacy_key)
+        if migrated is not None:
+            self._save_entries()
+            self._record_gateway_session_peer(migrated.session_id, session_key, source,
+                                              display_name=migrated.display_name)
 
     def _claim_legacy_slack_key(self, legacy_key: Optional[str]) -> bool:
         """Atomically reserve one ambiguous legacy Slack key for migration."""
@@ -169,6 +227,10 @@ class SessionRecoveryMixin:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
+        from gateway.session_identity import transport_profile_of
+        # A changed group/thread key is a different isolation lane, in either direction.
+        allow_peer_fallback = (allow_peer_fallback and transport_profile_of(source) is None
+                               and source.chat_type == "dm")
         return self._peer_row(
             self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
             user_id=source.user_id,
@@ -274,12 +336,24 @@ class SessionRecoveryMixin:
             session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
             raise_on_lookup_error=raise_on_lookup_error)
         migrated_legacy = False
+        from gateway.session_identity import transport_profile_of
+        account_key = self._legacy_account_session_key(source, session_key)
+        if not recovered and account_key:
+            candidate = self._find_gateway_session_row(
+                session_key=account_key, source=source, allow_peer_fallback=False,
+                raise_on_lookup_error=raise_on_lookup_error)
+            if isinstance(candidate, dict) and candidate.get("transport_profile") == transport_profile_of(source):
+                recovered, migrated_legacy = candidate, True
         if not recovered and legacy_key and self._claim_legacy_slack_key(legacy_key):
             recovered = self._find_gateway_session_row(
                 session_key=legacy_key, source=source, allow_peer_fallback=False,
                 raise_on_lookup_error=raise_on_lookup_error)
             migrated_legacy = bool(recovered)
         if not isinstance(recovered, dict):
+            return None, False
+        account = transport_profile_of(source)
+        if account and recovered.get("transport_profile") not in (None, account):
+            logger.warning("Session recovery refused a row owned by another bot account for %s", session_key)
             return None, False
         if not self._recovered_row_matches_source_scope(recovered, source):
             return None, False
@@ -367,6 +441,10 @@ class SessionRecoveryMixin:
             self._ensure_loaded_locked()
             legacy_entry = self._entries.get(legacy_key)
             if session_key not in self._entries and legacy_entry is not None:
+                from gateway.session_identity import transport_profile_of
+                account = transport_profile_of(source)
+                if account and legacy_entry.transport_profile not in (None, account):
+                    return
                 origin_scope = getattr(legacy_entry.origin, "scope_id", None)
                 if origin_scope is not None:
                     adopt = origin_scope == source.scope_id

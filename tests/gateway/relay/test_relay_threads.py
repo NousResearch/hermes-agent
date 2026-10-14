@@ -78,12 +78,13 @@ async def test_create_handoff_thread_routes_thread_create():
         return {"success": True, "thread_id": "th77"}
 
     stub.send_outbound = send_outbound  # type: ignore[method-assign]
-    thread_id = await adapter.create_handoff_thread("chan1", "fix the build")
+    thread_id = await adapter.create_handoff_thread("chan1", "fix the build", metadata={"scope_id": "TB"})
     assert thread_id == "th77"
     action = stub.sent[-1]
     assert action["op"] == "thread_create"
     assert action["chat_id"] == "chan1"
     assert action["thread_name"] == "fix the build"
+    assert action["metadata"]["scope_id"] == "TB"
 
 
 # ── rename_thread (semantic rename) ──────────────────────────────────────

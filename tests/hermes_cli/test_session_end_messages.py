@@ -131,6 +131,7 @@ def _gateway_runner():
     runner.session_store.reset_session.return_value = entry
     runner.session_store._entries = {key: entry}
     runner.session_store._generate_session_key.return_value = key
+    runner.session_store.prepare_session_key.return_value = key
     runner._running_agents, runner._pending_messages, runner._pending_approvals = {}, {}, {}
     runner._session_db = None
     runner._agent_cache_lock = None

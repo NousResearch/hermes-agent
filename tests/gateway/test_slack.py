@@ -2784,22 +2784,10 @@ class TestThreadReplyHandling:
         return store
 
     @pytest.fixture()
-    def adapter_with_session_store(self, mock_session_store):
+    def adapter_with_session_store(self, mock_session_store, adapter):
         """Create an adapter with a mock session store attached."""
-        config = PlatformConfig(enabled=True, token="***")
-        a = SlackAdapter(config)
-        a._app = MagicMock()
-        a._app.client = AsyncMock()
-        a._app.client.users_info = AsyncMock(
-            return_value={
-                "user": {
-                    "is_bot": False,
-                    "profile": {"display_name": "Test User"},
-                    "real_name": "Test User",
-                }
-            }
-        )
-        a._bot_user_id = "U_BOT"
+        a = adapter
+        a._team_clients["T_TEAM"] = a._app.client
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
         a.handle_message = AsyncMock()
@@ -3008,21 +2996,9 @@ class TestAssistantThreadLifecycle:
         return store
 
     @pytest.fixture()
-    def assistant_adapter(self, mock_session_store):
-        config = PlatformConfig(enabled=True, token="***")
-        a = SlackAdapter(config)
-        a._app = MagicMock()
-        a._app.client = AsyncMock()
-        a._app.client.users_info = AsyncMock(
-            return_value={
-                "user": {
-                    "is_bot": False,
-                    "profile": {"display_name": "Test User"},
-                    "real_name": "Test User",
-                }
-            }
-        )
-        a._bot_user_id = "U_BOT"
+    def assistant_adapter(self, mock_session_store, adapter):
+        a = adapter
+        a._team_clients["T_TEAM"] = a._app.client
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
         a.handle_message = AsyncMock()
@@ -3154,6 +3130,7 @@ class TestAssistantThreadLifecycle:
 
         runner = object.__new__(GatewayRunner)
         assert runner._thread_metadata_for_source(msg_event.source) == {
+            "platform": "slack",
             "thread_id": "171.111",
             "slack_team_id": "T_OTHER",
             # R3-5: per-turn egress identity stamped from THIS turn's source
@@ -4514,21 +4491,9 @@ class TestThreadImageContext:
         return store
 
     @pytest.fixture()
-    def adapter_with_session_store(self, mock_session_store):
-        config = PlatformConfig(enabled=True, token="***")
-        a = SlackAdapter(config)
-        a._app = MagicMock()
-        a._app.client = AsyncMock()
-        a._app.client.users_info = AsyncMock(
-            return_value={
-                "user": {
-                    "is_bot": False,
-                    "profile": {"display_name": "Test User"},
-                    "real_name": "Test User",
-                }
-            }
-        )
-        a._bot_user_id = "U_BOT"
+    def adapter_with_session_store(self, mock_session_store, adapter):
+        a = adapter
+        a._team_clients["T_TEAM"] = a._app.client
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
         a.handle_message = AsyncMock()

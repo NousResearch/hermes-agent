@@ -94,6 +94,7 @@ async def _load_profile_snapshot(
     adapter = _adapter()
     runner._profile_adapters["research"][Platform.TELEGRAM] = adapter
     runner._configure_profile_adapter(adapter, "research", Platform.TELEGRAM)
+    adapter.gateway_runner = runner
     return adapter
 
 
@@ -123,6 +124,7 @@ async def test_secondary_profile_busy_mode_controls_live_busy_behavior(
         secondary_mode,
     )
     event = _event(profile="research")
+    adapter._canonicalize(event.source)  # Receiving identity precedes every session-key lookup.
     session_key = runner._session_key_for_source(event.source)
     agent = MagicMock()
     agent._active_children = []
@@ -163,6 +165,7 @@ async def test_secondary_profile_busy_mode_controls_priority_path(
         secondary_mode,
     )
     event = _event(profile="research")
+    adapter._canonicalize(event.source)  # Receiving identity precedes every session-key lookup.
     session_key = runner._session_key_for_source(event.source)
     agent = MagicMock()
     agent._active_children = []
@@ -259,6 +262,7 @@ async def test_secondary_profile_busy_mode_controls_busy_handler_restart_drain(
     runner._draining = True
     runner._restart_requested = True
     event = _event(profile="research")
+    adapter._canonicalize(event.source)  # Receiving identity precedes every session-key lookup.
     session_key = runner._session_key_for_source(event.source)
 
     assert await runner._handle_active_session_busy_message(event, session_key) is True
@@ -280,6 +284,7 @@ async def test_secondary_profile_busy_mode_controls_priority_restart_drain(
     runner._draining = True
     runner._restart_requested = True
     event = _event(profile="research")
+    adapter._canonicalize(event.source)  # Receiving identity precedes every session-key lookup.
     session_key = runner._session_key_for_source(event.source)
     agent = MagicMock()
     agent._active_children = []
@@ -342,6 +347,7 @@ async def test_secondary_legacy_busy_text_mode_is_profile_specific(tmp_path):
         legacy_text_mode="queue",
     )
     event = _event(profile="research")
+    adapter._canonicalize(event.source)  # Receiving identity precedes every session-key lookup.
     session_key = runner._session_key_for_source(event.source)
     agent = MagicMock()
     agent._active_children = []
@@ -487,6 +493,7 @@ async def test_primary_adapter_busy_origin_uses_routed_privacy(
         source=adapter.build_source(chat_id="chat-1", user_id="user-1"),
     )
     assert event.source.profile == "research"
+    adapter._canonicalize(event.source)
     original = asdict(event.source)
     key = runner._session_key_for_source(event.source)
     agent = AIAgent(

@@ -686,7 +686,7 @@ class LineAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Best-effort chat info inferred from the ID prefix (U=user, C=group, R=room)."""
-        chat_type = {"U": "dm", "C": "group", "R": "channel"}.get((chat_id or "")[:1], "dm")
+        chat_type = {"U": "dm", "C": "group", "R": "room"}.get((chat_id or "")[:1], "unknown")
         return {"name": chat_id or "", "type": chat_type}
 
     def format_message(self, content: str) -> str:

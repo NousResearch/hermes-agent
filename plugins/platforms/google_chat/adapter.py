@@ -1545,11 +1545,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 lambda: self._chat_api.spaces().get(name=chat_id).execute(http=self._new_authed_http()))
         except HttpError as exc:
             logger.debug("[GoogleChat] get_chat_info failed: %s", _redact_sensitive(str(exc)))
-            return {"name": chat_id, "type": "group", "chat_id": chat_id}
+            return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
         space_type = (info.get("spaceType") or info.get("type") or "").upper()
         return {
             "name": info.get("displayName") or chat_id,
-            "type": "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group",
+            "type": "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group" if space_type in {"SPACE", "GROUP_CHAT", "ROOM"} else "unknown",
             "chat_id": chat_id,
         }
 

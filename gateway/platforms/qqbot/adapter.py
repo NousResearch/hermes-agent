@@ -649,7 +649,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         it takes no part in any authorization decision, so any non-empty
         value is accepted and every later slot keeps its position.
         """
-        parts = str(session_key or "").split(":")
+        parts = str(session_key or "").partition(":account~:")[0].split(":")
         if len(parts) < 5 or parts[0] != "agent" or not parts[1]:
             return None
         parsed = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
@@ -1645,8 +1645,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return content if self._markdown_support else strip_markdown(content)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        chat_type = self._guess_chat_type(chat_id)
-        return {"name": chat_id, "type": "group" if chat_type in {"group", "guild"} else "dm"}
+        chat_type = self._chat_type_map.get(chat_id)
+        return {"name": chat_id, "type": "group" if chat_type in {"group", "guild"}
+                else "dm" if chat_type == "c2c" else "unknown"}
 
     @staticmethod
     def _is_url(source: str) -> bool:

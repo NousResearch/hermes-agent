@@ -13,6 +13,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | File | Purpose |
 |------|---------|
 | `gateway/run.py` | `GatewayRunner` facade — composes the `gateway/run_*.py` sibling mixins (startup, adapters, inbound, turn, busy, goals, notifications, shutdown, …) and `gateway/slash_commands_*.py` handlers |
+| `gateway/conversation.py` | Conversation addresses and kinds, separate from session isolation |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
@@ -80,6 +81,13 @@ For example: `agent:main:telegram:private:123456789` for the default profile, or
 (`gateway/session.py::_session_key_namespace`; a profile literally named `main` is marked `main~`).
 
 Thread-aware platforms (Telegram forum topics, Discord threads, Slack threads) may include thread IDs in the chat_id portion. **Never construct session keys manually** — always use `build_session_key()` from `gateway/session.py`.
+
+`ConversationAddress` keeps parent room/channel and optional thread separate from conversation
+kind. Session isolation remains a `GatewayConfig` policy. Legacy key spellings are preserved;
+shared bots routed into another runtime append `:account~:<transport_profile>` so different
+receiving bots cannot share a transcript. Only a legacy lane with a matching persisted
+`transport_profile` is rekeyed; unknown ownership is retained separately. See
+[Cron continuation routing](cron-internals.md#continuation-routing) for origin compatibility.
 
 ### Two-Level Message Guard
 

@@ -889,16 +889,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:
-            return {"name": "Unknown", "type": "dm"}
+            return {"name": "Unknown", "type": "unknown"}
         if not await self._check_managed_bridge_exit():
             try:
                 async with self._bridge_req("get", f"chat/{to_whatsapp_jid(chat_id)}", 10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        return {"name": data.get("name", chat_id), "type": "group" if data.get("isGroup") else "dm", "participants": data.get("participants", [])}
+                        return {"name": data.get("name", chat_id), "type": {True: "group", False: "dm"}.get(data.get("isGroup"), "unknown"), "participants": data.get("participants", [])}
             except Exception as e:
                 logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
-        return {"name": chat_id, "type": "dm"}
+        return {"name": chat_id, "type": "unknown"}
 
     async def _report_bridge_exit(self) -> bool:
         bridge_exit = await self._check_managed_bridge_exit()

@@ -13,10 +13,69 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 | File | Purpose |
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/scheduler_sessions.py` | Resolve and seed reply-facing continuation sessions after confirmed delivery |
+| `gateway/conversation.py` | Normalized conversation address, kind and legacy compatibility |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
+
+## Continuation routing
+
+A conversation address contains the platform, receiving bot account, runtime profile, workspace
+or server scope, parent room/channel, and optional thread. Conversation kind (`dm`, `group`,
+`channel`) and the configured participant-isolation policy are separate from that address.
+`chat_type="thread"` remains a legacy adapter/key spelling, not a conversation kind.
+Snapshots retain `key_chat_type` when a legacy spelling (such as Feishu `forum` or LINE `room`)
+differs from the normalized kind; the reply-facing key keeps that layout without changing DM isolation.
+
+New gateway-created origins store a versioned `conversation` snapshot alongside the legacy flat
+fields. Cron resolves a reply-facing `SessionSource` and uses the same `SessionStore` and
+`build_session_key()` path as inbound messages. It mirrors to the exact resulting session ID,
+never by a most-recent-chat guess. Group and thread isolation are independent settings; an
+isolated seed needs the scheduling participant, including a stable alternative user ID.
+The stored runtime profile is an ownership expectation, not a preselected routing result.
+Current routes are resolved again after choosing the final room/thread surface. A changed
+runtime owner refuses continuation; a companion thread routed to another owner is skipped.
+Mirroring uses the selected session's store, including its owning profile and append retry queue.
+
+Legacy origins use a known kind from live metadata; a getter reporting `unknown` requires a
+single exact persisted inbound source. DingTalk and WeCom IDs do not encode kind, and a cold QQ cache does
+not prove a DM. Unknown kinds skip continuation instead of guessing. Without a live adapter, only a single persisted
+session matching the exact room, thread, scope, account and permitted participant can receive a
+mirror. Missing or ambiguous evidence skips continuation with a warning; delivery still follows
+the configured target. Account/profile mismatches in a captured origin refuse delivery. A different receiving bot
+requires its live gateway. The gateway's existing receiving-owner resolver selects that bot,
+even when the runtime profile owns a different bot; an offline receiver refuses delivery.
+Standalone delivery never borrows another profile's credentials. A captured runtime profile must
+match the bound standalone runtime before any payload is submitted. A standalone `agent:main`
+key retains its historical spelling; the owning runtime supplies its profile for exact mirroring,
+rather than interpreting `main` as a promise that the profile is `default`.
+Slack workspace scope reaches thread creation as well as text and media sends. An unresolved
+conversation cannot open a continuation thread. A native standalone Slack sender checks
+token ownership with `auth.test` before submitting any payload to a scoped target.
+Relay metadata lookups and thread creation carry the known logical platform, scope, participant
+and multiplex runtime profile even after restart; capabilities use that platform's descriptor.
+Child processes recover a conversation by its exact key in their runtime SessionDB when the
+central gateway routing index is absent locally; reset boundaries and address/participant
+checks still apply.
+The current participant may differ from the first participant stored in a shared conversation,
+but both must rebuild the exact inherited key under the same isolation layout. The child's
+runtime config may differ from the gateway's policy; delivery resolves the current gateway
+policy again rather than carrying a stored session ID.
+Standalone mirrors use the same durable lookup when the launch gateway's index is elsewhere.
+
+Historical key spellings remain compatible. A shared receiving bot routed into another runtime
+adds `:account~:<transport_profile>` to distinguish it from that runtime's own bot. An exact legacy
+key can move to this spelling only when its persisted receiving account proves ownership and
+there is no destination collision. Its session ID/history is retained; histories are never merged.
+Unknown ownership cannot migrate into an account-tagged lane. A native bot also cannot claim a
+legacy key naming another receiver: that entry moves to its proven owner's account key first,
+including before explicit `/new` reset and forced creation;
+a destination collision requires explicit repair. Changing participant isolation selects a separate key: non-DM recovery requires that exact
+key and never imports a formerly private or shared transcript by matching only the room and
+sender. Previously used keys retain their own history. Matrix rooms formerly misclassified by member count also start a separate group
+lane, retaining their old DM transcript.
 
 ## Scheduling Model
 
@@ -369,13 +428,16 @@ For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-
 
 By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
-- A footer noting the agent cannot see the delivered message in conversation
+- A footer explaining how to stop or manage the job
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation
 
-Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+Cron execution has its own session. When continuation is enabled, a confirmed delivery also
+seeds the resolved gateway session with the brief as a user turn labeled `cron`. The explicit
+session ID and isolation policy determine the destination. Ambiguous legacy addresses skip
+continuation with a warning; no room-wide latest-session fallback is used.
 
 ## Recursion Guard
 

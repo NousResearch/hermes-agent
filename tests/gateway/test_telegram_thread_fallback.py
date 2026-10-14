@@ -353,6 +353,8 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
     assert adapter.calls
     assert adapter.calls[0]["reply_to"] == "463"
     assert adapter.calls[0]["metadata"] == {
+        "platform": "telegram",
+        "user_id": "user-1",
         "thread_id": "20197",
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "20197",

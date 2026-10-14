@@ -276,18 +276,19 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
-    is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
-    if resolved is None and not is_local_shape and "@" not in raw_target:
-        return _roster_err(f"Invalid target: {raw_target!r}.")
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
+        # The relay goes first because a friendly name is not folder-id shaped — refusing
+        # "Dr. Scribe" on its shape hid the teammate one connection out that answers to it.
         relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
         if resolved == me:
             return _err("You can't message yourself. Pick a teammate from the roster.")
+        if not _LOCAL_TARGET_RE.match(raw_target) and "@" not in raw_target:
+            return _roster_err(f"Invalid target: {raw_target!r}.")
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
@@ -305,7 +306,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         from tools.bot_mode_probe import _handle, local_taken_forms
         from tools.bot_relay import (
             EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
-            resolve_remote_target, waiter_command,
+            resolve_remote_target, target_alias_forms, waiter_command,
         )
 
         roster = read_remote_roster(root)
@@ -313,9 +314,9 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         if match is None:
             return None
         if match == "ambiguous":
-            want = raw_target.strip().lstrip("@").partition("@")[0].lower()
+            wanted = target_alias_forms(raw_target.strip().lstrip("@").partition("@")[0])
             forms = ", ".join(form for r, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
-                              if want in _target_aliases(r))
+                              if wanted & _target_aliases(r))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
             envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))

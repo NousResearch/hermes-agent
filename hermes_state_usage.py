@@ -290,7 +290,9 @@ class SessionUsageMixin:
         # writer it must carry the agent's real source: the turn lease treats an existing row as
         # proof the create already happened, so the creator never returns to repair an anonymous
         # ``unknown`` placeholder and the session stays a phantom for life (#111999).
-        self._insert_session_row(session_id, source or "unknown", model=model)
+        # A per-turn task (voice_chat, runtime_override) never becomes the session's
+        # recorded route: never backfill the row's model from it.
+        self._insert_session_row(session_id, source or "unknown", model=None if task else model)
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
         has_usage = bool(input_tokens or output_tokens or cache_read_tokens or cache_write_tokens or reasoning_tokens
                          or api_call_count or estimated_cost_usd)
@@ -300,7 +302,8 @@ class SessionUsageMixin:
             estimated_cost_usd, actual_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
             billing_provider if has_accounted_usage else None,
             billing_base_url if has_accounted_usage else None,
-            billing_mode if has_accounted_usage else None, model if has_accounted_usage else None,
+            billing_mode if has_accounted_usage else None,
+            model if (has_accounted_usage and not task) else None,
             api_call_count, session_id)
         # Per-model attribution: the sessions row keeps one (model, provider) pair, so a
         # mid-session /model switch would attribute every token to the initial model. Only

@@ -1529,6 +1529,13 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
+    from agent.runtime_override import warn_and_drop_unsupported_override
+
+    # This runtime accepts only its own models and can fall through into the normal loop,
+    # so one turn would cross the override scope boundary twice: refuse explicitly.
+    warn_and_drop_unsupported_override(
+        agent, "the codex_app_server runtime does not accept an override model"
+    )
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
@@ -1543,6 +1550,40 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
     return None
 
+
+def _runtime_override_scope(agent: Any, system_message: str | None = None) -> Any:
+    """The turn's runtime_override scope, or a no-op context when none is set.
+
+    The override must be active before request assembly so every stage of the
+    turn observes one effective route; the scope restores the pre-override route
+    on exit, and a fallback handoff supersedes it via ``consume_runtime_override``.
+    """
+    override = getattr(agent, "_runtime_override", None) or {}
+    if not override:
+        from contextlib import nullcontext
+
+        return nullcontext()
+    from agent.runtime_override import apply_runtime_override
+
+    return apply_runtime_override(agent, override, system_message=system_message)
+
+
+def _synchronize_effective_request_prompt(agent: Any, state: Any) -> None:
+    """Build request instructions for the route that will actually serve this API call.
+
+    Turn setup captures the session prompt before pre_llm_call runs. Model-only
+    overrides and successful fallback handoffs must replace that in-flight
+    request prompt, without persisting an ephemeral override as session identity.
+    """
+    route = (agent.model, agent.provider)
+    if getattr(state, "_effective_prompt_route", route) == route:
+        return
+    state.active_system_prompt = agent._build_system_prompt(state.system_message)
+    state._effective_prompt_route = route
+    # A fallback owns the new durable route. An active proactive override does
+    # not: leave the base cached prefix to the scope's restoration.
+    if not getattr(agent, "_runtime_override", None):
+        agent._cached_system_prompt = state.active_system_prompt
 
 def _run_conversation_turn(
     agent,
@@ -1637,6 +1678,7 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    s._effective_prompt_route = (agent.model, agent.provider)
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
@@ -1651,48 +1693,53 @@ def _run_conversation_turn(
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
-        _run_phase(assemble_api_request, agent, s)
-        _pg = _run_phase(run_preflight_gate, agent, s)
-        if _pg.action == "return":
-            return _pg.result
-        if _pg.action == "break":
-            break
-        if _pg.action == "continue":
-            continue
-        _run_phase(announce_api_call, agent, s)
-
-        s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
-        s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
-        s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
-
-        early_result = _run_api_retry_loop(agent, s)
-        if early_result is not None:
-            return early_result
-
-        _rs = _run_phase(apply_retry_restarts, agent, s)
-        if _rs.action == "break":
-            break
-        if _rs.action == "continue":
-            continue
-
-        try:
-            _ri = _run_phase(normalize_model_response, agent, s)
-            if _ri.action == "return":
-                return _ri.result
-            if _ri.action == "continue":
-                continue
-            _v = _run_phase(
-                run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
-            )
-            if _v.action == "return":
-                return _v.result
-            if _v.action == "break":
+        # Scope 1: apply the turn's runtime_override BEFORE request assembly and
+        # preflight, so every stage (assemble -> preflight -> announce -> the retry
+        # loop's build/perform/check) observes the same effective route.
+        with _runtime_override_scope(agent, system_message=s.system_message):
+            _synchronize_effective_request_prompt(agent, s)
+            _run_phase(assemble_api_request, agent, s)
+            _pg = _run_phase(run_preflight_gate, agent, s)
+            if _pg.action == "return":
+                return _pg.result
+            if _pg.action == "break":
                 break
-            if _v.action == "continue":
+            if _pg.action == "continue":
                 continue
-        except Exception as e:
-            if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
+            _run_phase(announce_api_call, agent, s)
+
+            s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+            s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+            s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
+
+            early_result = _run_api_retry_loop(agent, s)
+            if early_result is not None:
+                return early_result
+
+            _rs = _run_phase(apply_retry_restarts, agent, s)
+            if _rs.action == "break":
                 break
+            if _rs.action == "continue":
+                continue
+
+            try:
+                _ri = _run_phase(normalize_model_response, agent, s)
+                if _ri.action == "return":
+                    return _ri.result
+                if _ri.action == "continue":
+                    continue
+                _v = _run_phase(
+                    run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
+                )
+                if _v.action == "return":
+                    return _v.result
+                if _v.action == "break":
+                    break
+                if _v.action == "continue":
+                    continue
+            except Exception as e:
+                if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
+                    break
 
     # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
     result = finalize_turn(agent, **{

@@ -39,6 +39,31 @@ def is_provider_stream_parse_error(error: BaseException) -> bool:
             and any(marker in str(error).lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
 
 
+# The Anthropic SDK's Bedrock event-stream decoder raises a plain ``ValueError("Bad response code,
+# expected 200: {...}")`` when Bedrock sends an exception frame mid-stream. These
+# ``:exception-type`` values are Bedrock's transient faults ("Try your request again"); a
+# ``validationException`` frame is a real client error and stays out of this set (#138580).
+_BEDROCK_STREAM_FAULT_PREFIX = "bad response code, expected 200"
+_BEDROCK_TRANSIENT_STREAM_EXCEPTIONS = (
+    "internalserverexception",
+    "serviceunavailableexception",
+    "throttlingexception",
+    "modelstreamerrorexception",
+    "modeltimeoutexception",
+    "modelnotreadyexception",
+)
+
+
+def is_provider_stream_fault_frame(error: BaseException) -> bool:
+    """True for a transient provider exception frame the event-stream decoder surfaced as ``ValueError``."""
+    if not isinstance(error, ValueError):
+        return False
+    text = str(error).lower()
+    return text.startswith(_BEDROCK_STREAM_FAULT_PREFIX) and any(
+        exc in text for exc in _BEDROCK_TRANSIENT_STREAM_EXCEPTIONS
+    )
+
+
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.
 _NETWORK_RESOLUTION_MARKERS = (
     "temporary failure in name resolution",

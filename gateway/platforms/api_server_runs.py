@@ -631,10 +631,11 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Request body must be a JSON object", status=400)
     room_dispatch, room_execution_policy = (
-        v if isinstance(v, dict) else None for v in (
-            (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
-            if isinstance(body, dict) else (None, None)))
+        v if isinstance(v, dict) else None
+        for v in (body.get("hosted_room_dispatch"), body.get("_room_execution_policy")))
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -653,7 +654,10 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if isinstance(raw_input, str):
         user_message = raw_input
     else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+        last = raw_input[-1] if isinstance(raw_input, list) else None
+        # A bare string item is a user turn, as /v1/responses reads it.
+        user_message = last if isinstance(last, str) else (
+            last.get("content", "") if isinstance(last, dict) else "")
     if not user_message:
         return _json_error(_openai_error, "No user message found in input", status=400)
     try:
@@ -1176,6 +1180,8 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         body = await request.json()
     except Exception:
         return _json_error(_openai_error, "Invalid JSON", status=400)
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Request body must be a JSON object", status=400)
     raw_choice = str(body.get("choice", "")).strip().lower()
     choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
     room_scoped = bool(self._room_grant_token(request))

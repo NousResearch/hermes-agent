@@ -369,7 +369,13 @@ export function TreeSplit({
             if (px !== Math.round(track.initial)) {
               track.paneIds.forEach(id => setOverride(id, px))
             }
-          } else {
+          } else if (px !== Math.round(track.initial)) {
+            // The flex branch mirrors the fixed one: only a track the plan
+            // MOVED gets a new weight. Rewriting every flex track from its plan
+            // size destroys the run's ratios for the ones that did not move — a
+            // zone rendered at 0px (an over-constrained row) hit the 0.01 floor
+            // on any drag at all, and its neighbours re-scaled with it, so the
+            // drag moved zones the cursor never reached.
             weights[index] = Math.max(0.01, plan.sizes[index] / pxPerWeight)
             weightsChanged = true
           }

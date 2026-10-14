@@ -129,6 +129,51 @@ describe('TreeSplit cascading expansion', () => {
     expect($paneStates.get().cron?.widthOverride).toBe(80)
     expect(row().weights).toEqual([2.2, 1, 5])
   })
+  it('leaves a flex zone the drag never reached on its own weight', () => {
+    // An over-constrained row renders a flex zone at 0px — nothing asked it to
+    // sit there, so its stored weight is still the truth about it. commitPlan
+    // rewrote EVERY flex track's weight from its plan size (0 for this one),
+    // which floored it to 0.01 and re-scaled the whole run: measured live, a
+    // 420px drag moved the chat 231px while the donors gave up 549.
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'right' }, id: 'squeezed', render: () => null, title: 'Squeezed' })
+    )
+
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        group(['browser'], { id: 'browser-zone' }),
+        group(['squeezed'], { id: 'squeezed-zone' })
+      ],
+      [5, 2, 3],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, browser, squeezed] = [...container.children] as HTMLElement[]
+    setWidth(container, 800)
+    setWidth(chat, 500)
+    setWidth(browser, 200)
+    setWidth(squeezed, 0)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="chat-zone"]')!, 500)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!, 200)
+
+    // Seam left of Browser, dragged 200px toward Chat: Browser grows, Chat
+    // donates — and the squeezed zone at the far end is never in the walk.
+    const browserSash = document.querySelectorAll('[role="separator"]')[0]!
+    fireEvent.pointerDown(browserSash, { button: 0, clientX: 400, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 200, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 200, pointerId: 1, pointerType: 'mouse' })
+
+    expect(row().weights[0]).toBe(3.75) // chat: 300px of 80px-per-weight
+    expect(row().weights[1]).toBe(5) // browser: 400px
+    expect(row().weights[2]).toBe(3) // squeezed: untouched, NOT floored to 0.01
+  })
   it('commits a regular cascade when an unrelated tool rail is already minimized', () => {
     markCollapsePane('terminal')
     disposers.push(

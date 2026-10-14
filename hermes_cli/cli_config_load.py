@@ -310,6 +310,10 @@ def _init_logging_and_display_from_config() -> None:
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(_cli().CLI_CONFIG),
         lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
         lambda: _im("agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
+        # The CLI's diff sink is prompt_toolkit's renderer, not sys.stdout, so the
+        # tty probe in _diff_colors_enabled cannot see it; keep the interactive
+        # transcript colored while Kanban worker logs (plain file stdout) stay clean (#88920).
+        lambda: _im("agent.display").set_diff_colors_forced(True),
     ):
         try:
             step()

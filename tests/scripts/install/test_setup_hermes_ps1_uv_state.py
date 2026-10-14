@@ -1,49 +1,38 @@
-"""The ps1 twins pin bootstrap uv state under the machine root, not the user's.
+"""The ps1 bootstraps pin bootstrap uv state under the machine root, not the user's.
 
 Their ``UV_CACHE_DIR`` / ``UV_PYTHON_INSTALL_DIR`` must name slots under
 ``get_default_hermes_root()`` — the cache in its OWN ``cache/uv-bootstrap``
 slot, off ``pm.packages.uv_cache_dir()`` (the payload-seeded directory;
 bootstrap bytes there first would make that seed skip subtrees yet still mark
 itself done), or ``uv python install`` writes managed CPython into a
-state tree pm never looks at and re-downloads it. Each file's pin block is
-extracted verbatim and executed with its own ``Get-HermesRoot`` — the scripts
-cannot be sourced on POSIX pwsh — so the statements run are the shipped bytes;
-``test_bootstrap_store_root_matches_pm.py`` pins the two bodies byte-identical.
+state tree pm never looks at and re-downloads it.
+
+Each bootstrap loads the resolver and pins the way it ships: ``install.ps1`` is
+piped (``irm | iex``) and carries GENERATED copies, while ``setup-hermes.ps1``
+runs from a checkout and dot-sources the canonical files. The probe reproduces
+that arrangement rather than string-matching markers, so the statements that
+run are the bytes the shipped entry path runs.
 """
 
 from __future__ import annotations
 
 import os
-import re
-import shutil
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-
-# name -> (path, BEGIN markers, naming the twin each block says it mirrors).
-_PS1_BOOTSTRAPS = {
-    "setup-hermes.ps1": (
-        ROOT / "setup-hermes.ps1",
-        "# --- BEGIN store-root resolver (mirrored in scripts/install.ps1) ---",
-        "# --- BEGIN uv state pins (mirrored in scripts/install.ps1) ---",
-    ),
-    "install.ps1": (
-        ROOT / "scripts" / "install.ps1",
-        "# --- BEGIN store-root resolver (mirrored in setup-hermes.ps1) ---",
-        "# --- BEGIN uv state pins (mirrored in setup-hermes.ps1) ---",
-    ),
-}
-_RESOLVER_END = "# --- END store-root resolver ---"
-_PINS_END = "# --- END uv state pins ---"
+BOOTSTRAP = ROOT / "scripts" / "bootstrap"
+CANON_RESOLVER = BOOTSTRAP / "store_root.ps1"
+CANON_PINS = BOOTSTRAP / "uv_state_pins.ps1"
 
 _POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 # ``any``: the OS lanes import only platforms-marked files, so without it this
 # file is never selected by the macOS/Windows lanes even though its extracted
-# resolver/pin blocks are designed to run under POSIX pwsh. The skipif still
-# decides — PowerShell is the real prerequisite, not the host OS.
+# blocks are designed to run under POSIX pwsh. The skipif still decides —
+# PowerShell is the real prerequisite, not the host OS.
 pytestmark = [
     pytest.mark.skipif(
         _POWERSHELL is None, reason="running the PowerShell bootstrap needs pwsh or powershell"
@@ -51,13 +40,49 @@ pytestmark = [
     pytest.mark.platforms("any"),
 ]
 
+# name -> the shipped file that loads the resolver and pins.
+_PS1_BOOTSTRAPS = {
+    "setup-hermes.ps1": ROOT / "setup-hermes.ps1",
+    "install.ps1": ROOT / "scripts" / "install.ps1",
+}
+
 _HOME_SHAPES = ("default", "profile")
 
 
-def _block(text: str, begin: str, end: str) -> str:
-    match = re.search(re.escape(begin) + r"\r?\n(.*?)" + re.escape(end), text, re.DOTALL)
-    assert match, f"the {begin!r} block is missing from the ps1 bootstrap"
-    return match.group(1)
+def _loads_canonical(text: str, name: str) -> bool:
+    """Whether *text* dot-sources the canonical resolver instead of embedding it."""
+    return "bootstrap\\store_root.ps1" in text
+
+
+def _probe_script(bootstrap: str, path: Path) -> str:
+    """The statements the shipped file runs to reach the pins, in order.
+
+    A checkout bootstrap dot-sources the canonical files; a piped installer
+    carries generated copies, so its own bytes are executed between the
+    GENERATED markers. Either way ``Set-UvStatePins`` is what must have run.
+    """
+    if bootstrap == "setup-hermes.ps1":
+        assert _loads_canonical(path.read_text(encoding="utf-8-sig"), bootstrap), (
+            "setup-hermes.ps1 must dot-source the canonical resolver"
+        )
+        return (
+            f'. "{CANON_RESOLVER.as_posix()}"\n'
+            f'. "{CANON_PINS.as_posix()}"\n'
+        )
+    return (
+        _generated_block(path, "# --- BEGIN GENERATED: store-root resolver", "# --- END GENERATED: store-root resolver ---")
+        + "\n"
+        + _generated_block(path, "# --- BEGIN GENERATED: uv state pins", "# --- END GENERATED: uv state pins ---")
+        + "\n"
+    )
+
+
+def _generated_block(path: Path, begin_prefix: str, end: str) -> str:
+    text = path.read_text(encoding="utf-8-sig")
+    start = text.index(begin_prefix)
+    start = text.index("\n", start) + 1
+    stop = text.index(end, start)
+    return text[start:stop]
 
 
 @pytest.mark.parametrize("home_kind", _HOME_SHAPES)
@@ -81,14 +106,11 @@ def test_ps1_bootstraps_pin_uv_state_under_the_machine_root(
     expected_cache = get_default_hermes_root() / "cache" / "uv-bootstrap"
     expected_python = expected_cache.parent / "uv-python"
 
-    path, resolver_begin, pins_begin = _PS1_BOOTSTRAPS[bootstrap]
-    text = path.read_text(encoding="utf-8-sig")
+    path = _PS1_BOOTSTRAPS[bootstrap]
     script = (
         "$ErrorActionPreference = 'Stop'\n"
-        + _block(text, resolver_begin, _RESOLVER_END)
-        + "\n"
-        + _block(text, pins_begin, _PINS_END)
-        + "\nSet-UvStatePins\n"
+        + _probe_script(bootstrap, path)
+        + "Set-UvStatePins\n"
         'Write-Output "$env:UV_CACHE_DIR|$env:UV_PYTHON_INSTALL_DIR"\n'
     )
     result = subprocess.run(
@@ -97,7 +119,7 @@ def test_ps1_bootstraps_pin_uv_state_under_the_machine_root(
         capture_output=True, text=True, timeout=120,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 0, f"{bootstrap}/{home_kind}: {result.stdout}{result.stderr}"
     cache, python_dir = result.stdout.strip().splitlines()[-1].split("|")
     assert Path(cache) == expected_cache, (
         f"{bootstrap}/{home_kind}: pinned UV_CACHE_DIR={cache}, expected {expected_cache}"

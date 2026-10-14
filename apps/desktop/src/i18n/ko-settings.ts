@@ -56,6 +56,22 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       title: '플러그인 설치',
       description: '설치하기 전에 이 저장소에 포함된 내용을 확인하세요.',
       repoLabel: '저장소',
+      verified: '검증됨',
+      unverified: '검증되지 않음',
+      reviewedByNous: 'Nous에서 검토했습니다.',
+      installsAndEnables: profile => `${profile} 프로필에 설치하고 바로 활성화합니다.`,
+      installsOnly: profile => `${profile} 프로필에 설치합니다.`,
+      advanced: '고급 설정',
+      versionLabel: '버전',
+      reviewedPin: sha => (sha ? `검토된 고정 커밋 ${sha}` : '검토된 고정 커밋'),
+      latestCommit: '최신 커밋',
+      nothingToInstall: '이 패키지에는 이 환경에 설치할 구성 요소가 없습니다.',
+      profileLabel: '설치할 프로필',
+      toolsConnected: n => `도구 ${n}개 연결됨`,
+      skillsReady: names =>
+        names.length === 1 ? `스킬 ${names[0]} 사용 준비됨` : `스킬 ${names.length}개 사용 준비됨`,
+      nextChat: '다음 채팅에서 추가 도구를 사용할 수 있습니다',
+      serverNotConnected: (server, reason) => `MCP 서버 ${server}에 연결되지 않았습니다${reason ? `: ${reason}` : '.'}`,
       includesHeading: '패키지 구성',
       agentLabel: '에이전트 플러그인',
       desktopLabel: '데스크톱 UI',
@@ -65,12 +81,10 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       desktopOnlyNote: '데스크톱 전용 패키지는 백엔드 에이전트 플러그인을 설치하지 않습니다.',
       insecureWarning:
         '보안이 적용되지 않았거나 로컬 전용인 URL 형식입니다. 운영 환경에서는 https:// 또는 git@를 사용하세요.',
-      securityHeading: '설치 전 확인',
       securityIntro: '신뢰할 수 있는 출처에서만 설치하세요. 추가될 내용을 확인하려면 아래 저장소를 검토하세요.',
       sourceHeading: '소스 코드',
       viewRepository: '저장소 보기',
       viewPluginFiles: '플러그인 파일 보기',
-      gitCloneLabel: 'Git 복제 URL',
       enableAgent: '설치 후 에이전트 플러그인 활성화',
       forceReinstall: '강제 재설치 (이미 설치되어 있으면 교체)',
       install: '설치',
@@ -83,14 +97,13 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       desktopSuccess: name => `데스크톱 플러그인 ${name} 설치 완료`,
       agentFailed: '에이전트 플러그인 설치 실패',
       desktopFailed: '데스크톱 플러그인 설치 실패',
-      missingEnv: vars => `필요한 환경 변수: ${vars}. 설정 → 도구와 키에서 추가하세요.`,
+      missingEnv: (name, vars) =>
+        `${name}은(는) 설치되었지만 사용하려면 키가 필요합니다: ${vars}. 지금 추가하지 않으면 플러그인 도구가 작동하지 않습니다.`,
+      installUncertain:
+        '설치 결과 대기는 종료되었지만 플러그인 설치가 계속 진행 중일 수 있습니다. 이 창을 닫고 플러그인에서 다시 검색한 뒤 설치를 다시 시도하세요.',
       installFromGit: 'Git에서 설치',
       reviewRepository: '저장소 검토',
       repoPlaceholder: 'https://github.com/owner/repo',
-      catalogPinned: (name, sha) =>
-        `Hermes 카탈로그 항목 “${name}” — 에이전트 구성 요소는 브랜치의 최신 버전이 아닌 검토된 고정 커밋${sha ? ` ${sha}` : ''}으로 설치됩니다.`,
-      reviewedHeading: '검토된 카탈로그 항목',
-      reviewedIntro: '이 항목의 고정 커밋은 사람이 검토했습니다. 아래에서 해당 코드를 직접 확인할 수 있습니다.',
       restartToApply: '플러그인을 적용하려면 게이트웨이를 다시 시작하세요.',
       restartNow: '게이트웨이 다시 시작',
       missingEnvAction: '설정하기',
@@ -501,6 +514,12 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
       '실시간 음성 페르소나의 말투, 속도, 언어에 관한 추가 지침입니다. Hermes는 자체 시스템 프롬프트를 유지합니다.'
   },
   about: {
+    channel: {
+      rollbackTitle: version => `안정 버전 ${version}(으)로 되돌리기`,
+      rollbackBody: version =>
+        `현재 빌드는 안정 버전 ${version}보다 최신입니다. 설치하면 Hermes가 해당 안정 버전으로 되돌아갑니다.`,
+      rollbackAction: version => `${version}(으)로 되돌리기`
+    },
     heading: 'Hermes Desktop',
     version: value => `버전 ${value}`,
     versionUnavailable: '버전 정보 없음',

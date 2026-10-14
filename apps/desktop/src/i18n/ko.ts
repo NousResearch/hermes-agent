@@ -5,12 +5,14 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { koCapabilities } from './ko-capabilities'
 import { koConversation } from './ko-conversation'
 import { koSettings } from './ko-settings'
+import { koFirstRun } from './ko_first_run'
 import { ko as permissionModelCopy } from './permission-model-copy'
 
 export const koOverrides = {
   ...koConversation,
   ...koCapabilities,
   settings: koSettings,
+  firstRun: koFirstRun,
   billingRisk: billingRiskCopy,
   permissionModel: permissionModelCopy,
   sessionImport: {
@@ -941,6 +943,15 @@ export const koOverrides = {
     }
   },
   connectors: {
+    directory: {
+      suggested: '추천 앱',
+      allApps: '모든 앱',
+      receiptConnected: apps => `연결된 앱: ${apps}`,
+      receiptNone: '새로 연결된 앱이 없습니다',
+      receiptTimedOut: '5분이 지나 종료되었습니다',
+      finishInBrowser: '브라우저에서 연결을 완료하세요',
+      signInFailed: '연결하지 못했습니다. 클릭하여 다시 시도하세요'
+    },
     title: '앱 연결하기',
     connect: '연결',
     skip: '나중에',
@@ -968,17 +979,6 @@ export const koOverrides = {
     openInBrowser: '브라우저에서 열기',
     setupCancel: '취소',
     required: '필수'
-  },
-  handoffTour: {
-    profileTitle: '첫 작업은 default 프로필에서 실행됩니다',
-    profileText:
-      '이 프로필 바에서 프로필을 전환할 수 있습니다. 지금 강조된 default 프로필에 작업 세션이 있습니다. 다른 하나인 setup 프로필에는 시작 안내 대화가 있습니다.',
-    sessionsTitle: '각 프로필은 별도의 세션을 유지합니다',
-    sessionsText:
-      '이 목록은 default 프로필의 세션입니다. 새 세션을 만들면 현재 선택한 프로필에서 시작됩니다. 프로필 바에서 프로필을 바꾸면 목록도 함께 바뀝니다.',
-    stayTitle: '클릭 한 번으로 Hermes의 도움을 받으세요',
-    stayText:
-      '도움이 필요할 때마다 setup 프로필로 전환해 Welcome to Hermes 대화를 여세요. 언제든 그곳에서 다시 볼 수 있습니다.'
   },
   freeTier: {
     providerRowTitle: 'Nous · 무료 요금제',

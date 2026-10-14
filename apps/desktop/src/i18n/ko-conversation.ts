@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { koThemePicker } from './ko_theme_picker'
 
 export const koConversation: Pick<
   TranslationOverrides,
@@ -836,6 +837,7 @@ export const koConversation: Pick<
     }
   },
   assistant: {
+    themePicker: koThemePicker,
     thread: {
       loadingSession: '세션 불러오는 중',
       showEarlier: '이전 메시지 보기',
@@ -928,13 +930,14 @@ export const koConversation: Pick<
       placeholder: '답변을 입력하세요…',
       skip: '건너뛰기',
       skipped: '건너뜀',
-      continueLabel: '계속',
       confirmAndContinueLabel: '확인 후 계속',
-      answeredBadge: '답변 완료',
-      questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변`,
-      lateAnswer: (question, choice) => `"${question}"에 대한 답변: ${choice}`,
-      lateAnswerTip: '이 답변을 후속 메시지로 작성',
-      lateAnswerHint: '이 질문은 더 이상 답변을 기다리지 않습니다. 옵션을 선택하면 후속 메시지로 작성합니다.'
+      noAnswer: '답변 없음',
+      singleSelectHint: '하나 선택',
+      multiSelectHint: '해당하는 항목 모두 선택',
+      oneQuestion: '질문 1개',
+      notDelivered:
+        '이 질문이 앱에 전달되지 않아 여기에서는 답변할 수 없습니다. 중지 버튼으로 현재 응답을 종료한 뒤 채팅으로 답변하세요.',
+      questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변`
     },
     mcpSetup: {
       installTitle: 'MCP 서버를 추가할까요?',

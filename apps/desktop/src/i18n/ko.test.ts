@@ -23,6 +23,11 @@ describe('Korean translation contract', () => {
     expect(ko.desktop.branchTitle(17)).toContain('17')
     expect(ko.ui.sidebar.toggle(true)).not.toBe(ko.ui.sidebar.toggle(false))
     expect(ko.skills.toggleToolset('TOOLS', true)).not.toBe(ko.skills.toggleToolset('TOOLS', false))
+    const missingKey = ko.settings.plugins.installModal.missingEnv('TestPlugin', 'EXAMPLE_TOKEN')
+    expect(missingKey).toContain('TestPlugin')
+    expect(missingKey).toContain('EXAMPLE_TOKEN')
+    expect(ko.firstRun.localModel.text('TestModel', '4 GB')).toContain('TestModel (4 GB)')
+    expect(ko.settings.about.channel.rollbackBody('0.21.7')).toContain('0.21.7')
   })
 
   it('keeps original description extensions and schema field copy available', () => {

@@ -425,6 +425,8 @@ export type BotsMessages = {
     portalUnavailable: string
     /** Managed runtimes (Hermes Cloud): updates are the platform's job, not the user's. */
     portalUnavailableManaged: string
+    managedNotIncludedTitle: string
+    managedNotIncludedBody: string
     unavailableTitle: string
     autoOpenMenu: string
     autoOpenOnToast: (name: string) => string

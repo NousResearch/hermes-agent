@@ -517,6 +517,9 @@ export const ko: BotsMessages = {
     createdOn: (name, target) => `${target}에 “${name}” 봇 생성됨`
   },
   screen: {
+    managedNotIncludedTitle: '이 봇에는 화면 기능이 포함되어 있지 않습니다',
+    managedNotIncludedBody:
+      'Hermes Cloud는 메모리가 8GB 이상인 봇에 화면 기능을 제공합니다. 메모리가 더 작은 봇에는 설치할 수 없습니다.',
     title: '화면',
     menu: '화면 열기',
     unsupportedTitle: '이 호스트는 봇 화면을 지원하지 않습니다',

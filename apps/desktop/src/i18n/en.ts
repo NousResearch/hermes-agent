@@ -1,16 +1,19 @@
 import { billingRiskEn as billingRiskCopy } from './billing-risk-copy'
 import { enSettings } from './en-settings'
-import { enAppTour, enHandoffTour } from './en_app_tour'
+import { enAppTour } from './en_app_tour'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enFirstRun } from './en_first_run'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enThemePicker } from './en_theme_picker'
 import { en as permissionModelCopy } from './permission-model-copy'
 import type { Translations } from './types'
 
@@ -28,6 +31,7 @@ export const en: Translations = {
   },
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
+  firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   connectors: enConnectorCard,
@@ -2596,7 +2600,6 @@ export const en: Translations = {
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
-  handoffTour: enHandoffTour,
   install: {
     stageStates: {
       pending: 'Pending',
@@ -3458,54 +3461,8 @@ export const en: Translations = {
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
       alwaysAllow: 'Always allow'
     },
-    clarify: {
-      notReady: 'Clarify request is not ready yet',
-      gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
-      sendFailed: 'Could not send clarify response',
-      loadingQuestion: 'Loading question…',
-      other: 'Other (type your answer)',
-      placeholder: 'Type your answer…',
-      skip: 'Skip',
-      skipped: 'Skipped',
-      noAnswer: 'No answer',
-      confirmAndContinueLabel: 'Confirm and continue',
-      singleSelectHint: 'Pick one',
-      multiSelectHint: 'Select all that apply',
-      oneQuestion: '1 question',
-      questionProgress: (answered, total) => `${answered} of ${total} answered`,
-      notDelivered:
-        "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat.",
-      continueLabel: 'Continue',
-      answeredBadge: 'Answered',
-      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
-      lateAnswerTip: 'Draft this answer as a follow-up message',
-      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Accent color',
-        connectors: 'Apps',
-        layout: 'Layout',
-        plugins: 'Plugins',
-        theme: 'Appearance'
-      },
-      loading: 'Loading options…',
-      unavailable: "This list isn't available right now. Reply in chat instead.",
-      findApp: 'Find an app',
-      customColor: 'Custom color',
-      plugin: 'Plugin',
-      startsLater: "We'll set these up when you start."
-    },
-    startChat: {
-      starting: title => `Starting “${title}”…`,
-      startingUntitled: 'Starting a chat…',
-      untitled: 'New chat',
-      notStarted: "Couldn't start that chat.",
-      retry: 'Retry',
-      inProfile: profile => `In ${profile}`,
-      open: 'Open',
-      openFailed: "Couldn't open the chat"
-    },
+    clarify: enClarify,
+    themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,
     mcpSetup: {
       installTitle: 'Add MCP servers',
@@ -3678,8 +3635,6 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
-        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
-        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },

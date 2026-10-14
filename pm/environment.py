@@ -49,6 +49,17 @@ _RESOLVER_MARKERS = (
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
 
+# The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
+# cannot date the file. uv words it as "no solution", but the index is at fault,
+# not the requested set, so it must never read as a dependency conflict (#135589).
+# A seeded lock says "has no publish time"; a cold one only warns the date is missing
+# and hints the version was filtered, so that case needs both lines.
+_UNDATED_PIN = "has no publish time"
+_UNDATED_FILE = ("is missing an upload date", "was filtered by `exclude-newer")
+UNDATED_INDEX_HINT = ("the package index did not report upload times, which locking Hermes's "
+                      "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
+                      "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
+
 
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
@@ -67,6 +78,8 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
+    if _UNDATED_PIN in lowered or all(marker in lowered for marker in _UNDATED_FILE):
+        return InstallError("venv", cause, UNDATED_INDEX_HINT)
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):

@@ -32,7 +32,7 @@ def kanban_terminal_tool_guidance(tool_names: Iterable[str] | None = None) -> di
     # Tests and lightweight callers may use this guard before model_tools discovery. Importing
     # the built-in module registers its declarative metadata; a supplied surface still filters it.
     if not guidance and allowed is None:
-        import tools.kanban_tools  # noqa: F401
+        import tools.kanban_tools
         guidance = registry.kanban_terminal_tool_guidance()
     return guidance
 

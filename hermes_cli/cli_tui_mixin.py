@@ -1984,7 +1984,8 @@ class CLITuiMixin:
             lambda: not self._clarify_state and not self._approval_state
             and not self._sudo_state and not self._secret_state and not self._connection_state)
         kb.add('c-g', filter=_editor_filter)(
-            kb.add('escape', 'g', filter=_editor_filter)(self._tui_handle_open_in_editor))
+            kb.add('escape', 'g', filter=_editor_filter)(
+                kb.add('c-x', 'c-e', filter=_editor_filter)(self._tui_handle_open_in_editor)))
         # Ctrl+S prompt stash: park a draft, send something else, bring it back. Suppressed while
         # a modal prompt owns the composer so Ctrl+S can't stash a password.
         _stash_filter = Condition(

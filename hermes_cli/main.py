@@ -1368,7 +1368,7 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(title: str, source: str | None = None) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
     Same timestamp+uuid id shape the CLI uses; the title is recorded with
@@ -1376,7 +1376,7 @@ def _create_titled_session(title: str) -> Optional[str]:
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
-    no-op.
+    no-op. ``source`` is the caller's ``--source`` tag (default ``cli``), stored as given (#137373).
     """
     db = None
     try:
@@ -1387,7 +1387,7 @@ def _create_titled_session(title: str) -> Optional[str]:
         # The CLI acquires the registry handle for this same path moments later; share it
         # instead of minting a second writer for one INSERT (close() releases the refcount).
         db = acquire()
-        db.create_session(new_session_id, source="cli")
+        db.create_session(new_session_id, source=source or "cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:
@@ -1426,7 +1426,7 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # a quiet send to a not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
                 # and proceed. See #86794.
-                new_sid = _create_titled_session(continue_val)
+                new_sid = _create_titled_session(continue_val, source=getattr(args, "source", None))
                 if new_sid:
                     args.resume = new_sid
                 else:

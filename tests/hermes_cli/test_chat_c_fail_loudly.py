@@ -27,10 +27,10 @@ def isolated_home(tmp_path, monkeypatch):
     return home
 
 
-def _create_titled_session(title):
+def _create_titled_session(title, source=None):
     from hermes_cli.main import _create_titled_session as fn
 
-    return fn(title)
+    return fn(title, source=source)
 
 
 class TestCreateIfMissingFlagParsing:
@@ -155,5 +155,67 @@ class TestChatCFailLoudlyOnStderr:
         db = SessionDB()
         try:
             assert db.get_session_title(args.resume) == "Bot Chat"
+        finally:
+            db.close()
+
+
+class TestCreateIfMissingKeepsSource:
+    """The create path stores the caller's --source, not a hardcoded cli (#137373)."""
+
+    def test_helper_stores_the_callers_source(self, isolated_home):
+        sid = _create_titled_session("Bot Chat", source="tool")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            row = db.get_session(sid)
+            assert row is not None
+            assert row["source"] == "tool"
+            assert row["created_source"] == "tool"
+        finally:
+            db.close()
+
+    def test_helper_defaults_to_cli_without_an_explicit_source(self, isolated_home):
+        sid = _create_titled_session("Bot Chat")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            row = db.get_session(sid)
+            assert row is not None
+            assert row["source"] == "cli"
+        finally:
+            db.close()
+
+    def test_create_if_missing_threads_args_source(self, isolated_home):
+        """`chat -c <title> --create-if-missing --source tool` → a row sourced tool."""
+        import hermes_cli.main as main_mod
+
+        args = type(
+            "Args",
+            (),
+            {
+                "continue_last": "Bot Chat",
+                "resume": None,
+                "create_if_missing": True,
+                "source": "tool",
+            },
+        )()
+
+        main_mod._resolve_continue_arg(args, use_tui=False)
+
+        assert args.resume, "resume should be set to the new session id"
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            row = db.get_session(args.resume)
+            assert row is not None
+            assert row["source"] == "tool"
+            assert row["created_source"] == "tool"
         finally:
             db.close()

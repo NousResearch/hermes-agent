@@ -31,6 +31,7 @@ class CLITuiRuntimeMixin:
     def _tui_process_loop(self):
         """REPL worker thread: drain ``_pending_input``, run idle housekeeping, dispatch each input."""
         held = None
+        self._report_program_status("idle")
         while not self._should_exit:
             try:
                 if held is not None:
@@ -156,6 +157,7 @@ class CLITuiRuntimeMixin:
             from hermes_cli.cli_inline_images import print_inline_images
             print_inline_images(self, submit_images)
 
+        self._report_program_status("working")
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()

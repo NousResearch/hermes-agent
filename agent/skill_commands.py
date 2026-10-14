@@ -287,7 +287,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
             return
         parts.append("")
         parts.append(f"[Skill config (from {display_hermes_home()}/config.yaml):")
-        parts.extend(f"  {key} = {str(value) if value else '(not set)'}" for key, value in resolved.items())
+        parts.extend(f"  {key} = {'(not set)' if value is None or value == '' else value}" for key, value in resolved.items())
         parts.append("]")
     except Exception:
         pass

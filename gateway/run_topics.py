@@ -163,14 +163,25 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
-    def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
-        """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
+    def _recover_telegram_topic_thread_id(
+        self, source: SessionSource, *, is_reply: bool = False
+    ) -> Optional[str]:
+        """Pin lobby-shaped topic-mode DM *replies* (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
-        topic is also "unknown" until its first message is recorded. None = leave the source alone."""
+        topic is also "unknown" until its first message is recorded. None = leave the source alone.
+
+        ``is_reply`` guards the pin: only messages that actually REPLY to a prior message (or carry an
+        explicit gateway route expectation) get steered into the last-bound topic — a *fresh* message
+        typed in the General/"All" lane is a first message for a NEW topic Telegram just created and
+        must stay in the lobby, otherwise the user's intent to start a topic is silently swallowed by
+        the running conversation (#31772).
+        """
         if (
             not self._is_telegram_dm(source) or not source.chat_id or not source.user_id
             or not self._telegram_topic_mode_enabled(source)
         ):
+            return None
+        if not is_reply:
             return None
         inbound = str(source.thread_id or "")
         if inbound and inbound not in self._TELEGRAM_GENERAL_TOPIC_IDS:
@@ -190,6 +201,232 @@ class GatewayTopicThreadsMixin:
                 recovered = str(b.get("thread_id") or "")
                 return recovered if recovered and recovered != inbound else None
         return None
+
+    # ── Telegram DM topic mode: fresh General/"All" lobby messages ──────────────────────────
+    #
+    # A FRESH (non-reply) message typed in the mobile app's General/"All" lane arrives with no
+    # ``message_thread_id`` (Telegram shows an empty auto-created topic and delivers the TEXT to
+    # the lobby). #135959 removed the old hijack, which left this lane inert: the message hit the
+    # debounced lobby reminder and no task ran. These helpers give it its own topic.
+
+    # Lobby CONTROL commands: they act on the CURRENT session/chat, never on a fresh conversation,
+    # so they must NOT be routed into a new topic when typed in the All lane. /approve and /deny
+    # are additionally excluded wherever they resolve pending approvals, and /topic is chat-level.
+    # Anything not listed here is treated as the start of a new conversation (like a message).
+    _CONTROL_LOBBY_COMMANDS = frozenset({
+        "new", "stop", "reset", "topic", "approve", "deny",
+    })
+
+    def _note_own_created_lobby_topic(self, chat_id: str, thread_id: str) -> None:
+        """Record a DM topic HERMES created, so the ``forum_topic_created`` service message
+        Telegram emits for it is not mistaken for a user-created empty topic.
+
+        Without this, Hermes' own topic creation would arm the reuse window: the next fresh
+        General/"All" message inside it would be routed into the topic the PREVIOUS message
+        created — re-creating the #31772 hijack through the back door. Covers every Hermes-side
+        create (fresh-lobby auto-create, System topic, handoff, configured ``dm_topics``).
+        """
+        if not chat_id or not thread_id:
+            return
+        own = getattr(self, "_own_created_lobby_topics", None)
+        if not isinstance(own, dict):
+            own = self._own_created_lobby_topics = {}
+        now = time.monotonic()
+        chat_entry = own.setdefault(str(chat_id), {})
+        # Prune expired entries so a long-lived gateway cannot grow this map without bound.
+        for tid, ts in list(chat_entry.items()):
+            if now - ts >= self._PENDING_LOBBY_TOPIC_WINDOW_S:
+                chat_entry.pop(tid, None)
+        chat_entry[str(thread_id)] = now
+        # Close the capture/create race: Telegram's ``forum_topic_created`` service message for a
+        # topic HERMES just created can be processed by the observer WHILE ``create_forum_topic``
+        # is still awaited, i.e. before this record exists. Drop it from the pending map too, or a
+        # later fresh "All" message would reuse the topic of the previous one (#31772 hijack).
+        pending = getattr(self, "_pending_lobby_topics", None)
+        if isinstance(pending, dict):
+            entry = pending.get(str(chat_id))
+            if entry and str(entry[0]) == str(thread_id):
+                pending.pop(str(chat_id), None)
+
+    def _is_own_created_lobby_topic(self, chat_id: str, thread_id: str) -> bool:
+        """True (and consumes the record) when Hermes itself created this DM topic recently."""
+        own = getattr(self, "_own_created_lobby_topics", None)
+        if not isinstance(own, dict):
+            return False
+        chat_entry = own.get(str(chat_id))
+        if not isinstance(chat_entry, dict):
+            return False
+        ts = chat_entry.pop(str(thread_id), None)
+        if ts is None:
+            return False
+        return (time.monotonic() - float(ts)) < self._PENDING_LOBBY_TOPIC_WINDOW_S
+
+    def _note_pending_lobby_topic(self, chat_id: str, thread_id: str) -> None:
+        """Record a Telegram-created EMPTY DM topic (its ``forum_topic_created`` service message)
+        so the next fresh General/"All" lobby message can be routed INTO it rather than Hermes
+        creating a duplicate. Called by the Telegram adapter's group-99 observer."""
+        if not chat_id or not thread_id:
+            return
+        if self._is_own_created_lobby_topic(chat_id, thread_id):
+            logger.debug(
+                "Ignoring forum_topic_created for a Hermes-created DM topic: chat=%s thread=%s",
+                chat_id, thread_id,
+            )
+            return
+        pending = getattr(self, "_pending_lobby_topics", None)
+        if not isinstance(pending, dict):
+            pending = self._pending_lobby_topics = {}
+        pending[str(chat_id)] = (str(thread_id), time.monotonic())
+
+    def _pop_pending_lobby_topic(self, chat_id: str) -> Optional[str]:
+        """Pop the recorded Telegram-created empty topic for *chat_id* while it is still fresh."""
+        pending = getattr(self, "_pending_lobby_topics", None)
+        if not isinstance(pending, dict):
+            return None
+        entry = pending.pop(str(chat_id), None)
+        if not entry:
+            return None
+        try:
+            thread_id, recorded_ts = entry
+            fresh = time.monotonic() - float(recorded_ts) < self._PENDING_LOBBY_TOPIC_WINDOW_S
+        except (TypeError, ValueError):
+            return None
+        return str(thread_id) if fresh and thread_id else None
+
+    async def _auto_create_telegram_topic_for_lobby_message(
+        self, source: SessionSource, text: str = ""
+    ) -> Optional[str]:
+        """Thread id to route a FRESH General/"All" lobby message into, or None.
+
+        Prefers the empty topic Telegram itself auto-created for this message (captured from its
+        ``forum_topic_created`` service message inside ``_PENDING_LOBBY_TOPIC_WINDOW_S``); else
+        creates one via the adapter's ``_create_dm_topic``. None = no topic could be chosen, and the
+        caller leaves the message on the pre-existing lobby-reminder path.
+        """
+        adapter = self._delivery_adapter_for(source)
+        if adapter is None or not source.chat_id:
+            return None
+        # Reuse is best-effort: it depends on the bot actually receiving Telegram's
+        # ``forum_topic_created`` service message for a client-created DM topic, and on that update
+        # being processed before the user's text batch flushes. When either fails, the fallback
+        # below creates the topic instead — the message still runs in its own topic, at the cost of
+        # Telegram's empty one remaining beside it (cosmetic).
+        reused = self._pop_pending_lobby_topic(str(source.chat_id))
+        if reused:
+            logger.info(
+                "telegram lobby fresh-message: reusing Telegram-created empty topic thread=%s for chat=%s",
+                reused, source.chat_id,
+            )
+            return reused
+        create_topic = getattr(adapter, "_create_dm_topic", None)
+        if not callable(create_topic):
+            return None
+        try:
+            chat_id_int = int(source.chat_id)
+        except (TypeError, ValueError):
+            return None
+        first_line = next((ln for ln in str(text or "").splitlines() if ln.strip()), "")
+        name = self._sanitize_telegram_topic_title(first_line)
+        try:
+            thread_id = await create_topic(chat_id_int, name=name)
+        except Exception:
+            logger.debug("Failed to create a DM topic for a fresh Telegram lobby message", exc_info=True)
+            return None
+        if not thread_id:
+            return None
+        logger.info(
+            "telegram lobby fresh-message: created topic thread=%s (%r) for chat=%s",
+            thread_id, name, source.chat_id,
+        )
+        return str(thread_id)
+
+    async def _route_fresh_lobby_message(self, event: MessageEvent) -> bool:
+        """Route a FRESH (non-reply) Telegram General/"All" lobby message into its own DM topic.
+
+        Stamps ``event.source.thread_id`` BEFORE dispatch, so the session key, the active-session
+        guard and the delivery snapshot all see the chosen topic. This is the crux: the in-handler
+        rewrite both reverted attempts used could never reach the final send, because
+        ``_process_message_background`` snapshots thread metadata BEFORE calling the handler and
+        reuses that snapshot for the reply. Returns True when a topic was stamped.
+        """
+        source = getattr(event, "source", None)
+        if source is None or getattr(event, "_lobby_topic_routed", False):
+            return False
+        if getattr(event, "internal", False) or not self._is_telegram_dm(source):
+            return False
+        # Fail closed on authorization: this router runs BEFORE the gateway's own admit gate, and
+        # creating a topic plus echoing the user's text are real side effects. The Telegram intake
+        # prefilters authorized text already, but any path that reaches handle_message without one
+        # must not let an unauthorized sender create topics or have text re-sent.
+        if getattr(source, "profile_route_rejected", False) is True:
+            return False
+        authorize = getattr(self, "_is_user_authorized", None)
+        if callable(authorize):
+            try:
+                if not authorize(source):
+                    return False
+            except Exception:
+                return False
+        # An explicitly routed event already names its destination; a lobby REPLY pins to the
+        # user's last-bound topic through the merged #135959 recovery and must stay there.
+        if (getattr(event, "metadata", None) or {}).get("gateway_session_key"):
+            return False
+        if getattr(event, "reply_to_message_id", None):
+            return False
+        # CONTROL commands in the lobby (/stop, /new, /reset, /topic, /approve, /deny, ...) act on
+        # the CURRENT session/chat guard, not on a fresh conversation — never start a topic for
+        # them. Every OTHER command typed in the All lane is the start of a new conversation and is
+        # routed exactly like a message (/status in All -> a /status topic, /model in All -> governs
+        # the topic it just created). The control set is structural, via busy_policy and the
+        # approval/pending-approval classes, not a hand-maintained command name list.
+        _cmd_name = event.get_command()
+        if _cmd_name:
+            from hermes_cli.commands import is_interrupt_then_dispatch, should_bypass_active_session
+            # /approve, /deny resolve pending approvals keyed by session (pre-router intercept);
+            # /stop and /new interrupt the current turn; /topic flips the chat-level toggle. None
+            # of them start a new conversation, so none may create a fresh topic.
+            if _cmd_name in self._CONTROL_LOBBY_COMMANDS or is_interrupt_then_dispatch(_cmd_name):
+                return False
+            # An UNRECOGNIZED command keeps the lobby path (never create a topic for typing
+            # garbage). Every recognized, non-control command is a conversation start: /status in
+            # All -> a /status topic and the reply lands there, like any other message.
+            if not should_bypass_active_session(_cmd_name):
+                return False
+        if not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
+            return False
+        thread_id = await self._auto_create_telegram_topic_for_lobby_message(source, text=event.text or "")
+        if not thread_id:
+            return False
+        event.source = replace_source(source, thread_id=str(thread_id))
+        event._lobby_topic_routed = True
+        await self._echo_lobby_message_into_topic(event)
+        return True
+
+    async def _echo_lobby_message_into_topic(self, event: MessageEvent) -> None:
+        """Best-effort echo of a fresh lobby message into the topic it was routed to.
+
+        Telegram delivered the text to General, so the topic would otherwise look empty. Kept a
+        bare ``adapter.send``: this is presentation, never the turn's reply, so it must not enter
+        the delivery ledger or the "nothing deliverable" loud-failure path.
+        """
+        text = str(getattr(event, "text", "") or "")
+        if not text.strip():
+            return
+        try:
+            adapter = self._delivery_adapter_for(event.source)
+            if adapter is None:
+                return
+            # Build the topic metadata WITHOUT a reply anchor: the message being echoed lives in
+            # General, so anchoring the echo to it would be a cross-topic reply Telegram may
+            # reject. An anchor-less send routed by direct_messages_topic_id is the supported
+            # shape for a synthetic DM-topic send (see TelegramAdapter._thread_kwargs_for_send).
+            metadata = self._thread_metadata_for_target(
+                event.source.platform, event.source.chat_id, str(event.source.thread_id),
+                chat_type=getattr(event.source, "chat_type", None), adapter=adapter,
+            )
+            await adapter.send(event.source.chat_id, text, metadata=metadata)
+        except Exception:
+            logger.debug("Failed to echo a fresh lobby message into its topic", exc_info=True)
 
     # ── Telegram topic mode: /topic activation helpers ──────────────────────────────────────
 

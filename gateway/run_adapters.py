@@ -1360,6 +1360,14 @@ class GatewayAdapterLifecycleMixin:
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        # Fresh General/"All" lobby messages (mobile Telegram DM topic mode) get their own topic
+        # BEFORE dispatch — see BasePlatformAdapter.set_fresh_lobby_router for why the pre-dispatch
+        # seam is required. Telegram only: it is TelegramAdapter.handle_message that invokes the
+        # hook, and no other platform has a DM-topic lobby to route.
+        if getattr(adapter, "platform", None) is Platform.TELEGRAM:
+            _set_fresh_lobby = getattr(adapter, "set_fresh_lobby_router", None)
+            if callable(_set_fresh_lobby):
+                _set_fresh_lobby(self._route_fresh_lobby_message)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )

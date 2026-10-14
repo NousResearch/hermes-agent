@@ -1970,6 +1970,11 @@ class BasePlatformAdapter(ABC):
         self._platform_event_handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = None
         # Rewrites ``event.source.thread_id`` before session keying (Telegram DM topics).
         self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
+        # Pre-dispatch router for FRESH General/"All" lobby messages (Telegram DM topics). Runs
+        # BEFORE any session key / guard / delivery snapshot reads the source, so the topic it
+        # chooses is visible to every downstream reader. None = no fresh-lobby lane (other
+        # platforms, and every adapter the runner does not wire it on).
+        self._fresh_lobby_router: Optional[Callable[[Any], Awaitable[bool]]] = None
         self._running, self._fatal_error_retryable = False, True
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -2364,20 +2369,53 @@ class BasePlatformAdapter(ABC):
         closed."""
         self._platform_event_handler = handler
 
-    def set_topic_recovery_fn(self, fn: Optional[Callable[[Any], Optional[str]]]) -> None:
+    def set_topic_recovery_fn(self, fn: Optional[Callable[..., Optional[str]]]) -> None:
         """Install a thread_id-recovery hook (Telegram DM topic mode): called with ``event.source``
         before session keying; a non-None return replaces ``source.thread_id``. ``None`` clears
-        it."""
+        it. The runner's hook takes ``is_reply=`` as a keyword, mirroring the in-turn recovery
+        call in ``run_turn._hmwa_resolve_session``."""
         self._topic_recovery_fn = fn
 
+    def set_fresh_lobby_router(self, fn: Optional[Callable[[Any], Awaitable[bool]]]) -> None:
+        """Install a pre-dispatch router for FRESH Telegram General/"All" lobby messages (DM topic
+        mode). Unlike :meth:`set_topic_recovery_fn` — which is synchronous and runs at batch-enqueue
+        key derivation, and therefore can only *rewrite* an already-keyed source — this hook is
+        awaited from the adapter's ``handle_message`` BEFORE ``super().handle_message``, i.e. before
+        the session guard lookup, the session key derivation and the delivery snapshot in
+        ``_process_message_background``. A topic chosen here is consequently seen by all of them,
+        including the busy path (the stamped source derives the NEW topic's key, so the message
+        never collides with a running session's guard). ``fn`` returns True when it stamped a topic.
+        ``None`` clears it; platforms that never register one are unaffected.
+        """
+        self._fresh_lobby_router = fn
+
+    async def _route_fresh_lobby_event(self, event: MessageEvent) -> bool:
+        """Run the registered fresh-lobby router, if any. Never raises into ingress."""
+        router = getattr(self, "_fresh_lobby_router", None)
+        if router is None:
+            return False
+        try:
+            return bool(await router(event))
+        except Exception:
+            logger.debug("[%s] fresh-lobby routing failed", self.name, exc_info=True)
+            return False
+
     def _apply_topic_recovery(self, event: MessageEvent) -> None:
-        """Rewrite ``event.source.thread_id`` in place if the hook returns one."""
+        """Rewrite ``event.source.thread_id`` in place if the hook returns one.
+
+        Passes the reply signal through: the runner's recovery only pins REPLIES (a fresh
+        General/"All" lobby message must stay unrouted so the fresh-lobby router can give it
+        its own topic), and calling it without ``is_reply`` left it on its ``False`` default —
+        the hook then returned ``None`` for every event, so a stripped lobby REPLY keyed the
+        busy guard on the lobby lane while ``run_turn`` recovered the bound topic for the turn,
+        splitting the guard key from the turn's session key.
+        """
         recover = getattr(self, "_topic_recovery_fn", None)
         source = getattr(event, "source", None)
         if recover is None or source is None:
             return
         try:
-            recovered = recover(source)
+            recovered = recover(source, is_reply=bool(getattr(event, "reply_to_message_id", None)))
             if recovered is None or str(recovered) == str(source.thread_id or ""):
                 return
         except Exception:

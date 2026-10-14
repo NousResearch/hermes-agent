@@ -172,6 +172,65 @@ async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lobby_reply_keys_busy_path_on_recovered_topic(tmp_path):
+    """Adapter-side topic recovery must agree with the turn's session key.
+
+    Uses the runner's REAL ``_recover_telegram_topic_thread_id`` as the hook (a MagicMock
+    cannot catch a missing ``is_reply=`` pass-through): a stripped lobby REPLY arriving while
+    its bound topic runs must be keyed on THAT topic's session by the adapter's busy guard —
+    not start a second, parallel turn on the lobby lane (the in-turn recovery in run_turn
+    would pin the same topic, splitting the guard key from the turn's session key).
+    """
+    from gateway.run import GatewayRunner
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="12345", user_id="u1")
+    db.create_session(session_id="sess-topic", source="telegram", user_id="u1")
+    topic_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm",
+        user_id="u1", thread_id="222",
+    )
+    db.bind_telegram_topic(
+        chat_id="12345", thread_id="222", user_id="u1",
+        session_key=build_session_key(topic_source), session_id="sess-topic",
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_db = db
+
+    adapter = _make_adapter()
+    adapter._busy_text_mode = ""  # direct merge, no debounce
+    adapter.set_topic_recovery_fn(runner._recover_telegram_topic_thread_id)
+
+    lobby_event = _make_event("hello", thread_id=None)
+    lobby_key = build_session_key(lobby_event.source)
+    topic_key = build_session_key(topic_source)
+    assert lobby_key != topic_key
+    adapter._active_sessions[topic_key] = asyncio.Event()  # a turn is running in topic 222
+
+    # A stripped lobby REPLY (Telegram DM topic mode drops message_thread_id on replies):
+    # recovery pins it to topic 222 BEFORE session keying, so it queues onto the topic's
+    # running turn and never touches the lobby lane.
+    reply = _make_event("follow up", thread_id=None)
+    reply.reply_to_message_id = "41"
+    await adapter.handle_message(reply)
+
+    assert str(reply.source.thread_id) == "222"
+    assert adapter._pending_messages[topic_key].text == "follow up"
+    assert lobby_key not in adapter._pending_messages
+
+    # A FRESH lobby message (not a reply) stays unrouted at this layer: the fresh-lobby
+    # router owns it. Recovery returns None, nothing is queued onto the busy topic.
+    fresh = _make_event("brand new topic", thread_id=None)
+    await adapter.handle_message(fresh)
+
+    assert fresh.source.thread_id is None
+    assert adapter._pending_messages[topic_key].text == "follow up"  # unchanged
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_rapid_text_followups_accumulate_instead_of_replacing():
     """Rapid TEXT follow-ups must all survive in the pending event."""
     adapter = _make_adapter()

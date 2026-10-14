@@ -4,6 +4,7 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -714,6 +715,66 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reused_client_topic_is_not_treated_as_operator_topic(tmp_path):
+    """A topic captured from Telegram's own service message must still be auto-renamed.
+
+    Regression (PR #135959 commit 2): _capture_telegram_created_dm_topic cached the
+    CLIENT-supplied placeholder name in ``_dm_topics``, the operator-config cache. The rename
+    lane skips any topic _get_dm_topic_info reports as a dict — meant for operator-declared
+    ``extra.dm_topics`` names — so every reused fresh-lobby topic kept Telegram's truncated
+    placeholder ("check my mem...") instead of the generated session title. The capture must
+    carry ONLY the thread id (via the runner's reuse window), never the name.
+    """
+    from hermes_state import SessionDB
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="9880",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:9880",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    # The adapter that receives the capture also serves the rename (delivery adapter).
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.rename_dm_topic = AsyncMock()
+    adapter.gateway_runner = SimpleNamespace(
+        _note_pending_lobby_topic=lambda chat_id, thread_id: None,
+    )
+    runner._delivery_adapter_for = lambda _source: adapter
+
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=208214988, type="private"),
+        message_thread_id=9880,
+        forum_topic_created=SimpleNamespace(name="check my mem...", is_name_implicit=True),
+    ))
+    adapter._capture_telegram_created_dm_topic(update)
+
+    # The capture must not have claimed the topic as operator-configured...
+    assert adapter._get_dm_topic_info("208214988", "9880") is None
+
+    # ...so the generated session title still reaches the topic.
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="9880"),
+        "sess-topic",
+        "Review and improve memory provider memories",
+    )
+
+    adapter.rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="9880",
+        name="Review and improve memory provider memories",
+    )
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
     import gateway.run as gateway_run
@@ -788,6 +849,34 @@ def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
+def test_recover_does_not_pin_fresh_lobby_message_to_last_topic(tmp_path):
+    # A *fresh* message typed in the General/"All" lane (missing message_thread_id
+    # or thread "1") is the first message of a NEW topic Telegram just created. It
+    # must NOT be hijacked into the running (most-recent) conversation (#31772).
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="1")) is None
+
+
+def test_recover_pins_lobby_reply_to_last_topic(tmp_path):
+    # A lobby-shaped message that actually REPLIES to a prior message keeps the
+    # stripped-reply recovery: it is pinned to the user's last-active bound topic
+    # so a cross-topic Reply doesn't fragment the conversation.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(
+        _make_source(thread_id="1"), is_reply=True
+    ) == "222"
+    assert runner._recover_telegram_topic_thread_id(
+        _make_source(thread_id=None), is_reply=True
+    ) == "222"
+
+
 
 
 def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
@@ -826,6 +915,510 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
     assert binding["chat_id"] == "208214988"
     assert binding["thread_id"] == "17585"
     assert binding["session_id"] == "sess-27166"
+
+
+# ---------------------------------------------------------------------------
+# Fresh General/"All" lobby messages (mobile Telegram DM topic mode)
+#
+# A FRESH (non-reply) message typed in the mobile app's General/"All" lane arrives with no
+# message_thread_id; #135959 stopped it being hijacked into the running topic, which left the
+# lane inert (lobby reminder, no task). These cover the follow-up: the message gets its own
+# topic, chosen BEFORE dispatch so the final send carries it.
+# ---------------------------------------------------------------------------
+
+_LOBBY_CHAT = "208214988"
+
+
+def _lobby_topic_mode_db(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id=_LOBBY_CHAT, user_id=_LOBBY_CHAT)
+    return db
+
+
+class _LobbyAdapterDouble:
+    """Adapter double for the fresh-lobby router: records sends, counts topic creations."""
+
+    def __init__(self, created="8842"):
+        self.sent = []
+        self._create_dm_topic = AsyncMock(return_value=created)
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+        self.sent.append(
+            {"chat_id": chat_id, "content": content, "reply_to": reply_to, "metadata": metadata}
+        )
+        return SendResult(success=True, message_id="1")
+
+
+def _wire_lobby_adapter(runner, adapter):
+    """Route _delivery_adapter_for to the double (avoids fighting _intake_adapter_for)."""
+    runner._delivery_adapter_for = lambda _source: adapter
+    return runner
+
+
+def _fresh_lobby_event(*, text="start a fresh topic", reply_to=None, metadata=None):
+    event = MessageEvent(
+        text=text,
+        source=_make_source(thread_id=None),
+        message_id="m2",
+        metadata=metadata or {},
+    )
+    event.reply_to_message_id = reply_to
+    return event
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_message_creates_a_topic_and_stamps_it(tmp_path):
+    """No pending topic: create one, name it from the first line, echo into it."""
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble(created="8842")
+    _wire_lobby_adapter(runner, adapter)
+
+    event = _fresh_lobby_event(text="plan my trip\nsecond line")
+    assert await runner._route_fresh_lobby_message(event) is True
+
+    assert event.source.thread_id == "8842"
+    assert event._lobby_topic_routed is True
+    adapter._create_dm_topic.assert_awaited_once()
+    assert adapter._create_dm_topic.await_args.kwargs["name"] == "plan my trip"
+    # Echoed into the new topic, anchored to the TOPIC: the lobby message id is not a valid
+    # cross-topic reply anchor.
+    assert len(adapter.sent) == 1
+    echo_meta = adapter.sent[0]["metadata"]
+    assert echo_meta["direct_messages_topic_id"] == "8842"
+    assert "telegram_reply_to_message_id" not in echo_meta
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_message_reuses_telegrams_own_empty_topic(tmp_path):
+    """A captured forum_topic_created topic is reused — no duplicate is created."""
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble(created="8842")
+    _wire_lobby_adapter(runner, adapter)
+
+    runner._note_pending_lobby_topic(_LOBBY_CHAT, "8790")
+    event = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(event) is True
+
+    assert event.source.thread_id == "8790"
+    adapter._create_dm_topic.assert_not_awaited()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_topic_falls_back_to_creating_one(tmp_path):
+    """A pending entry older than the reuse window is not reused."""
+    import time as _time
+
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble(created="8842")
+    _wire_lobby_adapter(runner, adapter)
+
+    runner._note_pending_lobby_topic(_LOBBY_CHAT, "8790")
+    runner._pending_lobby_topics[_LOBBY_CHAT] = (
+        "8790", _time.monotonic() - runner._PENDING_LOBBY_TOPIC_WINDOW_S - 1,
+    )
+    event = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(event) is True
+
+    assert event.source.thread_id == "8842"
+    adapter._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_topic_creation_failure_leaves_the_message_on_the_lobby_path(tmp_path):
+    """No topic could be chosen → False, source untouched, nothing echoed."""
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble()
+    adapter._create_dm_topic = AsyncMock(return_value=None)
+    _wire_lobby_adapter(runner, adapter)
+
+    event = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(event) is False
+
+    assert event.source.thread_id is None
+    assert adapter.sent == []
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_hermes_created_topic_is_not_reused_by_the_next_lobby_message(tmp_path):
+    """The #31772 hijack must not come back through the reuse window.
+
+    Telegram emits forum_topic_created for topics HERMES creates too. If that capture armed the
+    reuse window, the next fresh "All" message would land in the PREVIOUS message's topic.
+    """
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble(created="8842")
+    _wire_lobby_adapter(runner, adapter)
+
+    first = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(first) is True
+    assert first.source.thread_id == "8842"
+
+    # Telegram reports the service message for the topic Hermes just made.
+    runner._note_own_created_lobby_topic(_LOBBY_CHAT, "8842")
+    runner._note_pending_lobby_topic(_LOBBY_CHAT, "8842")
+
+    adapter._create_dm_topic = AsyncMock(return_value="8850")
+    second = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(second) is True
+
+    assert second.source.thread_id == "8850"
+    adapter._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_web_topic_lane_is_untouched(tmp_path):
+    """§3.1: a WEB client message carries a real, non-General thread id — never routed.
+
+    Web posts "All" messages INTO a real forum topic (message_thread_id set), which already
+    works; the router must not touch it (nor a real user topic).
+    """
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble()
+    _wire_lobby_adapter(runner, adapter)
+
+    for real_thread in ("8790", "17585"):
+        event = MessageEvent(
+            text="web message", source=_make_source(thread_id=real_thread), message_id="w1",
+        )
+        assert await runner._route_fresh_lobby_message(event) is False
+        assert event.source.thread_id == real_thread
+
+    # Thread "1" IS the General/lobby alias, so that one is ours to route.
+    lobby_one = MessageEvent(text="all lane", source=_make_source(thread_id="1"), message_id="w2")
+    assert await runner._route_fresh_lobby_message(lobby_one) is True
+    assert lobby_one.source.thread_id == "8842"
+
+    adapter._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_router_guards(tmp_path):
+    """Replies, commands, routed events, internal events and re-dispatch are never routed."""
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble()
+    _wire_lobby_adapter(runner, adapter)
+
+    # A lobby REPLY keeps the merged #135959 pin to the last-bound topic.
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(reply_to="6940")) is False
+    # CONTROL commands (interrupt/topic-toggle) must NOT start a new conversation.
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/new")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/stop")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/topic")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/approve")) is False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/deny")) is False
+    # A recognized NON-control command typed in the All lane IS a conversation start: route it
+    # into its own topic exactly like a message (/status in All -> a /status topic).
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/status")) is True
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/model gpt5")) is True
+    # An UNRECOGNIZED command keeps the lobby path.
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event(text="/nonexistent")) is False
+    # Explicitly routed events already name their destination.
+    assert await runner._route_fresh_lobby_message(
+        _fresh_lobby_event(metadata={"gateway_session_key": "agent:main:telegram:dm:x"})
+    ) is False
+    # Internal (non-user) events never create topics.
+    internal = _fresh_lobby_event()
+    internal.internal = True
+    assert await runner._route_fresh_lobby_message(internal) is False
+    # A group chat is not the DM lobby.
+    group = MessageEvent(text="hi", source=_make_group_source(thread_id=None), message_id="g1")
+    assert await runner._route_fresh_lobby_message(group) is False
+    # Unauthorized senders must not create topics or have text re-sent.
+    runner._is_user_authorized = lambda _source: False
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event()) is False
+    # Control commands were never routed; only /status and /model were (2 creates).
+    assert adapter._create_dm_topic.await_count == 2
+    assert adapter.sent != []  # the routed commands were echoed
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_router_is_idempotent_per_event(tmp_path):
+    """A re-dispatch (busy drain, requeue) must not create a second topic for one message."""
+    db = _lobby_topic_mode_db(tmp_path)
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble()
+    _wire_lobby_adapter(runner, adapter)
+
+    event = _fresh_lobby_event()
+    assert await runner._route_fresh_lobby_message(event) is True
+    assert await runner._route_fresh_lobby_message(event) is False
+
+    adapter._create_dm_topic.assert_awaited_once()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_router_is_inert_when_topic_mode_is_off(tmp_path):
+    """No topic mode for this chat → the lobby lane is not ours to route."""
+    db = SessionDB(db_path=tmp_path / "state.db")  # topic mode never enabled
+    runner = _make_runner(session_db=db)
+    adapter = _LobbyAdapterDouble()
+    _wire_lobby_adapter(runner, adapter)
+
+    assert await runner._route_fresh_lobby_message(_fresh_lobby_event()) is False
+    adapter._create_dm_topic.assert_not_awaited()
+    db.close()
+
+
+def test_capture_records_telegram_created_dm_topic_for_the_runner():
+    """The group-99 observer hands Telegram-created DM topics to the runner."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    recorded = []
+    adapter.gateway_runner = SimpleNamespace(
+        _note_pending_lobby_topic=lambda chat_id, thread_id: recorded.append((chat_id, thread_id)),
+    )
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=int(_LOBBY_CHAT), type="private"),
+        message_thread_id=8790,
+        forum_topic_created=SimpleNamespace(name="Trip", is_name_implicit=True),
+    ))
+
+    adapter._capture_telegram_created_dm_topic(update)
+
+    assert recorded == [(_LOBBY_CHAT, "8790")]
+    # The client-supplied placeholder name must NOT enter the operator-config cache: doing so
+    # makes _get_dm_topic_info report a dict and the auto-rename lane skip the generated title.
+    assert adapter._dm_topics == {}
+
+
+def test_capture_ignores_manually_named_dm_topics():
+    """A user-created, hand-named DM topic (is_name_implicit=False) is NOT captured.
+
+    Recording it in the chat-wide 60s reuse slot would route the user's next fresh General
+    message into that unrelated manual topic.
+    """
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    recorded = []
+    adapter.gateway_runner = SimpleNamespace(
+        _note_pending_lobby_topic=lambda chat_id, thread_id: recorded.append((chat_id, thread_id)),
+    )
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=int(_LOBBY_CHAT), type="private"),
+        message_thread_id=8790,
+        forum_topic_created=SimpleNamespace(name="Trip", is_name_implicit=False),
+    ))
+
+    adapter._capture_telegram_created_dm_topic(update)
+
+    assert recorded == []
+    assert adapter._dm_topics == {}
+
+
+def test_capture_ignores_group_topics_and_survives_a_bare_adapter():
+    """Group forum_topic_created is not the mobile "All" lane; no runner must not raise."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.gateway_runner = None
+    update = SimpleNamespace(message=SimpleNamespace(
+        chat=SimpleNamespace(id=-100123, type="supergroup"),
+        message_thread_id=42,
+        forum_topic_created=SimpleNamespace(name="General", is_name_implicit=True),
+    ))
+
+    adapter._capture_telegram_created_dm_topic(update)
+
+    assert adapter._dm_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_routed_lobby_topic_reaches_the_final_send_metadata():
+    """The regression both reverted commits hit: the chosen topic must survive to the reply.
+
+    ``_process_message_background`` snapshots thread metadata BEFORE calling the handler and
+    reuses it for the final send, so only a PRE-dispatch stamp can reach the reply.
+    """
+    import dataclasses as _dataclasses
+
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    class _DeliveryAdapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+            self.sent = []
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            return True
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+            return SendResult(success=True, message_id="1")
+
+        async def send_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def stop_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+    adapter = _DeliveryAdapter()
+
+    async def _handler(_event):
+        return "ack"
+
+    adapter.set_message_handler(_handler)
+
+    event = _fresh_lobby_event()
+    # Exactly what the router does, before dispatch:
+    event.source = _dataclasses.replace(event.source, thread_id="8842")
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    meta = adapter.sent[0]["metadata"]
+    assert meta["thread_id"] == "8842"
+    assert meta["direct_messages_topic_id"] == "8842"
+    assert meta["telegram_dm_topic_reply_fallback"] is True
+    assert meta["notify"] is True
+
+
+@pytest.mark.asyncio
+async def test_fresh_lobby_message_while_busy_keys_its_own_topic(monkeypatch):
+    """A fresh lobby message during a running session must not join the LOBBY lane's turn.
+
+    The router runs before the session key is derived, so the message keys the NEW topic and
+    starts its own turn instead of queueing into (or interrupting) the busy lobby session.
+    """
+    import dataclasses as _dataclasses
+
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    class _OrderingAdapter(BasePlatformAdapter):
+        """Mirrors TelegramAdapter.handle_message: router first, then the base pipeline."""
+
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            return True
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            return SendResult(success=True, message_id="1")
+
+        async def send_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def stop_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+        async def handle_message(self, event):
+            await self._route_fresh_lobby_event(event)
+            await super().handle_message(event)
+
+    adapter = _OrderingAdapter()
+
+    async def _router(event):
+        event.source = _dataclasses.replace(event.source, thread_id="8842")
+        return True
+
+    adapter.set_fresh_lobby_router(_router)
+    adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=None))
+
+    event = _fresh_lobby_event()
+    lobby_key = build_session_key(event.source)
+    adapter._active_sessions[lobby_key] = asyncio.Event()  # a turn is running in the LOBBY lane
+
+    scheduled = []
+
+    def _fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(asyncio, "create_task", _fake_create_task)
+
+    await adapter.handle_message(event)
+
+    # The stamped topic keyed its own turn...
+    assert scheduled, "a turn must be scheduled for the stamped topic"
+    assert event.source.thread_id == "8842"
+    # ...and the busy LOBBY lane was never queued into.
+    assert lobby_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_lobby_command_reply_lands_in_the_created_topic(tmp_path):
+    """A /status typed in the All lane: router creates a topic, and the final reply goes THERE.
+
+    The stamp happens at the adapter seam (before _dispatch_inline_reply snapshots event.source),
+    so the reply metadata carries the topic, not the lobby.
+    """
+    import dataclasses as _dataclasses
+
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    class _CmdAdapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+            self.sent = []
+
+        async def connect(self, *, is_reconnect: bool = False) -> bool:
+            return True
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+            return SendResult(success=True, message_id="1")
+
+        async def send_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def stop_typing(self, chat_id, metadata=None) -> None:
+            pass
+
+        async def get_chat_info(self, chat_id):
+            return {"id": chat_id}
+
+    adapter = _CmdAdapter()
+
+    async def _handler(_event):
+        return "status output"
+
+    adapter.set_message_handler(_handler)
+
+    event = _fresh_lobby_event(text="/status")
+    # The router's stamp, done at the adapter seam before dispatch:
+    event.source = _dataclasses.replace(event.source, thread_id="8842")
+
+    await adapter._dispatch_inline_reply(event, log_cmd="status")
+
+    meta = adapter.sent[0]["metadata"]
+    assert meta["thread_id"] == "8842"
+    assert meta["direct_messages_topic_id"] == "8842"
+    assert meta["telegram_dm_topic_reply_fallback"] is True
+    assert meta["notify"] is True
+    assert adapter.sent[0]["content"] == "status output"
 
 
 # ---------------------------------------------------------------------------

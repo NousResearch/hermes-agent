@@ -3899,6 +3899,9 @@ class GatewayRunner(
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
+    # How long a Telegram-created empty DM topic (``forum_topic_created`` service message) stays
+    # eligible for reuse by a fresh mobile General/"All" lobby message before we create our own.
+    _PENDING_LOBBY_TOPIC_WINDOW_S = 60.0
 
     def _normalize_source_for_session_key(self, source: SessionSource) -> SessionSource:
         """Apply Telegram DM topic recovery to a source for session-key purposes. Always derive override
@@ -3912,9 +3915,15 @@ class GatewayRunner(
         which skips that recovery — so the override is stored under a different key than the next message
         turn reads, and the override is silently dropped on Telegram forum topics and after compression
         session splits (#30479).
+
+        Session-scoped command handlers (``/model``, ``/reasoning``, ``/fast``, ``/resume``, ``/sessions``)
+        keep the pre-existing pin: an explicit session-management command typed in the lobby is asking
+        about the user's topics, NOT starting a new conversation — so it resolves to the last-bound topic.
+        The fresh-message no-pin rule applies only to normal message turns (``_hmwa_resolve_session``),
+        which is where typing in General/"All" to start a NEW topic was silently hijacked (#31772).
         """
         try:
-            recovered = self._recover_telegram_topic_thread_id(source)
+            recovered = self._recover_telegram_topic_thread_id(source, is_reply=True)
         except Exception:
             return source
         return source if recovered is None else dataclasses.replace(source, thread_id=recovered)

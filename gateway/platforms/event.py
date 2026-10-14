@@ -106,6 +106,9 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Set by the fresh General/"All" lobby router once it has stamped a topic on this event, so a
+    # re-dispatch (busy-path drain, batch requeue) cannot create a second topic for one message.
+    _lobby_topic_routed: bool = field(default=False, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""

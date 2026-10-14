@@ -224,7 +224,7 @@ async def test_fast_override_lands_under_the_recovered_telegram_topic_key(monkey
 
     runner = _make_runner()
     source = _make_source()
-    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda src: "77")
+    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda src, **_kw: "77")
     raw_key = runner._session_key_for_source(source)
     turn_key = runner._session_key_for_source(dataclasses.replace(source, thread_id="77"))
     assert turn_key != raw_key

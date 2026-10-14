@@ -70,7 +70,7 @@ def _make_runner(
     r._set_session_env = lambda c: None
     r._handle_active_session_busy_message = AsyncMock(return_value=False)
     r._session_db = MagicMock()
-    r._recover_telegram_topic_thread_id = lambda s: None
+    r._recover_telegram_topic_thread_id = lambda s, **_kw: None
     r._cache_session_source = lambda k, s: None
     r._is_session_run_current = lambda k, g: True
     r._begin_session_run_generation = lambda k: 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -338,5 +339,52 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     assert "Cross-room resume" in result
     assert PROJECT_B_NAME in result
     runner.session_store.switch_session.assert_called_once()
+
+
+BOB = "@bob:example.org"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [True, False], ids=["live-origin", "persisted-row"])
+@pytest.mark.parametrize("caller, allowed", [(SENDER, True), (BOB, False)], ids=["owner", "other-user"])
+async def test_matrix_cross_room_resume_reaches_only_the_callers_own_session(live, caller, allowed):
+    """``--cross-room`` lifts the room boundary for the caller's OWN session (the documented use:
+    reach your project session from another room). It is not authority over another participant's
+    session: resuming that reads their transcript and appends to it (IDOR)."""
+    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    caller_b = replace(_make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC), user_id=caller)
+    entry_a = _entry(source_a, "session-a", "Project A Plan")
+    entry_b = _entry(caller_b, "session-b", "Project B Plan")
+    runner = _make_runner(caller_b, [entry_a, entry_b] if live else [entry_b])
+    runner.session_store.switch_session.return_value = entry_a
+    runner._session_db._db.resolve_session_by_title.return_value = "session-a"
+    rows = {"session-a": {"id": "session-a", "source": "matrix", "user_id": SENDER, "chat_id": PROJECT_A_ROOM_ID}}
+    runner._session_db._db.get_session.side_effect = rows.get
+
+    await runner._handle_resume_command(_event("/resume --cross-room Project A Plan", caller_b))
+
+    assert runner.session_store.switch_session.called is allowed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("per_user", [True, False])
+async def test_matrix_same_room_resume_follows_the_room_session_key(per_user):
+    """In a per-user room (``group_sessions_per_user``, the default) a co-member's session is
+    theirs: another participant may neither resume nor list it. A shared room key is one session
+    for everyone, so there any member may."""
+    alice = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    bob = replace(alice, user_id=BOB, user_name="Bob")
+    entry_alice = _entry(alice, "session-alice", "Alice notes")
+    runner = _make_runner(bob, [entry_alice, _entry(bob, "session-bob", "Bob notes")])
+    runner.config.group_sessions_per_user = per_user
+    runner.session_store.get_or_create_session.return_value = _entry(bob, "session-bob", "Bob notes")
+    runner.session_store.switch_session.return_value = entry_alice
+    runner._session_db._db.resolve_session_by_title.return_value = "session-alice"
+
+    listing = await runner._handle_resume_command(_event("/resume", bob))
+    await runner._handle_resume_command(_event("/resume Alice notes", bob))
+
+    assert ("Alice notes" in listing) is not per_user
+    assert runner.session_store.switch_session.called is not per_user
 
 

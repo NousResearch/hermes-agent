@@ -112,14 +112,28 @@ def test_builtin_name_collision_only_copies_explicit_custom_selection(
         assert "custom_providers" not in created
 
 
-def test_fresh_profile_keeps_explicit_builtin_provider_settings(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "model",
+    [
+        {"provider": "openrouter", "default": "synthetic-model"},
+        {
+            "provider": "custom",
+            "default": "synthetic-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+    ],
+)
+def test_fresh_profile_keeps_explicit_builtin_provider_settings(
+    tmp_path, monkeypatch, model
+):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    provider = model["provider"]
     source = {
-        "model": {"provider": "openrouter", "default": "synthetic-model"},
-        "providers": {"openrouter": {"request_timeout_seconds": 150}},
+        "model": model,
+        "providers": {provider: {"request_timeout_seconds": 150}},
         "_config_version": DEFAULT_CONFIG["_config_version"],
     }
     atomic_config_write(home / "config.yaml", source)

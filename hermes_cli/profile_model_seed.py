@@ -28,10 +28,11 @@ def launch_model_seed(source_cfg: dict) -> dict:
     if selected is None:
         # Exact built-in keys carry provider tuning even without an endpoint URL.
         exact = providers.get(provider)
+        # Bare ``custom`` runs as provider ``custom`` and reads ``providers.custom`` tuning too.
         if (
             isinstance(exact, dict)
             and requested not in {"", "auto"}
-            and _shadowed_by_builtin(requested)
+            and (requested == "custom" or _shadowed_by_builtin(requested))
         ):
             seed["providers"] = {provider: exact}
         return seed

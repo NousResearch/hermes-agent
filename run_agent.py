@@ -54,7 +54,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
-def _gateway_origin_json(agent: AIAgent) -> Optional[str]:
+def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
     Mirrors ``SessionSource.to_dict()`` so state.db consumers see the same fields ``record_gateway_session_peer`` writes.
@@ -268,7 +268,9 @@ class AIAgent(
         read_terminal_callback: Callable[..., Any] | None = None, read_preview_callback: Callable[..., Any] | None = None,
         drive_preview_callback: Callable[..., Any] | None = None, read_window_below_callback: Callable[..., Any] | None = None,
         connection_callback: Callable[..., Any] | None = None, tour_callback: Callable[..., Any] | None = None,
-        setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
+        theme_callback: Callable[..., Any] | None = None,
+        setup_beat_callback: Callable[..., Any] | None = None,
+        step_callback: Callable[..., Any] | None = None,
         stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
         tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
         notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
@@ -581,6 +583,7 @@ class AIAgent(
             return float("inf")
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
+        from agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
@@ -588,6 +591,8 @@ class AIAgent(
         # cap below, so the floor can never outlive the run budget.
         if self.api_mode == "codex_responses" and not explicit:
             timeout = max(timeout, _high_effort_silence_floor(self))
+        if not explicit:
+            timeout *= long_decode_stale_multiplier(api_payload)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         if not explicit:

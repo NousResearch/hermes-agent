@@ -358,6 +358,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # "muse" = Meta Muse Spark: on defaults it answers in prose with 0 tool calls and the turn closes on
 # finish_reason=stop (#96550).
+# "nemotron" is deliberately absent from this list and EXECUTION_GUIDANCE_MODELS. We ran Nemotron 3.5 Super VL 5 times
+# with the tool-use enforcement, execution guidance and Google operational guidance blocks forced on and 5 times with
+# them off: pass rate moved by under 1 point on SWE-bench Verified, SWE-bench Pro and GDPval, and by +3.7 points on
+# Terminal-Bench 2.1, which was not significant per task (p = 0.14).
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek", "muse")
 
 # Models that receive OPENAI_MODEL_EXECUTION_GUIDANCE when agent.execution_guidance is "auto" (agentic-eval
@@ -389,15 +393,6 @@ TASK_COMPLETION_GUIDANCE = (
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
-)
-
-ASYNC_HANDOFF_GUIDANCE = (
-    "# Async handoff\n"
-    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
-    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
-    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
-    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
-    "completion before it is delivered."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
@@ -1244,14 +1239,14 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
-            and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
+            and snapshot.get("manifest") == (manifest if manifest is not None else _build_skills_manifest(skills_dir))):
         return snapshot
     return None
 
@@ -1370,6 +1365,10 @@ def build_skills_system_prompt(
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     _home_token = None
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)
@@ -1510,14 +1509,20 @@ def _build_skills_system_prompt_inner(
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
+    # Skill files are part of the key: another process (a hub install in a second terminal, the curator
+    # inside the gateway, a git pull of an external dir) never clears this process's LRU, so a key of
+    # config alone served the pre-change index to every running session until restart (#92313).
+    manifest = _build_skills_manifest(skills_dir)
+    files = frozenset((rel, *sig) for rel, sig in manifest.items())
+    files |= {(str(d), rel, *sig) for _, d in extra_roots for rel, sig in _build_skills_manifest(d).items()}
     cache_key = (
-        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
+        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots), files,
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(), tuple(plugin_rows),
     )
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
         entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
     )
@@ -1655,6 +1660,10 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
     the skills-index leak fixed in #86313).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     try:
         from hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()
@@ -1858,6 +1867,10 @@ def build_context_files_prompt(
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(

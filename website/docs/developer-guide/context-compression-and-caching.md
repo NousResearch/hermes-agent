@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn_hygiene.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Bedrock context window cache
@@ -82,7 +82,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
+Located in `gateway/run_turn_hygiene.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -226,6 +226,55 @@ attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### Attempt telemetry
+
+Every `compress_context` call that returns logs one content-free INFO line,
+`context compression attempt telemetry: {...}` (logger
+`agent.conversation_compression`). It never carries message text, summary
+text, the focus topic or error messages.
+
+- `trigger_source` names why the attempt ran: `manual`, `idle`,
+  `turn_start_threshold`, `engine_preflight`, `pre_api`, `post_tool`,
+  `gateway_hygiene` or `overflow`. An automatic caller that passes no label
+  reads `auto`; a refusal before any attempt began (pool saturation) reads
+  `unknown`.
+- `route` is `hermes` for the local compressor and `codex_app_server` when the
+  Codex thread owns compaction.
+- `commit_status` is `committed`, `aborted`, `failed`, `skipped` or `blocked`.
+  A `blocked` attempt was refused by an automatic guard; its `failure_class`
+  names the guard (`blocked:cooldown`, `blocked:structural_backoff`,
+  `blocked:ineffective`). Under the session lease, `session_ownership_lost`
+  (`skipped`) means another path already rotated the session, and
+  `session_ownership_unreadable` / `cooldown_state_unreadable` (`aborted`)
+  mean that state could not be read. `empty_transcript` (`aborted`) means the
+  engine returned no messages, so nothing was committed.
+- `attempt_id` names this attempt and `session_id` the session it started
+  in, even when the attempt then adopts a rotated child session or unwinds
+  after a newer attempt (a stall fallback) has begun. An attempt
+  that stops before the compressor runs, or rolls its state back, logs
+  `method: none` and no token counts, never an earlier attempt's numbers.
+- `method` says how the summary was produced: `llm_summary`,
+  `aux_fallback_main` (the summary model failed and the main model wrote it),
+  `deterministic_fallback` (static anchors summary; `items_dropped` counts the
+  replaced messages), `provider` (Codex) or `none`.
+- `messages_before` / `messages_after` and `tokens_before` / `tokens_after` /
+  `tokens_reclaimed` describe the transcript that crossed the commit boundary,
+  including retained `/compress here N` tail rows and boundary anchors.
+  A refused or rolled-back candidate never reached the transcript, so its
+  record has no `messages_after`, `tokens_after`, `tokens_reclaimed` or
+  `items_dropped`.
+  `token_count_method: estimate_rough` marks them as rough message-only
+  estimates (system prompt and tool schemas excluded), so they compare like
+  for like. `tool_results_pruned` and `reasoning_items_pruned` count the
+  deterministic passes that ran before and after the summary.
+
+The opt-in `hermes.compression.count` shared metric keeps coarse triggers
+(`auto`, `manual`, `overflow`) and counts only attempts the local compressor
+ran; blocked and Codex-routed attempts appear in the log line only. When the
+NeMo Relay runtime is live, the same record, plus micro-compaction passes and
+committed proactive prunes, is also emitted as a `hermes.compaction` mark (see
+[NeMo Relay Shared Metrics](./relay-shared-metrics.md#compaction-marks)).
+
 
 ## Configuration
 
@@ -287,6 +336,13 @@ Consumers observe the mode rather than diffing session ids:
 - The gateway re-baselines transcript handling from the agent's rotation-independent `_last_compaction_in_place` flag, not from an id-change diff.
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
+
+Canonical `/compress` uses the session's frozen `compression.in_place` and
+`min_tail_user_messages` settings too. In-place mode soft-archives the current physical
+transcript; rotating mode publishes a successor. Both keep the logical admission owner
+and previously issued input IDs unchanged, and commit the transcript, generation,
+revision and retry receipt together. Safe-mode sessions use code defaults rather than
+profile compression settings.
 
 ### Auxiliary feasibility and tail retention
 

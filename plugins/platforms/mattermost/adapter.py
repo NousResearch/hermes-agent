@@ -622,8 +622,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     continue
                 form = aiohttp.FormData()
                 form.add_field("channel_id", chat_id)  # required so the server can attribute the upload
-                with open(file_path, "rb") as fh:
-                    form.add_field("files", fh.read(), filename=os.path.basename(file_path))
+                form.add_field("files", await asyncio.to_thread(Path(file_path).read_bytes),
+                               filename=os.path.basename(file_path))
                 async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
                                         **_req_kw) as upload_resp:
                     if upload_resp.status not in {200, 201}:

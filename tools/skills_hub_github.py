@@ -249,6 +249,7 @@ class GitHubSource(SkillSource):
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
+        self._raw_unusable = False  # raw host unreachable here: later files go straight to the API
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -562,7 +563,23 @@ class GitHubSource(SkillSource):
 
     def _fetch_file_bytes(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[bytes]:
         """Fetch exact file bytes. ``ref`` pins to a tree SHA (see ``fetch`` on
-        the TOCTOU); None keeps the legacy unpinned behavior."""
+        the TOCTOU); None keeps the legacy unpinned behavior. A pinned file comes from
+        raw.githubusercontent.com first: the same bytes at the same commit, outside the REST rate
+        limit. Through the Contents API every file in a skill folder cost one call, so an anonymous
+        user (60/h) could never install a skill with more than ~58 files. A private repo or a raw
+        miss falls back to the API. A transport failure (DNS-poisoned or NXDOMAIN raw host surfaces as
+        SSRFConnectionBlocked, a dropping firewall as a 15 s timeout) also falls back, and marks raw
+        unusable for the rest of this source's flow."""
+        if ref and not self._raw_unusable:
+            try:
+                raw = hub()._skills_hub_http_get(
+                    f"https://raw.githubusercontent.com/{repo}/{ref}/{quote(path, safe='/')}",
+                    timeout=15.0, follow_redirects=False)
+            except (httpx.HTTPError, OSError, ValueError):  # ValueError: SSRFConnectionBlocked
+                self._raw_unusable = True
+            else:
+                if raw.status_code == 200:
+                    return raw.content
         resp = self._github_get(
             f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},

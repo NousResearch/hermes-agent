@@ -6,6 +6,7 @@
 import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
 import { connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
@@ -99,12 +100,14 @@ function isUpdateToastSnoozed(): boolean {
 }
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
-// against. The backend reports its own value in session runtime info; a lower
-// value (or none — a pre-GUI checkout) means the backend is older than this
-// GUI, a higher value means this GUI is older than the backend. Both
+// against. Legacy backends report their own value in session runtime info; a
+// lower value (or none — a pre-GUI checkout) means the backend is older than
+// this GUI, a higher value means this GUI is older than the backend. Both
 // directions are GUI<->backend skew and both warn — an old GUI silently
 // driving a newer backend is just as broken as the reverse, it only fails
-// further from the cause.
+// further from the cause. Canonical gateways identify their distinct wire
+// protocol instead. That value does not claim the legacy API features listed
+// below.
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 // v3: requires approvals.mode config RPCs and session.info reconciliation.
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
@@ -177,8 +180,12 @@ function isInstallMethodToastSnoozed(): boolean {
  * Runs on every session open; closing a toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
-export function reportBackendContract(contract: number | undefined): void {
-  const reported = contract ?? 0
+export function reportBackendContract(contract: number | undefined, protocol?: string): void {
+  // A canonical gateway speaks exactly the protocol this build targets. An
+  // unknown explicit protocol must not fall back to a legacy version claim, so
+  // it reads as an out-of-date backend.
+  const reported =
+    protocol === undefined ? (contract ?? 0) : protocol === CANONICAL_GATEWAY_PROTOCOL ? REQUIRED_BACKEND_CONTRACT : 0
 
   if (reported >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
@@ -514,6 +521,8 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    rollback: Boolean(res.rollback_to),
+    sourceVersion: res.rollback_to ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
@@ -625,6 +634,70 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
     $updateStatus.set(fallback)
 
     return fallback
+  } finally {
+    $updateChecking.set(false)
+  }
+}
+
+export type SourceUpdateChannel = 'main' | 'stable'
+
+/** What a source checkout follows, for display; null where a package owns the channel. */
+export type SourceUpdateTrack = { kind: 'stable' } | { kind: 'main' } | { kind: 'branch'; name: string }
+
+export function sourceUpdateTrack(status: DesktopUpdateStatus | null): SourceUpdateTrack | null {
+  if (!status?.supported || (status.mechanism !== 'posix-handoff' && status.mechanism !== 'windows-handoff')) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return { kind: 'stable' }
+  }
+
+  if (status.channel !== undefined || !status.branch) {
+    return null
+  }
+
+  return status.branch === 'main' ? { kind: 'main' } : { kind: 'branch', name: status.branch }
+}
+
+/**
+ * The selectable channel of a source checkout, or null where the selector must not
+ * appear: packages own their channel, runtimes older than the flag cannot save one,
+ * and a custom branch is neither stable releases nor every commit on main.
+ */
+export function sourceUpdateChannel(status: DesktopUpdateStatus | null): SourceUpdateChannel | null {
+  const source = status?.mechanism === 'posix-handoff' || status?.mechanism === 'windows-handoff'
+
+  if (!status?.supported || !source || !status.channelSelectable) {
+    return null
+  }
+
+  if (status.channel === 'stable') {
+    return 'stable'
+  }
+
+  return status.channel === undefined && status.branch === 'main' ? 'main' : null
+}
+
+/**
+ * Persist the source checkout's channel; the reply is a fresh check against it.
+ * An unreachable release still returns a status naming the saved channel.
+ */
+export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<DesktopUpdateStatus> {
+  const setChannel = window.hermesDesktop?.updates?.setChannel
+
+  if (!setChannel) {
+    throw new Error('This installation cannot change its update channel.')
+  }
+
+  $updateChecking.set(true)
+
+  try {
+    const status = await setChannel(channel)
+    $updateStatus.set(status)
+    maybeNotifyUpdateAvailable(status, 'client')
+
+    return status
   } finally {
     $updateChecking.set(false)
   }

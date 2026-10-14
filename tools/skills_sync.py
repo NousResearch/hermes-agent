@@ -222,7 +222,7 @@ def _copy_dir(src: Path, dest: Path) -> None:
     shutil.copytree(src, dest, ignore=_ignore_runtime_cache)
 
 
-def _recover_renamed_skill(st: _SyncState, skill_name: str, dest: Path) -> Optional[str]:
+def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Optional[str]:
     """Move a bundled skill's stale copy to its new canonical path after an upstream RENAME /
     RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
     byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""

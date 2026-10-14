@@ -1,9 +1,16 @@
+import type { ConnectorAccountRow } from '@hermes/shared'
+
 export type ConnectorResidency = 'hosted' | 'local'
 
 export type LocalServerStatus = 'error' | 'needs-auth' | 'off' | 'ok' | 'probing' | 'unknown'
 
+/** One hosted account; `disabled` marks an account a reconnect replaced. */
+export type AccountRow = ConnectorAccountRow
+
 export interface HostedConnectorInput {
   accountLabel?: string
+  /** The app's live accounts, active first, then newest. */
+  accounts?: readonly AccountRow[]
   connected: boolean
   connectedAt?: string
   connectionStatus?: string
@@ -12,6 +19,8 @@ export interface HostedConnectorInput {
   enabled: boolean
   inCatalog?: boolean
   orgLocked?: boolean
+  /** Accounts a reconnect replaced: listed, never counted, never offered for reconnect. */
+  retiredAccounts?: readonly AccountRow[]
   slug: string
   statusReason?: string
   toolsOff?: number
@@ -91,12 +100,14 @@ export type ConnectorVerb =
 
 export interface ConnectorWayHosted {
   accountLabel?: string
+  accounts: readonly AccountRow[]
   connected: boolean
   connectedAt?: string
   disabledTools?: readonly string[]
   fact?: ConnectorFact
   offBy?: ConnectorOffBy
   reason?: ConnectorReason
+  retiredAccounts: readonly AccountRow[]
   state: ConnectorState
   verb?: ConnectorVerb
 }

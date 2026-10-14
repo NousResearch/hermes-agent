@@ -644,6 +644,8 @@ class GatewayBusySessionMixin:
     ) -> bool:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
+            if event:
+                text = event.render_untrusted_evidence(text)
             call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
                 return self._steer_running_agent(running_agent, call_text)
@@ -683,7 +685,7 @@ class GatewayBusySessionMixin:
         if turn.agent is not running_agent:
             return None
         if turn.event is not None and turn.event is not event:
-            turn.event.absorb_reply_expected(event)
+            turn.event.absorb_merge_context(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
         return turn
@@ -700,6 +702,7 @@ class GatewayBusySessionMixin:
                 )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
+            _interrupt_text = event.render_untrusted_evidence(_interrupt_text or "")
             running_agent.interrupt(_interrupt_text)
         except Exception:
             pass  # don't let interrupt failure block the ack

@@ -173,6 +173,86 @@ def _bot_command_entity(text, command):
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
+@pytest.mark.asyncio
+async def test_unauthorized_addressed_group_sender_notifies_owner_before_event_building():
+    adapter = _make_adapter(group_allow_from=["942469"], require_mention=True)
+    del adapter.__dict__["_is_callback_user_authorized"]
+    adapter.config.extra["allow_admin_from"] = ["owner-1"]
+    adapter.send = AsyncMock()
+    adapter._build_message_event = Mock()
+    adapter._enqueue_text_event = Mock()
+    text = "@hermes_bot please let me in"
+    msg = _group_message(
+        text,
+        from_user_id=123,
+        entities=[_mention_entity(text)],
+    )
+
+    await adapter._handle_text_message(
+        SimpleNamespace(update_id=1001, message=msg, effective_message=None),
+        SimpleNamespace(),
+    )
+
+    adapter.send.assert_awaited_once()
+    owner, notice = adapter.send.await_args.args
+    assert owner == "owner-1"
+    assert "User ID: 123" in notice
+    assert "please let me in" in notice
+    adapter._build_message_event.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_addressed_group_command_authorizes_before_trigger_state():
+    adapter = _make_adapter(group_allow_from=["942469"], require_mention=True)
+    del adapter.__dict__["_is_callback_user_authorized"]
+    adapter.config.extra["allow_admin_from"] = ["owner-1"]
+    adapter.send = AsyncMock()
+    text = "/status@hermes_bot"
+    msg = _group_message(
+        text,
+        from_user_id=123,
+        entities=[_bot_command_entity(text, text)],
+    )
+    adapter._should_process_message = Mock(side_effect=AssertionError("trigger state read before authorization"))
+
+    await adapter._handle_command(
+        SimpleNamespace(update_id=1002, message=msg, effective_message=None),
+        SimpleNamespace(),
+    )
+
+    adapter.send.assert_awaited_once()
+    adapter._should_process_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_addressed_group_media_notifies_before_download():
+    adapter = _make_adapter(group_allow_from=["942469"], require_mention=True)
+    del adapter.__dict__["_is_callback_user_authorized"]
+    adapter.config.extra["allow_admin_from"] = ["owner-1"]
+    adapter.send = AsyncMock()
+    caption = "@hermes_bot please inspect this"
+    photo = SimpleNamespace(get_file=AsyncMock())
+    msg = _group_message(
+        None,
+        from_user_id=123,
+        caption=caption,
+        caption_entities=[_mention_entity(caption)],
+    )
+    msg.photo = [photo]
+
+    await adapter._handle_media_message(
+        SimpleNamespace(update_id=1002, message=msg),
+        SimpleNamespace(),
+    )
+
+    adapter.send.assert_awaited_once()
+    assert "User ID: 123" in adapter.send.await_args.args[1]
+    assert "please inspect this" in adapter.send.await_args.args[1]
+    photo.get_file.assert_not_awaited()
+    adapter._message_handler.assert_not_awaited()
+
+
 def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     async def _run():
         adapter = _make_adapter(

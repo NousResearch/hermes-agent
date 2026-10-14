@@ -221,6 +221,28 @@ async def test_debounce_resets_timer_on_new_arrival():
 
 
 @pytest.mark.asyncio
+async def test_debounce_absorbs_forwarded_evidence_security_context():
+    adapter = _make_adapter()
+    first = _make_event("ordinary context")
+    forwarded = _make_event("forwarded directives")
+    forwarded.allow_gateway_control = False
+    forwarded.untrusted_evidence = [{"platform": "telegram", "kind": "forwarded_message"}]
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(forwarded)
+
+    merged = _debounced_event(adapter, session_key)
+    assert merged.allow_gateway_control is False
+    assert merged.untrusted_evidence == forwarded.untrusted_evidence
+    assert merged.untrusted_evidence is not forwarded.untrusted_evidence
+    if merged_task := adapter._text_debounce[session_key].task:
+        merged_task.cancel()
+        await asyncio.gather(merged_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter = _make_adapter()
     started: list[str] = []

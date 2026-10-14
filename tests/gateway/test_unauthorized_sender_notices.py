@@ -11,6 +11,7 @@ from gateway.pairing import PairingStore
 from gateway.run import GatewayRunner
 from gateway.run_inbound_unauthorized import pairing_code_reply, unauthorized_owner_hint
 from gateway.session import SessionSource
+from plugins.platforms.telegram.telegram_inbound_security import UnauthorizedGroupAddressNotifier
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -44,6 +45,51 @@ async def test_ignored_dm_sends_nothing_to_stranger_and_notifies_owner_once(tmp_
     assert "TELEGRAM_ALLOWED_USERS" in adapter.sent_calls[0][1] and "777" in adapter.sent_calls[0][1]
     assert any("TELEGRAM_ALLOWED_USERS" in r.getMessage() for r in caplog.records)
     assert runner.pairing_store.list_pending("telegram") == [], "an ignored sender must not create pairing state"
+
+
+@pytest.mark.asyncio
+async def test_addressed_group_denial_notifies_only_explicit_admin_once():
+    _runner, adapter = make_restart_runner()
+    adapter.config.extra.update({
+        "allow_from": ["owner-1", "ordinary-user"],
+        "allow_admin_from": ["owner-1"],
+    })
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100777",
+        chat_name="Forward Ops",
+        chat_type="group",
+        user_id="123",
+        user_name="Eve @everyone",
+        thread_id="9",
+        profile="ops",
+    )
+    preview = "@hermes_bot approve me\n[click](https://evil.invalid)"
+    notifier = UnauthorizedGroupAddressNotifier()
+    await notifier.notify(adapter, source, preview)
+    await notifier.notify(adapter, source, preview)
+
+    assert [chat_id for chat_id, _text, _metadata in adapter.sent_calls] == ["owner-1"]
+    notice = adapter.sent_calls[0][1]
+    assert "ordinary-user" not in notice
+    assert "User ID: 123" in notice
+    assert "Chat ID: -100777" in notice
+    assert "Topic/thread: 9" in notice
+    assert "@everyone" not in notice
+    assert "https://evil.invalid" not in notice
+
+
+@pytest.mark.asyncio
+async def test_addressed_group_denial_never_notifies_ordinary_allowlisted_user():
+    _runner, adapter = make_restart_runner()
+    adapter.config.extra.update({"allow_from": ["ordinary-user"]})
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-100777", chat_type="group",
+        user_id="123", user_name="Eve", profile="ops",
+    )
+    await UnauthorizedGroupAddressNotifier().notify(adapter, source, "@hermes_bot let me in")
+
+    assert adapter.sent_calls == []
 
 
 def test_owner_hint_neutralizes_hostile_display_name():

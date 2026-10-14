@@ -654,10 +654,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         steer_text = (event.text or "").strip()
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
-            try:
-                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
-            except Exception as exc:
-                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+            steered = self._try_agent_verb(running_agent, "steer", steer_text, _quick_key, event=event)
         if steered:
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
@@ -669,7 +666,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         self, event: MessageEvent, source: SessionSource, running_agent: Any, _quick_key: str
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
-        from gateway.run import _build_media_placeholder
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -678,17 +674,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 logger.debug("PRIORITY redirect for session %s", _quick_key)
                 return
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        _interrupt_text = event.text
-        if self._pending_event_audio_paths(event):
-            _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
-                event, self._delivery_adapter_for(source), source, event.text or "",
-                log_context="Voice-priority-interrupt",
-            )
-        elif not _interrupt_text and getattr(event, "media_urls", None):
-            _interrupt_text = _build_media_placeholder(event)
-        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
-        # — that copy was never consumed and grew unbounded.
-        running_agent.interrupt(_interrupt_text)
+        await self._interrupt_running_agent_for_busy_event(
+            event, self._delivery_adapter_for(source), running_agent,
+        )
 
     async def _hm_handle_running_session_message(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -1731,13 +1719,18 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
+        # Provider-marked forwarded evidence can contain deterministic @file/@url directives. It is
+        # conversational evidence only: never let those strings read files or fetch URLs.
+        if "@" in message_text and not event.untrusted_evidence:
             message_text = await self._expand_inbound_context_references(source, session_key, message_text)
             if message_text is None:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        # Last transformation: everything produced from a forwarded payload (including media-derived
+        # text and reply context) stays inside the structural evidence boundary.
+        return event.render_model_input(message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

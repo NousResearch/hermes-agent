@@ -178,6 +178,7 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram import telegram_inbound_security
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -6468,9 +6469,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+        if not await telegram_inbound_security.authorize_message_or_report(self, msg):
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
@@ -6482,10 +6481,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
-        if not self._should_process_message(msg, is_command=True):
+        if not await telegram_inbound_security.authorize_message_or_report(self, msg):
             return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+        if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -6501,8 +6499,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg:
             return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg)
+        if not await telegram_inbound_security.authorize_message_or_report(self, msg):
             return
         if not self._gate_or_observe(msg, update, MessageType.LOCATION):
             return
@@ -6621,6 +6618,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         existing.media_types.extend(event.media_types)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
+        existing.absorb_security_context(event)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
@@ -6781,8 +6779,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         msg = update.message
         if not msg:
             return
-        if not self._is_user_authorized_from_message(msg):
-            self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+        if not await telegram_inbound_security.authorize_message_or_report(
+            self, msg, level=logging.INFO, what="media from unauthorized user",
+        ):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -7101,8 +7100,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
-            channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            timestamp=message.date)
+            channel_prompt=group_identity_prompt(self, message, channel_prompt), timestamp=message.date,
+            untrusted_evidence=(evidence := telegram_inbound_security.forwarded_evidence_provenance(message)),
+            allow_gateway_control=not evidence)
 
     # -- Message reactions (processing lifecycle) --
 

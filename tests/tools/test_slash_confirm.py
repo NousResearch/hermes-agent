@@ -92,7 +92,110 @@ class TestResolve:
         assert (r1 == "ran") ^ (r2 == "ran")
 
 
+@pytest.mark.asyncio
+async def test_resolution_preserves_registration_context_across_awaits(tmp_path, monkeypatch):
+    from contextvars import ContextVar
+    from hermes_constants import (
+        get_hermes_home, set_hermes_home_override, reset_hermes_home_override,
+    )
+
+    root = tmp_path / "root"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    marker = ContextVar("slash_confirm_marker", default="root")
+    observed = []
+
+    async def handler(choice):
+        observed.append((get_hermes_home(), marker.get()))
+        await asyncio.sleep(0)
+        observed.append((get_hermes_home(), marker.get()))
+        marker.set("handler-local")
+        return choice
+
+    for name in ("alpha", "beta", "alpha"):
+        home = root / "profiles" / name
+        home_token = set_hermes_home_override(home)
+        marker_token = marker.set(name)
+        try:
+            slash_confirm.register(name, name, "new", handler)
+        finally:
+            reset_hermes_home_override(home_token)
+            marker.reset(marker_token)
+        assert await slash_confirm.resolve(name, name, "always") == "always"
+        assert observed[-2:] == [(home, name), (home, name)]
+        assert get_hermes_home() == root
+        assert marker.get() == "root"
+
+
 class TestClear:
+    @pytest.mark.asyncio
+    async def test_stale_confirmation_does_not_run_or_rebind_context(self, monkeypatch):
+        from contextvars import ContextVar
+        marker = ContextVar("stale_confirm_profile", default="root")
+        calls = []
+
+        async def handler(choice):
+            calls.append(marker.get())
+            return choice
+
+        token = marker.set("alpha")
+        slash_confirm.register("sess", "old", "new", handler)
+        marker.reset(token)
+        monkeypatch.setattr(slash_confirm.time, "time", lambda: float("inf"))
+        assert await slash_confirm.resolve("sess", "old", "always") is None
+        assert calls == []
+        assert marker.get() == "root"
+        assert slash_confirm.get_pending("sess") is None
+
+    @pytest.mark.asyncio
+    async def test_superseded_confirmation_cannot_run_old_profile(self):
+        from contextvars import ContextVar
+        marker = ContextVar("superseded_confirm_profile", default="root")
+        calls = []
+
+        async def handler(choice):
+            await asyncio.sleep(0)
+            calls.append(marker.get())
+            return choice
+
+        for name in ("alpha", "beta"):
+            token = marker.set(name)
+            slash_confirm.register("sess", name, "new", handler)
+            marker.reset(token)
+        assert await slash_confirm.resolve("sess", "alpha", "always") is None
+        assert calls == []
+        assert await slash_confirm.resolve("sess", "beta", "always") == "always"
+        assert calls == ["beta"]
+        assert marker.get() == "root"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_profiles_and_duplicate_callbacks_are_isolated(self):
+        from contextvars import ContextVar
+        marker = ContextVar("concurrent_confirm_profile", default="root")
+        calls = []
+        both_started = asyncio.Event()
+
+        async def handler(choice):
+            home = marker.get()
+            calls.append(home)
+            if len(calls) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=5)
+            assert marker.get() == home
+            return home
+
+        for name in ("alpha", "beta"):
+            token = marker.set(name)
+            slash_confirm.register(name, name, "new", handler)
+            marker.reset(token)
+        results = await asyncio.gather(
+            slash_confirm.resolve("alpha", "alpha", "always"),
+            slash_confirm.resolve("beta", "beta", "always"),
+            slash_confirm.resolve("alpha", "alpha", "always"),
+        )
+        assert results == ["alpha", "beta", None]
+        assert sorted(calls) == ["alpha", "beta"]
+        assert marker.get() == "root"
+
     def test_clear_removes_entry(self):
         async def h(c):
             return "x"

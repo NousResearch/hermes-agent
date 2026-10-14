@@ -5742,6 +5742,7 @@ class TestNonConversationalSubtypeAllowlist:
         adapter.config.extra["allow_bots"] = "all"
         events = [self._event(s) for s in (None, "file_share", "thread_broadcast", "me_message",
                                            "document_mention")]
+        adapter.config.extra["allowed_bots"] = "B_OTHER"
         events.append(self._event("bot_message", bot_id="B_OTHER"))
         for event in events:
             accepted = await adapter._prefilter_inbound(event, None)

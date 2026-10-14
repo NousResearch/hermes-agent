@@ -457,6 +457,18 @@ class GatewayAuthorizationMixin:
     def _adapter_extra_for_source(self, source) -> dict:
         return _adapter_config_extra(self._delivery_adapter_for(source))
 
+    def _slack_bot_policy_authorizes(self, source: SessionSource) -> bool:
+        """Exact Slack bot ACL precedes all human, chat and delegated grants."""
+        extra = self._adapter_extra_for_source(source)
+        mode = str(extra.get("allow_bots", _auth_env("SLACK_ALLOW_BOTS") or "none")).lower().strip()
+        if mode not in {"mentions", "all"}:
+            return False
+        identity = str(source.user_id or "").strip()
+        if not identity:
+            return True  # Historical identity-less Workflow Builder fallback.
+        allowed = _coerce_allow_set(extra.get("allowed_bots", _auth_env("SLACK_ALLOWED_BOTS")))
+        return "*" in allowed or identity in allowed
+
     def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
         """Own-policy adapter verdict when no env allowlist exists; None = no verdict.
 
@@ -628,6 +640,8 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
+        if source.platform == Platform.SLACK and getattr(source, "is_bot", False):
+            return self._slack_bot_policy_authorizes(source)
         # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
         # service its adapter authenticated to (no human sender to allowlist).
         if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:

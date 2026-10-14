@@ -75,7 +75,7 @@ _ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
 
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "fable")
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -86,7 +86,9 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     # Claude 4.7
     "claude-opus-4-7":   128_000,
     # Claude 4.6
-    "claude-opus-4-6":   128_000,
+    # Local override on Brad's box: cap Opus 4.6 at 64K to avoid triggering
+    # Anthropic OAuth long-context credit gating on large Hermes prompts.
+    "claude-opus-4-6":    64_000,
     "claude-sonnet-4-6":  64_000,
     # Claude 4.5
     "claude-opus-4-5":    64_000,
@@ -239,10 +241,12 @@ def _supports_fast_mode(model: str) -> bool:
 #
 # ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
 # and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
+# native Anthropic (api.anthropic.com) for Opus 4.6+ with API-key auth, but the
+# OAuth/Claude Code authentication path rejects this beta with HTTP 400
+# ("This authentication style is incompatible with the long context beta
+# header."). Bedrock/Azure still gate 1M behind this beta as of 2026-04 —
+# without it Bedrock caps Opus at 200K even though model_metadata.py advertises
+# 1M. Keep the header for API-key/third-party routes, but strip it for OAuth.
 #
 # Migration guide: remove these if you no longer support ≤4.5 models or once
 # Bedrock/Azure promote 1M to GA.
@@ -276,7 +280,7 @@ _OAUTH_ONLY_BETAS = [
 # Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.284"
 _claude_code_version_cache: Optional[str] = None
 
 
@@ -594,7 +598,14 @@ def build_anthropic_client(
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        # The OAuth auth style is incompatible with the 1M long-context beta
+        # header, so strip context-1m even when the caller did not request the
+        # reactive drop_context_1m_beta recovery path.
+        oauth_safe_betas = _common_betas_for_base_url(
+            normalized_base_url,
+            drop_context_1m_beta=True,
+        )
+        all_betas = oauth_safe_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
@@ -1956,9 +1967,11 @@ def build_anthropic_kwargs(
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
+        # OAuth/Claude Code auth is incompatible with context-1m, so always
+        # strip it for OAuth fast-mode requests too.
         betas = list(_common_betas_for_base_url(
             base_url,
-            drop_context_1m_beta=drop_context_1m_beta,
+            drop_context_1m_beta=drop_context_1m_beta or is_oauth,
         ))
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)

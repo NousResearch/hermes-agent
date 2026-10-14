@@ -101,7 +101,7 @@ def isolated_chrome(tmp_path, port=0):
         browser = None
         def connect_browser():
             try:
-                return PinnedBrowser(ws)
+                return PinnedBrowser(ws, response_timeout=10)
             except (TimeoutError, OSError):
                 return None
         browser = wait_until(connect_browser, timeout=20, what='Chromium websocket')
@@ -127,6 +127,25 @@ def chrome(tab_tmp):
         yield browser
 
 
+def targets_unrecorded(registry, targets):
+    """Closure is settled only when exact target receipts are gone too."""
+    with registry._db() as conn:
+        recorded = {row[0] for row in conn.execute('SELECT target FROM targets')}
+    return not targets & recorded
+
+
+def wait_for_targets(browser, predicate, retry=None):
+    """Poll exact absence; never replay target creation after an ambiguous reply."""
+    def settled():
+        if retry is not None:
+            retry()
+        try:
+            return predicate(browser.targets())
+        except (TimeoutError, OSError):
+            return False
+    wait_until(settled, timeout=60, what='exact Chromium target state')
+
+
 def test_pinned_real_close_preserves_unknown(chrome, tmp_path):
     browser, ws = chrome
     unknown = browser.targets()
@@ -138,7 +157,8 @@ def test_pinned_real_close_preserves_unknown(chrome, tmp_path):
         r.record_created(token, target)
         r.finish(token)
     r.retire('a', 'run', evidence='fixture:native-finished')
-    r.cleanup(ws, browser.targets, browser.close_target)
+    wait_for_targets(browser, lambda targets: targets == unknown | {b} and targets_unrecorded(r, {a}),
+                     retry=lambda: r.cleanup(ws, browser.targets, browser.close_target))
     assert browser.targets() == unknown | {b}
     print(json.dumps({'closed': a, 'active': b, 'unknown': sorted(unknown)}))
 
@@ -212,7 +232,8 @@ def test_real_browser_exec_exact_capture_and_next_owner(chrome, tab_tmp, monkeyp
         assert not unknown & (a | b)
         assert external not in a | b
         db.end_session('a', 'new_session')
-        sweep(home)
+        wait_for_targets(browser, lambda targets: not a & targets and targets_unrecorded(r, a),
+                         retry=lambda: sweep(home))
         assert not a & browser.targets()
         assert unknown | b | {external} <= browser.targets()
         db.create_session('next', 'cli')
@@ -247,7 +268,8 @@ def test_real_parent_hold_cancel_retry_and_profile_isolation(chrome, tmp_path, m
     native_child_finished('continuation', home)  # includes cancellation after native exit
     # Reopen the durable registry, as after restart. The exact hold/receipt survives.
     r = OwnershipRegistry(home / 'browser_tabs.sqlite')
-    sweep(home)
+    wait_for_targets(browser, lambda targets: target not in targets and targets_unrecorded(r, {target}),
+                     retry=lambda: sweep(home))
     assert target not in browser.targets()
     db.close()
 
@@ -263,6 +285,7 @@ def test_real_parent_hold_cancel_retry_and_profile_isolation(chrome, tmp_path, m
         browser.close_target(target)
         raise TimeoutError('reply lost')
     other.cleanup(ws, browser.targets, ambiguous_close)
+    wait_for_targets(browser, lambda targets: active not in targets)
     assert active not in browser.targets()
     with other._db() as conn:
         assert conn.execute('SELECT pending_close FROM targets').fetchone()[0] == 1

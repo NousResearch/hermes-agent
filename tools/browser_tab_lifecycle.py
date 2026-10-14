@@ -177,7 +177,9 @@ def process_dead(pid, start):
 
 
 class PinnedBrowser:
-    def __init__(self, ws):
+    def __init__(self, ws, *, response_timeout=1):
+        # Cleanup keeps its short budget; disposable browser setup may need more.
+        self.response_timeout = response_timeout
         from urllib.parse import urlsplit
         parsed = urlsplit(ws)
         if parsed.scheme not in ('ws', 'wss') or not parsed.path.startswith('/devtools/browser/'):
@@ -189,7 +191,7 @@ class PinnedBrowser:
     def command(self, method, **params):
         self.sequence += 1
         self.socket.send(json.dumps(dict(id=self.sequence, method=method, params=params)))
-        deadline = time.monotonic() + 1
+        deadline = time.monotonic() + self.response_timeout
         while time.monotonic() < deadline:
             reply = json.loads(self.socket.recv(timeout=max(.01, deadline - time.monotonic())))
             if reply.get('id') == self.sequence:

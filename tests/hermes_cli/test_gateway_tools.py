@@ -133,12 +133,26 @@ def test_agents_before_the_first_turn_reads_the_opened_sessions_processes(gatewa
     assert ("process.list", {"session_id": SID}) in client.calls
 
 
-def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, capsys):
+def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, monkeypatch, capsys):
     """/stop typed while a turn runs is dispatched inline and interrupts it like Ctrl+C (tracker
-    #134889 N4), instead of being queued until the turn it should stop has finished."""
+    #134889 N4), instead of being queued until the turn it should stop has finished. Only the
+    interrupt runs on the UI thread: ``kill_all`` waits out each process's stop grace period, so it
+    runs on a worker and the input is back at once (Greptile 4277259986)."""
+    import threading
     from types import SimpleNamespace
     from cli import HermesCLI
     _agent, client = gateway
+    view = gateway_tools.process_view()
+    assert view is not None
+    kill_all, release, stopped = view.kill_all, threading.Event(), threading.Event()
+
+    def slow_kill_all(**kw):  # process.stop still inside its grace periods
+        release.wait(5)
+        try:
+            return kill_all(**kw)
+        finally:
+            stopped.set()
+    monkeypatch.setattr(view, "kill_all", slow_kill_all)
     stops = []
 
     class _Agent:
@@ -150,9 +164,13 @@ def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, c
     buffer = SimpleNamespace(reset=lambda **_k: None)
     event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer, invalidate=lambda: None))
     assert cli._tui_enter_inline_command(event, "/stop", False) is True
-    assert stops == [None]
+    assert stops == [None] and not stopped.is_set()  # interrupted; the UI thread did not wait on kill_all
+    release.set()
+    for worker in [t for t in threading.enumerate() if t.name == "cli-stop"]:
+        worker.join(5)
+    out = capsys.readouterr().out
+    assert stopped.is_set() and "Interrupting agent" in out and "Stopped 1 process(es)." in out
     assert any(method == "process.stop" for method, _ in client.calls)
-    assert "Interrupting agent" in capsys.readouterr().out
 
 
 def test_dock_stop_kills_one_process_through_the_gateway(gateway):

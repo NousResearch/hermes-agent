@@ -98,33 +98,20 @@ class CLICommandsSessionToolsMixin:
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and background (async) delegations.
         Typed while a turn runs it stops that turn first, as Ctrl+C does (the registry's
-        ``busy_policy="interrupt_then_dispatch"``; the input loop dispatches it inline).
+        ``busy_policy="interrupt_then_dispatch"``; the input loop dispatches it inline, on the UI
+        thread). The interrupt is immediate; the background cleanup then runs on a worker thread,
+        since ``kill_all`` waits out each process's stop grace period and would freeze input.
 
         See #14602.
         """
-        from hermes_cli.gateway_tools import process_registry as _registry, process_view
-        if getattr(self, "_agent_running", False) and getattr(self, "agent", None):
+        if not getattr(self, "_agent_running", False):
+            return _stop_background_work()
+        if getattr(self, "agent", None):
             from agent.interrupt_compat import request_hard_interrupt
             print(f"  {t('cli.tui.interrupting')}")
             request_hard_interrupt(self.agent)
-        process_registry, view = _registry(), process_view()
-        if view is not None:
-            view.refresh(force=True)
-        running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
-        # Background subagents live in their own registry, not the process registry.
-        n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
-        if not running and not n_async:
-            return print(f"  {_t('stop.none_running')}")
-        if running:
-            print(f"  {_t('stop.stopping', count=len(running))}")
-            print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
-        if n_async:
-            if view is not None:
-                interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
-            else:
-                from tools.async_delegation import interrupt_all
-                interrupted = interrupt_all(reason='/stop')
-            print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_stop_background_work, name="cli-stop").start()
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status. On the gateway both run there:
@@ -289,6 +276,30 @@ class CLICommandsSessionToolsMixin:
         reply = execute_command("profile", CommandContext(surface="cli"))
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
+
+
+def _stop_background_work() -> None:
+    """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)
+    delegations. Mid-turn it runs on a worker thread and prints its result from there."""
+    from hermes_cli.gateway_tools import process_registry as _registry, process_view
+    process_registry, view = _registry(), process_view()
+    if view is not None:
+        view.refresh(force=True)
+    running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
+    # Background subagents live in their own registry, not the process registry.
+    n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
+    if not running and not n_async:
+        return print(f"  {_t('stop.none_running')}")
+    if running:
+        print(f"  {_t('stop.stopping', count=len(running))}")
+        print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
+    if n_async:
+        if view is not None:
+            interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
+        else:
+            from tools.async_delegation import interrupt_all
+            interrupted = interrupt_all(reason='/stop')
+        print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
 
 def print_session_diff(cli, result: dict, stat_only: bool) -> None:

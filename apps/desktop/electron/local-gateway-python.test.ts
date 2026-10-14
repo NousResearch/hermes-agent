@@ -36,7 +36,7 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   await fs.writeFile(path.join(cwd, 'hermes_cli', 'gateway_client.py'), 'def _session_ticket(*args, **kwargs):\n    return "untrusted-project-ticket"\n')
 
   try {
-    for (const purpose of ['interactive', 'native-http'] as const) {
+    for (const purpose of ['interactive', 'native-http', 'native-profile-create'] as const) {
       await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, purpose)).resolves.toBe('private-grant')
       // Only the interactive (shared-primary) socket asks for host scope; native-http stays profile-bound.
       expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose, ...(purpose === 'interactive' ? { scope: 'host' } : {}) })

@@ -11,6 +11,7 @@ from gateway.platforms import api_server as _api_server
 from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
+from tests.waiting import async_wait_until
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -243,9 +244,8 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         return entry.response
     owner.runner._handle_message = handle
     run = asyncio.ensure_future(_execute_run(api, launch, _api_server=_api_server))
-    async with asyncio.timeout(10):
-        while not (run_projection(api, 'run_room') or {}).get('pending_controls'):
-            await asyncio.sleep(0.02)
+    await async_wait_until(lambda: (run_projection(api, 'run_room') or {}).get('pending_controls'),
+                           timeout=10, what='the clarify prompt projected on the run')
     prompt = run_projection(api, 'run_room')['pending_controls'][0]
     body = {'request_id': prompt['prompt_id'], 'execution_generation': prompt['execution_generation'], 'answer': 'b'}
     app = web.Application()

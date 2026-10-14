@@ -63,7 +63,7 @@ async def test_compress_waits_past_the_default_rpc_budget(monkeypatch):
             return {'id': req['id'], 'result': {'revision': 1, 'execution_generation': 1}}
 
         async def commit():  # a 120 s summary (scaled) then the receipt
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.12)  # health: allow HX013 -- the reply must land after the scaled 30 ms default budget expired
             await owner.inbox.put(json.dumps({'id': req['id'], 'result': {'status': 'applied'}}))
         asyncio.ensure_future(commit())
 

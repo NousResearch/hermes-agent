@@ -64,9 +64,12 @@ def test_ticket_atomic_single_use_profile_purpose_expiry_and_capacity(monkeypatc
         grants = list(pool.map(consume, range(8)))
     assert sum(g is not None for g in grants) == 1
     expired = store.mint(profile_id='a', subject='uid:1', purpose='interactive')
+    native = store.mint(profile_id='a', subject='uid:1', purpose='native-http')
     clock[0] = 30
     with pytest.raises(PermissionError):
         store.redeem(expired, profile_id='a', purpose='interactive')
+    with pytest.raises(PermissionError, match='expired'):  # the native-HTTP gate's redeem (profile_id=None)
+        store.redeem(native, profile_id=None, purpose='native-http')
     exposure = store.mint(profile_id='a', subject='uid:1', purpose='exposure')
     assert store.redeem(exposure, profile_id='a', purpose='exposure')['capabilities'] == frozenset({'transport:delegate'})
     for _ in range(store.MAX_ENTRIES):
@@ -103,10 +106,13 @@ async def test_old_socket_cleanup_cannot_unlink_replacement(tmp_path):
 def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
     import time
     from gateway.runtime_bootstrap_windows import NativeControlServer, query_runtime_control
+    import threading
+    stalled = threading.Event()  # the stalled handler hangs until teardown releases it
+
     def handler(raw, subject):
         assert subject.startswith('sid:S-1-')
         if raw == b'stall':
-            time.sleep(1)
+            stalled.wait(10)
         return json.dumps({'subject': subject}).encode() + b'\n'
     server = NativeControlServer(tmp_path, handler)
     server.start()
@@ -121,6 +127,7 @@ def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
             query_runtime_control(tmp_path, b'stall', 0.1)
         assert time.monotonic() - started < 2
     finally:
+        stalled.set()
         server.close()
     assert not server._thread.is_alive()
 
@@ -141,7 +148,7 @@ def test_native_pipe_handler_may_dial_its_own_pipe(tmp_path):
             except Exception as exc:  # report, never kill the serving thread
                 inner = {'error': repr(exc)}
             return json.dumps({'outer': inner}).encode() + b'\n'
-        time.sleep(2.5)  # longer than the per-peer I/O budget
+        time.sleep(2.5)  # health: allow HX013 -- the handler must outlast the 2 s per-peer I/O budget under test
         return json.dumps({'inner': raw.decode()}).encode() + b'\n'
 
     server = NativeControlServer(tmp_path, handler)
@@ -160,9 +167,42 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
     with DisconnectNamedPipe there dropped that client mid-request (WinError 233). The client is
     injected at the server's first DisconnectNamedPipe, the widest point of that window."""
     import threading
-    import time
     import gateway.runtime_bootstrap_windows as rbw
     real_disconnect, injected, armed = rbw._disconnect_pipe, {}, threading.Event()
+    real_native, real_accept = rbw._native, rbw._accept
+    landed, idle = threading.Event(), threading.Event()
+
+    class _InjectedClient:
+        """The injected client's ``_winapi``: reports when it reached the pipe."""
+        def __init__(self, win):
+            self._win = win
+
+        def __getattr__(self, name):
+            return getattr(self._win, name)
+
+        def CreateFile(self, *args):
+            try:
+                handle = self._win.CreateFile(*args)
+            except OSError as exc:
+                if exc.winerror != 231:  # 231 (all instances busy) queues on WaitNamedPipe next
+                    landed.set()
+                raise
+            landed.set()  # it opened the idle instance
+            return handle
+
+        def WaitNamedPipe(self, *args):
+            landed.set()
+            return self._win.WaitNamedPipe(*args)
+
+    def native():
+        win = real_native()
+        return _InjectedClient(win) if threading.current_thread() is injected.get("thread") else win
+
+    def accept(handle, budget):
+        connected = real_accept(handle, budget)
+        if not connected:
+            idle.set()
+        return connected
 
     def query():
         try:
@@ -175,13 +215,16 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
             injected["thread"] = threading.Thread(target=query)
             injected["thread"].start()
             armed.set()
-            time.sleep(0.3)  # let the client open (idle window) or queue on WaitNamedPipe (served)
+            # let the client open (idle window) or queue on WaitNamedPipe (served)
+            assert landed.wait(5), "the injected client never reached the pipe"
         real_disconnect(handle)
     monkeypatch.setattr(rbw, "_disconnect_pipe", disconnect_with_client_in_flight)
+    monkeypatch.setattr(rbw, "_native", native)
+    monkeypatch.setattr(rbw, "_accept", accept)
     server = rbw.NativeControlServer(tmp_path, lambda raw, subject: json.dumps({"echo": raw.decode()}).encode() + b"\n")
     server.start()
     try:
-        time.sleep(0.8)  # at least one idle accept cycle
+        assert idle.wait(10), "no idle accept cycle ran"  # at least one idle accept cycle
         assert json.loads(rbw.query_runtime_control(tmp_path, b"hello", 5)) == {"echo": "hello"}
         assert armed.wait(5)
         injected["thread"].join(10)

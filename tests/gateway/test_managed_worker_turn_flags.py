@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -73,17 +75,19 @@ def _run(tmp_path, scenario):
         target.mkdir(exist_ok=True)
         submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text='DELETE', **flags)
         assert 'result' in submitted, submitted
-        async with asyncio.timeout(90):
-            while status(request_id) != [('terminal',)]:
-                snapshot = await rpc(ws, 'session.resume', session_id=sid)
-                prompt = next((p for p in snapshot['result']['prompts'] if p['kind'] == 'approval'), None)
-                if prompt:
-                    await rpc(ws, 'approval.respond', session_id=sid, prompt_id=prompt['prompt_id'],
-                              execution_generation=prompt['execution_generation'], choice='deny')
-                    while status(request_id) != [('terminal',)]:
-                        await asyncio.sleep(.05)
-                    return 'prompted'
-                await asyncio.sleep(.1)
+        deadline = time.monotonic() + 90
+        while status(request_id) != [('terminal',)]:
+            assert time.monotonic() < deadline, f'{request_id} neither settled nor parked an approval'
+            snapshot = await rpc(ws, 'session.resume', session_id=sid)
+            prompt = next((p for p in snapshot['result']['prompts'] if p['kind'] == 'approval'), None)
+            if prompt:
+                await rpc(ws, 'approval.respond', session_id=sid, prompt_id=prompt['prompt_id'],
+                          execution_generation=prompt['execution_generation'], choice='deny')
+                await async_wait_until(lambda: status(request_id) == [('terminal',)],
+                                       timeout=max(deadline - time.monotonic(), 1), interval=.05,
+                                       what=f'denied {request_id} to settle')
+                return 'prompted'
+            await asyncio.sleep(.1)
         return 'settled'
 
     async def exercise(desc):

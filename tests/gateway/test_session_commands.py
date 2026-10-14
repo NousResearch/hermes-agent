@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -78,9 +79,8 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
                 assert 'SLASH_SKILL_BODY' not in result['result']['display'], result
             assert not peer.requests and not rows(), 'resolution executed a turn'
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_SLASH')
-            async with asyncio.timeout(30):
-                while not rows() or rows()[0][1] != 'terminal':
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: (r := rows()) and r[0][1] == 'terminal', timeout=30, interval=.05,
+                                   what='the warm turn to settle')
             block = await rpc(ws, 'prompt.submit', session_id=sid, input_id='block', text='BLOCK_STARTED')
             assert block.get('result', {}).get('status') == 'queued', block
             assert await asyncio.to_thread(peer.blocked.wait, 25), ([m for r in peer.requests for m in r['messages'] if m['role'] == 'user'], rows())
@@ -99,7 +99,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
             for params, reason in [({'command': 'help', 'profile': 'foreign'}, 'profile_mismatch'),
                                    ({'command': 'help', 'source': 'telegram'}, 'invalid_params'),
                                    ({'command': 'restart'}, 'unsupported_command'),
-                                   ({'command': 'approve'}, 'unsupported_command')]:
+                                   ({'command': 'sethome'}, 'unsupported_command')]:
                 denied = await command(**params)
                 assert denied['error']['message'] == reason, denied
             # A second dashboard operator shares access but still obeys the busy fence.
@@ -111,9 +111,8 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
                     receipts.append(result)
                     assert 'mid-turn' in result.get('result', {}).get('output', ''), result
             peer.release.set()
-            async with asyncio.timeout(45):
-                while any(row[1] != 'terminal' for row in rows()):
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: all(row[1] == 'terminal' for row in rows()), timeout=45, interval=.05,
+                                   what='every admission to settle')
             title = await command(command='title Owned slash title')
             assert 'Owned slash title' in title['result']['output'], title
             listing = await rpc(ws, 'session.list')

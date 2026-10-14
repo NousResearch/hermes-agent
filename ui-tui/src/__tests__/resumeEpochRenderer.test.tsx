@@ -154,8 +154,9 @@ it('detaches the prior canonical subscription only after the replacement attache
 
     pending.shift()!.resolve(result('b', 'sub-b'))
     await vi.waitFor(() => expect(getUiState().sid).toBe('b'))
+    // A resume switch closes the view it leaves, as main's `session.close` did (`tui_close`).
     expect(request).toHaveBeenCalledWith('session.detach', {
-      session_id: 'a', subscription_id: 'sub-a'
+      end_reason: 'tui_close', session_id: 'a', subscription_id: 'sub-a'
     })
     pending.find(call => call.method === 'session.detach')!.resolve({
       session_id: 'a', subscription_id: 'sub-a', detached: true

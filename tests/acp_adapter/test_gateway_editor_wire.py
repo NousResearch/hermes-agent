@@ -7,6 +7,7 @@ import json
 import pytest
 
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
+from tests.waiting import async_wait_until
 
 
 class EditPeer(BaseHTTPRequestHandler):
@@ -82,9 +83,8 @@ async def test_real_editor_diff_requires_native_consent_before_write(daemon, tmp
             task = asyncio.create_task(acp.rpc('session/prompt', sessionId=sid,
                 prompt=[{'type': 'text', 'text': 'Edit the owned fixture'}]))
             try:
-                async with asyncio.timeout(20):
-                    while not any(f.get('method') == 'session/request_permission' for f in acp.frames):
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: any(f.get('method') == 'session/request_permission' for f in acp.frames),
+                                       timeout=20, what='the edit permission request')
                 permission = next(f for f in acp.frames if f.get('method') == 'session/request_permission')
                 call = permission['params']['toolCall']
                 assert call['kind'] == 'edit', permission

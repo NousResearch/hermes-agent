@@ -34,6 +34,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [readError, setReadError] = useState('')
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
@@ -123,7 +124,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   const send = () => {
-    if (!restored || busyRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
 
@@ -180,9 +181,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
       <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
-      <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
+      <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>
 }

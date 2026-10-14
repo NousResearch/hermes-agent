@@ -10,14 +10,25 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # Sources the pre-authority local CLI/TUI/GUI wrote. ``oneshot`` (finite ``chat -q`` / ``-z``) and ``tool``
 # (``chat --source tool``) are CLI runs that printed ``hermes --resume <id>``: adopted for resume like
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'oneshot', 'tool'})
+# ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool'})
+# Legacy labels that are not creation sources of their own (session_policy.SURFACES).
+LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+
+
+def legacy_account_label(row):
+    # main's Desktop stamped the signed-in Nous account on its chats. That is a label, not a route or
+    # an authenticated owner, so it does not block adoption of an otherwise unrouted Desktop row.
+    user_id = row.get('user_id')
+    return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
 
 
 def validate_legacy_row(db, row):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
     if (row['source'] not in LEGACY_LOCAL_SOURCES
-            or any(row.get(k) for k in ('session_key', 'chat_id', 'user_id', 'origin_json'))
+            or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+            or (row.get('user_id') and not legacy_account_label(row))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 
@@ -47,7 +58,9 @@ def bind_legacy_target(db, conn, receipt):
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone():
         raise RuntimeStoreError('storage_unavailable')
     source = receipt['entry']['origin']
-    conn.execute('UPDATE sessions SET ended_at=NULL,end_reason=NULL,session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
+    # Binding is a read-side claim: the row keeps main's ``source`` label and its end stamp. The first
+    # admitted turn reopens it (``reopen_local_session``), exactly as the classic surfaces did.
+    conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
                  (receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm', _json(source), target))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json({
         'session_id': receipt['session_id'], 'profile_id': receipt['profile_id'],

@@ -45,12 +45,14 @@ async def test_ingress_admission_never_blocks_the_owner_loop_on_a_held_writer(tm
     assert await asyncio.to_thread(held.wait, 10)
     try:
         task = asyncio.create_task(admit())
-        ticks, start = 0, time.monotonic()
-        while time.monotonic() - start < 1.0:
+        # A loop parked in a blocking BEGIN IMMEDIATE runs no ticks until the writer lets go (held
+        # 30 s here; the store's write patience is 20 s), so no gap between ticks reaches 2 s.
+        ticks, last = 0, time.monotonic()
+        while ticks < 10:
             await asyncio.sleep(0.05)
             ticks += 1
-        # A loop parked in a blocking BEGIN IMMEDIATE runs no ticks until the writer lets go.
-        assert ticks >= 10, f'owner loop stalled behind the held writer ({ticks} ticks in 1s)'
+            gap, last = time.monotonic() - last, time.monotonic()
+            assert gap < 2.0, f'owner loop stalled behind the held writer ({gap:.1f}s before tick {ticks})'
         assert not task.done(), 'the admission must wait for the writer, not skip the commit'
     finally:
         release.set()

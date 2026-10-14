@@ -12,6 +12,7 @@ import pytest
 
 from gateway.session_contract import SessionRef
 from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -59,9 +60,8 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
 
     async def scenario():
         live.task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy=None))
-        async with asyncio.timeout(10):
-            while 's' not in getattr(authority, '_managed_workers', {}):
-                await asyncio.sleep(.01)
+        await async_wait_until(lambda: 's' in getattr(authority, '_managed_workers', {}),
+                               what='the managed worker to register')
         async with asyncio.timeout(15):
             await run_runtime.settle_gateway_runtime(runner)
         return live.task

@@ -574,7 +574,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             if _denied is not None:
                 return True, _denied
             if _cmd_def_inner.name in ("stop", "new"):
-                await self._hm_cancel_queued_followups(_quick_key)
+                await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
@@ -587,11 +587,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             return True, None
         return False, None
 
-    async def _hm_cancel_queued_followups(self, _quick_key: str) -> None:
-        """Busy /stop and /new drop the human follow-up queued behind the running turn, as main
-        dropped the adapter slot; under session authority it sits in the durable FIFO instead.
-        Only still-queued ``messaging:*`` rows of this route's logical owner: automation wakes,
-        LOCAL/API input and ``unknown`` rows are untouched. Settled silently (no pause notice)."""
+    async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
+        """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
+        cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
+        ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
+        and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
+        claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
@@ -602,11 +603,20 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         ref = SessionRef(authority.profile_id, sid)
         actor = Principal('messaging-control', authority.profile_id,
                           frozenset({'session:submit', 'session:control'}), 'busy-command')
-        for row in await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid):
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
+        # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
+        # promised the queued followers stay saved, so a /new from the chat leaves them queued.
+        paused = any(row['status'] == 'unknown' for row in rows)
+        for row in [] if paused else rows:
             if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
                 # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
                 with suppress(RuntimeStoreError):
                     await authority.cancel_queued(actor, ref, row['admission_id'])
+        handle = authority._handle(ref)
+        if handle.execution_state == 'running':
+            # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
+            with suppress(RuntimeStoreError):
+                await authority.interrupt(actor, ref, handle.execution_generation)
 
     def _hm_busy_telegram_grace_queue(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
@@ -678,41 +688,23 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
-        """busy_input_mode for a follow-up the durable FIFO is about to admit. Returns True when the
-        text already landed inside the running turn (steer / redirect), so it must NOT also be
-        admitted as its own turn; False when the caller should admit it (queue mode, a demotion,
-        or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
+        """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
+        resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
+        Returns True when the text already landed inside the running turn (steer / redirect), so it
+        must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
+        a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         mode = self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
-        if (mode == "queue" or self._draining or running_agent is None
-                or running_agent is _AGENT_PENDING_SENTINEL or not self._hm_text_only(event)):
+        adapter = self._delivery_adapter_for(source)
+        if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
+                or (event.message_type == MessageType.TEXT and mode != "steer"
+                    and self._effective_busy_text_mode(source) == "queue")):
             return False
-        text = (event.text or "").strip()
-        if not text:
-            return False
-        if mode == "steer":
-            if hasattr(running_agent, "steer"):
-                try:
-                    return bool(self._steer_running_agent(running_agent, self._steer_text_with_origin(text, event)))
-                except Exception as exc:
-                    logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc, exc_info=True)
-            return False
-        if self._agent_has_active_subagents(running_agent):
-            logger.info("PRIORITY interrupt demoted to queue for session %s because the running agent has active subagents (#30170)", _quick_key)
-            return False
-        if await self._session_has_compression_in_flight(_quick_key):
-            logger.info("PRIORITY interrupt demoted to queue for session %s because context compression is in flight (#56391)", _quick_key)
-            return False
-        if (getattr(running_agent, "_supports_active_turn_redirect", False) is True and hasattr(running_agent, "redirect")
-                and self._redirect_active_turn(running_agent, text, _quick_key, event)):
-            logger.debug("PRIORITY redirect for session %s", _quick_key)
-            return True
-        # No redirect: end the running turn; the follow-up is admitted and runs as the next turn.
-        logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        running_agent.interrupt()
-        return False
+        outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
+        await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
+        return bool(outcome.steered or outcome.redirected)
 
     async def _hm_handle_running_session_message(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -720,6 +712,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if getattr(event, "internal", False) and not event.get_command():
+            # Main's rule (run_busy's busy handler, which the shared runtime's busy dispatch skips):
+            # an internal synthetic event never interrupts or steers the running turn.
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
@@ -1179,7 +1176,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
                 # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
                 # its whole request timeout.
-                if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
+                # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
+                # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
+                if self._is_session_running(_quick_key) and (
+                        await self._route_plaintext_approval_while_busy(event, _quick_key)
+                        or await self._hm_busy_preempt(event, source, _quick_key)):
                     return True, None
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:

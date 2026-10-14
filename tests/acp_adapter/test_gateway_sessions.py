@@ -3,12 +3,14 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import sys
+import time
 
 import pytest
 from websockets.asyncio.client import connect
 
 from hermes_cli.gateway_client import GatewayClient
 from tests.gateway.test_normal_runtime_boot import control
+from tests.waiting import async_wait_until
 
 
 @asynccontextmanager
@@ -82,13 +84,14 @@ async def test_acp_transport_shares_canonical_history_and_order(daemon, tmp_path
             assert reply.get("result", {}).get("stopReason") == "end_turn", reply
             assert "LOCAL_ACK_WS_SHARED" in json.dumps(acp.frames)
         accepted = await ws.rpc("prompt.submit", session_id=sid, input_id="after-acp-disconnect", text="WS_SHARED WS")
-        async with asyncio.timeout(30):
-            while True:
-                receipt = await ws.rpc("prompt.receipt", session_id=sid, admission_id=accepted["admission_id"])
-                if receipt["status"] == "terminal":
-                    assert receipt["outcome"] == "completed", receipt
-                    break
-                await asyncio.sleep(.05)
+        deadline = time.monotonic() + 30
+        while True:
+            receipt = await ws.rpc("prompt.receipt", session_id=sid, admission_id=accepted["admission_id"])
+            if receipt["status"] == "terminal":
+                assert receipt["outcome"] == "completed", receipt
+                break
+            assert time.monotonic() < deadline, f"WS prompt never settled: {receipt}"
+            await asyncio.sleep(.05)
         snapshot = await ws.rpc("session.resume", session_id=sid)
         assert "WS_SHARED ACP" in json.dumps(snapshot["messages"])
         assert "WS_SHARED WS" in json.dumps(snapshot["messages"])
@@ -122,9 +125,8 @@ async def test_acp_permission_detach_keeps_canonical_waiter(daemon, tmp_path, mo
             prompt_task = asyncio.create_task(acp.rpc("session/prompt", sessionId=sid,
                 prompt=[{"type": "text", "text": "Remove the owned fixture"}]))
             try:
-                async with asyncio.timeout(15):
-                    while not any(f.get("method") == "session/request_permission" for f in acp.frames):
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: any(f.get("method") == "session/request_permission" for f in acp.frames),
+                                       timeout=15, what="the ACP permission request")
                 permission = next(f for f in acp.frames if f.get("method") == "session/request_permission")
                 assert target.exists()
                 snapshot = await ws.rpc("session.resume", session_id=sid)
@@ -141,9 +143,7 @@ async def test_acp_permission_detach_keeps_canonical_waiter(daemon, tmp_path, mo
         response = await ws.rpc("approval.respond", session_id=sid, prompt_id=pending["prompt_id"],
             execution_generation=pending["execution_generation"], choice="once")
         assert response["status"] == "resolved", response
-        async with asyncio.timeout(20):
-            while target.exists():
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: not target.exists(), timeout=20, what="the approved deletion")
         print("ACP_PERMISSION_RECEIPT=" + json.dumps({"session_id": sid, "permission": permission,
               "stale_generation_rejected": True, "detached_waiter_resolved_by_ws": True,
               "real_owned_deletion": not target.exists()}))

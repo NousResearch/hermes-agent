@@ -77,10 +77,16 @@ export function ClarifyToolPending({
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
 
+  // Locked answers (a reconnect replay, or text typed in the composer) stage
+  // their questions. A newly locked answer replaces what the card staged, so
+  // Confirm never re-sends an older pick; an answer seen before is left alone,
+  // so a later edit on the card stands.
+  const [seenLocks, setSeenLocks] = useState<Record<string, null | string>>({})
+
   // A canonical gateway answers a batch one card at a time through the SAME
   // mounted tool row: a new live request is a new card, so the previous card's
-  // submit latch and staged picks must not carry over (that left question 2
-  // disabled behind question 1's spinner).
+  // submit latch, staged picks and seen locks must not carry over (that left
+  // question 2 disabled behind question 1's spinner).
   const [cardRequestId, setCardRequestId] = useState(request?.requestId)
 
   if (request?.requestId !== cardRequestId) {
@@ -89,12 +95,10 @@ export function ClarifyToolPending({
     if (request?.requestId) {
       setSubmitting(false)
       setStaged({})
+      setSeenLocks({})
     }
   }
 
-  // Reconnect replay: answers the server already locked (an earlier window's
-  // partial progress) pre-stage their questions so the restored card shows
-  // them selected instead of blank.
   useEffect(() => {
     const lockedAnswers = request?.lockedAnswers
 
@@ -102,13 +106,15 @@ export function ClarifyToolPending({
       return
     }
 
+    setSeenLocks(lockedAnswers)
+
     setStaged(current => {
       const next = { ...current }
 
       for (const question of questions) {
         const answer = lockedAnswers[question.qid]
 
-        if (answer === undefined || answer === null || next[question.qid]) {
+        if (answer === undefined || answer === null || seenLocks[question.qid] === answer) {
           continue
         }
 

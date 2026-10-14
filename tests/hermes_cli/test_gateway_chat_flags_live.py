@@ -1,4 +1,5 @@
-"""Gateway-path launch flags main supported: bare -c, --resume latest, --list-tools, resume footer."""
+"""Launch flags on the classic CLI (main's HermesCLI, gateway-backed): bare -c, --resume latest, --list-tools,
+resume footer. Expectations are main's (git archive 3b63f7b0a4c, lanes/pushready/probe_oneshot.py)."""
 import json
 from http.server import ThreadingHTTPServer
 import os
@@ -41,8 +42,11 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
     def hermes(*args, cwd, module="hermes_cli.main"):
         result = subprocess.run([sys.executable, "-m", module, *args], cwd=cwd, env=env,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False)
-        sid = next((line.split("Session: ", 1)[1].strip() for line in result.stderr.splitlines()
-                    if line.startswith("Session: ")), None)
+        # Main's channels: -Q prints `session_id: <id>` on stderr, -q its exit summary's `Session:` row.
+        sid = next((line.split(":", 1)[1].strip() for line in result.stderr.splitlines()
+                    if line.startswith("session_id: ")), None)
+        sid = sid or next((line.split(":", 1)[1].strip() for line in result.stdout.splitlines()
+                           if line.startswith("Session:")), None)
         return result, sid
 
     with (home / "gw.log").open("w") as log:
@@ -61,7 +65,7 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
             assert empty.returncode == 1 and "No previous CLI session" in empty.stderr, empty
 
             first, sid_a = hermes("chat", "-q", "in repo a", cwd=repo_a)
-            assert first.returncode == 0 and "RECOVERY_ACK_in repo a" in first.stdout, first
+            assert first.returncode == 0 and "RECOVERY_ACK_in repo a" in first.stdout and sid_a, first
             # Main's single-query exit block: how to continue the session it just printed.
             assert f"Resume this session with:\n  hermes --resume {sid_a}" in first.stdout, first.stdout
             quiet, sid_b = hermes("chat", "-q", "in repo b", "-Q", cwd=repo_b)

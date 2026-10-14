@@ -10,6 +10,8 @@ from contextlib import nullcontext
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
+# Prepared off the commit like model, then published as a new frozen policy.
+_POLICY = frozenset({'model', 'reasoning', 'workspace'})
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
@@ -73,7 +75,7 @@ async def mutate_session(authority, actor, ref, params):
 
 
 async def _owned_mutation(authority, actor, ref, params):
-    if (params.get('operation') in {'model', 'compress', 'reset', 'rewind'}
+    if (params.get('operation') in {*_POLICY, 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
     live = authority.sessions.get(_owner_ref(authority, ref, params).session_id)
@@ -90,7 +92,7 @@ async def _owned_mutation(authority, actor, ref, params):
     else:
         async with live.mutation_lock:
             result = await _mutate_session(authority, actor, ref, params)
-    if params.get('operation') in {'model', 'compress', 'reset'}:
+    if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
         authority._schedule(ref)
     return result
 
@@ -100,7 +102,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
     operation = params['operation']
-    if not isinstance(operation, str):
+    if not isinstance(operation, str) or (operation in _POLICY and params.get('expected_generation') is None):
         raise RuntimeStoreError('invalid_params')
     cold_history = False
     imported_ids = None
@@ -140,7 +142,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             raise RuntimeStoreError('permission_denied')
 
     prepared = None
-    if operation in {'model', 'compress'}:
+    if operation in {*_POLICY, 'compress'}:
         # Its own BEGIN IMMEDIATE, so off the loop like the commit below.
         prepared = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
             principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
@@ -149,12 +151,14 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         if 'snapshot' in prepared:
             from gateway.session_mutation_model import prepare_model
             from gateway.session_mutation_compress import prepare_compress
-            prepare = {'model': prepare_model, 'compress': prepare_compress}[operation]
+            from gateway.session_mutation_policy import PREPARE
+            prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
             applied = False
-            if prepared.get('status') in {'preview', 'confirmation_required'}:
-                # ``--preview`` is a read-only report and a guarded model target awaits the user's
-                # confirmation: no receipt, no publication, no eviction.
+            if prepared.get('status') in {'preview', 'noop', 'confirmation_required'}:
+                # ``--preview`` and a compress that removes nothing are read-only reports, and a
+                # guarded model target awaits the user's confirmation: no receipt, no publication,
+                # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:
@@ -175,7 +179,13 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         current = authority.db.get_session(ref.session_id)
         owns_projection = current is not None and (
             current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
-        if operation not in {'model', 'reset', 'compress', 'rewind'} or owns_projection:
+        if operation == 'compress' and applied and owns_projection and live is not None:
+            # Before the boundary evicts the agent whose compressor holds the running count.
+            from gateway.session_usage import note_compression
+            note_compression(authority, ref, live)
+        elif operation == 'reset' and applied and live is not None:
+            live.compression_count = 0  # a fresh conversation, as main's /new builds a fresh agent
+        if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
             _project_committed(authority, ref, operation, result)
         if live is not None:
             if operation == 'rewind' and owns_projection:
@@ -192,13 +202,28 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
 
 def _project_committed(authority, ref, operation, result):
     """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
-    if operation == 'model':
+    if operation in _POLICY:
         from gateway.session_local import publish_local_policy
         publish_local_policy(authority, ref.session_id)
         # A drain that ran while the receipt committed off-loop saw the new stored policy beside
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
         authority._schedule(ref)
+    if operation == 'reasoning':
+        # The picked level is the policy's now; a typed /reasoning override must not shadow it.
+        authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
+    if operation in {'reasoning', 'workspace'}:
+        # Every viewer repaints its reasoning pill / workspace from the published policy, as main's
+        # _emit_session_info did after the live change.
+        from gateway.session_local import local_session_info
+        authority.sessions[ref.session_id].event_stream.publish(
+            ref.session_id, local_session_info(authority, ref), event_type='session.info')
+    if operation == 'workspace':
+        # Main's move drops the terminal environment so the next command starts in the new folder.
+        from hermes_state_local import local_receipt
+        from tools.terminal_tool_lifecycle import cleanup_vm
+        for sid in {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}:
+            cleanup_vm(sid)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])

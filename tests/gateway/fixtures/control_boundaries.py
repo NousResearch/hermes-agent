@@ -48,12 +48,14 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
     turn = TurnRunner(SimpleNamespace(session_authority=authority), ctx)
 
     async def wait_prompt():
-        async with asyncio.timeout(5):
-            while True:
-                snapshot = await authority.attach(actor, ref)
-                if snapshot.prompts:
-                    return snapshot.prompts[-1]
-                await asyncio.sleep(.01)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5
+        while True:
+            snapshot = await authority.attach(actor, ref)
+            if snapshot.prompts:
+                return snapshot.prompts[-1]
+            assert loop.time() < deadline, 'no approval prompt was published'
+            await asyncio.sleep(.01)
 
     tasks = []
     try:
@@ -62,9 +64,10 @@ async def exercise_control_boundaries(tmp_path, monkeypatch):
                 turn._approval_notify_sync, {'command': f'owned-command-{n}', 'description': 'fixture',
                 'allow_session': False, 'allow_permanent': False, 'pattern_keys': [str(n)]}))
             tasks.append(task)
-            async with asyncio.timeout(5):
-                while len((await authority.attach(actor, ref)).prompts) < n + 1:
-                    await asyncio.sleep(.01)
+            loop, deadline = asyncio.get_running_loop(), asyncio.get_running_loop().time() + 5
+            while len((await authority.attach(actor, ref)).prompts) < n + 1:
+                assert loop.time() < deadline, f'approval prompt {n} was never published'
+                await asyncio.sleep(.01)
         prompts = (await authority.attach(actor, ref)).prompts
         import pytest
         for bad_actor, bad_ref, gen, reason in [

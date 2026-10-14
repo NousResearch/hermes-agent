@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import { expect, test, vi } from 'vitest'
 
-import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { createLocalGatewayDials, ensureLocalGateway, nativeGrantRoute, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
@@ -91,6 +91,17 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
     const { mintLocalGatewayTicket } = await import('./local-gateway')
     await mintLocalGatewayTicket(endpoint)
     expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive', scope: 'host' })
+
+    for (const [route, method, purpose] of [
+      ['/api/profiles', 'POST', 'native-profile-create'],
+      ['/api/profiles?unused=1', 'post', 'native-profile-create'],
+      ['/api/profiles', 'GET', 'native-http'],
+      ['/api/profiles/import', 'POST', 'native-http'],
+      ['/api/config', 'POST', 'native-http']
+    ]) {
+      await nativeGatewayHttpHeaders(descriptor, endpoint.api_origin + route, home, method)
+      expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+    }
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
@@ -404,6 +415,16 @@ test('a ?profile= request on the shared host descriptor mints for the sibling pr
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', path.resolve('hermes-home'))).toThrow('Invalid profile route')
 })
 
+// The batched sidebar names its owner in `recents_profile`; a grant for the window's own profile
+// is refused there (profile_scope_mismatch) and the sidebar drops that profile's sessions.
+test('a sidebar read mints for the profile its recents_profile names', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home', 'profiles', 'p2'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: path.resolve('hermes-home') }
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40', path.resolve('hermes-home'))).toMatchObject({ profile_id: path.resolve('hermes-home') })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=p2', path.resolve('hermes-home'))).toBe(endpoint)
+  // `profile` is not the sidebar's selector.
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?profile=default&recents_profile=p2', path.resolve('hermes-home'))).toBe(endpoint)
+})
+
 // A native gateway grant is minted only by main's shared transport (fetchJsonForBackend), which
 // also carries the descriptor's configured headers; a call site that hands fetchJson a
 // gatewayDescriptor itself silently drops them. Source guard over the one module that issues them.
@@ -458,4 +479,25 @@ test.skipIf(process.platform === 'win32')('a group-writable home mints through t
     await fs.chmod(home, 0o700)
     await fs.rm(home, { recursive: true, force: true })
   }
+})
+
+test('a session write that names its owner only in the body gets a grant for that profile', () => {
+  const url = 'http://127.0.0.1:1/api/sessions/s1'
+  expect(nativeGrantRoute(url, { hidden: true, profile: 'p2' })).toBe('p2')
+  // The URL's own selector wins; the gateway refuses a body that disagrees with it.
+  expect(nativeGrantRoute(url + '?profile=p3', { profile: 'p2' })).toBe(url + '?profile=p3')
+  expect(nativeGrantRoute('http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=p3', { profile: 'p2' })).toContain('recents_profile=p3')
+
+  for (const body of [undefined, null, {}, { profile: '' }, { profile: 7 }, [{ profile: 'p2' }]]) {
+    expect(nativeGrantRoute(url, body)).toBe(url)
+  }
+})
+
+test('an ensure refusal names its remedy instead of only a status pointer', async () => {
+  // A gateway another install owns is refused, not replaced; ensure says what to do in `detail`.
+  const detail = "another Hermes install's gateway owns this profile; stop it there: hermes gateway stop"
+
+  await expect(ensureLocalGateway(async () => ({
+    code: 3, stdout: JSON.stringify({ state: 'incompatible', reason_code: 'runtime_protocol', detail, endpoint: null })
+  }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
 })

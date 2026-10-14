@@ -872,8 +872,20 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
     return result
 
 
+def _owner_db_for(request: Request, profile: Optional[str]):
+    """The live owner's own store for *profile* when a composed gateway serves it, else None."""
+    runner = getattr(request.app.state, "gateway_runner", None)
+    if runner is None:
+        return None
+    from gateway.session_authorities import authority_for_home
+    from hermes_state import _default_db_path
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    authority = authority_for_home(runner, home)
+    return getattr(authority, "db", None)
+
+
 @manage_router.post("/api/sessions/owner-backfill")
-async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
+async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: Request):
     """Stamp legacy ``profile_name = NULL`` rows with the serving-profile identity.
 
     A multi-connection Desktop fails closed on unowned rows.  Each ``state.db``
@@ -891,9 +903,15 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
 
     with http_failure(
         "POST /api/sessions/owner-backfill failed", 500, detail="Internal server error"):
-        stamped = await asyncio.to_thread(
-            _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
-            read_only=False)
+        owner_db = _owner_db_for(request, body.profile)
+        if owner_db is not None:
+            # A live gateway owns this store: it is the only writer (the offline maintenance lock
+            # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
+            stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
+        else:
+            stamped = await asyncio.to_thread(
+                _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
+                read_only=False)
 
     if stamped:
         _log.info(

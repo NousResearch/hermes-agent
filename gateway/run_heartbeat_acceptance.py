@@ -55,9 +55,11 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     authority = active_authority(runner)
     if authority is None:
         return
-    pending = list_session_admissions(authority.db, session_id=session_id)
+    # Admissions live on the route's logical owner (the compression root), not its transcript tip;
+    # a LOCAL route's heartbeat rides local_automation_v1.
+    pending = list_session_admissions(authority.db, session_id=authority.logical_owner(session_id))
     if any(row['payload'].get('native_text_v1', {}).get('automation', {}).get('heartbeat')
-           for row in pending):
+           or row['payload'].get('local_automation_v1', {}).get('heartbeat') for row in pending):
         return
     manager = HeartbeatManager(session_id)
     prompt = manager.due_prompt()

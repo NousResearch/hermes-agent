@@ -216,23 +216,28 @@ class FanoutTransport:
                         self._remove(peer)
                     return
                 generation = peer.generation
-                frame, size = peer.pending.popleft()
-                peer.pending_bytes -= size
+                # Everything queued so far goes out as ONE batch: a producer with no per-frame I/O
+                # (an in-process turn streaming tokens) otherwise outruns one cross-thread round trip
+                # per frame and overflows a healthy socket's mailbox. In flight stays bounded: the
+                # next batch is taken only after this one is on the wire.
+                batch = list(peer.pending)
+                peer.pending.clear()
+                peer.pending_bytes = 0
             try:
                 # Duck-typed on purpose: importing ``tui_gateway.ws`` here would pull
                 # ``tui_gateway.server`` in on this drain thread, racing any concurrent
                 # importer with a partially initialized module.
-                write_async = getattr(peer.transport, "write_async", None)
+                write_many = getattr(peer.transport, "write_many_async", None)
                 loop = getattr(peer.transport, "_loop", None)
-                if write_async is not None and loop is not None:
+                if write_many is not None and loop is not None:
                     # write() acknowledges buffered tokens/timeouts, not socket
                     # progress. Await the real send so WS cannot move an
                     # unbounded backlog underneath this bounded mailbox.
                     from agent.async_utils import safe_schedule_threadsafe
-                    future = safe_schedule_threadsafe(write_async(frame), loop)
+                    future = safe_schedule_threadsafe(write_many([frame for frame, _size in batch]), loop)
                     ok = future is not None and future.result()
                 else:
-                    ok = peer.transport.write(frame)
+                    ok = all(peer.transport.write(frame) for frame, _size in batch)
             except Exception:
                 logger.debug("fanout write failed; pruning peer", exc_info=True)
                 ok = False

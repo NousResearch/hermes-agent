@@ -99,6 +99,9 @@ class GatewayDashboardMount:
             lifespan = web.app.router.lifespan_context(web.app)
             try:
                 await lifespan.__aenter__()
+                if self._closed:  # close() won while the lifespan started; it never saw this mount
+                    await lifespan.__aexit__(None, None, None)
+                    raise RuntimeError("gateway API stopped")
             except BaseException:
                 self.web = web
                 self._unbind_state()

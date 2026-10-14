@@ -15,6 +15,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import Principal, SessionRef, Submission
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
+from tests.waiting import async_wait_until
 
 ACTOR = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')
@@ -93,7 +94,8 @@ async def test_unserve_stops_and_joins_the_running_turn_before_release(tmp_path,
                 assert retired is False and not returned.is_set()
     finally:
         agent.release.set()
-        await asyncio.sleep(.05)
+        if agent.started.is_set():  # the released turn hands its result back before the store closes
+            await async_wait_until(returned.is_set, timeout=10, what='turn returned')
         db.close()
 
 
@@ -128,5 +130,6 @@ async def test_retire_stops_the_turn_a_hosted_room_stop_waits_for(tmp_path, monk
             assert retired is True and returned.is_set()
     finally:
         agent.release.set()
-        await asyncio.sleep(.05)
+        if agent.started.is_set():  # the released turn hands its result back before the store closes
+            await async_wait_until(returned.is_set, timeout=10, what='turn returned')
         db.close()

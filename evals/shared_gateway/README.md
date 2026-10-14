@@ -24,6 +24,6 @@ Evidence paths are relative to the receipt directory. Supply a full report with 
 
     python3 evals/shared_gateway/normal_boot.py --repo /path/to/checkout --python /path/to/project/.venv/bin/python --output /private/path/boot-before.json
 
-Repeat against the fixed checkout with a different output path. A descriptor pass is **not** proof of an authenticated API handshake, session execution, worker ownership, or native Windows startup. The current unintegrated bootstrap is expected to fail this check; retain that failure rather than weakening the assertion.
+Repeat against the fixed checkout with a different output path. A descriptor pass is **not** proof of an authenticated API handshake, session execution, worker ownership, or native Windows startup. The integrated bootstrap is expected to pass it (`tests/gateway/test_normal_runtime_boot.py` asserts the same `ready` descriptor from the real control socket); a failure is a regression, so retain it rather than weakening the assertion.
 
 The unified `run.py` driver is not implemented yet. Existing private native and subprocess probes have different receipt formats; do not rename them or manufacture a full report to obtain a pass. Test fixtures in `test_shared_gateway_harness.py` exercise the checker only and are not acceptance evidence.

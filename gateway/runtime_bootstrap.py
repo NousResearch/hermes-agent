@@ -10,6 +10,8 @@ _PURPOSE_CAPABILITIES = {
     'interactive': frozenset({'session:create', 'session:read', 'session:submit',
                               'session:control', 'session:approve', 'session:respond'}),
     'native-http': frozenset({'http:owner'}),
+    # Same-user host operation, not permission to read or mutate another profile.
+    'native-profile-create': frozenset({'profiles:create'}),
     'exposure': frozenset({'transport:delegate'}),
     'worker-adoption': frozenset({'worker:adopt'}),
 }

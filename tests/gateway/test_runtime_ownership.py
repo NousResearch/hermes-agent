@@ -119,10 +119,11 @@ def test_profile_reservations_unwind_without_releasing_another_owner(tmp_path):
 
 @pytest.mark.platforms("linux")
 @pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0, reason="root opens a mode-000 file")
-@pytest.mark.parametrize("mode", [0o000, 0o400])
+@pytest.mark.parametrize("mode", [0o400])
 def test_stale_unopenable_gateway_lock_is_replaced_on_boot(tmp_path, monkeypatch, mode):
-    """Main's #42685: a lock this user cannot open (left by a root-run gateway) and that no process
-    holds is unlinked and recreated, so boot does not exit "already held" forever."""
+    """Main's #42685: a lock this user cannot write (left by a root-run gateway) that a read-only
+    flock proves unheld is unlinked and recreated, so boot does not exit "already held" forever.
+    An unreadable one is refused instead (test_foreign_stale_gateway_lock)."""
     import json
     from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
     home = tmp_path / 'home'

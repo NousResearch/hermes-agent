@@ -49,12 +49,24 @@ def commit_local_session(db, *, epoch, receipt):
             model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
             (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
-             policy['model'], policy['cwd'], db._own_profile_name(), _json(entry['origin']), started))
+             policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt
     return db._execute_write(write)
+
+
+def _row_cwd(policy):
+    """The sessions-row ``cwd``: the create request's ``row_cwd`` (``""`` = none) when it sent one,
+    else the execution cwd. Row metadata only (workspace grouping, ``-c``, cwd restore); the
+    frozen policy's ``cwd`` / ``TERMINAL_CWD`` stay where the session's tools run."""
+    try:
+        request = json.loads(policy.get('request_json') or '{}')
+    except (TypeError, ValueError):
+        request = {}
+    value = request.get('row_cwd') if isinstance(request, dict) else None
+    return policy['cwd'] if not isinstance(value, str) else (value or None)
 
 
 def _policy_target(raw):

@@ -38,7 +38,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { profileScopeForSessionOwner } from '@/store/session-request-router'
-import { $sessionStates, $sessionTiles, knownOwnerForSession } from '@/store/session-states'
+import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
@@ -56,7 +56,7 @@ import {
   writePreparedSubmission
 } from './prepared-submissions'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
-import { captureSubmissionDestination } from './submission-destination'
+import { captureSubmissionDestination, destinationAfterCreate, sameAuthorityPublishedOwner } from './submission-destination'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -469,11 +469,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
-      const destination = retained
+      let destination = retained
         ? captureSubmissionDestination(targetStoredSessionId ?? sessionId, ambientRequestGateway, retained)
         : captured
 
-      const requestGateway = destination.requestGateway
+      let requestGateway = destination.requestGateway
       const submissionId = retained?.id ?? options?.submission_id ?? crypto.randomUUID()
 
       let startingStoredSessionId = routedSessionNeedsResume
@@ -989,6 +989,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         sessionId = createdRuntimeId
+        destination = destinationAfterCreate(destination, targetStoredSessionId ?? sessionId, ambientRequestGateway)
+        requestGateway = destination.requestGateway
       }
 
       try {
@@ -1066,17 +1068,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ...(titlePreview && { title_preview: titlePreview })
         })
 
-        // A fresh draft had no session owner at entry. Adopt its published
-        // route only if it is the SAME captured connection/profile authority.
-        const publishedDestination = captureSubmissionDestination(targetStoredSessionId, ambientRequestGateway, {
-          owner: knownOwnerForSession(targetStoredSessionId)
-        })
-
         const prepared: NonNullable<typeof retained> = retained ?? {
           id: submissionId,
-          owner:
-            destination.owner ??
-            (publishedDestination.scopeKey === destination.scopeKey ? publishedDestination.owner : undefined),
+          owner: destination.owner ?? sameAuthorityPublishedOwner(destination, targetStoredSessionId, ambientRequestGateway),
           displayText: options?.displayText,
           attachments: syncedAttachments,
           text,

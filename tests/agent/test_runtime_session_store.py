@@ -95,7 +95,7 @@ def test_outbox_filesystem_failure_is_sticky(tmp_path, monkeypatch):
 def test_outbox_journal_survives_a_cross_device_rename(tmp_path, monkeypatch):
     """The journal publishes through utils.atomic_replace: a bind-mounted outbox whose rename
     fails EXDEV falls back to copy+fsync instead of failing every worker write, and the
-    journal stays owner-only."""
+    journal stays owner-only (POSIX mode bits; Windows has none to check)."""
     import errno
     import stat
     real_replace = os.replace
@@ -108,7 +108,8 @@ def test_outbox_journal_survives_a_cross_device_rename(tmp_path, monkeypatch):
     try:
         journal = store.path
         assert json.loads(journal.read_text())['scope'] == {'session_id': 's'}
-        assert stat.S_IMODE(journal.stat().st_mode) == 0o600
+        if os.name == 'posix':
+            assert stat.S_IMODE(journal.stat().st_mode) == 0o600
         assert [p.name for p in journal.parent.iterdir() if p.name.startswith('.pending-')] == []
     finally:
         store._outbox_owner.close()

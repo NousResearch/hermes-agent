@@ -436,6 +436,7 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import {
@@ -462,11 +463,14 @@ import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   composeUnifiedSessionResponse,
+  fetchAllProfilesAggregatePerProfile,
+  fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
+  isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
@@ -5377,7 +5381,7 @@ function fetchJson(url, token, options: any = {}) {
     async (requestState: any) => {
       // Mint inside each retry: a grant authorizes exactly one HTTP request.
       const nativeHeaders = options.gatewayDescriptor
-        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME)
+        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME, options.method || 'GET', options.upload ? undefined : options.body)
         : null
 
       return new Promise((resolve, reject) => {
@@ -10785,9 +10789,10 @@ function profileRouteOptions(
 // so the next ensureBackend() re-runs `gateway ensure` (attach or start) instead
 // of minting tickets against a dead control socket. Nothing is killed: the
 // descriptor never owned the runtime.
-async function forgetLocalGatewayDescriptor(profile) {
+async function forgetLocalGatewayDescriptor(profile, request?: { method?: string; path?: string }) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
-  const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
+  // Resolve the route the failed call used (B2-15): an unscopable mutation's stale entry is pooled.
+  const route = resolveProfileBackendRoute(key, profileRouteOptions(key, request))
 
   if (route.backend === 'primary') {
     const attempt = backendConnectionState.startAttempt()
@@ -12518,11 +12523,7 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      if (params.partition !== 'persist:hermes-preview') {
-        return
-      }
-
-      webPreferences.preload = PREVIEW_GUEST_PRELOAD_PATH
+      applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH)
     })
   })
 }
@@ -15585,9 +15586,31 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
+
+  // A native grant names one profile and the gateway refuses `all`: assemble the unified
+  // session lists, project tree and PR scan from one read per profile, each carrying that
+  // profile's own grant.
+  if (descriptor.gatewayEndpoint && !opts.profileScoped) {
+    const sessions = isAllProfilesSessionListRequest(opts.method, path)
+
+    if (sessions || isAllProfilesAggregateRequest(opts.method, path)) {
+      const listing = (await fetchJsonForBackend(descriptor, '/api/profiles', { timeoutMs: opts.timeoutMs })) as any
+
+      const profiles = (Array.isArray(listing?.profiles) ? listing.profiles : [])
+        .map(profile => profile?.name)
+        .filter(name => typeof name === 'string' && name)
+
+      const readProfile = (_profile, scoped) =>
+        fetchJsonForBackend(descriptor, scoped, { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, profileScoped: true })
+
+      return sessions
+        ? fetchAllProfilesSessionsPerProfile(path, profiles, readProfile)
+        : fetchAllProfilesAggregatePerProfile(path, profiles, readProfile)
+    }
+  }
 
   if (descriptor.authMode === 'oauth') {
     // The OAuth cookie path rides electron.net with JSON headers; multipart
@@ -16442,10 +16465,10 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    connection = await ensureBackend(routeProfile, {
-      passive: request?.passive,
-      request: { method: request?.method, path: request?.path }
-    })
+    // The redial reuses these options: without the request an unscopable mutation's retry
+    // resolves the shared primary and writes in the wrong profile (B2-15).
+    const ensureOpts = { passive: request?.passive, request: { method: request?.method, path: request?.path } }
+    connection = await ensureBackend(routeProfile, ensureOpts)
 
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
@@ -16461,8 +16484,8 @@ async function handleHermesApiRequest(request) {
 
     response = connection.gatewayEndpoint
       ? await redialLocalGateway({
-          ensure: () => ensureBackend(routeProfile),
-          forget: () => forgetLocalGatewayDescriptor(routeProfile),
+          ensure: () => ensureBackend(routeProfile, ensureOpts),
+          forget: () => forgetLocalGatewayDescriptor(routeProfile, ensureOpts.request),
           use: send
         })
       : await send(connection)

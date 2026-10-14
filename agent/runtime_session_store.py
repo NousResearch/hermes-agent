@@ -73,8 +73,7 @@ class WorkerRPC:
             descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
             if descriptor.get('pid') == os.getpid():
                 raise WorkerPersistenceError('synchronous_self_rpc')
-            ticket = _session_ticket(self.home, endpoint,
-                purpose='interactive' if method == 'worker.register' else 'worker-adoption')
+            ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
             url, protocols = gateway_ws_target(endpoint, ticket)
             # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
             with connect(url, subprotocols=protocols,

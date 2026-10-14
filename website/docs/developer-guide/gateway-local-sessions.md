@@ -95,8 +95,12 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
   stamps a session-token identity and also supports creation. Callers cannot provide an
   identity in RPC parameters, and operator scope does not promote resume-only capabilities
   to `session:create`.
-- `session.list({limit})` returns authorized **live** authority sessions (`scope: "live"`),
-  not the full historical session picker. `session.info({session_id})` is a lightweight,
+- `session.list({limit})` returns authorized **live** authority sessions (`scope: "live"`).
+  The native TUI picker also requests `session.list({limit, scope: "stored"})` for pre-authority
+  CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
+  excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
+  by listing it. Explicit resume performs adoption; the default live feed is unchanged.
+  `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,
   epoch, capabilities, and the creation contract (`session_create.sources` and

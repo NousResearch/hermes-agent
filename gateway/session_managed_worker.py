@@ -1,8 +1,9 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from collections import deque
 from dataclasses import asdict, replace
+from functools import partial
 import json
 import os
 import queue
@@ -294,18 +295,34 @@ class ManagedWorker:
         except psutil.Error:
             pass
 
+    def _signal_group(self, kill):
+        """POSIX: signal the worker's whole process group (it leads one, WORKER_POPEN), so the tool
+        children a killed worker never reaps with _die_with_owner go too. Only while the leader is
+        unreaped and still leads its group; otherwise (Windows, gone) the handle alone."""
+        if os.name != 'nt' and self.process.poll() is None:
+            import signal
+            try:
+                if os.getpgid(self.process.pid) == self.process.pid:
+                    os.killpg(self.process.pid, signal.SIGKILL if kill else signal.SIGTERM)  # windows-footgun: ok — POSIX only
+                    return
+            except (ProcessLookupError, PermissionError):
+                pass
+        (self.process.kill if kill else self.process.terminate)()
+
     def close(self):
         self.closed.set()
         self._demand.release()  # a reader parked between frames exits; one mid-read ends at EOF
         if self.process.poll() is None:
             self._signal_worker(kill=False)
-            self.process.terminate()
+            self._signal_group(kill=False)
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._signal_worker(kill=True)
-            self.process.kill()
-            self.process.wait(timeout=5)
+            self._signal_group(kill=True)
+            # Still unreaped after SIGKILL (a launcher's handle): the teardown below must still run.
+            with suppress(subprocess.TimeoutExpired):
+                self.process.wait(timeout=5)
         else:
             self._signal_worker(kill=True)
         if self.writer.ident is not None:
@@ -465,8 +482,10 @@ async def execute_managed(authority, ref, row, policy):
         if worker.stop.is_set():
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
             raise RuntimeStoreError('managed_worker_stopped')
-        scope = reserve_admission_worker(authority, admission_id=row['admission_id'],
-                    process=process, principal_id=row['principal_id'], hello=hello)
+        # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
+        from gateway.session_runtime_workers import tracked_write
+        scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
+                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
@@ -475,7 +494,9 @@ async def execute_managed(authority, ref, row, policy):
         worker.writer.start()
         while True:
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
-            authority.check_approval_generation(ref.session_id, row['generation'])
+            # The claim's execution stamp, not a ledger read per frame (publish_execution fences the same way).
+            if authority.executing.get(ref.session_id) != row['generation']:
+                raise RuntimeStoreError('stale_generation')
             with authority.sessions[ref.session_id].event_stream.lock:
                 if _prompt_frame(authority, ref, row, worker, frame):
                     continue
@@ -498,11 +519,11 @@ async def execute_managed(authority, ref, row, policy):
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
             if frame == {'type': 'finished'} and accepted is not None:
-                code = await asyncio.to_thread(process.wait, 10)
-                if code != 0:
-                    raise RuntimeStoreError('managed_worker_lost')
+                # 'finished' follows the worker's durable execution.finish: the turn is complete.
+                # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
+                with suppress(subprocess.TimeoutExpired):
+                    await asyncio.to_thread(process.wait, 10)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
-                # The worker must acknowledge its durable finish before that boundary.
                 authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
@@ -518,13 +539,15 @@ async def execute_managed(authority, ref, row, policy):
                 return _interrupted_before_bootstrap(authority, row)
             raise
         from gateway.session_worker_reservation import lose_admission_worker
-        lose_admission_worker(authority, row, scope)
+        from gateway.session_runtime_workers import tracked_write
+        await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
         live = authority.sessions[ref.session_id]
         with live.event_stream.lock:
             live.controls.snapshot(ref.session_id, None)
             authority._publish_pending(ref)
             live.event_stream.publish(ref.session_id, {'text': 'Worker execution is unknown.',
-                'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown'})
+                'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown',
+                'status': 'error'})  # the message.complete TurnStatus: never painted as a normal finish
         waiter = authority.waiters.pop(row['admission_id'], None)
         if waiter is not None and not waiter.done():
             waiter.set_result('Worker execution is unknown.')

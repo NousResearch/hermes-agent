@@ -287,7 +287,8 @@ async def test_new_and_branch_move_the_terminal_continue_pointer(monkeypatch, tm
     from hermes_cli.gateway_chat_view import GatewayChatView
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TMUX_PANE", "%9")
-    monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()),
+                        raising=False)  # os.ttyname does not exist on Windows
 
     class Peer:
         async def rpc(self, method, **params):
@@ -311,3 +312,35 @@ async def test_new_and_branch_move_the_terminal_continue_pointer(monkeypatch, tm
     else:
         assert await view.command(command) is True
     assert terminal_breadcrumbs.read_breadcrumb()["session_id"] == "moved"
+
+
+@pytest.mark.asyncio
+async def test_oneshot_z_writes_no_session_lines_to_stderr_like_main(monkeypatch, tmp_path, capsys):
+    """Main's ``hermes -z`` printed the reply on stdout and nothing on stderr; ``-q -Q`` keeps the
+    ``Session:`` / ``session_id:`` lines automation wrappers read."""
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli", "oneshot"], "parameters": ["cwd", "request_id", "source"]}}
+            return {"stored_session_id": "stored-z"}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def rendered(self, query, *, oneshot):
+        self._print_exit_ids()
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    monkeypatch.chdir(tmp_path)
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(oneshot="z")) == 0
+    assert "stored-z" not in capsys.readouterr().err
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 0
+    err = capsys.readouterr().err
+    assert "Session: stored-z" in err and "session_id: stored-z" in err

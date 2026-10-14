@@ -975,6 +975,50 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', expect.anything()))
   })
 
+  it('pages a long owner read from slash.exec like main\'s sidecar output', async () => {
+    // The shared owner answers a read as `{type: 'exec', output}` (gateway/session_commands.py);
+    // main's sidecar sent bare `{output}`, paged when long. /context and /cron must still open
+    // the pager, not collapse to a one-line system row.
+    patchUiState({ sid: 'sid-abc' })
+    const output = ['Conversation: 4 messages', '  user: 2, assistant: 2, tool: 0, system: 0', 'Model: fake-model'].join('\n')
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            Promise.resolve(method === 'slash.exec' ? { output, type: 'exec' } : {})
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/context')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.page).toHaveBeenCalledWith(output, 'Context'))
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(output)
+  })
+
+  it('keeps a short owner read from slash.exec as a system line', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            Promise.resolve(method === 'slash.exec' ? { output: 'Hermes v1', type: 'exec' } : {})
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/version')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalledWith('Hermes v1'))
+    expect(ctx.transcript.page).not.toHaveBeenCalled()
+  })
+
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {
     patchUiState({ sid: 'sid-abc' })
 

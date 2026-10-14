@@ -4,6 +4,7 @@ The mailbox is a delivery receipt, not an execution queue. A committed canonical
 admission is the only consumer; unknown execution is never retried as inference.
 """
 import asyncio
+from functools import partial
 import logging
 from pathlib import Path
 
@@ -15,12 +16,14 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
-    scan_receipts, remember_receipt, track_receipt_task)
+    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin)
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
     'canonical', 'queued', 'claimed', 'ambiguous', 'settled', 'failed', 'cancelled',
 })
+_BOT_DM_MAX_CHARS = 16200
+_PRODUCER_MAX_CHARS = 1024 * 1024
 
 
 def _canonical_record_error(path, record):
@@ -82,11 +85,12 @@ def _home(authority, actor, profile):
     return home
 
 
-def _target(authority, actor):
-    row = authority.db.get_session_by_title('Bot Chat')
-    if row is None:
-        ref = _create_bot_chat(authority, actor)
-    else:
+async def _target(authority, actor):
+    ref = None
+    if authority.db.get_session_by_title('Bot Chat') is None:
+        ref = await _create_bot_chat(authority, actor)  # None: a concurrent delivery created it first
+    if ref is None:
+        row = authority.db.get_session_by_title('Bot Chat')
         tip = authority.db.get_compression_tip(row['id'])
         target = authority.db.get_session(tip)
         if target is None:
@@ -101,20 +105,33 @@ def _target(authority, actor):
     return ref, live, entry
 
 
-def _create_bot_chat(authority, actor):
+async def _create_bot_chat(authority, actor):
     """No Bot Chat yet: mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
     did on the CLI lane this door replaced, so a fresh profile's first delivery has somewhere
     to land instead of being recorded as failed. Same owner step as ``session.create`` with a
-    title: no await between the lookup and the titled creation. Creation is the actor's own
-    capability; a submit-only principal (owner recovery) still gets ``not_found``."""
+    title: lookup, creation and title run under the authority's titled-create lock, with the
+    commits off the owner loop (N90). Creation is the actor's own capability; a submit-only
+    principal (owner recovery) still gets ``not_found``."""
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('not_found')
-    from gateway.session_local import create_local_session
+    from gateway.session_local import stage_local_session
+    from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
-    ref = create_local_session(authority, actor, {
-        'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
-    title_new_session(authority, ref, 'Bot Chat')
-    return ref
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_local import commit_local_session
+    lock = getattr(authority, '_titled_create_lock', None)
+    if lock is None:
+        lock = authority._titled_create_lock = asyncio.Lock()
+    async with lock:
+        if authority.db.get_session_by_title('Bot Chat') is not None:
+            return None
+        ref = stage_local_session(authority, actor, {
+            'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
+        if isinstance(ref, dict):
+            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            ref = restore_local_session(authority, ref['session_id'])
+        await tracked_write(authority, partial(title_new_session, authority, ref, 'Bot Chat'))
+        return ref
 
 
 def _bot_chat_creation_id(authority, actor):
@@ -122,7 +139,7 @@ def _bot_chat_creation_id(authority, actor):
     ``bot-chat:<profile>`` id; a generation is spent once its session was deleted (retired: a retry
     must never resurrect it) or renamed (titled, but not "Bot Chat" — or the lookup had found it),
     and a replacement takes the next one. Derived from durable rows only, so a restart and two
-    concurrent deliveries (this runs on the owner loop with no await) pick the same identity. An
+    concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
     existing UNtitled session is the same creation interrupted before its title: it is reused."""
     from gateway.session_local_recovery import local_identity
     from hermes_state_mutation_retirement import retired_session
@@ -273,7 +290,7 @@ async def _maybe_retry(authority, home, path, record):
                       'bot-delivery-retry')
     try:
         authority._require_admission_open()
-        ref, live, entry = _target(authority, actor)
+        ref, live, entry = await _target(authority, actor)
         if ref.session_id != record['session_id']:
             raise RuntimeStoreError('admission_conflict')
         if authority.db.latest_conversation_role(entry.session_id) == 'user':
@@ -296,7 +313,15 @@ async def _maybe_retry(authority, home, path, record):
     record['retry'] = {'identity': identity}
     record.update(status='queued', reply='')
     await write_receipt(home, record)
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    try:
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'queue_full':
+            raise
+        # Nothing was admitted: keep the delivery pending (as for a drain) so the next wake or
+        # delivery performs the same derived retry once the FIFO has room.
+        record.update(status='claimed', reply='')
+        return
     record.update(_result(authority, record))
     if record['status'] in {'queued', 'claimed'}:
         _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
@@ -370,7 +395,7 @@ async def _migrate(authority, actor, home, root):
               and record['status'] in {'queued', 'claimed'}]
     if not legacy:
         return
-    ref, live, entry = _target(authority, actor)
+    ref, live, entry = await _target(authority, actor)
     for path, record in sorted(legacy, key=lambda item: (item[1].get('sequence', item[1]['created_at']), item[0].name)):
         owner = record['owner']
         if owner['profile_home'] != str(home):
@@ -459,7 +484,11 @@ async def _deliver(connection, params):
     except ValueError as exc:
         raise RuntimeStoreError('invalid_params') from exc
     message = params.get('message')
-    if not isinstance(message, str) or not message.strip() or len(message) > 16200:
+    # Main capped only a relayed bot DM (MESSAGE_MAX_CHARS + attribution headroom), at the relay
+    # edge; a trusted producer's report (cron bot-chat, its deferred drain) carries no author and
+    # was admitted whole, so it gets a resource bound only.
+    limit = _BOT_DM_MAX_CHARS if params.get('author') is not None else _PRODUCER_MAX_CHARS
+    if not isinstance(message, str) or not message.strip() or len(message) > limit:
         raise RuntimeStoreError('invalid_params')
     author = parse_turn_author(params.get('author'))
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
@@ -488,7 +517,7 @@ async def _deliver(connection, params):
             return await _publish_result(authority, home, record)
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
-        ref, live, entry = _target(authority, actor)
+        ref, live, entry = await _target(authority, actor)
         if params.get('session_id', entry.session_id) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
         return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
@@ -518,7 +547,13 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         if legacy is not None:
             return None
         raise RuntimeStoreError('admission_conflict')
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    try:
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    except RuntimeStoreError as exc:
+        if exc.reason == 'queue_full' and legacy is None:
+            # Refused inside the admit transaction before any INSERT: nothing to recover.
+            await withdraw_pin(home, key)
+        raise
     record.update(status='canonical', admission_id=receipt.admission_id)
     record.update(_result(authority, record))
     if record['status'] in {'queued', 'claimed'}:

@@ -22,6 +22,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 A_FOLLOWERS = ('A_FOLLOWER_1', 'A_FOLLOWER_2')
 
@@ -65,9 +66,7 @@ def test_new_session_never_absorbs_or_drops_earlier_queued_work(tmp_path, restar
         return [[m.get('content') for m in r['messages'] if m['role'] == 'user'] for r in peer.requests]
 
     async def until(predicate, timeout=30):
-        async with asyncio.timeout(timeout):
-            while not predicate():
-                await asyncio.sleep(.03)
+        await async_wait_until(predicate, timeout=timeout, interval=.03)
 
     ids = {}
 

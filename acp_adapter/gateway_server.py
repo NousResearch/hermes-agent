@@ -42,23 +42,25 @@ def _stage_user_content(content):
         if not url.startswith('data:'):
             texts.append(f"[Image attached: {url}]")
             continue
-        header, _, data = url.partition(',')
-        declared = header[len('data:'):].split(';', 1)[0].strip().lower()
         if len(attachments) >= _ATTACHMENT_LIMIT:
             raise GatewayClientError('acp_content_invalid')
         try:
-            raw = base64.b64decode(data, validate=True)
+            raw = base64.b64decode(url.partition(',')[2], validate=True)
         except (binascii.Error, ValueError) as exc:
             raise GatewayClientError('acp_content_invalid') from exc
-        # The staged extension and admitted type come from the sniffed bytes, never the client's
-        # text (``text/html`` -> .html, ``image/svg+xml``, or a path-shaped subtype on Windows).
+        # The sniffed bytes are authoritative for the staged extension and admitted type; the
+        # client's declared type (a file suffix, or image/png by default) is never trusted. A
+        # part admission cannot carry (bmp/svg, over the media cap) degrades to a text note so
+        # the user's text still runs, as main's in-process server did for oversize images.
         mime = sniff_image_mime(raw)
-        if mime is None or (declared and {'image/jpg': 'image/jpeg'}.get(declared, declared) != mime):
-            raise GatewayClientError('acp_content_invalid')
+        if mime is None:
+            texts.append("[Image omitted: unsupported image format]")
+            continue
         try:
             path = cache_image_from_bytes(raw, _IMAGE_EXT[mime])
         except ValueError as exc:
-            raise GatewayClientError('acp_content_invalid') from exc
+            texts.append(f"[Image omitted: {exc}]")
+            continue
         attachments.append({'path': path, 'mime': mime})
     return "\n".join(texts), attachments
 
@@ -126,8 +128,11 @@ class GatewayACPAgent(acp.Agent):
         # editor's retry (that session's next prompt, same content) reuses it, so the authority
         # returns the same admission.
         self._unacked = {}
-        # Admissions whose message.complete the pump is projecting right now.
+        # Admissions whose terminal reply one path (the pump's message.complete or a retry's
+        # terminal receipt) is delivering right now; the other path yields to the claim.
         self._settling = set()
+        # Admissions a terminal receipt already delivered: their late message.complete adds nothing.
+        self._receipted = {}
         self._pending_cancels = set()
         self._tool_args = {}
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
@@ -209,6 +214,13 @@ class GatewayACPAgent(acp.Agent):
             self._snapshots[session_id] = snapshot
             for pending in snapshot.get("prompts", []):
                 self._permission(session_id, pending)
+            await self._notify_unknown(session_id)
+
+    async def _notify_unknown(self, session_id):
+        """The classic chat's resume notice: say why the next prompt will be refused and how to recover."""
+        if self._has_unknown(session_id) and self._conn:
+            await self._conn.session_update(session_id=self._editor_id(session_id), update=acp.update_agent_message_text(
+                self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
 
     def _transport_closed(self):
         # The socket reader settles every pending RPC before the pump sees its disconnect frame,
@@ -287,10 +299,7 @@ class GatewayACPAgent(acp.Agent):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
-        if self._has_unknown(session_id) and self._conn:
-            # The classic chat's resume notice: say why the next prompt will be refused and how to recover.
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
-                self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
+        await self._notify_unknown(session_id)
         return snapshot
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
@@ -422,7 +431,6 @@ class GatewayACPAgent(acp.Agent):
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
-        self._mutations.retire(session_id)  # ... and every prepared control's (a slash re-keeps its own)
         command = _slash_command(text) if not attachments else None
         if command is not None:
             from hermes_cli.gateway_mutations import slash_mutation
@@ -445,8 +453,8 @@ class GatewayACPAgent(acp.Agent):
                 self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
             self._mutations.acknowledge(session_id, operation, payload)
             return PromptResponse(stop_reason='end_turn')
-        client = await self._client()
-        link = self._link
+        # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
+        self._mutations.retire(session_id)
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
@@ -454,6 +462,9 @@ class GatewayACPAgent(acp.Agent):
         input_id = retained[1] if retained is not None and retained[0] == retry_key else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
+            # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
+            client = await self._client()
+            link = self._link
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
             from hermes_cli.gateway_client import GatewayRPCError
@@ -513,13 +524,21 @@ class GatewayACPAgent(acp.Agent):
                                  include_result=True)
         if admission_id in self._terminals or admission_id in self._settling:
             return  # this connection's pump carried the completion itself
-        text = (saved.get("result") or {}).get("final_response") or ""
-        if text and self._conn:
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(text))
-        outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
-        async with self._changed:
-            self._terminals[admission_id] = {"outcome": outcome}
-            self._changed.notify_all()
+        self._settling.add(admission_id)  # claimed before the first await; the pump yields to it
+        self._receipted[admission_id] = None
+        while len(self._receipted) > 256:
+            self._receipted.pop(next(iter(self._receipted)))
+        try:
+            outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+            text = (saved.get("result") or {}).get("final_response") or ""
+            remainder = self._final_remainder(admission_id, {"text": text, "outcome": outcome})
+            if remainder and self._conn:
+                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(remainder))
+            async with self._changed:
+                self._terminals[admission_id] = {"outcome": outcome}
+                self._changed.notify_all()
+        finally:
+            self._settling.discard(admission_id)
 
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
         """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
@@ -632,6 +651,11 @@ class GatewayACPAgent(acp.Agent):
                     await self._conn.session_update(session_id=editor_id,
                                                     update=acp.update_agent_message_text(text + "\n\n"))
         elif kind == "message.complete":
+            if aid in self._settling or aid in self._receipted:
+                # A retry's terminal receipt claimed this reply; it is shown once, from there.
+                self._streamed.pop(aid, None)
+                self._segments.pop(aid, None)
+                return
             self._settling.add(aid)
             try:
                 remainder = self._final_remainder(aid, payload)

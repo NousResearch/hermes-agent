@@ -82,7 +82,7 @@ export function gatewayOwnerProfile(endpoint: GatewayEndpoint): string {
   return path.basename(path.dirname(home)) === 'profiles' ? path.basename(home) : 'default'
 }
 
-/** One restart per stale (gateway, client) code pair per process. An owner a restart cannot move
+/** One restart per (owner process, stale gateway, client) per Desktop process. An owner a restart cannot move
  *  (a service unit pinned to another checkout) is then attached as-is instead of being restarted
  *  on every dial. */
 export function createStaleGatewayRestarter(
@@ -94,7 +94,7 @@ export function createStaleGatewayRestarter(
   const restarts = new Map<string, { done: boolean; promise: Promise<void> }>()
 
   return async (endpoint, stale) => {
-    const key = `${stale.gateway}\n${stale.client}`.toLowerCase()
+    const key = `${gatewayOwnerProfile(endpoint)}\n${stale.gateway}\n${stale.client}`.toLowerCase()
     const pending = restarts.get(key)
 
     if (pending && !pending.done) {
@@ -184,7 +184,11 @@ export async function ensureLocalGateway(
   }
 
   if (result.code !== 0 || payload.state !== 'ready') {
-    throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}). Use hermes gateway status for recovery.`)
+    // A refused replacement (another install's or a newer Hermes's gateway) names its remedy in
+    // `detail`; a start that died carries its own output there. Either beats a pointer elsewhere.
+    const detail = typeof payload.detail === 'string' && payload.detail.trim() ? ` ${payload.detail.trim().split(/\r?\n/)[0]}.` : ''
+
+    throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}).${detail} Use hermes gateway status for recovery.`)
   }
 
   const endpoint: GatewayEndpoint = payload.endpoint
@@ -312,11 +316,17 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
+/** The batched sidebar names its owner in `recents_profile` (the gateway checks that selector);
+ *  every other profile-scoped route uses `profile`. */
+function scopedProfileOf(url: URL): null | string {
+  return url.searchParams.get(url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile')
+}
+
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
-export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): GatewayEndpoint {
-  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
+export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string): GatewayEndpoint {
+  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile)) : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
   const own = path.basename(endpoint.profile_id)
@@ -325,29 +335,44 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   if (profile === ownName) {return endpoint}
 
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
-  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : launchHome
+  // The root home is the endpoint's own profile_id (Python resolved it); the raw launch HERMES_HOME
+  // may be a symlink, and a ticket for an unresolved sibling home fails 'Noncanonical' (B2-17).
+  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : endpoint.profile_id
   const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
 }
 
-export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id) {
+/** What a native grant is minted for: the URL's own profile selector or, when it names none, a
+ *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
+ *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
+export function nativeGrantRoute(url: string, body?: unknown): string {
+  if (scopedProfileOf(new URL(url))?.trim()) {return url}
+  const profile = body && typeof body === 'object' && !Array.isArray(body) ? (body as { profile?: unknown }).profile : undefined
+
+  return typeof profile === 'string' && profile.trim() ? profile : url
+}
+
+export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET', body?: unknown) {
   if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, url, launchHome), 'native-http') }
+  const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
+    ? 'native-profile-create' : 'native-http'
+
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
 // home whose group-write only Python can prove private.
-let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined
+let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create') => Promise<string>) | undefined
 
 export function configurePythonGatewayTicketClient(client: NonNullable<typeof pythonTicketClient>) {
   pythonTicketClient = client
 }
 
-async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http', homes: string[]) {
+async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create', homes: string[]) {
   if (!pythonTicketClient) {throw new Error(`Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`)}
 
   try {
@@ -389,11 +414,11 @@ async function resolveControlSocket(home: string): Promise<string> {
 /** The Desktop's interactive socket is the one shared-primary route: its renderer selects every
  *  served sibling with a `profile` param, so it asks for a host-scoped grant explicitly. Every
  *  other ticket (and every other client's) stays bound to the one profile it names. */
-export function ticketScope(purpose: 'interactive' | 'native-http'): { scope?: 'host' } {
+export function ticketScope(purpose: 'interactive' | 'native-http' | 'native-profile-create'): { scope?: 'host' } {
   return purpose === 'interactive' ? { scope: 'host' } : {}
 }
 
-export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
+export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create' = 'interactive'): Promise<string> {
   if (process.platform === 'win32') {
     if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
 

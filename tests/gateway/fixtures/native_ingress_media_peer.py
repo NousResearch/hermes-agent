@@ -10,6 +10,7 @@ import threading
 import traceback
 
 from shared_authority_peer import ModelPeer
+from tests.waiting import wait_until
 
 
 async def probe(mode, peer):
@@ -116,8 +117,10 @@ async def probe(mode, peer):
         # Published by rename: the parent SIGKILLs this process the moment the file exists.
         (state / 'accepted.tmp').write_text(json.dumps(evidence))
         os.replace(state / 'accepted.tmp', state / 'accepted.json')
-        threading.Event().wait(60)
-        raise AssertionError('parent failed to kill owner')
+        # Hang until the parent's SIGKILL lands; a parent that exits instead orphans us (reparent).
+        parent = os.getppid()
+        wait_until(lambda: os.getppid() != parent, timeout=60, interval=.05, what='the parent to kill this owner')
+        raise AssertionError('parent exited without killing owner')
 
     if mode == 'recover':
         before = json.loads((state / 'accepted.json').read_text())

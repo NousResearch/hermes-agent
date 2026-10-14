@@ -4,6 +4,7 @@
 import logging
 import asyncio
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -117,7 +118,31 @@ def _session_mutation_context(request, profile):
     authority = owner
     if native is not None and native['profile_id'] != authority.profile_id:
         raise HTTPException(status_code=403, detail='profile_mismatch')
+    if native is not None:
+        # One transport per verified native request, so the grant's own profile can claim its old
+        # local history exactly as over the native socket (``require_history_claim``); a shared
+        # 'http' id never can.
+        import uuid
+        return authority, Principal(subject, authority.profile_id, capabilities, 'native-http:' + uuid.uuid4().hex)
     return authority, Principal(subject, authority.profile_id, capabilities, 'http')
+
+
+@contextmanager
+def _native_history_transport(request, authority, actor):
+    """Bind a verified native HTTP actor as a native legacy transport for one mutation."""
+    native = None
+    if authority is not None and str(getattr(actor, 'transport_id', '')).startswith('native-http:'):
+        native = getattr(request.state, 'native_http_principal', None)
+    if native is None:
+        yield
+        return
+    from gateway.session_local_migration import bind_native_transport, unbind_native_transport
+    bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': authority.profile_id,
+                                             'instance_id': native['instance_id']})
+    try:
+        yield
+    finally:
+        unbind_native_transport(authority, actor)
 
 
 def _mutate_offline_store(profile, actor, params):
@@ -179,7 +204,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         if authority is None:
             result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
-            result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+            with _native_history_transport(request, authority, actor):
+                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
         status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,

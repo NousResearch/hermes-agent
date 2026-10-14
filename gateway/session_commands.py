@@ -16,8 +16,27 @@ from hermes_state_runtime import RuntimeStoreError
 # gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
-                            'suggestions', 'bundles'})
+                            'suggestions', 'bundles', 'skills'})
 _CONTROL_COMMANDS = frozenset({'title'})
+# Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
+# local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
+# cached agent, the /debug summary upload, /blueprint's job creation. A turn the handler would have
+# pushed onto the adapter FIFO comes back as a ``send`` directive (gateway/session_command_sink.py).
+_HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review', 'refine', 'debug', 'curator',
+                               'login'})
+# Idle-path commands the messaging gateway answers by rewriting the turn (``_hm_cmd_<name>``,
+# gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
+_PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'initiate-setup', 'moa', 'blueprint', 'egress'})
+# Per-session settings: the messaging handler itself, made session-correct for a local session
+# (gateway/session_setting_commands.py). Admission-fenced like any control.
+_SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',
+                               'yolo', 'fast', 'personality'})
+# Typed `/approve` / `/deny`: the messaging handler resolves THIS session's waiting approval (its
+# route is the session key), the same waiter `approval.respond` answers by prompt id.
+_APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
+# Reports with no messaging handler: the classic CLI's own text, built by the owner for this
+# session (gateway/session_info_reads.py).
+_INFO_READS = frozenset({'toolsets', 'platforms'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -39,6 +58,7 @@ def _first_token(arg):
 # redeems a credit, ``/memory approve|approval`` applies writes / edits config.yaml,
 # ``/suggestions accept|catalog`` schedules cron jobs delivering to this (non-messaging) chat.
 _READ_ARGUMENTS = {
+    'skills': lambda arg: _first_token(arg) in {'', 'pending', 'diff'},
     'usage': lambda arg: not arg.strip(),
     'memory': lambda arg: arg.strip().lower() in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
@@ -46,11 +66,21 @@ _READ_ARGUMENTS = {
 }
 
 
+# The write forms of a command whose reads are above: the messaging handler's own review verbs,
+# applied for this session's profile (`/skills approve|reject` the staged queue, `/skills approval`
+# its config.yaml switch, as main's CLI wrote it).
+_CONTROL_ARGUMENTS = {
+    'skills': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+}
+
+
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
-    if name in _CONTROL_COMMANDS:
+    if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
+            or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
+            or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
         return 'control'
-    if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
+    if name in _INFO_READS or (name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg)):
         return 'read'
     return 'refused'
 
@@ -103,6 +133,22 @@ def _skill_directive(name, arg, route):
             'display': describe_skill_invocation(message, separator=' ')}
 
 
+async def _tui_read(authority, actor, ref, name, arg):
+    """Main's TUI sidecar text for a TUI session's /status, /context or /cron read, else None."""
+    from gateway.session_local import authorize_local_source
+    from gateway.session_policy import policy_for_source
+    from gateway.session_tui_reads import run_tui_read, tui_read
+    live = authority.sessions[ref.session_id]
+    if authorize_local_source(authority.runner, live.source) is not True:
+        return None
+    policy = policy_for_source(authority.runner, live.source)
+    render = tui_read(policy, name, arg)
+    if render is None:
+        return None
+    authority.authorize(actor, ref, 'session:read')
+    return await run_tui_read(authority, ref, live, policy, render, arg)
+
+
 @contextmanager
 def _session_workspace(runner, source):
     """The session's frozen terminal policy (``TERMINAL_CWD`` = its launch cwd), so ``/diff``
@@ -142,7 +188,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     definition = resolve_command(name)
     canonical = definition.name if definition else name
     verdict = command_verdict(canonical, arg) if definition else None
+    if definition is not None and (tui := await _tui_read(authority, actor, ref, canonical, arg)) is not None:
+        return tui
     capability = ('session:read' if verdict == 'read' else
+                  'session:approve' if canonical in _APPROVAL_COMMANDS else
                   'session:control' if definition else 'session:submit')
     authority.authorize(actor, ref, capability)
     if verdict == 'refused':
@@ -159,13 +208,42 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 return _skill_directive(name, arg, live.route)
         return await asyncio.to_thread(build)
 
+    if canonical in _INFO_READS:
+        from gateway.session_info_reads import run_info_read
+        return await run_info_read(authority, live, canonical)
+
     from gateway.platforms.base import MessageEvent
-    event = MessageEvent(text='/' + canonical + (' ' + arg if arg else ''), source=live.source)
+    from gateway.session_command_sink import capture
+    typed = '/' + canonical + (' ' + arg if arg else '')
+    event = MessageEvent(text=typed, source=live.source)
+    runner = authority.runner
+    prompt = None
     # Use the registry's existing busy contract, not a local approximation.
-    with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+    with _profile_runtime_scope(home), _session_workspace(runner, live.source), capture() as sink:
         if authority._handle(ref).execution_state != 'idle':
-            output = await authority.runner._dispatch_busy_slash_command(event, definition, live.route, live.source)
+            output = await runner._dispatch_busy_slash_command(event, definition, live.route, live.source)
+        elif canonical in _PROMPT_COMMANDS:
+            handled, output = await getattr(runner, '_hm_cmd_' + canonical.replace('-', '_'))(
+                event, live.source, live.route)
+            if not handled:
+                prompt = event.text
         else:
-            handler = authority.runner._command_handler_table((canonical,))[canonical]
+            handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
-    return {'type': 'exec', 'output': str(output or '')}
+    if canonical in _APPROVAL_COMMANDS:
+        # Settle the answered prompt for every viewer now (`approval.settled`), as approval.respond does.
+        handle = authority._handle(ref)
+        live.controls.snapshot(ref.session_id, handle.execution_generation
+                               if handle.execution_state == 'running' else None)
+    prompt = prompt if prompt is not None else sink.prompt
+    if prompt:
+        # The client submits the turn with its own durable input id; the gateway never does.
+        notice = '\n'.join(filter(None, [*sink.notices, str(output or '')]))
+        return {'type': 'send', 'message': prompt, 'display': sink.display or typed,
+                **({'notice': notice} if notice else {})}
+    return {'type': 'exec', 'output': '\n'.join(filter(None, [*sink.notices, _text(output)]))}
+
+
+def _text(output):
+    """A handler reply as text: ``/blueprint``'s result object carries it in ``.text``."""
+    return str(getattr(output, 'text', output) or '')

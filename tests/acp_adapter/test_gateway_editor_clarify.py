@@ -11,6 +11,7 @@ import json
 import pytest
 
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
+import time
 
 
 @pytest.mark.platforms("linux")
@@ -28,9 +29,10 @@ async def test_editor_answers_canonical_clarify_through_clarify_respond(
         turn = None
         if restored:
             accepted = await ws.rpc("prompt.submit", session_id=sid, input_id="cli-turn", text="Ask my color")
-            async with asyncio.timeout(30):
-                while not (await ws.rpc("session.resume", session_id=sid))["prompts"]:
-                    await asyncio.sleep(.05)
+            deadline = time.monotonic() + 30
+            while not (await ws.rpc("session.resume", session_id=sid))["prompts"]:
+                assert time.monotonic() < deadline, "the CLI turn's clarify never reached the snapshot"
+                await asyncio.sleep(.05)
         async with editor(daemon, tmp_path) as acp:
             capabilities = {"elicitation": {"form": {}}} if form else {}
             assert "result" in await acp.rpc("initialize", protocolVersion=1, clientCapabilities=capabilities)
@@ -39,10 +41,11 @@ async def test_editor_answers_canonical_clarify_through_clarify_respond(
                 turn = asyncio.create_task(acp.rpc("session/prompt", sessionId=sid,
                                                    prompt=[{"type": "text", "text": "Ask my color"}]))
             method = "elicitation/create" if form else "session/request_permission"
-            async with asyncio.timeout(30):
-                while not any(f.get("method") == method for f in acp.frames):
-                    assert turn is None or not turn.done(), turn.result()
-                    await asyncio.sleep(.05)
+            deadline = time.monotonic() + 30
+            while not any(f.get("method") == method for f in acp.frames):
+                assert turn is None or not turn.done(), turn.result()
+                assert time.monotonic() < deadline, f"no {method} request reached the editor"
+                await asyncio.sleep(.05)
             request = next(f for f in acp.frames if f.get("method") == method)
             params = request["params"]
             assert params["sessionId"] == sid
@@ -61,10 +64,11 @@ async def test_editor_answers_canonical_clarify_through_clarify_respond(
                 reply = await asyncio.wait_for(turn, 40)
                 assert reply.get("result", {}).get("stopReason") == "end_turn", reply
             else:
-                async with asyncio.timeout(40):
-                    while (await ws.rpc("prompt.receipt", session_id=sid,
-                                        admission_id=accepted["admission_id"]))["status"] != "terminal":
-                        await asyncio.sleep(.05)
+                deadline = time.monotonic() + 40
+                while (await ws.rpc("prompt.receipt", session_id=sid,
+                                    admission_id=accepted["admission_id"]))["status"] != "terminal":
+                    assert time.monotonic() < deadline, "the answered CLI turn never settled"
+                    await asyncio.sleep(.05)
     tool_results = [m for messages in model_peer.requests for m in messages if m["role"] == "tool"]
     assert any("green" in json.dumps(m) for m in tool_results), tool_results
 
@@ -84,10 +88,11 @@ async def test_dismissed_clarify_card_releases_the_turn_with_skip(daemon, tmp_pa
             assert "result" in await acp.rpc("session/load", cwd=str(tmp_path), sessionId=sid, mcpServers=[])
             turn = asyncio.create_task(acp.rpc("session/prompt", sessionId=sid,
                                                prompt=[{"type": "text", "text": "Ask my color"}]))
-            async with asyncio.timeout(30):
-                while not any(f.get("method") == "session/request_permission" for f in acp.frames):
-                    assert not turn.done(), turn.result()
-                    await asyncio.sleep(.05)
+            deadline = time.monotonic() + 30
+            while not any(f.get("method") == "session/request_permission" for f in acp.frames):
+                assert not turn.done(), turn.result()
+                assert time.monotonic() < deadline, "no session/request_permission reached the editor"
+                await asyncio.sleep(.05)
             request = next(f for f in acp.frames if f.get("method") == "session/request_permission")
             acp.process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request["id"],
                                                 "result": {"outcome": {"outcome": "cancelled"}}}).encode() + b"\n")

@@ -98,9 +98,8 @@ async def test_a_different_body_under_an_in_flight_key_is_refused_and_the_first_
     async with TestClient(TestServer(app)) as client:
         seed = await (await client.post('/v1/responses', json={'input': 'seed'})).json()
         first = asyncio.ensure_future(client.post('/v1/responses', json={'input': 'first'}, headers=headers))
-        async with asyncio.timeout(10):
-            while 'first' not in calls:
-                await asyncio.sleep(0.02)
+        from tests.waiting import async_wait_until
+        await async_wait_until(lambda: 'first' in calls, timeout=10, what="the first request's turn to start")
         other = await client.post('/v1/responses', json={'input': 'other', 'previous_response_id': seed['id']},
                                   headers=headers)
         other_body = await other.json()

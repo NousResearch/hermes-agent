@@ -27,6 +27,7 @@ from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
+from hermes_state_runtime import RuntimeStoreError
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
@@ -38,6 +39,9 @@ from gateway.relay.transport import RelayTransport
 from datetime import UTC
 
 logger = logging.getLogger(__name__)
+# Native admission refusals a redelivery cannot change (sender, route or payload).
+_PERMANENT_REFUSALS = frozenset({'permission_denied', 'invalid_params', 'admission_conflict',
+                                 'profile_mismatch', 'not_found'})
 
 # The drain-path going-idle ACK budget must stay strictly under the runner's
 # default adapter disconnect timeout (5s) or cancellation fires before
@@ -898,8 +902,18 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
             # Wait only for the SQLite receipt, never inference or outbound ACKs
-            # (those need this same WS reader). Exceptions deliberately suppress ACK.
-            if await admit_producer(self, event) is None and getattr(event, '_consumer_reply', None):
+            # (those need this same WS reader). A permanent refusal returns, so the
+            # transport ACKs it (a replay would be refused again: main's runner dropped
+            # it too); any other failure withholds the ACK so the connector redelivers.
+            try:
+                receipt = await admit_producer(self, event)
+            except RuntimeStoreError as exc:
+                if exc.reason not in _PERMANENT_REFUSALS:
+                    raise
+                logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",
+                               exc.reason, event.source.platform.value, event.source.chat_id)
+                return
+            if receipt is None and getattr(event, '_consumer_reply', None):
                 # A post_gateway_admission plugin consumed it (never committed); its reply is
                 # sent off this reader, like an executed admission's.
                 from gateway.session_ingress import deliver_response

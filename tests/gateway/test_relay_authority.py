@@ -35,6 +35,7 @@ async def probe(peer):
     from gateway.session_envelope import prepare_native, restore_native
     from hermes_cli import web_server
     from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from tests.waiting import async_wait_until
 
     sockets, outgoing, frames = [], [], []
     secret = 'owned-relay-fixture-secret'
@@ -88,8 +89,9 @@ async def probe(peer):
         async def send(raw_event):
             await connector_ws.send(json.dumps({'type': 'inbound', 'event': raw_event,
                                                'bufferId': raw_event['message_id']}) + '\n')
+            deadline = time.monotonic() + 25
             async with asyncio.timeout(25):
-                while True:
+                while time.monotonic() < deadline:
                     entries = list(authority.sessions.values())
                     rows = list_session_admissions(authority.db, session_id=next(iter(authority.sessions)),
                         pending_only=False) if entries else []
@@ -98,8 +100,9 @@ async def probe(peer):
                         # The drain hands the reply to the adapter only AFTER the terminal commit
                         # (deliver_settled); the entry leaves pending_deliveries once that send
                         # returned. Closing the connector before then drops the final mid-send.
-                        while adapter._active_sessions or settled[0]['admission_id'] in authority.pending_deliveries:
-                            await asyncio.sleep(.01)
+                        await async_wait_until(lambda: not adapter._active_sessions
+                                               and settled[0]['admission_id'] not in authority.pending_deliveries,
+                                               timeout=25, what='the settled reply handed to the connector')
                         assert any(f.get('type') == 'inbound_ack' and f.get('bufferId') == raw_event['message_id']
                                    for f in outgoing), outgoing
                         return rows
@@ -107,6 +110,7 @@ async def probe(peer):
                     errors = [f for f in outgoing if 'invalid_params' in json.dumps(f) or 'not_found' in json.dumps(f)]
                     assert not errors, errors
                     await asyncio.sleep(.02)
+                raise TimeoutError(f"{raw_event['message_id']} never settled")
 
         try:
             failed_insert = asyncio.Event()
@@ -171,17 +175,14 @@ async def probe(peer):
                 queued.update(message_id='relay-4', text='QUEUED_AFTER_BLOCK')
                 await connector_ws.send(json.dumps({'type': 'inbound', 'event': queued}) + '\n')
                 try:
-                    async with asyncio.timeout(5):
-                        while not any(r['request_id'] == 'relay-4' for r in list_session_admissions(
-                                authority.db, session_id=sid, pending_only=False)):
-                            await asyncio.sleep(.01)
+                    await async_wait_until(lambda: any(r['request_id'] == 'relay-4' for r in list_session_admissions(
+                        authority.db, session_id=sid, pending_only=False)), timeout=5, what='relay-4 admitted')
                     assert not adapter._pending_messages
                 finally:
                     peer.release.set()
-                async with asyncio.timeout(10):
-                    while any(not task.done() for task in adapter._background_tasks) or any(r['status'] != 'terminal' for r in
-                            list_session_admissions(authority.db, session_id=sid, pending_only=False)) or authority.pending_deliveries:
-                        await asyncio.sleep(.01)
+                await async_wait_until(lambda: not (any(not task.done() for task in adapter._background_tasks) or any(
+                    r['status'] != 'terminal' for r in list_session_admissions(authority.db, session_id=sid, pending_only=False))
+                    or authority.pending_deliveries), timeout=10, what='every relay admission settled and delivered')
                 rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
                 assert len(peer.requests) == 4, peer.requests
                 payload = rows[0]['payload']
@@ -237,9 +238,7 @@ async def probe(peer):
                 # 4401 must revoke queued provenance, not grant on a cached descriptor.
                 revoke = True
                 await connector_ws.close(code=4401, reason='revoked')
-                async with asyncio.timeout(5):
-                    while not transport.auth_revoked:
-                        await asyncio.sleep(.01)
+                await async_wait_until(lambda: transport.auth_revoked, timeout=5, what='the connector auth revoked')
                 try:
                     restore_native(payload, runner)
                 except RuntimeStoreError:

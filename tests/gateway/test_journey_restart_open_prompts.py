@@ -19,10 +19,12 @@ import shlex
 import signal
 import sqlite3
 import threading
+import time
 
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 FOLLOWERS = {'approval': ('APPROVAL_FOLLOWER_1', 'APPROVAL_FOLLOWER_2'),
              'clarify': ('CLARIFY_FOLLOWER_1', 'CLARIFY_FOLLOWER_2')}
@@ -109,9 +111,7 @@ def test_restart_fences_open_prompts_and_never_reruns_work(tmp_path, restart):
         return reply['result']
 
     async def until(predicate, timeout=40):
-        async with asyncio.timeout(timeout):
-            while not predicate():
-                await asyncio.sleep(.03)
+        await async_wait_until(predicate, timeout=timeout, interval=.03, what='admission rows')
 
     async def answer(ws, sid, prompt):
         kind = prompt['kind']
@@ -131,10 +131,12 @@ def test_restart_fences_open_prompts_and_never_reruns_work(tmp_path, restart):
                 before['sessions'][kind] = sid
                 await call(ws, 'prompt.submit', session_id=sid, input_id=ASK[kind], text=ASK[kind])
                 prompt = None
-                async with asyncio.timeout(30):
-                    while prompt is None:
-                        snapshot = await call(ws, 'session.resume', session_id=sid)
-                        prompt = next((p for p in snapshot['prompts'] if p['kind'] == kind), None)
+                deadline = time.monotonic() + 30
+                while prompt is None:
+                    snapshot = await call(ws, 'session.resume', session_id=sid)
+                    prompt = next((p for p in snapshot['prompts'] if p['kind'] == kind), None)
+                    if prompt is None:
+                        assert time.monotonic() < deadline, ('no open ' + kind + ' prompt', snapshot)
                         await asyncio.sleep(.03)
                 before['prompts'][kind] = prompt
                 for name in FOLLOWERS[kind]:

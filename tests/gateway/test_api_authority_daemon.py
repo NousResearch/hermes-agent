@@ -12,6 +12,7 @@ import aiohttp
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, websocket, rpc
 from tests.gateway.fixtures.api_usage_peer import UsageModelPeer
+from tests.waiting import async_wait_until
 
 
 def test_ordinary_daemon_api_ws_fifo_retry(tmp_path):
@@ -62,9 +63,8 @@ def test_ordinary_daemon_api_ws_fifo_retry(tmp_path):
                         assert response.status == 200, text
                         return text
                 pending = asyncio.create_task(follow())
-                async with asyncio.timeout(10):
-                    while not any(row['request_id'].endswith(':daemon-retry') and row['status'] == 'queued' for row in rows()):
-                        await asyncio.sleep(.02)
+                await async_wait_until(lambda: any(row['request_id'].endswith(':daemon-retry') and row['status'] == 'queued'
+                                                   for row in rows()), timeout=10, what='the follow-up queued')
                 peer.release.set()
                 completed = json.loads(await pending)
                 assert completed['usage'] == {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}, completed

@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import threading
 import traceback
+from tests.waiting import async_wait_until
 
 
 class Peer(BaseHTTPRequestHandler):
@@ -118,9 +119,8 @@ async def probe(peer):
             accepted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=source, text='Write owned cwd proof')
             assert 'result' in accepted, accepted
         for sid in sessions:
-            async with asyncio.timeout(30):
-                while authority.sessions[sid].task is None:
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: authority.sessions[sid].task is not None, timeout=30,
+                                   what='the admitted turn to be scheduled')
             await asyncio.wait_for(authority.sessions[sid].task, 40)
         for source, sid, ws in zip(('cli', 'tui', 'gui'), sessions, sockets):
             agent = authority.agent(SessionRef(authority.profile_id, sid))

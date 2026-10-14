@@ -30,15 +30,13 @@ import { patchUiState } from '../../uiStore.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
-// Client display preferences. The shared gateway's config.set covers only session controls
-// (busy/verbose/yolo/model), so there the change applies to this view and is not saved;
-// say so after the command's own notice instead of a bare invalid_params.
-const saveDisplayPref = (ctx: SlashRunCtx, command: string, key: string, value: string) => {
-  if (ctx.gateway.gw?.isCanonical) {
-    return queueMicrotask(() => ctx.transcript.sys(t('canonical.controls.prefNotSaved', command)))
-  }
+// Client display preferences: written to the profile's config.yaml by either backend (the shared
+// owner's config.set serves them profile-wide, like the sidecar). `/focus` names the session on the
+// shared owner so its tool-progress mode follows at once (the sidecar's session read it from config).
+const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
+  const session = key === 'focus' && ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {}
 
-  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value }).catch(() => {})
+  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
 }
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
@@ -112,6 +110,7 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
+            ['/connectors', t('slashCmd.core.help.connectors')],
             ['/details [hidden|collapsed|expanded|cycle]', t('slashCmd.core.help.detailsGlobal')],
             ['/details <section> [hidden|collapsed|expanded|reset]', t('slashCmd.core.help.detailsSection')],
             ['/fortune [random|daily]', t('slashCmd.core.help.fortune')],
@@ -180,7 +179,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ mouseTracking: next })
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
-      saveDisplayPref(ctx, 'mouse', 'mouse', next)
+      saveDisplayPref(ctx, 'mouse', next)
     }
   },
 
@@ -321,7 +320,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ compact: next })
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
-      saveDisplayPref(ctx, 'density', 'density', next ? 'on' : 'off')
+      saveDisplayPref(ctx, 'density', next ? 'on' : 'off')
     }
   },
 
@@ -368,7 +367,7 @@ export const coreCommands: SlashCommand[] = [
 
         patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
         transcript.sys(t('slashCmd.core.details.section', first, mode ?? t('slashCmd.core.details.reset')))
-        saveDisplayPref(ctx, 'details', `details_mode.${first}`, mode ?? '')
+        saveDisplayPref(ctx, `details_mode.${first}`, mode ?? '')
 
         return
       }
@@ -383,7 +382,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       transcript.sys(t('slashCmd.core.details.current', next, ''))
-      saveDisplayPref(ctx, 'details', 'details_mode', next)
+      saveDisplayPref(ctx, 'details_mode', next)
     }
   },
 
@@ -595,10 +594,6 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'save'))
-      }
-
       ctx.gateway
         .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
         .then(
@@ -641,7 +636,7 @@ export const coreCommands: SlashCommand[] = [
       queueMicrotask(() =>
         ctx.transcript.sys(next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled'))
       )
-      saveDisplayPref(ctx, 'focus', 'focus', next ? 'on' : 'off')
+      saveDisplayPref(ctx, 'focus', next ? 'on' : 'off')
     }
   },
 
@@ -668,7 +663,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ statusBar: next })
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.statusbar.state', next)))
-      saveDisplayPref(ctx, 'statusbar', 'statusbar', next)
+      saveDisplayPref(ctx, 'statusbar', next)
     }
   },
 
@@ -708,7 +703,7 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.battery.state', next ? 'on' : 'off')))
-      saveDisplayPref(ctx, 'battery', 'battery', next ? 'on' : 'off')
+      saveDisplayPref(ctx, 'battery', next ? 'on' : 'off')
     }
   },
 

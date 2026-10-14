@@ -85,15 +85,17 @@ test('metadata writes retain the original CAS revision and request identity unti
   expect(protocol.prepare('session.archive', { session_id: 's', archived: true })).toMatchObject({ expected_revision: 8, operation: 'archive', payload: { archived: true } })
 })
 
-test('canonical create retries retain identity and reject unsupported explicit intent', () => {
+test('canonical create retries retain identity', () => {
   const protocol = new CanonicalDesktopProtocol()
   const params = { source: 'desktop', profile: 'default', cols: 96, fast: false, cwd: '/tmp' }
   const first = protocol.prepare('session.create', params)
   expect(first).toMatchObject({ source: 'gui', cwd: '/tmp', request_id: expect.any(String) })
   expect(protocol.prepare('session.create', { ...params })).toEqual(first)
   expect(first).not.toHaveProperty('profile')
-  expect(() => protocol.prepare('session.create', { ...params, fast: true })).toThrow('fast')
-  expect(() => protocol.prepare('session.create', { ...params, provider: 'custom' })).toThrow('provider')
+  expect(protocol.prepare('session.create', { ...params, fast: true })).toMatchObject({ service_tier: 'priority' })
+  const manual = protocol.prepare('session.create', { ...params, model: 'gpt-5', provider: 'custom' })
+  expect(manual).toMatchObject({ model: 'gpt-5', provider: 'custom' })
+  expect(protocol.prepare('session.create', { ...params, model: 'gpt-5', provider: 'custom' })).toEqual(manual)
   protocol.result('session.create', first, { session_id: 'canonical', stored_session_id: 'canonical' })
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
 })

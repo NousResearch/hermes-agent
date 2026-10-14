@@ -5,7 +5,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { resetOverlayState } from '../app/overlayStore.js'
 import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
-import { resetTurnState } from '../app/turnStore.js'
+import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { Msg } from '../types.js'
 
@@ -387,5 +387,27 @@ describe('createGatewayEventHandler', () => {
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
     })
+  })
+
+  it('echoes the canonical bootstrap verdict so a refused gateway is never a silent retry loop', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        cwd: '',
+        python: 'gateway ensure',
+        stderr_tail:
+          'Command failed: python gateway_bootstrap.py --start\ngateway incompatible: runtime_protocol\n' +
+          "gateway incompatible: another Hermes install's gateway owns this profile; stop it there: hermes gateway stop"
+      },
+      type: 'gateway.start_timeout'
+    } as any)
+
+    const messages = getTurnState().activity.map(a => a.text)
+
+    expect(messages).toContain('gateway incompatible: runtime_protocol')
+    expect(messages.some(m => m.includes('another Hermes install'))).toBe(true)
+    expect(messages.some(m => m.startsWith('Command failed'))).toBe(false)
   })
 })

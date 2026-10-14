@@ -9,6 +9,7 @@ import sqlite3
 import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def test_restore_refuses_live_authority_without_changing_data(tmp_path):
@@ -44,9 +45,8 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             created = await rpc(ws, 'session.create', request_id='create', source='tui', cwd=str(home), toolsets=[])
             session = created['result']['session_id']
             await rpc(ws, 'prompt.submit', session_id=session, input_id='warm', text='WARM')
-            async with asyncio.timeout(30):
-                while dict(rows()).get('warm') != 'terminal':
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: dict(rows()).get('warm') == 'terminal', timeout=30, interval=.05,
+                                   what='the warm turn to settle')
             snapshot = create_quick_snapshot(hermes_home=home)
             assert snapshot, snapshot
             await rpc(ws, 'prompt.submit', session_id=session, input_id='started', text='BLOCK_STARTED')

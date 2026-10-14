@@ -2,6 +2,7 @@
 import asyncio
 from contextvars import ContextVar
 from dataclasses import asdict, replace
+from functools import partial
 import hashlib
 import json
 import logging
@@ -65,6 +66,10 @@ def storage_source(db, source, session_id, fallback):
     # refresh: pickers filter on them (kanban/tool/oneshot hidden, cron in its own section). Interactive
     # surfaces keep the transport's ``local``, outside the state-owned stale-open sweeps keyed on cli/tui/acp.
     label = receipt['policy']['source']
+    # An adopted pre-authority row (main's cli/tui/gui history) keeps the label main wrote: its
+    # ``sessions list --source``, ``-c`` and stale-open sweeps key on it, as they did before the upgrade.
+    if 'legacy_session_id' in receipt:
+        return label
     return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label
 
 
@@ -83,8 +88,9 @@ async def forward(connection, params):
     identity = [params[k] for k in ('agent', 'tenant', 'peer', 'context_id')]
     key = 'a2a:' + hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
     from gateway.session_local_recovery import local_identity, restore_local_session
-    from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
+    from gateway.session_local import stage_local_session
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_local import commit_local_session, local_receipt
     sid = local_identity(authority.profile_id, actor.subject, key)
     authority._require_admission_open()
     if authority.db.get_session(sid) is not None:
@@ -106,9 +112,12 @@ async def forward(connection, params):
                            'forwarding into a new session instead of adopting it', legacy['id'], title)
         token = _forward_identity.set(identity)
         try:
-            ref = create_local_session(authority, actor, {'source': 'a2a', 'request_id': key})
+            ref = stage_local_session(authority, actor, {'source': 'a2a', 'request_id': key})
         finally:
             _forward_identity.reset(token)
+        if isinstance(ref, dict):  # the creation commit runs off the owner loop (N90); a duplicate converges
+            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            ref = restore_local_session(authority, ref['session_id'])
     if ref.session_id not in connection.subscriptions:
         await connection.resume(ref, {})
     receipt = await authority.submit(actor, Submission(params['input_id'], ref, {'text': params['text']}, 'queue'))

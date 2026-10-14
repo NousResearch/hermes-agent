@@ -10,9 +10,19 @@ from hermes_state_runtime import RuntimeStoreError
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
-                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id'})
+                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd'})
+# Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
+# turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
+FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
+                   'platform_toolsets')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets')
+# What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
+SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
+                  'api_key_env')
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
+_TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (policy, live) for a turn
 # Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
@@ -41,19 +51,114 @@ class LocalSessionPolicy:
     # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
 
-    def config(self, authority=None):
+    def config(self, authority=None, *, secrets=True):
+        return self.effective(authority, secrets=secrets)[0]
+
+    def effective(self, authority=None, *, secrets=True):
+        """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
+        (the turn's policy scope holds that read): a route never pairs one profile's model with another's
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
+        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
-        if self.config_secret_ref is not None and authority is not None:
+        live = self.read_profile(authority)
+        if self.config_secret_ref is not None and authority is not None and secrets:
             from gateway.session_policy_credentials import recover_config_secrets
-            secrets = recover_config_secrets(authority, self)
-            for path, value in secrets.items():
+            for path, value in recover_config_secrets(authority, self).items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
                 for key in path[:-1]:
-                    target = target[key]
+                    # An alias entry added after creation is absent from the frozen tree.
+                    target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
-        return config
+        model = self.model
+        if live:
+            frozen, request = config.get('model') or {}, json.loads(self.request_json)
+            pick = frozen.get('selection_profile')
+            held = pick is not None and pick == list(profile_target(live))
+            pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            pinned |= {'service_tier'} if 'service_tier' in request else set()
+            for key in FOLLOW_SECTIONS:
+                if key in pinned:
+                    continue
+                if key in live:
+                    config[key] = live[key]
+                else:
+                    config.pop(key, None)
+            if held:
+                config['model'] = _held_pick(frozen, config.get('model') or {})
+            else:
+                from gateway.run import _resolve_gateway_model
+                model = _resolve_gateway_model(live) or self.model
+            agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
+            for key in FOLLOW_AGENT_KEYS:
+                if key in pinned:
+                    continue
+                if key in live_agent:
+                    agent[key] = live_agent[key]
+                else:
+                    agent.pop(key, None)
+        source = (config.get('model') or {}).get('api_key_from') if isinstance(config.get('model'), dict) else None
+        if source:
+            # ``/model <alias>`` with a literal key: the receipt points at the alias entry's secret.
+            value = config
+            for part in source:
+                value = value.get(part) if isinstance(value, dict) else None
+            config['model']['api_key'] = value
+        return config, model
+
+    @property
+    def follows_profile(self):
+        return json.loads(self.request_json).get('follow_profile_config') is True
+
+    def read_profile(self, authority):
+        """The owning profile's current config for a following session, else None; inside this policy's
+        turn scope, the turn's one read."""
+        if authority is None or not self.follows_profile:
+            return None
+        held = _TURN_PROFILE.get()
+        if held is not None and held[0] == self:
+            return held[1]
+        from gateway.run import _load_gateway_config
+        return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+
+    def current_toolsets(self, config):
+        """The next turn's toolsets from its resolved *config*: a following session without an explicit
+        toolset pick runs the profile's current selection (main #124211), else the frozen launch set."""
+        if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
+                or 'toolsets' in json.loads(self.request_json)):
+            return self.toolsets
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode)))
+
+    def current_reasoning_config(self, runner, session_key=None):
+        """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
+        the profile's current effort when following, else the frozen one."""
+        peek = getattr(runner, '_peek_session_state', None)
+        state = peek(session_key) if session_key and peek is not None else None
+        if state is not None and state.conversation.reasoning_override is not None:
+            return dict(state.conversation.reasoning_override)
+        if not self.follows_profile:
+            return self.reasoning_config
+        from gateway.session_authorities import active_authority
+        from hermes_constants import resolve_reasoning_config
+        config, model = self.effective(active_authority(runner), secrets=False)
+        return resolve_reasoning_config(config, model or '')
+
+    def current_service_tier(self, runner, session_key):
+        """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
+        from agent.fast_mode import parse_service_tier
+        from gateway.session_authorities import active_authority
+        from gateway.session_state import SERVICE_TIER_UNSET
+        state = runner._peek_session_state(session_key) if session_key else None
+        if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
+            return state.conversation.service_tier_override
+        config = self.config(active_authority(runner), secrets=False)
+        return parse_service_tier((config.get('agent') or {}).get('service_tier'))
+
+    def current_model(self, authority):
+        """The model this session's next turn runs: the profile's current default when following."""
+        return self.effective(authority, secrets=False)[1]
 
     @property
     def provider(self):
@@ -91,15 +196,53 @@ class LocalSessionPolicy:
         return resolve_turn_limit(cfg.get('agent', {}).get('max_turns', cfg.get('max_turns')))
 
     @property
+    def verbose(self):
+        """`hermes chat -v`: the session's agent runs with quiet_mode off, so its status lines reach the
+        viewer (``agent.print``) as main's in-process verbose agent printed them."""
+        return json.loads(self.request_json).get('verbose', False)
+
+    @property
+    def run_budget_seconds(self):
+        """Frozen `agent.run_budget_seconds` (`--run-budget` folds into it); None = no budget."""
+        from agent.agent_init import _normalize_run_budget_seconds
+        return _normalize_run_budget_seconds(self.config().get('agent', {}).get('run_budget_seconds'))
+
+    @property
     def reasoning_config(self):
         from hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(self.config(), self.model or '')
 
 
+def profile_target(config):
+    """(model, provider) a profile config selects; 'auto' is no provider (main's _config_model_target)."""
+    model = config.get('model')
+    if isinstance(model, dict):
+        provider = str(model.get('provider') or '').strip()
+        return str(model.get('default') or '').strip(), '' if provider.lower() == 'auto' else provider
+    return (model.strip() if isinstance(model, str) else ''), ''
+
+
+def _held_pick(frozen, live):
+    """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
+    ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    def route(block):
+        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+    if route(frozen) != route(live):
+        return frozen
+    return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
+            **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
+
+
 def present_sections(config):
     """A bare ``gateway:`` key parses as YAML null; like load_config's merge (#58277), treat it as absent so
     ``cfg.get('gateway', {}).get(...)`` reads the default instead of crashing a fresh install's first turn."""
-    return {key: value for key, value in config.items() if value is not None}
+    config = {key: value for key, value in config.items() if value is not None}
+    # A scalar ``model: <id>`` (a form every classic loader accepts) is the mapping's ``default``.
+    if isinstance(config.get('model'), str):
+        config['model'] = {'default': config['model']} if config['model'].strip() else {}
+    return config
 
 
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
@@ -125,10 +268,19 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
         raise RuntimeStoreError('invalid_params')
+    row_cwd = params.get('row_cwd')
+    if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
+        raise RuntimeStoreError('invalid_params')
+    if params.get('cwd_explicit') is False and 'cwd' in params:
+        cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
+    if params.get('follow_profile_config') is True and 'model' in params:
+        # The pick's provenance, recorded before the launch route folds in: it holds while the profile
+        # still targets this, and a later profile edit supersedes it.
+        config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     enabled = _resolve_toolsets(params, config, source, safe_mode)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
@@ -142,6 +294,20 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+
+
+def _profile_workspace_cwd(home):
+    """A NAMED profile's configured ``terminal.cwd``, which beats a client cwd the Desktop only inherited
+    (``cwd_explicit: false``; main's ``_completion_cwd``). Placeholders and missing dirs are unset."""
+    import os
+    from hermes_constants import profile_name_for_home
+    if profile_name_for_home(home) in {None, 'default'}:
+        return None
+    from hermes_cli.config import read_user_config_raw
+    terminal = read_user_config_raw(Path(home) / 'config.yaml').get('terminal')
+    raw = str((terminal if isinstance(terminal, dict) else {}).get('cwd') or '').strip()
+    configured = os.path.abspath(os.path.expanduser(raw)) if raw not in {'', '.', 'auto', 'cwd'} else None
+    return configured if configured and os.path.isdir(configured) else None
 
 
 def _apply_launch_overrides(params, config):
@@ -160,9 +326,28 @@ def _apply_launch_overrides(params, config):
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id'):
+    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
+                 'cwd_explicit', 'verbose'):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
+    if 'service_tier' in params:
+        # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
+        # profile tier; an unknown word is refused, never read as normal.
+        from agent.fast_mode import parse_exact_service_tier
+        try:
+            tier = parse_exact_service_tier(params['service_tier']) if isinstance(params['service_tier'], str) else None
+        except ValueError:
+            tier = None
+        if tier is None:
+            raise RuntimeStoreError('invalid_params')
+        config.setdefault('agent', {})['service_tier'] = tier or 'normal'
+    if 'run_budget' in params:
+        # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
+        # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
+        value = params['run_budget']
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise RuntimeStoreError('invalid_params')
+        config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
         section = dict(section) if isinstance(section, dict) else {'enabled': bool(section)} if section else {}
@@ -307,7 +492,9 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     config_secrets = dict(config_secrets or {})
     policy = bind_editor_mcp(authority, session_id, policy, config_secrets.pop(PRIVATE_KEY, None))
     if api_key is None and not config_secrets:
-        return policy
+        # Nothing private remains (a followed section's secret, or a cleared key): a stale reference
+        # would no longer match the re-fingerprinted policy identity.
+        return replace(policy, credential_ref=None, config_secret_ref=None)
     keys = getattr(authority, '_local_launch_keys', None)
     if keys is None:
         keys = authority._local_launch_keys = {}
@@ -422,7 +609,6 @@ def restore_policy(data):
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not Path(policy.cwd).is_dir()
                 or not isinstance(policy.model, str) or not policy.model.strip()
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
@@ -462,6 +648,10 @@ def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
+    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    # turn runs in a missing directory.
+    if not Path(policy.cwd).is_dir():
+        raise RuntimeStoreError('workspace_unavailable')
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
@@ -470,9 +660,15 @@ def policy_scope(policy, *, authority=None):
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
+    # A following session's turn reads its profile once; every resolution in the turn uses that read.
+    profile_token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    active = policy
+    if policy.follows_profile:
+        from dataclasses import replace
+        active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
-    policy_token = _ACTIVE_POLICY.set(policy)
+    policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
         from gateway.session_local_mcp import editor_mcp_scope
@@ -482,6 +678,7 @@ def policy_scope(policy, *, authority=None):
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
+        _TURN_PROFILE.reset(profile_token)
 
 
 def active_policy():

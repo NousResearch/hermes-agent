@@ -7,6 +7,7 @@ module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -310,7 +311,9 @@ class _ResponsesStream:
         if "sequence_number" not in data:
             data["sequence_number"] = self.sequence_number
         self.sequence_number += 1
-        self.recorded_events.append((event_type, data))
+        if self.durable_key:  # the only reader is the keyed replay record (emit_completed)
+            # Snapshot: terminal trimming later edits the nested tool output these frames share.
+            self.recorded_events.append((event_type, copy.deepcopy(data)))
         await self.response.write(self._api._sse_frame(data, event=event_type))
 
     def _item_id(self, kind, *, call_id=None, commentary=False):
@@ -634,9 +637,12 @@ class _ResponsesStream:
         if self.durable_key:
             headers = {k: v for k, v in self.response.headers.items() if k.startswith('X-Hermes-')}
             terminal_event = {'type': 'response.' + status, 'response': env, 'sequence_number': self.sequence_number}
-            self.response_store.put(self.durable_key[0], {
-                'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
-                'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
+            if not self.terminal_replay:
+                # Only the publisher recorded the deltas; a replay observer winning the
+                # INSERT OR IGNORE would leave every later replay without them.
+                self.response_store.put(self.durable_key[0], {
+                    'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
+                    'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
             stored = self.response_store.get(self.durable_key[0])
             if _settled(stored):
                 env = stored['response']
@@ -1033,7 +1039,8 @@ class OpenAICompatRoutesMixin:
             return (result, usage), None
         except RuntimeStoreError as exc:
             from gateway.platforms.api_server import _openai_error
-            return None, web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+            from gateway.platforms.api_server_authority_runs import store_error_response
+            return None, store_error_response(_openai_error, exc)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
             message = "" if getattr(e, "_notification_presentation_suppressed", False) is True else f"Internal server error: {e}"
@@ -1299,7 +1306,8 @@ class OpenAICompatRoutesMixin:
                 self, request, body, gateway_session_key, durable_key, idempotency_scope, idempotency_key)
         except RuntimeStoreError as exc:
             from gateway.platforms.api_server import _openai_error
-            return web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+            from gateway.platforms.api_server_authority_runs import store_error_response
+            return store_error_response(_openai_error, exc)
         if error is not None:
             return error
         session_id, user_message = context['session_id'], context['user_message']
@@ -1438,6 +1446,8 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
+        if isinstance(result, dict) and isinstance(result.get("_turn_user_row"), dict):
+            current_user = dict(result["_turn_user_row"])  # settled canonical turn: carries api_content
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if isinstance(agent_messages, list) and agent_messages:
             turn_start = APIServerAdapter._response_messages_turn_start_index(

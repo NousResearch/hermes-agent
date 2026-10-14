@@ -181,7 +181,7 @@ async def test_forward_wakes_on_the_completion_frame_instead_of_a_fixed_100ms_po
                 'status': 'terminal' if done else 'queued', 'admission_id': 'adm', 'outcome': 'completed'}}))
             if len(calls) == 1:
                 async def complete():
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.0)  # health: allow HX013 -- the fake turn's 1 s length is the window the RPC-count bound is measured over
                     await ws.send(json.dumps({'jsonrpc': '2.0', 'method': 'event', 'params': {
                         'type': 'message.complete', 'session_id': 's', 'payload': {'admission_id': 'adm'}}}))
                 asyncio.ensure_future(complete())

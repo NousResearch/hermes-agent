@@ -1,4 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { statSync } from 'node:fs'
+import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
@@ -75,7 +77,7 @@ class TicketBridge {
     this.child.on('close', () => this.dispose())
   }
 
-  request(endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http'): Promise<string> {
+  request(endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
@@ -160,25 +162,89 @@ interface ResolvedTicketBackend {
   kind: string
   shell?: boolean
   env?: NodeJS.ProcessEnv
+  root?: string
+}
+
+const RUNTIME_COMMAND_TIMEOUT_MS = 30_000
+
+/** Ask an installation launcher for its interpreter; it owns ABI and store selection. */
+function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fail = (detail: string) => reject(new Error(`Gateway ticket bootstrap could not resolve the installed Hermes Python runtime: ${detail}`))
+
+    const child = spawn(backend.command, ['--print-runtime-command'], hiddenWindowsChildOptions({
+      cwd: backend.root, env: { ...process.env, ...backend.env }, shell: Boolean(backend.shell), stdio: ['ignore', 'pipe', 'ignore']
+    }))
+
+    let output = ''
+    const timer = setTimeout(() => child.kill('SIGKILL'), RUNTIME_COMMAND_TIMEOUT_MS)
+    child.stdout!.setEncoding('utf8')
+    child.stdout!.on('data', data => {
+      output += String(data)
+
+      if (output.length > 65536) { child.kill('SIGKILL') }
+    })
+    child.on('error', error => { clearTimeout(timer); fail(error.message) })
+    child.on('close', code => {
+      clearTimeout(timer)
+
+      if (code !== 0) { fail(`launcher exited ${code ?? 'without a code'}; refresh this installation's launcher`);
+
+ return }
+
+      let command: unknown
+
+      try { command = JSON.parse(output) } catch { fail('launcher did not report a runtime command');
+
+ return }
+
+      const python = Array.isArray(command) ? command[0] : undefined
+
+      if (typeof python !== 'string' || !path.isAbsolute(python) || python.includes('\0') || !isFile(python)) {
+        fail('launcher reported an invalid runtime command');
+
+ return
+      }
+
+      resolve(python)
+    })
+  })
+}
+
+function isFile(candidate: string): boolean {
+  try { return statSync(candidate).isFile() } catch { return false }
+}
+
+/**
+ * The helper needs a bare interpreter. A Python backend is one; an installed
+ * launcher backend names its own. The helper is stdlib-only, so the checkout on
+ * PYTHONPATH is its whole import closure (-P still keeps the cwd out).
+ */
+export async function ticketRuntimeFor(backend: ResolvedTicketBackend): Promise<{ command: string; env?: NodeJS.ProcessEnv }> {
+  if (backend.kind === 'python' && !backend.shell) {
+    return backend
+  }
+
+  if (backend.kind === 'command' && backend.root) {
+    const python = await launcherRuntimePython({ ...backend, root: backend.root })
+
+    return { command: python, env: { ...backend.env, PYTHONPATH: backend.root } }
+  }
+
+  throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
 }
 
 export function createGatewayTicketResolver(resolveBackend: () => Promise<ResolvedTicketBackend>, cwd: () => string) {
-  let cached: Promise<ResolvedTicketBackend> | undefined
+  let cached: Promise<{ command: string; env?: NodeJS.ProcessEnv }> | undefined
   let cachedGeneration = -1
 
-  return async (endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http'): Promise<string> => {
+  return async (endpoint: TicketEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create'): Promise<string> => {
     const generation = bridgeGeneration
 
     if (!cached || cachedGeneration !== generation) {
       cachedGeneration = generation
 
-      const flight = resolveBackend().then(backend => {
-        if (backend.kind !== 'python' || backend.shell) {
-          throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
-        }
-
-        return backend
-      }).catch(error => {
+      const flight = resolveBackend().then(ticketRuntimeFor).catch(error => {
         if (cached === flight) { cached = undefined }
         throw error
       })
@@ -198,7 +264,7 @@ export function mintGatewayTicketWithPython(
   backend: { command: string; env?: NodeJS.ProcessEnv },
   cwd: string,
   endpoint: TicketEndpoint,
-  purpose: 'interactive' | 'native-http'
+  purpose: 'interactive' | 'native-http' | 'native-profile-create'
 ): Promise<string> {
   const env = { ...process.env, ...backend.env, HERMES_HOME: endpoint.profile_id,
     PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }

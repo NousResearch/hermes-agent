@@ -824,16 +824,21 @@ def _retained_tree_is_live(db_path: str, worktree_path: str) -> bool:
     path = Path(db_path)
     if not path.is_file():
         return False
-    roots = {str(Path(worktree_path)).rstrip("/\\"), str(Path(worktree_path).resolve()).rstrip("/\\")}
-    inside = " OR ".join(["(s.cwd = ? OR substr(s.cwd, 1, length(?)) IN (?, ?))"] * len(roots))
-    params = [v for root in roots for v in (root, root + "/", root + "/", root + "\\")]
+    def key(value) -> str:  # native path identity: Windows is case-insensitive, either separator
+        return os.path.normcase(str(value)).replace("\\", "/").rstrip("/")
+
+    roots = {key(Path(worktree_path)), key(Path(worktree_path).resolve())}
+
+    def inside(cwd) -> int:
+        return int(bool(cwd) and any(key(cwd) == r or key(cwd).startswith(r + "/") for r in roots))
     try:
         conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
         try:
+            conn.create_function("hermes_inside_tree", 1, inside, deterministic=True)
             row = conn.execute(
-                f"SELECT 1 FROM sessions s WHERE ({inside}) AND (s.message_count>0 OR EXISTS ("
+                "SELECT 1 FROM sessions s WHERE hermes_inside_tree(s.cwd) AND (s.message_count>0 OR EXISTS ("
                 "SELECT 1 FROM session_admissions a WHERE a.target_session_id=s.id AND a.status!='terminal')) "
-                "LIMIT 1", params).fetchone()
+                "LIMIT 1").fetchone()
         finally:
             conn.close()
     except sqlite3.Error as exc:

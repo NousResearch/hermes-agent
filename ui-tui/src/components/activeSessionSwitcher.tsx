@@ -387,11 +387,12 @@ export function ActiveSessionSwitcher({
                 }))
               }))
             : gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: currentSessionId }),
-          canonicalList
-            ? Promise.resolve({ sessions: [] })
-            : includeHistory
-              ? gw.request<SessionListResult>('session.list', { limit: 200 })
-              : Promise.resolve(null)
+          includeHistory
+            ? gw.request<SessionListResult>('session.list', {
+                limit: 200,
+                ...(canonicalList ? { scope: 'stored' } : {})
+              })
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null

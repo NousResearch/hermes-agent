@@ -50,7 +50,9 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     receipt = local_receipt(db, ref.session_id)
     assert ref.session_id == 'old-cli'
     assert receipt['entry']['session_id'] == 'old-cli'
-    assert db.get_session('old-cli')['ended_at'] is None
+    # Adoption is a mount: main's end stamp and source label stay until the first admitted turn.
+    assert (db.get_session('old-cli')['ended_at'], db.get_session('old-cli')['end_reason']) == (original['ended_at'], 'cli_exit')
+    assert db.get_session('old-cli')['source'] == 'cli'
     assert db.get_session('old-cli')['title'] == original['title']
     assert db.get_session('old-cli')['parent_session_id'] == original['parent_session_id']
     policy = runner.adapters[Platform.LOCAL].policies[ref.session_id]
@@ -60,6 +62,10 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     await authority.attach(native, ref)
     assert runner.adapters[Platform.LOCAL].policies[ref.session_id] == policy
     history = [{'role': 'user', 'content': 'COMPRESSED'}, {'role': 'assistant', 'content': 'RETAINED'}]
+    # Compression runs inside a turn, and the first admitted turn reopens the adopted row.
+    from gateway.session_local_recovery import reopen_local_session
+    reopen_local_session(authority, ref)
+    assert db.get_session('old-cli')['end_reason'] is None
     assert db.try_acquire_compression_lock(ref.session_id, 'fixture')
     try:
         db.publish_compression_child(parent_session_id=ref.session_id, child_session_id='compressed',
@@ -125,7 +131,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
     from gateway.session_bot import _target
     submitter = Principal(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
-    assert _target(authority, submitter)[2].session_id == 'reset-tip'
+    assert (await _target(authority, submitter))[2].session_id == 'reset-tip'
 
 
 @pytest.mark.asyncio
@@ -165,3 +171,47 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
     assert {db.get_session(s)['source'] for s in ('old-oneshot', 'old-tool')} == {'oneshot', 'tool'}
     listed = await native.dispatch({'id': 3, 'method': 'session.list', 'params': {}})
     assert listed['result']['sessions'] == [], listed
+
+
+@pytest.mark.asyncio
+async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
+    """main's Desktop stored its chats with ``source='desktop'``. After the upgrade the native owner
+    adopts them by id like ``gui`` history, including the ones stamped with the signed-in Nous
+    account. Any other identity still needs its own authority."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account')):
+        db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+        'profile_id': str(tmp_path), 'instance_id': 'first'})
+    resumed = await native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old-desktop'}})
+    assert resumed.get('result', {}).get('session_id') == 'old-desktop', resumed
+    assert [m['content'] for m in resumed['result']['messages']] == ['OLD-DESKTOP']
+    from gateway.config import Platform
+    assert runner.adapters[Platform.LOCAL].policies['old-desktop'].platform == 'desktop'
+    stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
+    assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
+    assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
+    # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.
+    for sid, source, user_id in (('old-desktop-foreign', 'desktop', 'telegram:42'),
+                                 ('old-cli-account', 'cli', 'nous:account')):
+        db.create_session(sid, source=source, model='old-model', cwd=str(tmp_path), user_id=user_id)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+        refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
+        assert 'error' in refused, refused
+        assert db.get_session(sid)['user_id'] == user_id

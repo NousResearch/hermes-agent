@@ -1018,7 +1018,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
-            enabled_toolsets = list(policy.toolsets)
+            enabled_toolsets = list(policy.current_toolsets(user_config))
         adapter = self._delivery_adapter_for(source)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
@@ -1675,10 +1675,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             self._evict_cached_agent(session_key)
             return
         # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
+        from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, turn_ctx.source)
         _cfg_model = self._fallback_baseline_model(
-            session_key, turn_ctx.source, _agent, policy_model=policy.model if policy and policy.model else None)
+            session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

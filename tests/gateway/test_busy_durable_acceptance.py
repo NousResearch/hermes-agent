@@ -22,7 +22,8 @@ async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_com
         return SimpleNamespace(status='queued', admission_id='queued')
 
     authority = SimpleNamespace(admit_native=admit, native_waiters=set(), waiters={}, db=None)
-    adapter = SimpleNamespace(_background_tasks=set(), _message_handler=lambda event: admit_message(authority, event))
+    adapter = SimpleNamespace(_background_tasks=set(), _message_handler=lambda event: admit_message(authority, event),
+                              _release_turn_marker=AsyncMock())
     delivery = AsyncMock()
     monkeypatch.setattr(ingress, 'deliver_response', delivery)
     # admit_message re-reads the committed row (a drain may already have settled it); still queued.
@@ -48,7 +49,7 @@ async def test_pre_admission_refusal_reaches_receive_loop():
     async def refused(event):
         raise RuntimeStoreError('permission_denied')
 
-    adapter = SimpleNamespace(_background_tasks=set(), _message_handler=refused)
+    adapter = SimpleNamespace(_background_tasks=set(), _message_handler=refused, _release_turn_marker=AsyncMock())
     event = MessageEvent(text='refused', source=SessionSource(platform=Platform.TELEGRAM, chat_id='chat'))
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await dispatch_shared_busy(adapter, event, 'route')

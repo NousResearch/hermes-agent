@@ -63,6 +63,19 @@ def _admissions(bot):
     return list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
 
 
+def _quiet(bot):
+    """Nothing left that could admit another row: no receipt task, mailbox operation or drain runs."""
+    authority = bot.authority
+    return (not any(not task.done() for task in getattr(authority, '_bot_receipt_tasks', ()))
+            and not getattr(authority, '_bot_mailbox_operations', None)
+            and all(live.task is None or live.task.done() for live in authority.sessions.values()))
+
+
+async def _settle_quietly(bot):
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: _quiet(bot), timeout=10, what='receipt tasks and drains to go idle')
+
+
 async def _settled(bot, count):
     from gateway.session_bot import _result
     from tools.bot_live_delivery import read_delivery_result
@@ -89,7 +102,7 @@ async def test_transient_failure_retries_exactly_once_and_the_receipt_follows_th
     again = await deliver(bot.connection, params)
     assert again['status'] == 'settled' and again['reply'] == 'pong'
     await recover_bot_deliveries(bot.authority)
-    await asyncio.sleep(0.05)
+    await _settle_quietly(bot)
     assert len(_admissions(bot)) == 2
 
 
@@ -105,7 +118,7 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     assert receipt['reason'] == 'provider_server_error' and '503' in receipt['error'], receipt
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     await recover_bot_deliveries(bot.authority)
-    await asyncio.sleep(0.1)
+    await _settle_quietly(bot)
     assert len(_admissions(bot)) == 2
     # Auth failures do not classify transient: settled failed, never retried.
     other = 'd' * 32
@@ -116,7 +129,7 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
         if all(r['status'] == 'terminal' for r in _admissions(bot)) and len(_admissions(bot)) == 3:
             break
     await recover_bot_deliveries(bot.authority)
-    await asyncio.sleep(0.1)
+    await _settle_quietly(bot)
     assert [r['request_id'] for r in _admissions(bot)][2:] == ['bot:' + other]
     from gateway.session_bot import _result
     from tools.bot_live_delivery import read_delivery_result
@@ -155,10 +168,18 @@ async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
     """``hermes peer dm`` waits on the delivery, not on the original admission id: once that
     fails transiently its future never fires again, and the answer is the retry's."""
     from gateway.platforms.api_server_bot_chat import await_peer_receipt
+    from gateway import session_bot
     from gateway.session_bot import deliver
+    from tests.waiting import async_wait_until
     gate = asyncio.Event()
     import gateway.session_finite as finite
     execute = finite.execute_finite_admission
+    wait_admission, followed = session_bot.peer_wait_admission, []
+
+    def peer_wait_admission(authority, record):
+        live = wait_admission(authority, record)
+        followed.append(live)
+        return live
 
     async def held(authority, ref, row):
         if row['request_id'].endswith(':retry'):
@@ -166,6 +187,7 @@ async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
         return await execute(authority, ref, row)
 
     finite.execute_finite_admission = held
+    session_bot.peer_wait_admission = peer_wait_admission
     try:
         bot.errors[:] = ['Error code: 429 - rate limit exceeded']
         first = await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
@@ -174,12 +196,16 @@ async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
             await asyncio.sleep(0.02)
             if len(_admissions(bot)) == 2:
                 break
-        await asyncio.sleep(0.1)
+        retry_id = _admissions(bot)[1]['admission_id']
+        # The waiter re-read the delivery after the original failed and now follows the held retry.
+        await async_wait_until(lambda: (retry_id, False) in followed or waiting.done(), timeout=10,
+                               what='the peer waiter to follow the retry admission')
         assert not waiting.done(), waiting.result()
         gate.set()
         receipt = await asyncio.wait_for(waiting, 5)
     finally:
         finite.execute_finite_admission = execute
+        session_bot.peer_wait_admission = wait_admission
     assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
     assert receipt['retry_admission_id']
 
@@ -212,7 +238,7 @@ async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retr
             await asyncio.sleep(0.02)
             if _admissions(bot)[0]['status'] == 'terminal':
                 break
-        await asyncio.sleep(0.1)
+        await _settle_quietly(bot)  # the original's receipt task has published its interim state
         interim = await await_delivery_async(bot.home, KEY, 0.2)
         assert interim['status'] == 'claimed' and len(_admissions(bot)) == 1, interim
         waiting = asyncio.create_task(await_delivery_async(bot.home, KEY, 10))
@@ -230,6 +256,7 @@ async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot)
     """The cross-process mailbox lock guards one receipt write, taken off the event loop: a DM
     runner (another process) holding it delays only that write, never every other session, socket
     and delivery on the owner's loop, and never across an admission await."""
+    import sys
     import threading
     import time
     from gateway.session_bot import deliver
@@ -237,18 +264,31 @@ async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot)
     from tools.bot_live_delivery import _locked, _root
     with _locked(bot.home):
         pass
+    from tests.waiting import async_wait_until
     held, release = threading.Event(), threading.Event()
 
     def foreign_holder():
         with _FileLock(_root(bot.home) / '.lock'):
             held.set()
-            release.wait(1.0)
-    threading.Thread(target=foreign_holder, daemon=True).start()
+            release.wait(10)  # the test releases it as soon as the loop has been measured
+    holder = threading.Thread(target=foreign_holder, daemon=True)
+    holder.start()
     assert held.wait(5)
+
+    def queued_behind_holder():
+        # Another thread (the off-loop receipt write) is parked in flock behind the holder.
+        for ident, frame in sys._current_frames().items():
+            if ident in (holder.ident, threading.get_ident()):
+                continue
+            while frame is not None:
+                if frame.f_code.co_name == '_flock':
+                    return True
+                frame = frame.f_back
+        return False
     delivering = asyncio.create_task(deliver(bot.connection, dict(id=KEY, profile='default', message='ping')))
     started = time.monotonic()
-    for _ in range(5):
-        await asyncio.sleep(0.02)
+    # The loop keeps polling while the write waits off it; a write on the loop would block every poll.
+    await async_wait_until(queued_behind_holder, timeout=10, what='the mailbox write to wait off the loop')
     loop_stall = time.monotonic() - started
     release.set()
     receipt = await asyncio.wait_for(delivering, 5)

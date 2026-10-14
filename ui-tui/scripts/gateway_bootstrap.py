@@ -1,11 +1,10 @@
 """Ink's private pipe bootstrap; the child is a client, never an agent owner.
 
 ``--start`` ensures the owner (first launch). A reconnect discovers only, except ``--recover``
-re-ensures an owner that is gone without anyone asking: it CRASHED (its retained runtime record
-still claims it live) or it ended ITSELF by the auto-started idle exit (``gateway/run_idle_exit.py``,
-"the next client starts a fresh gateway" — this reconnecting client is that next client). An
-explicitly stopped gateway (``hermes gateway stop`` / a planned stop: ``stopped`` without the idle
-exit's reason, or a durable ``desired_state: stopped``) is never resurrected by a reconnect.
+(a bounded slot, ``gatewayClient.ts`` ``OWNER_RECOVERY_LIMIT`` per window) re-ensures whenever the
+owner is not ready: it crashed, ended by its idle exit, was stopped with ``hermes gateway stop``
+while this TUI was open, or an older Hermes's gateway answers (ensure replaces that one). Main's TUI
+ran its own sidecar and never depended on an external daemon, so an open TUI comes back on its own.
 """
 import contextlib
 import json
@@ -15,26 +14,19 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# ``gateway_state`` values only a live owner publishes; ``hermes gateway stop`` and planned stops
-# persist ``stopped``, so a dead process still claiming one of these did not stop cleanly.
-_LIVE_CLAIMS = frozenset({"running", "starting", "draining", "degraded"})
 
 
-def owner_crashed(home: Path) -> bool:
-    """After discovery answered ``absent``: did the owner serving *home* end without anyone asking
-    (a crash, or its own idle exit while this client was away — suspended, asleep, disconnected)?"""
-    from gateway.run_idle_exit import IDLE_EXIT_STOP_PREFIX
-    from gateway.status import read_runtime_status
-    from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
-    owner = multiplexer_serves_home(home) or implied_host_root(home) or home
-    record = read_runtime_status(owner / "gateway_state.json")
-    if not isinstance(record, dict) or record.get("desired_state") == "stopped":
-        return False
-    # The owner's own idle exit (gateway/run_idle_exit.py) persists ``stopped`` with this reason;
-    # no operator asked for it, and "the next client starts a fresh gateway" is this client.
-    idle_exited = (record.get("gateway_state") == "stopped"
-                   and str(record.get("exit_reason") or "").startswith(IDLE_EXIT_STOP_PREFIX))
-    return idle_exited or record.get("gateway_state") in _LIVE_CLAIMS
+def failure_message(receipt) -> str:
+    """What the TUI shows when there is no owner to attach: the bounded verdict, then its detail
+    (a refusal's remedy, or a start that died's own redacted output), each line still a verdict."""
+    head = f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}"
+    detail = getattr(receipt, "detail", None)
+    if not detail:
+        return head
+    if receipt.reason_code == "runtime_exited":
+        return f"{head}\n{detail}"
+    lines = [line.strip() for line in str(detail).splitlines() if line.strip()]
+    return "\n".join([head, *(f"gateway {receipt.state}: {line}" for line in lines)])
 
 
 def bootstrap(start: bool, recover: bool = False) -> dict:
@@ -54,11 +46,10 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=5))
-    if not start and recover and receipt.state == "absent" and owner_crashed(home):
+    if not start and recover and receipt.state != "ready":
         receipt = ensure_gateway_runtime(home, timeout=30, idle_exit=True)
     if receipt.state != "ready" or receipt.endpoint is None:
-        detail = f"\n{receipt.detail}" if receipt.reason_code == "runtime_exited" and receipt.detail else ""
-        raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}{detail}")
+        raise RuntimeError(failure_message(receipt))
     endpoint = receipt.endpoint
     # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
     control = control_home_for(home, endpoint)

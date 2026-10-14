@@ -152,13 +152,9 @@ export const opsCommands: SlashCommand[] = [
     help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
-      // The shared owner's environment is every profile's; it re-reads `.env` per turn itself.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload'))
-      }
-
+      // The shared gateway serves `/reload` for one session this client controls.
       ctx.gateway
-        .rpc<ReloadEnvResponse>('reload.env', {})
+        .rpc<ReloadEnvResponse>('reload.env', ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {})
         .then(
           ctx.guarded<ReloadEnvResponse>(r => {
             const n = Number(r.updated ?? 0)
@@ -251,12 +247,6 @@ export const opsCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.ops.rollback.noSession'))
-      }
-
-      // Checkpoints live in the legacy sidecar's per-session map, which never holds a
-      // shared-gateway session; the owner serves no rollback verb yet.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'rollback'))
       }
 
       const trimmed = arg.trim()
@@ -356,11 +346,6 @@ export const opsCommands: SlashCommand[] = [
       // explicit subcommands skip the overlay and act directly so scripts and
       // multi-step flows can drive it without entering interactive mode.
       if (sub === 'pause' || sub === 'resume' || sub === 'unpause') {
-        // The spawn gate is process-global: on the shared owner it would pause every chat.
-        if (ctx.gateway.gw?.isCanonical) {
-          return ctx.transcript.sys(t('canonical.controls.notAvailable', `agents ${sub}`))
-        }
-
         const paused = sub === 'pause'
         ctx.gateway.gw
           .request<DelegationPauseResponse>('delegation.pause', { paused })
@@ -754,6 +739,12 @@ export const opsCommands: SlashCommand[] = [
 
       runViaSlashWorker()
     }
+  },
+
+  {
+    help: 'manage connector accounts: list, rename, add another, reconnect, remove',
+    name: 'connectors',
+    run: () => patchOverlayState({ connectors: true })
   },
 
   {

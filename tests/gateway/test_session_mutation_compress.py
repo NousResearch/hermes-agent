@@ -10,6 +10,7 @@ import threading
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 from tests.gateway.test_session_mutation_model import CatalogModel
+from tests.waiting import async_wait_until
 
 
 class SummaryModel(CatalogModel):
@@ -87,13 +88,12 @@ def run_compress_case(tmp_path, mode, in_place):
             accepted = {}
             async def turn(text):
                 accepted[text] = await call('prompt.submit', session_id=sid, input_id=text, text=text)
-                async with asyncio.timeout(30):
-                    while True:
-                        with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
-                            row = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
-                        if row and row[0] == 'terminal':
-                            return await call('session.resume', session_id=sid)
-                        await asyncio.sleep(.03)
+                def terminal():
+                    with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
+                        row = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
+                    return row and row[0] == 'terminal'
+                await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                return await call('session.resume', session_id=sid)
             history_count = 16
             for i in range(history_count):
                 before = await turn('HISTORY_' + str(i))
@@ -110,6 +110,9 @@ def run_compress_case(tmp_path, mode, in_place):
             assert (result['target_session_id'] == physical) is effective_in_place
             compressed = await call('session.resume', session_id=sid)
             assert 'SUMMARY_RETAINED_FACTS' in json.dumps(compressed['messages'])
+            # Main's agent counts the compaction (status bar `🗜️ N`, /usage): the evicted agent's
+            # successor carries it, before its first turn and after it.
+            assert (await call('session.stats', session_id=sid))['compression_count'] == 1
             retained = 1 if mode == 'safe' else cfg['compression']['min_tail_user_messages']
             with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
                 tail_users = [row[0] for row in db.execute(
@@ -121,12 +124,14 @@ def run_compress_case(tmp_path, mode, in_place):
                 retried = await call('prompt.submit', session_id=sid, input_id=text, text=text)
                 assert retried['admission_id'] == receipt['admission_id']
             await turn('AFTER_COMPRESSION')
+            assert (await call('session.stats', session_id=sid))['compression_count'] == 1
             assert 'SUMMARY_RETAINED_FACTS' in json.dumps(peer.requests[-1]['messages'])
             for i in range(history_count - retained, history_count):
                 assert f'HISTORY_{i}' in json.dumps(peer.requests[-1]['messages'])
             count = len(peer.requests)
             assert await call('session.mutate', **params) == result
             assert len(peer.requests) == count
+            assert (await call('session.stats', session_id=sid))['compression_count'] == 1  # retry: no recount
             # Later mutations must target the current transcript, not a closed ancestor.
             after = await call('session.resume', session_id=sid)
             branch = await call('session.mutate', session_id=sid, request_id='branch-after-compress',

@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -20,6 +21,14 @@ from agent.i18n import t
 logger = logging.getLogger("hermes_cli.main")
 
 
+def _bypass_chat_launch(args) -> bool:
+    """--safe-mode / --ignore-user-config chat: the gateway owner freezes code defaults and runs
+    the turn out of process, so the profile's display.interface must not pick a surface and the
+    client performs no discovery. Explicit --tui forwards the flags in its session.create policy."""
+    return bool(getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False)) \
+        and not getattr(args, "tui", False)
+
+
 def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -28,6 +37,41 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
         return str(data.get("session_id") or "").strip() or None
     except Exception:
         return None
+
+
+# A canonical local session is keyed ``local-`` + 64 hex; main's epilogue printed 22-char stored ids.
+_SHORT_RESUME_LEN = 22
+
+
+def _short_resume_id(db, session_id: str) -> str:
+    """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
+    resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
+    if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
+        return session_id
+    short = session_id[:_SHORT_RESUME_LEN]
+    try:
+        return short if db.resolve_session_id(short) == session_id else session_id
+    except sqlite3.Error:  # an unreadable store prints the whole id
+        return session_id
+
+
+def _branch_lineage(db, session: dict) -> list:
+    """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
+    named the parent and so reported the conversation's tokens; a canonical branch child is named
+    itself, and its copied history was billed on the ancestors."""
+    rows, seen = [session], {session.get("id")}
+    while True:
+        try:
+            config = json.loads(rows[-1].get("model_config") or "{}")
+        except (TypeError, ValueError):
+            break
+        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
+        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
+        if not parent:
+            break
+        seen.add(parent_id)
+        rows.append(parent)
+    return rows
 
 
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
@@ -49,12 +93,14 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
             return
 
         title = db.get_session_title(target)
+        resume_id = _short_resume_id(db, target)
         message_count = int(session.get("message_count") or 0)
         if message_count == 0:
             return  # No real conversation — don't show resume info
-        tokens = {
-            k: int(session.get(f"{k}_tokens") or 0)
-            for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+        for row in _branch_lineage(db, session):
+            for k in tokens:
+                tokens[k] += int(row.get(f"{k}_tokens") or 0)
     except Exception:
         return
     finally:
@@ -65,10 +111,10 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     from hermes_cli.profiles import get_active_profile_name
     active_profile = get_active_profile_name()
     profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
-    print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {target}{profile_flag}")
+    print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {resume_id}{profile_flag}")
     if title:
         print(f'  hermes --tui -c "{title}"{profile_flag}')
-    print(f"\nSession:        {target}")
+    print(f"\nSession:        {resume_id}")
     if title:
         print(f"Title:          {title}")
     print(f"Messages:       {message_count}")

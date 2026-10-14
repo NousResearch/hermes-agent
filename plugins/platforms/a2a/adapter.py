@@ -482,6 +482,11 @@ class A2AAdapter(BasePlatformAdapter):
                 self._forwarded_inputs.popitem(last=False)
         return seen
 
+    def _forget_forwarded_input(self, input_id: Optional[str]) -> None:
+        """Drop a fresh id a pre-admission guard refused, so its resend is refused again."""
+        with self._pending_lock:
+            self._forwarded_inputs.pop(input_id, None)
+
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
@@ -541,6 +546,8 @@ class A2AAdapter(BasePlatformAdapter):
         max_turns = protocol.max_pingpong_turns()
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent),
                                 input_id=(input_id or task_id) if forwarded else "")
+        if not retry and (turn > max_turns or not text):
+            self._forget_forwarded_input(input_id)
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)

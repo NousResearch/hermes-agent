@@ -1,4 +1,11 @@
-"""Native PTY clients against an ordinary daemon and loopback model only."""
+"""Native PTY clients against an ordinary daemon and loopback model only.
+
+`hermes --cli chat` (interactive and -q/-Q) is main's HermesCLI again, its agent and session store the
+gateway's; `-z` stays on the gateway transport client. The CLI process may read state.db (maintainer
+ruling) but builds no AIAgent, no GatewayRunner and no SessionDB writer. The thin client's
+`/approve <id>` detach/reconnect leg is retired: main's classic approval is the modal the A/B harness
+step 03a_approval_modal compares against main.
+"""
 import json
 import os
 from pathlib import Path
@@ -10,6 +17,8 @@ import time
 import uuid
 
 import pytest
+
+from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 
 from tests.gateway.test_normal_runtime_boot import control
 
@@ -30,6 +39,9 @@ def test_native_classic_fresh_resume_and_oneshot(tmp_path, model_peer, request):
         "approvals": {"mode": "manual", "timeout": 60},
         "model": {"provider": "custom", "default": "local-wire-stub", "base_url": model_url},
         "auxiliary": {"title_generation": {"enabled": False}},
+        # Answered at the current offer version, as tests/fakes/fake_llm_provider.write_hermes_home
+        # does: main's interactive chat asks it first on a home that never answered.
+        "telemetry": {"shared_metrics": {"enabled": False, "send": False, "offer_version": OFFER_VERSION}},
     }))
     env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
@@ -44,8 +56,9 @@ owners = []
 def trace(frame, event, arg):
     if event == 'call' and frame.f_code.co_name == '__init__':
         obj = frame.f_locals.get('self')
-        if type(obj).__name__ in {'AIAgent', 'SessionDB', 'GatewayRunner'}:
-            owners.append(type(obj).__name__)
+        name = type(obj).__name__
+        if name in {'AIAgent', 'GatewayRunner'} or (name == 'SessionDB' and not frame.f_locals.get('read_only')):
+            owners.append(name)
 sys.setprofile(trace)
 try:
     module = 'hermes_cli.main'
@@ -102,12 +115,22 @@ finally:
                     pass
                 time.sleep(.1)
             assert descriptor.get("state") == "ready", log_path.read_text()
+            def type_line(text):
+                # As the A/B harness types: main's prompt_toolkit drops an Enter in the same burst.
+                tmux("send-keys", "-t", "chat", "-l", text)
+                until(text, 10)
+                time.sleep(1)  # health: allow HX013 -- main drops an Enter sent in the same burst as the text (probe_pty.py); the gap is the input timing
+                tmux("send-keys", "-t", "chat", "Enter")
+
             launch("--cli", "chat")
             first = until("Welcome to Hermes Agent")
-            sid = next(line.split("Session: ", 1)[1].strip() for line in first.splitlines() if "Session: " in line)
-            tmux("send-keys", "-t", "chat", "WS_SHARED", "Enter")
+            type_line("WS_SHARED")
             fresh = until("LOCAL_ACK_WS_SHARED")
-            tmux("send-keys", "-t", "chat", "/quit", "Enter")
+            type_line("/title")
+            # Main's bare /title prints the full id (the banner shows its 8-character label).
+            shown = until("Session ID: ")
+            sid = next(line.split("Session ID: ", 1)[1].strip() for line in shown.splitlines() if "Session ID: " in line)
+            type_line("/quit")
             detached = until("CLI_RC=0")
             assert json.loads(witness.read_text()) == [], witness.read_text()
             assert daemon.poll() is None
@@ -133,32 +156,7 @@ finally:
             tmux("kill-session", "-t", "chat")
 
             from tests.gateway.fixtures.authority_controls_peer import ModelPeer as ApprovalPeer
-            target = tmp_path / "owned-removal"
-            target.mkdir()
-            (target / "owned.txt").write_text("disposable")
-            model_peer.command = "rm -r -- " + shlex.quote(str(target))
             model_peer.RequestHandlerClass = ApprovalPeer
-            launch("--cli", "chat", "-q", "Remove the owned fixture")
-            approval = until("/approve ")
-            approval_sid = next(line.split("Session: ", 1)[1].strip() for line in approval.splitlines() if "Session: " in line)
-            prompt_id = next(line.split("/approve ", 1)[1].split()[0] for line in approval.splitlines() if "/approve " in line)
-            assert target.exists()
-            tmux("send-keys", "-t", "chat", f"/approve {prompt_id} forged", "Enter")
-            until("invalid_params")
-            assert target.exists(), "Invalid choice must not resolve the real approval"
-            tmux("send-keys", "-t", "chat", "/quit", "Enter")
-            until("CLI_RC=0")
-            assert target.exists()
-            tmux("kill-session", "-t", "chat")
-            launch("--cli", "chat", "--resume", approval_sid)
-            until("/approve ")
-            tmux("send-keys", "-t", "chat", f"/approve {prompt_id} once", "Enter")
-            approved = until("APPROVAL_FINISHED")
-            assert not target.exists(), "Real terminal effect must follow native consent"
-            tmux("send-keys", "-t", "chat", "/quit", "Enter")
-            until("CLI_RC=0")
-            assert json.loads(witness.read_text()) == []
-            tmux("kill-session", "-t", "chat")
             cwd_supported = "cannot preserve caller cwd" not in first
             cwd_receipt = tmp_path / "cwd-proof.txt"
             model_peer.command = "pwd > " + shlex.quote(str(cwd_receipt))
@@ -175,8 +173,7 @@ finally:
             assert json.loads(witness.read_text()) == []
             receipt = {"gateway_root": str(gateway_root), "caller_cwd_effect_verified": cwd_supported,
                        "policy": policy, "direct_cli": direct,
-                       "approval_detach_reconnect": approval_sid, "approval": approved,
-                       "invalid_choice_no_effect": True, "real_terminal_effect": True,"session_id": sid, "daemon_pid": daemon.pid,
+                       "session_id": sid, "daemon_pid": daemon.pid,
                        "same_instance": descriptor["instance_id"], "client_agent_db_owners": [],
                        "fresh": fresh, "detach": detached, "resume": resumed, "oneshot": oneshot}
             print("CLI_PTY_RECEIPT=" + json.dumps(receipt))

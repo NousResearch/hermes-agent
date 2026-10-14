@@ -40,7 +40,7 @@ def _run(mode, supervise):
         async with asyncio.timeout(15):
             assert await worker.next_frame(HELLO_SECONDS, ack=0) == {'type': 'hello'}
             worker.writer.start()
-            await asyncio.sleep(ACK + 0.4)  # the turn outlives the ack interval before any Stop
+            await asyncio.sleep(ACK + 0.4)  # health: allow HX013 -- elapsed time IS the subject: the turn must outlive the ack interval before the first Stop
             return await supervise(worker)
 
     try:

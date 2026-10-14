@@ -20,6 +20,8 @@ import threading
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = 'sleep 2; echo FIRST_$((40+2)); sleep 1; echo SECOND_$((6*7)); (exit 7)'
 
@@ -119,9 +121,8 @@ def test_next_managed_turn_reads_the_previous_workers_background_output(tmp_path
             sid = created['result']['session_id']
             for request_id, text in (('start', 'START'), ('wait', 'WAIT')):
                 assert 'result' in await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text=text)
-                async with asyncio.timeout(90):
-                    while not settled(request_id):
-                        await asyncio.sleep(.1)
+                await async_wait_until(lambda: settled(request_id), timeout=90, interval=.1,
+                                       what=f'{request_id} to settle')
             return (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
     try:
         with daemon(ROOT, home, env, barrier=False) as (_owner, desc):

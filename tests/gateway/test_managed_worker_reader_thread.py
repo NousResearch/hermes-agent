@@ -8,7 +8,19 @@ import sys
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 SILENT = 'import sys; sys.stdin.buffer.read()'
+
+
+def _parked(worker):
+    """The worker's reader thread is blocked inside ``read_frame`` on the silent pipe."""
+    frame = worker.reader and sys._current_frames().get(worker.reader.ident)
+    while frame is not None:
+        if frame.f_code.co_name == 'read_frame':
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _spawn(code):
@@ -25,7 +37,8 @@ def test_parked_worker_reads_leave_the_default_executor_free():
         asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=4))
         parked = [asyncio.create_task(w.next_frame(None, ack=30)) for w in workers]
         try:
-            await asyncio.sleep(.3)
+            await async_wait_until(lambda: all(_parked(w) for w in workers), timeout=10,
+                                   what='every reader parked on its silent pipe')
             # Settlement, env preparation and control RPCs all run on this pool.
             return await asyncio.wait_for(asyncio.to_thread(lambda: 'answered'), 3)
         finally:
@@ -52,7 +65,7 @@ def test_a_frame_arriving_after_a_cancelled_read_is_not_lost():
         try:
             # A read cancelled while the child is silent (turn cancellation, Stop race).
             first = asyncio.create_task(worker.next_frame(None, ack=30))
-            await asyncio.sleep(.3)
+            await async_wait_until(lambda: _parked(worker), timeout=10, what='the reader parked on the silent pipe')
             first.cancel()
             await asyncio.gather(first, return_exceptions=True)
             worker.send({'type': 'go'})

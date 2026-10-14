@@ -161,6 +161,16 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
     runner.session_authority = authority
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
+    polled_while_draining = threading.Event()
+    real_operation = session_cron.operation
+
+    async def observed_operation(owner, name, params, actor=None):
+        draining = runner._draining
+        result = await real_operation(owner, name, params, actor)
+        if name == 'status' and draining:
+            polled_while_draining.set()  # answered, not refused, during the drain
+        return result
+    monkeypatch.setattr(session_cron, 'operation', observed_operation)
 
     async def probe():
         session_cron.bind_owner(authority)
@@ -172,7 +182,8 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
             row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
             assert await session_cron.operation(
                 authority, 'cancel', {'session_id': sid, 'admission_id': row['admission_id']}) == {'ok': True}
-            await asyncio.sleep(0.3)  # the firer polls status at least once during the drain
+            # the firer polls status at least once during the drain, and is answered
+            assert await asyncio.to_thread(polled_while_draining.wait, 10), 'firer never polled status during the drain'
             settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
                                  generation=row['generation'], outcome='completed',
                                  result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})

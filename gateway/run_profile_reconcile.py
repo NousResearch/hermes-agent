@@ -114,6 +114,7 @@ class GatewayProfileReconcileMixin:
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
             live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
+            listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
             from gateway.status import live_gateway_pid_for_home
 
@@ -154,7 +155,7 @@ class GatewayProfileReconcileMixin:
             self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
             from gateway.run_runtime import unpark_profile
-            for name in [n for n in self._parked_profile_names() if n not in live]:
+            for name in [n for n in self._parked_profile_names() if n not in listed]:
                 unpark_profile(self, name)
             parked = self._parked_profile_names()
             # The watcher never re-parks the same profile every cycle; a creator's explicit signal does.
@@ -371,32 +372,34 @@ class GatewayProfileReconcileMixin:
                 # this process exits. Raising here aborted the reconcile for every other profile.
                 logger.error("[MULTIPLEX] Profile '%s' unrouted, but a turn outlived its Stop; ownership retained", name)
                 return
-            # Its session authority and reservation go before the store handles: the authority owns the
-            # state.db writer, and the next restart must not try to reserve a home that no longer exists.
-            release_profile_home(self, home)
-            with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
-                from hermes_state_registry import close_all_under
-                close_all_under(home)
-            with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-                from plugins.memory import import_provider_module  # catalog plugin since it left core
-                import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
-            # The gateway process is a second holder the CLI-side delete cannot reach: its routed
-            # log files (logs/.__agent.lock, logs/.__errors.lock) and its scoped MCP servers'
-            # mcp-stderr.log handle live HERE, so unserve must release them in this process too
-            # (#130244) — the same two calls ``delete_profile`` makes for the deleting process.
-            # Both calls BLOCK (the log release stops/joins the QueueListener, which can be inside
-            # a ConcurrentRotatingFileHandler emit waiting on another process's rotation lock; the
-            # MCP shutdown waits on future.result for the MCP loop), so they run off the loop in a
-            # worker thread — otherwise every other served profile's events stall behind them.
-            # ``asyncio.to_thread`` copies the context, so the surrounding
-            # ``_profile_runtime_scope`` home/secret override stays visible in the worker.
-            with _log_suppressed(logging.DEBUG, "scoped MCP shutdown failed", exc_info=True):
-                from hermes_constants import hermes_home_key
-                from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-                await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
-            with _log_suppressed(logging.DEBUG, "profile log handler release failed", exc_info=True):
-                from hermes_logging import release_profile_log_handlers
-                await asyncio.to_thread(release_profile_log_handlers, home)
+            # The reservation (gateway.lock) is released LAST: a deleter waiting on it may rmtree the
+            # home as soon as it goes, so every handle this process holds there must close first.
+            try:
+                with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
+                    from hermes_state_registry import close_all_under
+                    close_all_under(home)
+                with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
+                    from plugins.memory import import_provider_module  # catalog plugin since it left core
+                    import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
+                # The gateway process is a second holder the CLI-side delete cannot reach: its routed
+                # log files (logs/.__agent.lock, logs/.__errors.lock) and its scoped MCP servers'
+                # mcp-stderr.log handle live HERE, so unserve must release them in this process too
+                # (#130244) — the same two calls ``delete_profile`` makes for the deleting process.
+                # Both calls BLOCK (the log release stops/joins the QueueListener, which can be inside
+                # a ConcurrentRotatingFileHandler emit waiting on another process's rotation lock; the
+                # MCP shutdown waits on future.result for the MCP loop), so they run off the loop in a
+                # worker thread — otherwise every other served profile's events stall behind them.
+                # ``asyncio.to_thread`` copies the context, so the surrounding
+                # ``_profile_runtime_scope`` home/secret override stays visible in the worker.
+                with _log_suppressed(logging.DEBUG, "scoped MCP shutdown failed", exc_info=True):
+                    from hermes_constants import hermes_home_key
+                    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+                    await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
+                with _log_suppressed(logging.DEBUG, "profile log handler release failed", exc_info=True):
+                    from hermes_logging import release_profile_log_handlers
+                    await asyncio.to_thread(release_profile_log_handlers, home)
+            finally:
+                release_profile_home(self, home)
             logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 

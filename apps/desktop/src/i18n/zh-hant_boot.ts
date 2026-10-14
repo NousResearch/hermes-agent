@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhHantSessionCommands } from './zh-hant_session_commands'
 
 export const zhHantBoot = {
   boot: {
@@ -72,8 +73,8 @@ export const zhHantBoot = {
     }
   },
   promptNotices: {
-    legacySendUnconfirmed:
-      '此伺服器無法確認這則訊息先前的傳送，它可能已經執行過。再次傳送前請先查看對話。'
+    legacySendUnconfirmed: '此伺服器無法確認這則訊息先前的傳送，它可能已經執行過。再次傳送前請先查看對話。',
+    sessionCommands: zhHantSessionCommands
   },
 
   updates: {

@@ -14,6 +14,7 @@ import type { Msg } from '../types.js'
 
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
+import { findSlashCommand } from './slash/registry.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
@@ -498,7 +499,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
-        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
+
+        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace, name =>
+          Boolean(findSlashCommand(name))
+        )
 
         if (next !== null) {
           return composerActions.setInput(next)

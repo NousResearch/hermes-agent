@@ -1,5 +1,6 @@
 """Durable deletion fences outside prunable transcript rows."""
 import json
+import time
 from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, _json, _text
 
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
@@ -20,12 +21,13 @@ def has_mutation_receipt(db, principal_id, session_id, request_id):
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is not None
 
 
-_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning', 'tools'})
+_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning', 'tools', '_turn_user_row'})
 
 
 def _compact_result(conn, admission_id):
     """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
-    but not the transcript copies a turn result carries (cumulative ``messages``, reasoning)."""
+    but not the transcript copies a turn result carries (cumulative ``messages``, reasoning, the
+    settled ``_turn_user_row``)."""
     from hermes_state_terminal import RESULT_PREFIX
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
     if saved is None:
@@ -52,6 +54,7 @@ def retire_terminal_receipts(conn, session_ids):
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'
+            row['retired_at'] = time.time()
             _compact_result(conn, row['admission_id'])
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
@@ -72,6 +75,7 @@ def retire_terminal_receipts(conn, session_ids):
                 if receipt['payload_digest'] != closing:
                     receipt['result_json'] = None
             row['receipts'] = receipts
+            row['retired_at'] = time.time()
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (WORKER_PREFIX + row['execution_id'], _json(row)))
             conn.execute('DELETE FROM worker_receipts WHERE execution_id=?', (row['execution_id'],))
@@ -188,14 +192,38 @@ def entry_session_id(raw):
 
 
 def retire_routes(conn, session_ids):
-    # OR IGNORE: the marker is a fact, not a receipt; re-retiring an id that was recreated
-    # beside its tombstone must not abort the delete that removes it again.
+    # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
+    # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
     for sid in session_ids:
-        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
-                     (RETIRED_PREFIX + sid, '{}'))
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                     (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:
             conn.execute('DELETE FROM gateway_routing WHERE scope=? AND session_key=?',
                          (row['scope'], row['session_key']))
+
+
+RETRY_HORIZON_S = 7 * 86400  # exact-retry horizon: a retry within it gets the byte-exact settled reply
+_EXPIRED = "json_valid(value) AND json_extract(value, '$.retired_at') < ?"
+
+
+def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
+    """Reclaim deletion tombstones retired more than *older_than* seconds ago: the terminal admission
+    with its identity pointer and compacted result, terminal workers and the retired-session marker.
+    Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
+    from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
+    prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX)
+    now = time.time()
+    for prefix in prefixes:
+        conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
+                     "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))
+    cutoff = now - older_than
+    for key, raw in conn.execute(f'SELECT key,value FROM state_meta WHERE key GLOB ? AND {_EXPIRED}',
+                                 (ADMISSION_PREFIX + '*', cutoff)).fetchall():
+        row = json.loads(raw)
+        conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
+                     identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
+    for prefix in prefixes[1:]:
+        conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (prefix + '*', cutoff))

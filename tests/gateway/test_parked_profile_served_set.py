@@ -12,13 +12,14 @@ from gateway.runtime_bootstrap import TicketStore
 from gateway.session_authorities import SessionAuthorities
 from gateway.session_contract import Submission
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
 async def test_still_retiring_profile_leaves_the_served_set(tmp_path, monkeypatch):
     from gateway import session_finite
     agent = _Agent(honours_stop=False)
-    db, authority, execute, _returned = _authority(tmp_path, agent)
+    db, authority, execute, returned = _authority(tmp_path, agent)
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr('gateway.session_cron.unbind_owner', lambda authority: None)
     launch = SimpleNamespace(profile_id=str(tmp_path / 'launch'), retiring=False)
@@ -40,5 +41,8 @@ async def test_still_retiring_profile_leaves_the_served_set(tmp_path, monkeypatc
                 runner.session_ticket_store.mint(profile_id='owned', subject='u', purpose='interactive')
     finally:
         agent.release.set()
-        await asyncio.sleep(.05)
+        # The turn thread returns, then its session task settles; only then may the store close.
+        assert await asyncio.to_thread(returned.wait, 10), 'released turn thread never returned'
+        task = authority.sessions['s'].task
+        await async_wait_until(lambda: task is None or task.done(), what='the released turn to settle')
         db.close()

@@ -72,6 +72,7 @@ import type {
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { sessionCommandHandlers } from './slash-session-commands'
 import { captureSubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
@@ -639,6 +640,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // registry row in desktop-slash-commands.ts plus an entry here — never a
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        ...sessionCommandHandlers<SlashActionCtx>({
+          activeSessionIdRef,
+          busyRef,
+          destination,
+          requestGateway,
+          runExec,
+          submitPromptText,
+          updateSessionState,
+          withSlashOutput
+        }),
         new: async () => {
           prepareDefaultNewSession()
           startFreshSessionDraft()

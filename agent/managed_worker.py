@@ -165,7 +165,8 @@ class WorkerControls:
     def stop(self):
         self.stopped.set()
         if self.agent is not None:
-            self.agent.interrupt()
+            from agent.interrupt_compat import request_hard_interrupt
+            request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
         with self.lock:
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
@@ -211,7 +212,11 @@ class WorkerControls:
     def clarify(self, questions):
         """clarify_tool's batch contract: ``callback(questions) -> {answers, outcome, notice?}``.
         One owner prompt per question, stopping at the first that is interrupted or unanswered;
-        an empty answer is a skip (``None``), as on the other surfaces."""
+        an empty answer is a skip (``None``), as on the other surfaces. A finite turn (``chat -q`` /
+        ``-z``, bound by worker_turn_scope) answers headless at once: its viewer cannot answer."""
+        from gateway.session_finite import finite_clarify_reply, finite_turn_required
+        if finite_turn_required() is True:
+            return finite_clarify_reply()
         answers = {}
         reply = {'answers': answers, 'outcome': 'submitted'}
         for entry in questions:
@@ -227,6 +232,8 @@ class WorkerControls:
 
     def _ask(self, question, choices, multi_select):
         import uuid
+        from tools.clarify_gateway import get_clarify_timeout
+        timeout = get_clarify_timeout()  # the frozen worker config; <= 0 is unlimited, as on every surface
         prompt_id = uuid.uuid4().hex
         state = {'event': threading.Event(), 'answer': None}
         with self.lock:
@@ -236,7 +243,7 @@ class WorkerControls:
         try:
             self.channel.send('clarify', prompt_id=prompt_id, question=question,
                               choices=list(choices or []), multi_select=bool(multi_select))
-            state['event'].wait(3600)
+            state['event'].wait(timeout if timeout > 0 else None)
             return state['answer']
         finally:
             with self.lock:
@@ -353,7 +360,8 @@ def execute(frame, channel):
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
             if controls.stopped.is_set():
-                agent.interrupt()
+                from agent.interrupt_compat import request_hard_interrupt
+                request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
             from gateway.session_kanban import run_worker_turns

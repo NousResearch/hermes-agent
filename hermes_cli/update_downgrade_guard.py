@@ -72,6 +72,16 @@ def _pre_runtime_snapshot(home: Path) -> str | None:
     return None
 
 
+def _named_profile(home: Path) -> str:
+    """The ``-p`` name that opens ``home`` (``hermes -p acme update`` passes ``profiles/acme``);
+    ``""`` for the default root or a custom HERMES_HOME, which bare ``hermes`` opens."""
+    from hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
+    parent = _get_profiles_root().resolve()
+    resolved = home.resolve()
+    named = resolved.parent == parent and _PROFILE_ID_RE.match(resolved.name) and resolved.name != "default"
+    return resolved.name if named else ""
+
+
 def downgrade_refusal(git_cmd, root: Path, target_ref: str, home: Path | None = None) -> str | None:
     """Why the update must not move to ``target_ref``, or ``None``: refuses only a pre-runtime target
     while this profile's or a sibling profile's state.db holds runtime ledger rows."""
@@ -79,7 +89,7 @@ def downgrade_refusal(git_cmd, root: Path, target_ref: str, home: Path | None = 
     from hermes_constants import get_hermes_home
 
     home = Path(home or get_hermes_home())
-    profiles = [("", home), *_sibling_profile_homes(home)]
+    profiles = [(_named_profile(home), home), *_sibling_profile_homes(home)]
     ledgered = [(name, h) for name, h in profiles if _has_ledger_rows(h / "state.db")]
     if not ledgered or not target_predates_runtime(git_cmd, root, target_ref):
         return None

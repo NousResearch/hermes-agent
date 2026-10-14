@@ -13,6 +13,7 @@ import time
 
 import websockets
 from tests.gateway.test_normal_runtime_boot import control
+from tests.waiting import async_wait_until
 from local_recovery_probe import websocket, rpc
 
 
@@ -103,9 +104,7 @@ async def probe(root, base, mode):
             return [dict(r) for r in db.execute('SELECT * FROM session_admissions ORDER BY seq')]
 
     async def wait_for(predicate, seconds=35):
-        async with asyncio.timeout(seconds):
-            while not predicate():
-                await asyncio.sleep(.03)
+        await async_wait_until(predicate, timeout=seconds)
 
     proc = None
     try:

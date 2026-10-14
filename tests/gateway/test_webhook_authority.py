@@ -23,6 +23,7 @@ async def probe(peer):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from hermes_state_runtime import list_session_admissions
+    from tests.waiting import async_wait_until
 
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='webhook-test')
@@ -58,17 +59,15 @@ async def probe(peer):
             assert duplicate.status in (200, 202), await duplicate.text()
             assert len(rows()) == 1
             peer.release.set()
-            async with asyncio.timeout(25):
-                while rows()[0]['status'] != 'terminal':
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: rows()[0]['status'] == 'terminal', timeout=25,
+                                   what='the webhook admission to settle')
             # Lose the process-local optimization: durable identity still suppresses replay.
             adapter._seen_deliveries.clear()
             duplicate = await client.post(url, data=body, headers=headers)
             assert duplicate.status in (200, 202), await duplicate.text()
             assert len(rows()) == 1 and len(peer.requests) == 1
-            async with asyncio.timeout(5):
-                while adapter._background_tasks:
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: not adapter._background_tasks, timeout=5,
+                                   what='the webhook background tasks to finish')
             assert authority.db.get_session(rows()[0]['target_session_id'])['ended_at'] is not None
             Path(os.environ['HERMES_HOME'], 'webhook-receipt.json').write_text(json.dumps({
                 'failed_status': failed.status, 'retry_status': accepted.status,

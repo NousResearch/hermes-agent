@@ -58,6 +58,7 @@ class ProcessStopParams(Params):
 
 class ProcessStopResult(Result):
     killed: int
+    delegations: int = 0
 
 
 method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
@@ -108,6 +109,7 @@ class ProcessEntry(_Open):
     notify_on_complete: bool | None = None
     exit_code: int | None = None
     exited_at: float | None = None
+    started_epoch: float | None = None
     completion_reason: str | None = None
     detached: bool | None = None
 

@@ -82,8 +82,8 @@ async def test_refused_native_admission_leaves_no_fresh_capture(tmp_path, monkey
         return {'text': 'x', 'native_text_v1': {'source': {}, 'event': {'message_id': 'm'},
                 'media': capture_native_media([cache_image_from_bytes(PNG + b'fresh', '.png')])}}
     monkeypatch.setattr('gateway.session_envelope.prepare_native', prepare)
-    monkeypatch.setattr('gateway.session_envelope.restore_native',
-                        lambda payload: type('E', (), {'source': authority.sessions['s'].source})())
+    monkeypatch.setattr('gateway.session_envelope.restore_native_source',
+                        lambda payload: authority.sessions['s'].source)
 
     def refused(*args, **kwargs):
         raise RuntimeStoreError('admission_conflict')

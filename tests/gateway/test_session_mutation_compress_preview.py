@@ -169,7 +169,7 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
             'during', ref, {'text': 'typed while compressing'}, 'queue')), 2)
         assert receipt.status == 'queued'
         claim = asyncio.create_task(authority._claim_next(ref, authority.sessions[ref.session_id]))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)  # health: allow HX013 -- proves the claim does NOT complete while compress holds the gate
         assert not claim.done(), 'a turn was claimed under a compression still preparing its transcript'
         release.set()
         reply = await asyncio.wait_for(compressing, 10)
@@ -179,4 +179,45 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
         assert row['generation'] == reply['result']['execution_generation'] + 1
     finally:
         release.set()
+        await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_writing(tmp_path, monkeypatch):
+    """A short session's ``/compress`` (the summarizer protects every message) is main's
+    ``No changes from compression: N messages`` report, read-only like a preview: no receipt, no
+    revision bump, no ``nothing_to_compress`` error on the wire (FINDINGS row 25)."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from agent.context_compressor import ContextCompressor
+
+    monkeypatch.setattr(run, '_load_gateway_config', dict)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
+    monkeypatch.setattr(ContextCompressor, 'compress', lambda self, messages, **kw: messages)
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='short', source='tui', cwd=str(tmp_path),
+                                                              model='frozen', toolsets=[]))
+    db.append_message(ref.session_id, 'user', 'hi')
+    db.append_message(ref.session_id, 'assistant', 'hello')
+    before = db.get_session(ref.session_id)
+    try:
+        reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'noop', 'expected_revision': before['runtime_revision'],
+            'expected_generation': before['runtime_generation'], 'operation': 'compress', 'payload': {}}})
+        result = reply.get('result') or {}
+        assert result.get('status') == 'noop', reply
+        assert result['summary']['headline'] == 'No changes from compression: 2 messages', result
+        assert result['summary']['noop'] is True and result['summary']['token_line'].endswith('(unchanged)')
+        after = db.get_session(ref.session_id)
+        assert (after['runtime_revision'], after['runtime_generation']) == (before['runtime_revision'], before['runtime_generation'])
+        assert not db.list_meta_prefix('gateway.mutation.v1.'), 'a no-op left a mutation receipt'
+    finally:
         await owner.close()

@@ -271,6 +271,19 @@ profile creation/import/activation, and profile rename/delete are not granted by
 this primary-profile credential. Native clients must not rewrite `all` to `current`
 or borrow the primary grant to hide a cross-profile failure.
 
+Creating a profile from native Desktop uses a separate, same-user
+`purpose: "native-profile-create"` grant carrying only `profiles:create`. It is
+accepted exclusively by `POST /api/profiles`; it does not authorize profile reads,
+import, activation, rename, deletion, or WebSocket access. The existing create
+handler validates the name and clone options. Optional `soul` content is written
+inside the staged profile before publication, so creation does not need a follow-up
+write or a running new-profile gateway; `soul_set` confirms it was applied. Older
+remote backends retain the separate, explicitly profile-scoped SOUL update.
+Desktop mints this grant per create
+request, never sends it to the renderer, and still uses ordinary profile-bound
+grants for subsequent requests. The same expiry, one-use, daemon, socket-peer and
+Origin checks apply. Ordinary `native-http` grants still receive 403 on creation.
+
 The native HTTP integration is covered by real ordinary-daemon/control-socket/TCP
 probes in `tests/gateway/test_native_http_auth.py`, alongside gated OAuth/cookie and
 actual non-loopback-peer controls. This does not establish native Desktop UI parity

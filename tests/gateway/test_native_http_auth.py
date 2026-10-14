@@ -129,6 +129,16 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
                           headers=headers(ticket(home, descriptor))).status_code == 200
         assert client.get('/api/profiles/sessions/sidebar?recents_profile=default',
                           headers=headers(ticket(home, descriptor))).status_code == 200
+        # The cross-profile project tree and PR scan answer one grant for its own profile only.
+        assert client.get('/api/profiles/projects/tree?profile=default',
+                          headers=headers(ticket(home, descriptor))).status_code == 200
+        assert client.post('/api/profiles/sessions/pull-requests?profile=default', json={'ids': ['x']},
+                           headers=headers(ticket(home, descriptor))).status_code == 200
+        for scope in ('', '?profile=all', '?profile=other', '?profile=default&profile=other'):
+            assert client.get('/api/profiles/projects/tree' + scope,
+                              headers=headers(ticket(home, descriptor))).status_code == 403, scope
+            assert client.post('/api/profiles/sessions/pull-requests' + scope, json={'ids': ['x']},
+                               headers=headers(ticket(home, descriptor))).status_code == 403, scope
         assert client.get('/api/config?profile=current',
                           headers=headers(ticket(home, descriptor))).status_code == 200
         assert client.get('/api/profiles', headers=headers(ticket(home, descriptor))).status_code == 200
@@ -141,9 +151,9 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
         query_ticket = ticket(home, descriptor)
         assert client.get('/api/config', params={'ticket': query_ticket}).status_code == 401
         assert client.get('/api/config', headers={'Cookie': 'X-Hermes-Gateway-Ticket=' + query_ticket}).status_code == 401
-        expired = ticket(home, descriptor)
-        time.sleep(31)  # Real production TTL, not a patched clock or shortened grant.
-        assert client.get('/api/config', headers=headers(expired)).status_code == 401
+        # Expiry is TicketStore.redeem's ``expires <= monotonic()`` rule, which the native-HTTP gate
+        # maps to 401 like every other redeem refusal: covered at the exact 30 s boundary with a
+        # patched clock in test_runtime_bootstrap, not by a 31 s wall-clock wait in the default lane.
         stale = ticket(home, descriptor)
         old_instance = descriptor['instance_id']
         assert 'ticket' not in json.dumps(control(home, 'identify')).lower()
@@ -153,7 +163,7 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
         assert client.get('/api/config', headers=headers(stale)).status_code == 401
         assert client.get('/api/config', headers=headers(ticket(home, descriptor))).status_code == 200
     print(json.dumps({'native_http': 'ordinary daemon config and profiles HTTP passed',
-                      'replay_expiry_restart_purpose_origin_profile': 'rejected'}))
+                      'replay_restart_purpose_origin_profile': 'rejected'}))
 
 
 @pytest.mark.asyncio

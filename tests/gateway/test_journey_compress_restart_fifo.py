@@ -18,6 +18,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 FOLLOWERS = ('FOLLOWER_1', 'FOLLOWER_2', 'FOLLOWER_3')
 
@@ -120,9 +121,7 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         return reply['result']
 
     async def wait_rows(predicate, timeout=40):
-        async with asyncio.timeout(timeout):
-            while not predicate():
-                await asyncio.sleep(.03)
+        await async_wait_until(predicate, timeout=timeout, interval=.03, what='admission rows')
 
     async def first(desc, owner):
         async with websocket(home, desc) as ws:

@@ -7,6 +7,7 @@ import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -88,7 +89,8 @@ async def test_editor_own_lost_turn_reports_unknown_not_end_turn(yield_between):
         await agent._project({'session_id': 's', 'type': 'session.info',
                               'payload': {'pending': [{'admission_id': 'ours', 'status': 'unknown'}]}})
         if yield_between:
-            await asyncio.sleep(0.01)
+            # session.info alone must wake and settle the prompt before the completion arrives.
+            await async_wait_until(submitted.done, what='the prompt woke on session.info')
         await agent._project({'session_id': 's', 'type': 'message.complete', 'admission_id': 'ours',
                               'payload': {'outcome': 'unknown', 'text': 'Worker execution is unknown.'}})
 

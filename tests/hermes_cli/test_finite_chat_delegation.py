@@ -149,7 +149,10 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
         assert payload["finite"] is True
         async with websocket(home, desc) as ws:
             assert "result" in await rpc(ws, "session.resume", session_id=sid)
-            retry = dict(session_id=sid, input_id=request_id, **payload)
+            # The row stores the committed admission; its ``cli_turn_v1`` block holds the per-turn CLI
+            # fields under their wire names, so the retry re-sends exactly what the CLI submitted.
+            wire = {key: value for key, value in payload.items() if key != "cli_turn_v1"}
+            retry = dict(session_id=sid, input_id=request_id, **wire, **payload.get("cli_turn_v1", {}))
             assert (await rpc(ws, "prompt.submit", **retry))["result"]["status"] == "terminal"
             conflict = await rpc(ws, "prompt.submit", **{**retry, "finite": False})
             assert conflict["error"]["message"] == "admission_conflict"

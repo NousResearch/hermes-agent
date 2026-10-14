@@ -14,6 +14,7 @@ CLI ran in-process, mapped onto what the owner serves -- the mapping Ink uses
 - every other registry command -> ``slash.exec``: the owner runs its reviewed reads and
   refuses the rest, which prints where the command stands (the parity table below).
 """
+import contextlib
 import sys
 import uuid
 
@@ -47,10 +48,21 @@ def _user_turns(snapshot):
             and is_user_originated_turn(row)]
 
 
-def _rewind_to(turns_back):
+def _rewind_to(turns_back, *, retry=False):
     def payload(snapshot):
         turns = _user_turns(snapshot)
-        return {"target_message_id": turns[-turns_back]["row_id"]} if len(turns) >= turns_back else None
+        if len(turns) < turns_back:
+            return None
+        target = turns[-turns_back]
+        if retry:
+            # Main's retry_last order: a turn that cannot be resent losslessly as text (an image
+            # turn) is refused on the CAS snapshot, before session.mutate archives it.
+            from agent.context_compressor import retryable_user_text, user_originated_turn_view
+            try:
+                retryable_user_text((user_originated_turn_view(target) or {}).get("content"))
+            except ValueError as exc:
+                raise GatewayClientError(f"/retry: {exc}") from exc
+        return {"target_message_id": target["row_id"]}
     return payload
 
 
@@ -60,14 +72,19 @@ async def _mutate(view, operation, payload):
     return result
 
 
-async def _rewind(view, turns_back):
-    """The rewound user turn's text, or None when there was nothing to rewind."""
-    result = await _mutate(view, "rewind", _rewind_to(turns_back))
+async def _rewind(view, turns_back, *, retry=False):
+    """The rewound user turn's text (``/retry``: its lossless resend text), or None when there was
+    nothing to rewind."""
+    result = await _mutate(view, "rewind", _rewind_to(turns_back, retry=retry))
     if result.get("status") == "nothing" or not result.get("rewound_count"):
         return None
     snapshot = await view.client.rpc("session.resume", session_id=view.session_id)
     view.generation = snapshot["execution_generation"]
     content = (result.get("target_message") or {}).get("content")
+    if retry:
+        from agent.context_compressor import retryable_user_text
+        with contextlib.suppress(ValueError):
+            return retryable_user_text(content), result["rewound_count"]
     return content if isinstance(content, str) else "", result["rewound_count"]
 
 
@@ -94,7 +111,7 @@ async def _undo(view, rest):
 
 async def _retry(view, rest):
     from agent.i18n import t
-    rewound = await _rewind(view, 1)
+    rewound = await _rewind(view, 1, retry=True)
     if rewound is None or not rewound[0].strip():
         print(t("cli.session.retry_no_user_message"))
         return
@@ -167,8 +184,11 @@ async def forward(view, name, rest):
         from hermes_cli.commands import resolve_command
         print(refusal(name) if resolve_command(name) else f"Unknown command: /{name} (use /help)")
         return
-    if reply.get("type") == "skill":
-        # A skill directive is the client's durable submit (same contract as Ink and Desktop).
+    if reply.get("type") in ("skill", "send"):
+        # A prompt directive is the client's durable submit (same contract as Ink and Desktop):
+        # a skill body, or the turn a command built (/plan, /goal's kickoff...) after its notice.
+        if reply.get("notice"):
+            print(reply["notice"])
         print(f"\n{'─' * 40}\n● {reply.get('display') or '/' + name}", flush=True)
         await view.submit(reply["message"])
     else:

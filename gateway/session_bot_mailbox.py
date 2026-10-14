@@ -86,6 +86,20 @@ def _scan_receipts(home):
         return root, list(_scan_records(root))
 
 
+def _withdraw_pin(home, key):
+    with _locked(home) as root:
+        path = root / f'{key}.json'
+        current = _read(path)
+        if current is not None and current.get('status') == 'ambiguous' and not current.get('admission_id'):
+            path.unlink()
+
+
+async def withdraw_pin(home, key):
+    """Drop a pre-admission pin the FIFO definitely refused (nothing committed), only while it is
+    still that pin, so the same-id retry admits instead of answering ``unknown_execution``."""
+    return await _mailbox_io(_withdraw_pin, home, key)
+
+
 async def scan_receipts(home):
     return await _mailbox_io(_scan_receipts, home)
 

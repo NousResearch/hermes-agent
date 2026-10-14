@@ -79,8 +79,9 @@ async def run_task(connection, params):
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     authority = connection.authority
-    # Resolved off-loop up front: no await may separate the saved-claim check, session
-    # creation and the claim's write transaction below.
+    # Resolved off-loop up front: no await separates the saved-claim check from session
+    # creation. The Kanban claim check and its marker share one off-loop transaction; a
+    # concurrent retry of the same attempt meets that marker (same session) or a stale claim.
     owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
@@ -104,23 +105,29 @@ async def run_task(connection, params):
     import os
     import psutil
     context = json.loads(policy.kanban_json)
-    with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-        # Either this exact attempt was already admitted to this session (retry after a
-        # crash between session creation and admission), or the claim is still current
-        # now; a reclaimed/closed task never reaches resume/submit.
-        marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
-                              (params['task_id'], params['run_id'])).fetchone()
-        if marker:
-            if json.loads(marker[0])['session_id'] != ref.session_id:
-                raise RuntimeStoreError('stale_kanban_claim')
-        else:
-            task = kb.get_task(conn, params['task_id'])
-            if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
-                raise RuntimeStoreError('stale_kanban_claim')
-            kb._append_event(conn, task.id, 'owner_admitted',
-                {'db': owner_db, 'session_id': ref.session_id,
-                 'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
-                run_id=task.current_run_id)
+
+    def admit_claim():
+        # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
+        # check and its marker share one write transaction, off the owner loop.
+        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+            # Either this exact attempt was already admitted to this session (retry after a
+            # crash between session creation and admission), or the claim is still current
+            # now; a reclaimed/closed task never reaches resume/submit.
+            marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                                  (params['task_id'], params['run_id'])).fetchone()
+            if marker:
+                if json.loads(marker[0])['session_id'] != ref.session_id:
+                    raise RuntimeStoreError('stale_kanban_claim')
+            else:
+                task = kb.get_task(conn, params['task_id'])
+                if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
+                    raise RuntimeStoreError('stale_kanban_claim')
+                kb._append_event(conn, task.id, 'owner_admitted',
+                    {'db': owner_db, 'session_id': ref.session_id,
+                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                    run_id=task.current_run_id)
+    from gateway.session_runtime_workers import tracked_write
+    await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
     receipt = await authority.submit(connection.actor, Submission(request_id, ref,
         {'text': f'work kanban task {params["task_id"]}'}, 'queue'))

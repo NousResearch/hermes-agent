@@ -23,6 +23,7 @@ async def probe(peer):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native
     from hermes_state_runtime import list_session_admissions
+    from tests.waiting import async_wait_until
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='graph-test')
     adapter = MSGraphWebhookAdapter(PlatformConfig(enabled=True, extra={
@@ -60,9 +61,8 @@ async def probe(peer):
             duplicate = await client.post(url, json={'value': [notification]})
             assert duplicate.status == 202 and len(rows()) == 1
             peer.release.set()
-            async with asyncio.timeout(25):
-                while rows()[0]['status'] != 'terminal':
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: rows()[0]['status'] == 'terminal', timeout=25,
+                                   what='the Graph notification turn to settle')
             assert len(peer.requests) == 1
             # A plugin scheduler owns this route exclusively; do not also infer.
             calls = []

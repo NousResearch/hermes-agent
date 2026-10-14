@@ -16,9 +16,8 @@ async def prepare_model(authority, live, payload, prepared):
     _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
 
     def switch(**kwargs):
-        # The alias table switch_model resolved against, read in the same call (process-global).
         result = switch_model(**kwargs)
-        return result, _alias_credential(result)
+        return result, _alias_credential(authority, result)
     result, alias_credential = await asyncio.to_thread(switch, raw_input=payload['model'],
         current_provider=old.provider, current_model=old.model, current_base_url=old.base_url or '',
         current_api_key=runtime.get('api_key') or '', explicit_provider=payload.get('provider', ''),
@@ -34,22 +33,35 @@ async def prepare_model(authority, live, payload, prepared):
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
+    if old.follows_profile:
+        # A committed /model holds while the profile still targets what it targets now (main's
+        # composer_override_profile); a later profile edit supersedes it.
+        from pathlib import Path
+        from gateway.run import _load_gateway_config
+        from gateway.session_policy import present_sections, profile_target
+        live = await asyncio.to_thread(
+            lambda: _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        frozen['model']['selection_profile'] = list(profile_target(present_sections(live)))
     # A direct alias's own credential is part of the selection (never ``result.api_key``, which the
     # switch resolved for its probe): its env pointer is committed and re-read every turn; a literal
-    # key becomes a private config secret, a null in the durable receipt like build_policy's.
-    key_env, alias_key = alias_credential
+    # key is a private config secret at the alias entry's own path (what a restarted owner re-reads)
+    # and the receipt keeps only a pointer to it, which config() projects into ``model.api_key``.
+    key_env, source, alias_key = alias_credential
     if key_env:
         frozen['model']['key_env'] = key_env
-    if alias_key:
-        frozen['model']['api_key'] = None
+    if source:
+        frozen['model'].update(api_key=None, api_key_from=list(source))
+    elif 'api_key' not in frozen['model']:
+        frozen['model'].pop('api_key_from', None)
     # Creation identity (request_json) remains immutable; runtime selection lives in the policy.
     policy = replace(old, model=result.new_model, config_json=json.dumps(frozen))
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
     # A cleared field's private value must not be re-hydrated into the new route by config().
     secrets = {path: value for path, value in secrets.items()
                if not (len(path) == 2 and path[0] == 'model' and path[1] not in frozen['model'])}
-    if alias_key:
-        secrets[('model', 'api_key')] = alias_key
+    if source:
+        secrets.pop(('model', 'api_key'), None)
+        secrets[source] = alias_key
     # Re-fingerprint frozen config references because policy identity includes model.
     # An explicit launch key belongs to the endpoint it authenticated, not to a provider name:
     # custom -> custom on another base_url must not carry it (same route identity as config keys).
@@ -63,15 +75,36 @@ async def prepare_model(authority, live, payload, prepared):
     return dict(prepared, policy=asdict(policy))
 
 
-def _alias_credential(result):
-    """``(key_env, literal_key)`` the direct alias a switch resolved declares for its own endpoint
-    (``api_key: "${VAR}"`` is the pointer ``VAR``); ``(None, None)`` when it declares none."""
-    from hermes_cli.model_switch import DIRECT_ALIASES
-    alias = DIRECT_ALIASES.get(result.resolved_via_alias or '') if result.success else None
-    raw = (alias.api_key or '').strip() if alias is not None else ''
-    if raw.startswith('${') and raw.endswith('}'):
-        return raw[2:-1].strip() or None, None
-    return ((alias.key_env or '').strip() or None) if alias is not None and not raw else None, raw or None
+def _alias_credential(authority, result):
+    """``(key_env, source_path, literal_key)`` the direct alias a switch resolved declares for its own
+    endpoint, read from THIS owner's config.yaml: the file a restarted owner re-reads, never the
+    process-global alias cache another served profile may refill after the switch. A raw
+    ``api_key: "${VAR}"`` is the pointer ``VAR``; ``(None, None, None)`` when it declares none."""
+    from pathlib import Path
+    from gateway.run import _load_gateway_config
+    from hermes_cli.config import _env_ref_var_name, read_user_config_raw
+    name = result.resolved_via_alias if result.success else ''
+    path = Path(authority.db.db_path).resolve().parent / 'config.yaml'
+    raw = read_user_config_raw(path) if name else {}
+    for section in (('model_aliases',), ('model', 'aliases')):
+        model = raw.get('model')  # `model: name` (a scalar) is valid config and declares no aliases
+        entries = raw.get(section[0]) if len(section) == 1 else (model.get('aliases') if isinstance(model, dict) else None)
+        for written, entry in (entries.items() if isinstance(entries, dict) else ()):
+            if not isinstance(entry, dict) or not entry.get('model') or str(written).strip().lower() != name:
+                continue
+            key = str(entry.get('api_key') or '').strip()
+            pointer = _env_ref_var_name(key[2:-1]) if key.startswith('${') and key.endswith('}') else None
+            if pointer:
+                return pointer, None, None
+            if not key:
+                return str(entry.get('key_env') or '').strip() or None, None, None
+            value = _load_gateway_config(path)
+            for part in (*section, written, 'api_key'):
+                value = value.get(part) if isinstance(value, dict) else None
+            if not value:
+                raise RuntimeStoreError('model_resolution_failed')
+            return None, (*section, written, 'api_key'), value
+    return None, None, None
 
 
 def _persisted_selection_context(authority, snapshot, old):

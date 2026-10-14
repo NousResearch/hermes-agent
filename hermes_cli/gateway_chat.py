@@ -201,7 +201,8 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
-        print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
+        if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
+            print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if not oneshot:
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
             await asyncio.to_thread(write_breadcrumb, snapshot["stored_session_id"])
@@ -256,6 +257,15 @@ def check_resume_policy(args, snapshot):
     frozen = dict((info or {}).get("launch_request") or {})
     if info and "cwd" in info:
         frozen["cwd"] = info["cwd"]
+    if "model" in requested and requested["model"] == frozen.get("model_requested"):
+        requested["model"] = frozen.get("model")  # the alias the owner resolved at creation
+    elif "model" in requested and requested["model"] != frozen.get("model") and "model_requested" not in frozen:
+        # The owner froze the resolved id of a `-m <alias>`; the same alias again is the same route.
+        from gateway.session_local_route import resolve_launch_route
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import get_hermes_home
+        flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
+        requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
     for key, value in requested.items():
         if key == "api_key":
             continue  # never durable; a repeated key is not a policy change
@@ -313,9 +323,18 @@ def launch_from_args(args) -> int:
                 return failed("credentials or agent init failed", 1)
         query_file = getattr(args, "query_file", None)
         if query_file:
-            args.query = sys.stdin.read() if query_file == "-" else Path(query_file).read_text(encoding="utf-8-sig")
+            # Main's --query-file contract (the Bot Mode DM transport): undecodable bytes are
+            # replaced, and an unreadable or empty file is exit 2 with the file named.
+            try:
+                if query_file == "-":
+                    args.query = sys.stdin.read()
+                else:
+                    with open(query_file, encoding="utf-8-sig", errors="replace") as handle:
+                        args.query = handle.read()
+            except OSError as exc:
+                return failed(f"cannot read --query-file {query_file}: {exc}", 2)
             if not args.query.strip():
-                raise GatewayClientError("--query-file is empty")
+                return failed(f"--query-file {query_file} is empty", 2)
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
         return asyncio.run(run_gateway_chat(args, emitter=emitter))

@@ -145,6 +145,20 @@ def _bypass_policy(params, *, private_secrets):
 
 
 def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+    """Stage, commit and publish a local session inline (synchronous callers)."""
+    from gateway.session_local_recovery import restore_local_session
+    from hermes_state_local import commit_local_session
+    staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
+                                 trusted_secrets=trusted_secrets, skills_prompt=skills_prompt)
+    if isinstance(staged, dict):
+        commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
+        staged = restore_local_session(authority, staged['session_id'])
+    return staged
+
+
+def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+    """Everything before the creation commit: the existing session's ref on an exact retry, else the
+    receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop)."""
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -160,8 +174,15 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     else:
         from gateway.session_local_route import resolve_launch_route
         config = _load_gateway_config()
+        raw_model = params.get('model')
         params = resolve_launch_route(params, config)
         policy = build_policy(params, config, private_secrets=private_secrets)
+        if isinstance(raw_model, str) and params.get('model') != raw_model:
+            # Owner-stamped provenance (not a create field): a remote client cannot re-resolve the
+            # typed `-m` alias against its own home, so resume compares a repeat against this.
+            import json
+            policy = replace(policy, request_json=json.dumps(
+                {**json.loads(policy.request_json), 'model_requested': raw_model}, sort_keys=True))
         if policy.model is None:
             policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     request_id = params.get('request_id', uuid.uuid4().hex)
@@ -171,7 +192,6 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now
     from gateway.session_local_recovery import local_identity, restore_local_session
-    from hermes_state_local import commit_local_session
     authority._require_admission_open()
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     from gateway.session_policy import bind_launch_key, restore_policy, launch_key
@@ -201,10 +221,8 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     # naive cutoff, and one aware entry aborts the whole iteration.
     now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
-    commit_local_session(authority.db, epoch=authority.epoch, receipt={
-        'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
-        'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
-    return restore_local_session(authority, sid)
+    return {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
+            'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}
 
 
 def publish_local_policy(authority, session_id):
@@ -221,7 +239,7 @@ def _lazy_model(authority, policy):
     """The model a not-yet-built session will run: with no provider pinned, the free tier's agent
     build pins ``nous/welcome`` (``pin_model_for_route``), so the configured default is not it."""
     import json
-    model = policy.model if policy else None
+    model = policy.current_model(authority) if policy else None
     if (policy is None or json.loads(policy.request_json).get('model')
             or str(policy.provider or '').strip().lower() not in {'', 'auto'}):
         return model
@@ -231,6 +249,42 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
+def _reasoning_fields(agent, policy, model, authority=None, override=None):
+    """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
+    resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
+    pending until ``reasoning_effort`` arrives."""
+    from agent.fast_mode import STATIC_TIERS, parse_service_tier
+    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from agent.voice_turn_route import session_runtime_view
+    from hermes_cli.models import resolve_fast_mode_overrides
+    if agent is None and policy is None:
+        return {}
+    view = session_runtime_view(agent) if agent is not None else None
+    if view is None:
+        from hermes_constants import resolve_reasoning_config
+        effective, next_model = policy.effective(authority, secrets=False)
+        route = effective.get('model') or {}
+    config = (getattr(view, 'reasoning_config', None) if view is not None
+              else override if override is not None else resolve_reasoning_config(effective, next_model or ''))
+    tier = (getattr(view, 'service_tier', None) if view is not None
+            else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
+    provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
+    base_url = getattr(view, 'base_url', None) if view is not None else route.get('base_url')
+    effort = ''
+    if isinstance(config, dict):
+        effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
+    wire = ''
+    if effort and effort != 'none':
+        wire = str(clamp_effort(effort, route_supported_efforts(
+            provider, model, getattr(view, 'api_mode', None))) or '')
+    try:
+        fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
+            model, provider=provider or None, base_url=base_url or None, tier=tier) is not None
+    except Exception:  # health: allow BLE001 -- main's _fast_tier_applies gate: unknown means not Fast
+        fast = False
+    return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast}
+
+
 def local_session_info(authority, ref):
     live = authority.sessions[ref.session_id]
     agent = authority.agent(ref)
@@ -238,16 +292,53 @@ def local_session_info(authority, ref):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     info = {'source': policy.source if policy else live.source.platform.value,
-            'model': (getattr(agent, 'model', policy.model if policy else None) if agent is not None
+            'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),
             **({'cwd': policy.cwd} if policy else {})}
+    peek = getattr(authority.runner, '_peek_session_state', None)
+    state = peek(live.route) if peek is not None else None
+    override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
+    info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+    info.update(_classic_cli_fields(authority, ref, live, agent, policy))
     return info
+
+
+def _classic_cli_fields(authority, ref, live, agent, policy):
+    """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
+    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
+    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    import contextlib
+    stored_id = ref.session_id
+    with contextlib.suppress(Exception):
+        from hermes_state_local import local_receipt
+        stored_id = local_receipt(authority.db, ref.session_id)['entry']['session_id'] or stored_id
+    row = {}
+    with contextlib.suppress(Exception):
+        row = authority.db.get_session(stored_id) or {}
+    yolo = bool(policy is not None and getattr(policy, 'yolo', False))
+    with contextlib.suppress(Exception):
+        from tools.approval import is_session_yolo_enabled
+        yolo = yolo or is_session_yolo_enabled(live.route)
+    api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
+    if api_mode is None and policy is not None:
+        with contextlib.suppress(Exception):
+            api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
+    hint = None
+    if agent is not None and getattr(agent, 'api_key', None):
+        from agent.redact import mask_secret
+        hint = mask_secret(str(agent.api_key))
+    tools = getattr(agent, 'tools', None) if agent is not None else None
+    started = row.get('started_at')
+    return {'title': row.get('title'), 'started_at': started,
+            'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+            'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
+            'credential_hint': hint}

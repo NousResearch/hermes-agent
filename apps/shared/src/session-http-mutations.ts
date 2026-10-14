@@ -14,6 +14,9 @@ export interface SessionMutationIdentity {
 /** Keep an ambiguous write's identity until the same intent is acknowledged.
  * Keys include the captured destination and payload; neither retries nor a
  * profile switch may silently refresh the precondition of a possibly committed edit.
+ * A key is a JSON array whose first two entries are the destination scope and the session id:
+ * an acknowledged write retires that session's other retained identities (their revision is
+ * superseded, so replaying them could only conflict or return a stale receipt).
  */
 export function createSessionMutationClient() {
   const pending = new Map<string, Promise<SessionMutationIdentity>>()
@@ -37,15 +40,23 @@ export function createSessionMutationClient() {
     try { identity = await prepared } catch (error) { pending.delete(key); throw error }
     try {
       const result = await send(identity)
-      pending.delete(key)
+      const owner = sessionOwner(key)
+      for (const other of [...pending.keys()]) { if (other === key || (owner && sessionOwner(other) === owner)) { pending.delete(other) } }
       return result
     } catch (error) {
       // These responses definitively rejected the write. Show the conflict;
       // only a later explicit user action may read a new precondition.
-      if (/revision_conflict|stale_generation|permission_denied|profile_mismatch|invalid_params|admission_conflict|session_busy|retained_receipts|runtime_coordination_required/.test(String(error))) {
+      if (/revision_conflict|stale_generation|permission_denied|profile_mismatch|invalid_params|admission_conflict|session_busy|retained_receipts|runtime_coordination_required|unknown_execution|not_found|mutation_identity_required/.test(String(error))) {
         pending.delete(key)
       }
       throw error
     }
   }
+}
+
+function sessionOwner(key: string): string | null {
+  try {
+    const parsed = JSON.parse(key)
+    return Array.isArray(parsed) && parsed.length > 2 ? JSON.stringify(parsed.slice(0, 2)) : null
+  } catch { return null }
 }

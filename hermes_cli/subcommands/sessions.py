@@ -12,6 +12,13 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+def cmd_sessions_lazy(args, **kwargs):
+    """``hermes sessions`` handler; sessions_cmd imports only when the subcommand runs."""
+    from hermes_cli.sessions_cmd import cmd_sessions
+
+    return cmd_sessions(args, **kwargs)
+
+
 def _add_rename_and_discard(sessions_subparsers) -> None:
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title")

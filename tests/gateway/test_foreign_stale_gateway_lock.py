@@ -1,5 +1,5 @@
-"""A gateway.lock this user cannot read and cannot prove unheld (a root run on macOS, which has no
-/proc/locks) is refused with a terminal reason and the exact recovery command, never guessed at."""
+"""A gateway.lock this user cannot read, so cannot flock to prove unheld (a root run), is refused
+with a terminal reason and the exact recovery command, never guessed at."""
 import os
 
 import pytest
@@ -17,10 +17,11 @@ def _unreadable_lock(tmp_path):
     return home, lock
 
 
-def test_reserve_without_proc_locks_refuses_with_recovery_command(tmp_path, monkeypatch):
+def test_reserve_refuses_an_unreadable_lock_with_recovery_command(tmp_path):
+    """Linux too: an unheld /proc/locks snapshot cannot stop a holder (a root gateway) locking the
+    old inode between the read and the unlink, so nothing short of our own flock replaces it."""
     from gateway import runtime_ownership
     home, lock = _unreadable_lock(tmp_path)
-    monkeypatch.setattr(runtime_ownership, '_inode_locked_per_proc', lambda ino: None)  # macOS: no table
     inode = lock.stat().st_ino
     with pytest.raises(PermissionError) as raised:
         runtime_ownership.ProfileOwnership().reserve([home])

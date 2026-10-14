@@ -15,17 +15,10 @@ const COMMANDS = [
   '/battery on'
 ]
 
-// The shared gateway's config.set accepts only busy/verbose/yolo/model, and these commands
-// swallowed its refusal: the view changed, the notice said nothing, and the preference was gone
-// on the next launch.
+// Main persisted these through config.set; the shared owner serves the same keys profile-wide
+// (gateway/session_tui_config.py), so a canonical TUI saves them too instead of dropping them.
 function harness(isCanonical: boolean) {
-  const request = vi.fn(async (method: string, params: any) => {
-    if (method === 'config.set' && isCanonical) {
-      throw new Error(`invalid_params: ${params.key}`)
-    }
-
-    return { value: params?.value }
-  })
+  const request = vi.fn(async (_method: string, params: any) => ({ key: params?.key, value: params?.value }))
 
   const sys = vi.fn()
 
@@ -53,7 +46,7 @@ beforeEach(() => {
   patchUiState({ sid: 'owner' })
 })
 
-it('display preferences apply to the view and say they are not saved on the shared gateway', async () => {
+it('the shared gateway persists display preferences through config.set and prints main\'s text', async () => {
   const { notices, request, slash } = harness(true)
 
   for (const cmd of COMMANDS) {
@@ -62,7 +55,15 @@ it('display preferences apply to the view and say they are not saved on the shar
 
   await flush()
 
-  expect(request.mock.calls.filter(([method]) => method === 'config.set')).toEqual([])
+  expect(request.mock.calls.filter(([method]) => method === 'config.set').map(([, params]) => params)).toEqual([
+    { key: 'mouse', value: 'off' },
+    { key: 'density', value: 'on' },
+    { key: 'details_mode', value: 'expanded' },
+    { key: 'details_mode.tools', value: 'hidden' },
+    { key: 'focus', session_id: 'owner', value: 'on' },
+    { key: 'statusbar', value: 'off' },
+    { key: 'battery', value: 'on' }
+  ])
   expect(getUiState()).toMatchObject({
     battery: true,
     compact: true,
@@ -70,10 +71,8 @@ it('display preferences apply to the view and say they are not saved on the shar
     mouseTracking: 'off',
     statusBar: 'off'
   })
-
-  for (const name of ['mouse', 'density', 'details', 'focus', 'statusbar', 'battery']) {
-    expect(notices()).toContain(`/${name} applies to this view only; not saved on the shared gateway`)
-  }
+  expect(notices()).toEqual(expect.arrayContaining(['mouse tracking off', 'density on', 'status bar off']))
+  expect(notices().some(text => text.includes('not saved'))).toBe(false)
 })
 
 it('a standalone backend still persists them through config.set', async () => {

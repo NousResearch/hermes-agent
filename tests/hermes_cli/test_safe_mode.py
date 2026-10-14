@@ -22,6 +22,7 @@ import time
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -175,9 +176,9 @@ def test_canonical_safe_launch_is_frozen_policy_executed_in_isolated_worker(tmp_
             sid = created['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='ordinary-input', text='ORDINARY_PROBE')
             assert 'result' in submitted, submitted
-            async with asyncio.timeout(60):
-                while query('SELECT status FROM session_admissions WHERE request_id=?', ('ordinary-input',)) != [('terminal',)]:
-                    await asyncio.sleep(.05)
+            await async_wait_until(
+                lambda: query('SELECT status FROM session_admissions WHERE request_id=?', ('ordinary-input',)) == [('terminal',)],
+                timeout=60, interval=.05, what='the ordinary turn to settle')
             return sid
 
     def safe_cli(request_tag, *flags):

@@ -2,7 +2,7 @@
 """Regenerate website/docs/developer-guide/gateway-command-parity.md from the code.
 
 For every ``COMMAND_REGISTRY`` command it records what each local client does with it on the
-shared gateway -- the classic CLI view (``hermes_cli/gateway_chat_commands.py``), Ink
+shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``cli.py``), Ink
 (``ui-tui/src/app/slash/commands/*.ts``), Desktop (``apps/desktop/src/lib/desktop-slash-commands.ts``
 + the registry's ``desktop=`` dump), ACP (``acp_adapter`` -> ``slash_mutation``) -- and the
 gateway's own ``slash.exec`` verdict for a local session (``gateway/session_commands.py``).
@@ -20,8 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "website" / "docs" / "developer-guide" / "gateway-command-parity.md"
 
-# Per-session settings that write config.yaml / messaging-only state through their gateway handler:
-# enabling them as-is would print success and change nothing for a local session.
+# Per-session settings: slash.exec runs their messaging handler, which applies a setting to the local
+# session it came from (gateway/session_setting_commands.py; tests/gateway/test_session_setting_commands.py).
 TOGGLES = frozenset({"fast", "reasoning", "yolo", "footer", "personality", "busy", "voice", "approvals",
                      "verbose", "codex-runtime"})
 # Why a command with a gateway handler is NOT a read for a local session (probe: the real handler
@@ -31,14 +31,13 @@ NOT_A_LOCAL_READ = {
     "platform": "messaging adapters; `pause`/`resume` mutate them",
     "sessions": "messaging origin-scoped listing (`/sessions all` needs a messaging admin)",
     "debug": "uploads logs to a public paste",
-    "curator": "no gateway handler (`_handle_curator_command` is missing)",
     "save": "writes an export file on the gateway host",
     "rollback": "restores filesystem checkpoints",
     "resume": "switches the messaging chat's session; local clients resume by id",
-    "skills": "write-approval queue; `/skills approve|approval` write",
 }
 # The read-only argument forms of a read whose other subcommands write.
 READ_FORMS = {"usage": "bare only (`reset` refused)", "memory": "bare / `pending`",
+              "skills": "bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused",
               "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics"}
 
 
@@ -61,9 +60,21 @@ def gateway_cell(name):
     return "refused"
 
 
+# Reads a TUI session gets as main's TUI sidecar rendered them (gateway/session_tui_reads.py).
+TUI_READS = {"status": "TUI session: main's `Hermes TUI Status`",
+             "context": "TUI session: main's live /context with the category table",
+             "cron": "TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs"}
+
+
 def port_note(cmd):
+    if cmd.name in TUI_READS:
+        return "; ".join(filter(None, [TUI_READS[cmd.name], _base_note(cmd)]))
+    return _base_note(cmd)
+
+
+def _base_note(cmd):
     if cmd.name in TOGGLES:
-        return "port: per-session setting"
+        return "per-session setting (gateway handler)"
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
     if cmd.gateway_only:
@@ -73,11 +84,15 @@ def port_note(cmd):
     return ""
 
 
-def classic_cell(name, gateway):
-    from hermes_cli.gateway_chat_commands import VIEW_ROUTES
-    if name in VIEW_ROUTES:
-        return VIEW_ROUTES[name]
-    return "slash.exec" if gateway != "refused" else "refused: not available yet"
+def classic_cell(cmd):
+    """``hermes chat`` is main's ``HermesCLI`` with a gateway-backed agent and session store
+    (``hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
+    handler in the CLI process. The cell names that handler; a gateway-only command has none."""
+    from cli import HermesCLI
+    entry = HermesCLI._slash_handler(cmd.name)
+    if entry is None:
+        return "messaging-only: unknown command" if cmd.gateway_only else "unknown command"
+    return f"HermesCLI.{entry[0]}"
 
 
 def acp_cell(name, gateway):
@@ -110,7 +125,7 @@ def _ink_commands():
 def ink_cell(cmd, gateway, ink, served):
     entry = next((ink[n] for n in (cmd.name, *cmd.aliases) if n in ink), None)
     if entry is None:
-        return "slash.exec" if gateway != "refused" else "slash.exec: refused"
+        return "slash.exec" if gateway != "refused" or cmd.name in TUI_READS else "slash.exec: refused"
     _, block = entry
     methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))
     refused = re.findall(r"notAvailable', '([\w-]+) ([\w-]+)'\)", block)
@@ -204,14 +219,19 @@ Every local client (classic CLI, Ink TUI, Desktop, ACP) attaches to the one gate
 the session. A slash command either runs in the client against a canonical verb
 (`session.mutate`, `session.create`, `prompt.receipt`, ...), or goes to the owner as
 `slash.exec`, where `gateway/session_commands.py` runs only the reviewed reads below and refuses
-the rest (`unsupported_command`). The classic CLI prints a refusal as
-"/x is not available on the shared gateway yet" with a link to this page.
+the rest (`unsupported_command`). The classic CLI (`hermes chat`) is main's `HermesCLI` with a
+gateway-backed agent and session store: its column names the main handler it runs in-process
+(turns, tools and session writes go to the gateway through `hermes_cli/gateway_agent.py` /
+`gateway_session_store.py`). The `--stream-json` / safe-mode transport client keeps its own
+narrower routes (`hermes_cli/gateway_chat_commands.py`).
 
 **Gateway (`slash.exec`)**: `read` = the real handler runs for a local session (proved by
-`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write; `refused`.
-**Notes**: `port: per-session setting` toggles write config.yaml or messaging-only state
-through their gateway handler, so they stay refused until ported to the session's frozen
-policy; `client-local (cli_only)` commands are terminal/UI features of a client.
+`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write (`/approve`
+`/deny` resolve this session's waiting approval, `tests/gateway/test_session_approval_commands.py`);
+`refused`.
+**Notes**: `per-session setting (gateway handler)` = the messaging handler runs and applies the
+setting to this local session (its next turn and `config.get`), saving config.yaml only where the
+handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
 """
 
@@ -228,7 +248,7 @@ def render() -> str:
         gateway = gateway_cell(cmd.name)
         counts[gateway.split(" ")[0]] = counts.get(gateway.split(" ")[0], 0) + 1
         aliases = f" ({', '.join('/' + a for a in cmd.aliases)})" if cmd.aliases else ""
-        cells = [f"`/{cmd.name}`{aliases}", gateway, classic_cell(cmd.name, gateway),
+        cells = [f"`/{cmd.name}`{aliases}", gateway, classic_cell(cmd),
                  ink_cell(cmd, gateway, ink, served), desktop_cell(cmd, gateway, specs, served),
                  acp_cell(cmd.name, gateway), port_note(cmd)]
         rows.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")

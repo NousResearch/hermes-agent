@@ -16,6 +16,7 @@ import { useTheme } from '@/themes'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { normalizeHex } from '@/themes/color'
 import type { ThemeMode } from '@/themes/context'
+import { persistAccent } from '@/themes/persist-accent'
 
 export type SetupRow = SetupChooseOption
 
@@ -69,11 +70,20 @@ const APP_LABELS: Record<SetupChooseKind, (id: string, sources: Pick<RowSources,
 
 interface LiveLook {
   apply: (id: string, setMode: (mode: ThemeMode) => void) => void
+  commit?: (id: string) => void
   snapshot: (mode: ThemeMode, setMode: (mode: ThemeMode) => void) => () => void
 }
 
 export const LIVE_LOOK: Partial<Record<SetupChooseKind, LiveLook>> = {
   accent: {
+    commit: id => {
+      const hex = normalizeHex(id)
+
+      if (hex) {
+        setOnboardingAnswers({ accent: hex === NOUS_ACCENT ? null : hex })
+        persistAccent(hex)
+      }
+    },
     apply: id => {
       const hex = normalizeHex(id)
 

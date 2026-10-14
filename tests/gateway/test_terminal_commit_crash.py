@@ -11,6 +11,7 @@ import threading
 import aiohttp
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import daemon, Model
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -61,9 +62,7 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
                     follower = await response.json()
                     assert response.status == 202, follower
                 peer.release.set()
-                async with asyncio.timeout(30):
-                    while snapshot()[1] is None:
-                        await asyncio.sleep(.02)
+                await async_wait_until(lambda: snapshot()[1] is not None, timeout=30, what='the terminal result committed')
                 rows, saved = snapshot()
                 assert not pending.done(), 'HTTP result published before crash barrier'
                 proc.kill(); await asyncio.to_thread(proc.wait, 10)
@@ -78,9 +77,7 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
                 reply = await response.json()
                 assert response.status == 200, reply
                 assert reply['choices'][0]['message']['content'] == saved['result']['final_response']
-            async with asyncio.timeout(25):
-                while snapshot()[0][follower] != 'terminal':
-                    await asyncio.sleep(.03)
+            await async_wait_until(lambda: snapshot()[0][follower] == 'terminal', timeout=25, what='the follower ran after restart')
             assert snapshot()[0]['once'] == 'terminal'
             assert snapshot()[1] == saved
 

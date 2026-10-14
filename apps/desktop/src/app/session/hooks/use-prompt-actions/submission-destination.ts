@@ -1,6 +1,10 @@
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
+import {
+  requestForSessionProfile,
+  type SessionOwnerScope,
+  sessionRpcNeedsProfileRoute
+} from '@/store/session-request-router'
 import { knownOwnerForSession } from '@/store/session-states'
 
 import type { GatewayRequest } from './utils'
@@ -80,4 +84,30 @@ export function captureSubmissionDestination(
   capturedRequests.set(destination.requestGateway, destination)
 
   return destination
+}
+
+/** A fresh draft had no owner at entry, so it held the ambient socket. The
+ * create it performed published the chat's exact owner; a profile activation
+ * settling during that create moves the ambient authority, not this session.
+ * Without a published owner the entry guard still decides. */
+export function destinationAfterCreate(
+  destination: SubmissionDestination,
+  sessionId: string,
+  request: GatewayRequest
+): SubmissionDestination {
+  const owner = destination.owner ? undefined : knownOwnerForSession(sessionId)
+
+  return sessionRpcNeedsProfileRoute(owner) ? captureSubmissionDestination(sessionId, request, { owner }) : destination
+}
+
+/** A draft created outside this submit (slash kickoff) had no owner at entry.
+ * Journal its published route only if it is the SAME captured authority. */
+export function sameAuthorityPublishedOwner(
+  destination: SubmissionDestination,
+  sessionId: null | string | undefined,
+  request: GatewayRequest
+): SessionOwnerScope {
+  const published = captureSubmissionDestination(sessionId, request, { owner: knownOwnerForSession(sessionId) })
+
+  return published.scopeKey === destination.scopeKey ? published.owner : undefined
 }

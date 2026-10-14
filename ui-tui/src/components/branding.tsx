@@ -213,8 +213,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
-  const tr = useT()
-  const T = tr.chatBits.branding
+  const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -254,23 +253,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
     return line
   }
 
-  // The canonical authority intentionally returns a narrow metadata snapshot.
-  // Do not invent tool/skill inventories or crash while rendering that session.
-  if (!info.skills || !info.tools) {
-    return (
-      <Box flexDirection="column">
-        <Text>
-          <Text color={t.color.sessionLabel}>{T.sessionLabel}</Text>
-          <Text color={t.color.sessionBorder}>{sid}</Text>
-        </Text>
-        <Text color={t.color.muted}>{tr.canonical.launch.inventoryUnavailable}</Text>
-      </Box>
-    )
-  }
-
   // ── Collapsible skills section ──
-  // Non-null here: the narrow-snapshot guard above returned when either is missing.
-  const skills = info.skills
+  const skills = info.skills ?? {}
   const skillEntries = Object.entries(skills).sort()
   const skillsTotal = flat(skills).length
   const skillsCatCount = skillEntries.length
@@ -297,7 +281,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible tools section ──
-  const tools = info.tools
+  const tools = info.tools ?? {}
   const toolEntries = Object.entries(tools).sort()
   const toolsTotal = flat(tools).length
 

@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { esSessionCommands } from './es_session_commands'
 
 // Shell notices (remote-display toast, butterbar), spread into es.ts.
 export const esNotices = {
@@ -18,6 +19,7 @@ export const esNotices = {
   },
   promptNotices: {
     legacySendUnconfirmed:
-      'Este servidor no pudo confirmar el envío anterior de este mensaje, así que es posible que ya se haya ejecutado. Revisa la conversación antes de volver a enviarlo.'
+      'Este servidor no pudo confirmar el envío anterior de este mensaje, así que es posible que ya se haya ejecutado. Revisa la conversación antes de volver a enviarlo.',
+    sessionCommands: esSessionCommands
   }
 } satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

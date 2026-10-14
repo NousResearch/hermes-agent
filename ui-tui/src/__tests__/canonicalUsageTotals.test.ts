@@ -5,23 +5,22 @@ import { noteCanonicalCompletion } from '../app/slash/canonicalSessionCommands.j
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 5))
-const REPORT = 'Session token usage\nModel: reads-model\nAPI calls: 3\nTotal tokens: 1,234'
+
+// The owner's session-cumulative counters (`gateway/session_usage.py::usage_stats`).
+const STATS = {
+  api_calls: 11, compression_count: 1, context_length: 128000, context_source: 'provider_usage', input_tokens: 1100,
+  last_prompt_tokens: 900, model: 'reads-model', output_tokens: 134, prompt_tokens: 1100, total_tokens: 1234
+}
 
 beforeEach(() => {
   resetUiState()
   patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {} } as any })
 })
 
-// The owner serves `/usage` as a reviewed session read (slash.exec, as the classic CLI uses it):
-// Ink on the shared gateway shows those session totals instead of "not available yet".
-it('/usage shows the session totals the shared gateway reports, then the last turn', async () => {
-  const request = vi.fn(async (method: string, params: any) => {
-    if (method === 'slash.exec' && params.command === 'usage') {
-      return { output: REPORT }
-    }
-
-    if (method === 'prompt.receipt') {
-      return { result: { api_calls: 1, input_tokens: 5, model: 'm', output_tokens: 7, total_tokens: 12 } }
+function harness(stats: Record<string, unknown>) {
+  const request = vi.fn(async (method: string) => {
+    if (method === 'session.stats') {
+      return stats
     }
 
     throw new Error(`unknown_method: ${method}`)
@@ -40,12 +39,46 @@ it('/usage shows the session totals the shared gateway reports, then the last tu
     transcript: { page, panel, send: vi.fn(), setHistoryItems: vi.fn(), sys, trimLastExchange: (x: unknown[]) => x }
   } as any)
 
+  return { page, panel, request, slash, sys }
+}
+
+// FINDINGS rows 5/18: main's /usage is ONE "Usage" panel of session totals (all API calls of the
+// session, the context line, compressions) — not the messaging gateway's markdown page and not a
+// "last turn" panel with a fabricated $0.0000 cost.
+it("/usage shows main's session totals panel from the owner's session.stats", async () => {
+  const { page, panel, request, slash, sys } = harness(STATS)
+
   noteCanonicalCompletion('owner', 'adm-1')
   slash('/usage')
   await flush()
 
-  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'usage', session_id: 'owner' })
-  expect(page).toHaveBeenCalledWith(REPORT, 'Usage')
-  expect(panel).toHaveBeenCalledWith('Usage · last turn', [{ rows: expect.arrayContaining([['Total tokens', '12']]) }])
+  expect(request).toHaveBeenCalledWith('session.stats', { session_id: 'owner' })
+  expect(request).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  expect(request).not.toHaveBeenCalledWith('prompt.receipt', expect.anything())
+  expect(page).not.toHaveBeenCalled()
+  expect(panel).toHaveBeenCalledTimes(1)
+  expect(panel).toHaveBeenCalledWith('Usage', [
+    {
+      rows: [
+        ['Model', 'reads-model'],
+        ['Input tokens', '1,100'],
+        ['Output tokens', '134'],
+        ['Total tokens', '1,234'],
+        ['API calls', '11']
+      ]
+    },
+    { text: expect.stringContaining('900 / 128,000 (1%)') },
+    { text: expect.stringContaining('1') }
+  ])
   expect(sys).not.toHaveBeenCalledWith('session totals are not available on the shared gateway yet')
+})
+
+it('/usage before any API call says so, as main did', async () => {
+  const { panel, slash, sys } = harness({ ...STATS, api_calls: 0, total_tokens: 0 })
+
+  slash('/usage')
+  await flush()
+
+  expect(panel).not.toHaveBeenCalled()
+  expect(sys.mock.calls[0]?.[0]).toMatch(/no API calls/i)
 })

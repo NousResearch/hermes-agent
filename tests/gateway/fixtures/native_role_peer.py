@@ -10,6 +10,7 @@ import traceback
 from types import SimpleNamespace
 
 from shared_authority_peer import ModelPeer
+from tests.waiting import async_wait_until
 
 
 async def probe(peer):
@@ -71,9 +72,7 @@ async def probe(peer):
 
     async def send(ev):
         await adapter.handle_message(ev)
-        async with asyncio.timeout(15):
-            while adapter._active_sessions:
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not adapter._active_sessions, timeout=15, what='adapter sessions idle')
 
     if sys.argv[1] == 'multiplex':
         from agent.secret_scope import set_multiplex_active

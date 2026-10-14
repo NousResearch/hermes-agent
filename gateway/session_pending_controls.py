@@ -15,7 +15,7 @@ class PendingControls:
         self.pending = {}
         self.remote_responders = {}
 
-    def register(self, session_id, route, generation, data):
+    def register(self, session_id, route, generation, data, *, timeout_s=None):
         from gateway.run import _redact_approval_command
         with self.events.lock:
             prompt_id = data['request_id']
@@ -32,10 +32,12 @@ class PendingControls:
             if 'edit' in data:
                 prompt['edit'] = deepcopy(data['edit'])
                 prompt['choices'] = ['once', 'deny']
+            if timeout_s is not None:
+                prompt['timeout_s'] = timeout_s
             self.pending[prompt_id] = (route, prompt)
             self.events.publish(session_id, prompt, event_type='approval.request')
 
-    def register_clarify(self, session_id, generation, entry):
+    def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         from gateway.run import _redact_approval_command
         with self.events.lock:
             prompt = {"kind": "clarify", "prompt_id": entry.clarify_id,
@@ -43,6 +45,8 @@ class PendingControls:
                       "question": _redact_approval_command(entry.question),
                       "choices": [_redact_approval_command(c) for c in entry.choices or []],
                       "multi_select": entry.multi_select}
+            if timeout_s is not None:
+                prompt["timeout_s"] = timeout_s
             self.pending[entry.clarify_id] = (entry, prompt)
             self.events.publish(session_id, prompt, event_type="clarify.request")
 

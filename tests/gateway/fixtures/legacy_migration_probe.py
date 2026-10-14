@@ -9,6 +9,7 @@ import sys
 import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def probe(base, legacy_root, owner_root=None):
@@ -39,9 +40,8 @@ def probe(base, legacy_root, owner_root=None):
             db.row_factory = sqlite3.Row
             return [dict(r) for r in db.execute(sql, args)]
     async def wait_settled():
-        async with asyncio.timeout(45):
-            while any(r['status'] != 'terminal' for r in query('SELECT status FROM session_admissions')):
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: all(r['status'] == 'terminal' for r in query('SELECT status FROM session_admissions')),
+                               timeout=45, interval=.05, what='every admission to settle')
     async def run(desc):
         async with websocket(home, desc) as ws:
             first = await rpc(ws, 'session.resume', session_id=sid)

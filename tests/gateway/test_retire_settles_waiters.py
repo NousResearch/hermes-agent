@@ -9,6 +9,7 @@ from gateway import run_runtime
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from gateway.session_contract import Submission
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -44,5 +45,6 @@ async def test_successful_retirement_fails_pending_waiters_and_keeps_rows_queued
             assert rows['follower']['status'] == 'queued'  # durable: the next owner runs it
     finally:
         agent.release.set()
-        await asyncio.sleep(.05)
+        await async_wait_until(lambda: all(task.done() for task in run_runtime._authority_tasks(authority)),
+                               timeout=10, what="the authority's tasks finished")
         db.close()

@@ -293,13 +293,16 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_path, monkeypatch):
+async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_path, monkeypatch, caplog):
     """A writer held past the claim's patience (or a full disk) is transient. The drain must not die
     with the committed head queued and its waiter parked forever: every _schedule caller is
     event-driven, so nothing would re-arm it. It retries in place and runs the head once."""
+    import logging
     import sqlite3
     from gateway import session_authority, session_finite
+    from tests.waiting import async_wait_until
 
+    caplog.set_level(logging.WARNING, logger='gateway.session_authority')
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(db, '_WRITE_PATIENCE_S', 0.2)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
@@ -319,7 +322,9 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
         try:
             schedule(REF)
             task = authority.sessions['s'].task
-            await asyncio.sleep(0.6)
+            # Two deferred claims: the drain hit the held writer and retried in place at least once.
+            await async_wait_until(lambda: caplog.text.count('claim deferred by storage') >= 2 or task.done(),
+                                   timeout=20, what='the drain to retry its claim behind the held writer')
             assert not task.done(), task.exception() if task.done() else None
             assert not waiter.done(), 'a transient storage error must not release accepted work'
         finally:

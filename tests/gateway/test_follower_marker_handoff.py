@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adopted_marker(tmp_path, monkeypatch):
@@ -51,7 +53,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
         # (auto-TTS, ledger write) release the adopted marker.
         event._turn_marker_handoff = True
         reply = await admit_message(authority, event)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.3)  # health: allow HX013 -- the auto-TTS/ledger window in which the follower must NOT be claimed
         await BasePlatformAdapter._release_turn_marker(adapter, event)
         return reply
 
@@ -61,7 +63,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     follower_queued.set()
     assert await asyncio.wait_for(first, 10) == 'reply to one'
     from hermes_state_runtime import get_session_admission
-    async with asyncio.timeout(10):
-        while get_session_admission(authority.db, admission_id=follower.admission_id)['status'] != 'terminal':
-            await asyncio.sleep(0.02)
+    await async_wait_until(
+        lambda: get_session_admission(authority.db, admission_id=follower.admission_id)['status'] == 'terminal',
+        timeout=10, what='the follower to settle')
     assert slot_at_follower == [None], "the follower's marker overwrote turn one's before its reply was ledgered"

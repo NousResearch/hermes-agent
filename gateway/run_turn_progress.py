@@ -133,6 +133,9 @@ class GatewayTurnProgressMixin:
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -821,6 +824,9 @@ class GatewayTurnProgressMixin:
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.note_tool_start(self, call_id, tool_name, args)
         self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
@@ -836,7 +842,13 @@ class GatewayTurnProgressMixin:
         # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
         verbose = live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose"
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result))
         self._publish_execution("tool.complete", payload)
+        if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
+            # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
+            self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
@@ -848,6 +860,11 @@ class GatewayTurnProgressMixin:
         if not ctx._run_still_current():
             return
         self._publish_execution("agent.step", {"iteration": iteration})
+        if iteration > 1 and local_viewer_turn(self):
+            # Each step after the first follows a finished API call: main's CLI repainted its status
+            # bar from the agent's counters right then (the last call is covered at turn end).
+            from gateway.session_usage import publish_usage
+            publish_usage(self, ctx.agent_holder[0])
         if not ctx._hooks_ref.loaded_hooks:
             return
         # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so
@@ -869,6 +886,22 @@ class GatewayTurnProgressMixin:
         except Exception as e:
             logger.debug("event_callback hook error: %s", e)
 
+    def _local_notice_callback_sync(self, notice) -> None:
+        """``AgentNotice`` -> ``notification.show`` for local viewers (the TUI's payload)."""
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+        ctx = self._ctx
+        if ctx.mute_notification_reply or not self._status_live() or not str(notice.text or "").strip():
+            return
+        render_notification(lambda: self._publish_execution("notification.show", {
+            "text": str(notice.text).strip(), "level": notice.level, "kind": notice.kind,
+            "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id}),
+            platform=ctx.source.platform, user_config=ctx.user_config, diagnostic=is_diagnostic_notice(notice))
+
+    def _local_notice_clear_callback_sync(self, key) -> None:
+        """Recovery -> ``notification.clear`` for local viewers (main's TUI payload)."""
+        if key and self._status_live():
+            self._publish_execution("notification.clear", {"key": str(key)})
+
     def _status_live(self) -> bool:
         """Status adapter present and this run is still the current generation."""
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
@@ -889,6 +922,18 @@ class GatewayTurnProgressMixin:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
+            if local_viewer_turn(self):
+                # Main's CLI repainted its status-bar title when the auto-title landed.
+                authority, canonical_id, _generation = self._approval_owner
+
+                def republish(title, title_source):
+                    from gateway.session_contract import SessionRef
+                    from gateway.session_local import local_session_info
+                    ref = SessionRef(getattr(authority, "profile_id", ""), canonical_id)
+                    authority.sessions[canonical_id].event_stream.publish(
+                        canonical_id, local_session_info(authority, ref), event_type="session.info")
+                agent._on_session_title = republish
+                return
             runner = self._runner
             source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
@@ -923,6 +968,10 @@ class GatewayTurnProgressMixin:
             )
             return
         def present():
+            if local_viewer_turn(self):
+                self._publish_execution("status.update", {"kind": _viewer_status_kind(event_type, prepared),
+                                                          "text": prepared})
+                return
             fut = self._schedule(
                 _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",
@@ -931,3 +980,16 @@ class GatewayTurnProgressMixin:
                 fut.add_done_callback(self._track_future_cleanup_id)
         render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
                             diagnostic=is_warning_status(event_type, message))
+
+
+def local_viewer_turn(runner) -> bool:
+    """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
+    publishes nothing, so status and notices go to that stream instead."""
+    return (getattr(runner, "_approval_owner", None) is not None
+            and getattr(getattr(runner._ctx, "source", None), "platform", None) == Platform.LOCAL)
+
+
+def _viewer_status_kind(kind, text):
+    """The TUI's ``status.update`` kind: auto-compaction progress is re-tagged ``compacting``."""
+    from agent.conversation_compression import is_compaction_progress_status
+    return "compacting" if kind == "lifecycle" and is_compaction_progress_status(text) else str(kind)

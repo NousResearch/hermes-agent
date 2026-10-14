@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { zhSessionCommands } from './zh_session_commands'
 
 // Shell notices (remote-display toast, butterbar), spread into zh.ts.
 export const zhNotices = {
@@ -16,7 +17,7 @@ export const zhNotices = {
     }
   },
   promptNotices: {
-    legacySendUnconfirmed:
-      '此服务器无法确认这条消息之前的发送，它可能已经运行过。再次发送前请先查看对话。'
+    legacySendUnconfirmed: '此服务器无法确认这条消息之前的发送，它可能已经运行过。再次发送前请先查看对话。',
+    sessionCommands: zhSessionCommands
   }
 } satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

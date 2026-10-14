@@ -14,6 +14,7 @@ import pytest_asyncio
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_state_runtime import list_session_admissions
+from tests.waiting import async_wait_until
 
 LOST = 'Gateway disconnected; turn outcome is unknown.'
 
@@ -94,10 +95,9 @@ async def _acp(owner):
 
 
 async def _settled(owner, count):
-    async with asyncio.timeout(5):
-        while sum(row['status'] == 'terminal' for row in list_session_admissions(
-                owner.authority.db, session_id=owner.sid, pending_only=False)) < count:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: sum(row['status'] == 'terminal' for row in list_session_admissions(
+        owner.authority.db, session_id=owner.sid, pending_only=False)) >= count,
+        timeout=5, what=f'{count} terminal admissions')
 
 
 def _surface(name, owner):

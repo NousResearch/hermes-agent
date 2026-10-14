@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 import traceback
 
 
@@ -114,12 +115,14 @@ async def probe(peer, target):
         assert list_gateway_approvals(route), 'real worker never blocked for approval'
         assert target.exists(), 'effect preceded human consent'
         # Rendering completes before the callback registers its shared projection.
-        async with asyncio.timeout(3):
-            while True:
-                snapshot = await rpc(b, 3, 'session.resume')
-                if snapshot['result'].get('prompts'):
-                    break
-                await asyncio.sleep(.02)
+        deadline = time.monotonic() + 3
+        while True:
+            snapshot = await rpc(b, 3, 'session.resume')
+            if snapshot['result'].get('prompts'):
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError
+            await asyncio.sleep(.02)
     except TimeoutError:
         raise AssertionError('approval-blocked worker absent from shared attach snapshot') from None
     else:

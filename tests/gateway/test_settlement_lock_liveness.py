@@ -6,14 +6,15 @@ publication keep running; the commit still looks atomic with its completion fram
 import asyncio
 import sqlite3
 import threading
-import time
-
 import pytest
 
 from gateway.session_contract import Principal, Submission
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
+from tests.waiting import async_wait_until
 
-_HOLD_S = 1.5
+# The competing writer holds the lock until the test has watched the loop run (``go``); this is
+# only the ceiling after which a stalled loop gets it back and the test fails instead of hanging.
+_HOLD_CEILING_S = 30.0
 VIEWER = Principal('human', 'owned', frozenset({'session:read', 'session:submit'}), 'viewer')
 
 
@@ -22,7 +23,7 @@ async def _settling_behind_a_held_writer(tmp_path, monkeypatch):
     from gateway import session_results
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    frames, entered, released = [], threading.Event(), threading.Event()
+    frames, entered, released, go = [], threading.Event(), threading.Event(), threading.Event()
     authority.sessions['s'].event_stream.observers.add(frames.append)
     settle = session_results.settle_session_input
 
@@ -38,7 +39,7 @@ async def _settling_behind_a_held_writer(tmp_path, monkeypatch):
         writer.execute('BEGIN IMMEDIATE')
 
         def release():
-            time.sleep(_HOLD_S)
+            go.wait(_HOLD_CEILING_S)
             released.set()
             writer.rollback()
             writer.close()
@@ -47,9 +48,8 @@ async def _settling_behind_a_held_writer(tmp_path, monkeypatch):
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     await authority.submit(ACTOR, Submission('work', REF, {'text': 'work'}, 'queue'))
     drain = asyncio.create_task(authority._drain(REF))
-    while not entered.is_set():
-        await asyncio.sleep(0.01)
-    return db, authority, frames, released, drain
+    await async_wait_until(entered.is_set, what='the settlement to reach the held writer')
+    return db, authority, frames, released, go, drain
 
 
 def _types(frames):
@@ -58,13 +58,16 @@ def _types(frames):
 
 @pytest.mark.asyncio
 async def test_attach_during_a_contended_settlement_leaves_the_loop_free(tmp_path, monkeypatch):
-    db, authority, frames, released, drain = await _settling_behind_a_held_writer(tmp_path, monkeypatch)
+    db, authority, frames, released, go, drain = await _settling_behind_a_held_writer(tmp_path, monkeypatch)
     with db:
         ticks = []
         asyncio.get_running_loop().call_later(0.05, lambda: ticks.append(released.is_set()))
         attach = asyncio.create_task(authority.attach(VIEWER, REF))
-        await asyncio.sleep(0.3)
-        assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+        try:
+            await async_wait_until(lambda: ticks, timeout=_HOLD_CEILING_S + 5, what='the 50 ms callback')
+            assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+        finally:
+            go.set()
         snapshot = await asyncio.wait_for(attach, 10)
         await asyncio.wait_for(drain, 10)
         # The snapshot still never shows the terminal row without its completion frame.
@@ -78,15 +81,18 @@ async def test_attach_during_a_contended_settlement_leaves_the_loop_free(tmp_pat
 @pytest.mark.asyncio
 async def test_pending_publication_during_a_contended_settlement_keeps_idle_after_completion(
         tmp_path, monkeypatch):
-    db, authority, frames, released, drain = await _settling_behind_a_held_writer(tmp_path, monkeypatch)
+    db, authority, frames, released, go, drain = await _settling_behind_a_held_writer(tmp_path, monkeypatch)
     with db:
         ticks = []
         loop = asyncio.get_running_loop()
         # A loop-side publisher (submit/cancel/automation call this) racing the settlement.
         loop.call_later(0.02, authority._publish_pending, REF)
         loop.call_later(0.05, lambda: ticks.append(released.is_set()))
-        await asyncio.sleep(0.3)
-        assert ticks == [False], 'pending publication waited for the held writer'
+        try:
+            await async_wait_until(lambda: ticks, timeout=_HOLD_CEILING_S + 5, what='the 50 ms callback')
+            assert ticks == [False], 'pending publication waited for the held writer'
+        finally:
+            go.set()
         await asyncio.wait_for(drain, 10)
         kinds = _types(frames)
         start, complete = kinds.index(('message.start', None)), kinds.index(('message.complete', None))
@@ -103,48 +109,46 @@ async def test_cancel_behind_a_held_writer_leaves_the_loop_free_and_still_settle
     with db:
         receipt = await authority.submit(ACTOR, Submission('queued', REF, {'text': 'queued'}, 'queue'))
         waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
-        released = threading.Event()
-        writer = sqlite3.connect(str(tmp_path / 'state.db'), isolation_level=None, check_same_thread=False)
-        writer.execute('BEGIN IMMEDIATE')
-
-        def release():
-            time.sleep(_HOLD_S)
-            released.set()
-            writer.rollback()
-            writer.close()
-        threading.Thread(target=release, daemon=True).start()
+        released, go = _hold_writer(tmp_path)
         ticks = []
         asyncio.get_running_loop().call_later(0.05, lambda: ticks.append(released.is_set()))
         cancel = asyncio.create_task(authority.cancel_queued(ACTOR, REF, receipt.admission_id))
-        await asyncio.sleep(0.3)
-        assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+        try:
+            await async_wait_until(lambda: ticks, timeout=_HOLD_CEILING_S + 5, what='the 50 ms callback')
+            assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+        finally:
+            go.set()
         cancelled = await asyncio.wait_for(cancel, 10)
         assert (cancelled.status, cancelled.outcome) == ('terminal', 'cancelled')
         assert waiter.done() and receipt.admission_id not in authority.cancel_obligations
 
 
 def _hold_writer(tmp_path):
-    """A second connection holds the state.db write lock for ``_HOLD_S`` (another process)."""
-    released = threading.Event()
+    """A second connection holds the state.db write lock (another process) until ``go`` is set,
+    or ``_HOLD_CEILING_S`` passes; ``released`` is set just before it lets go."""
+    released, go = threading.Event(), threading.Event()
     writer = sqlite3.connect(str(tmp_path / 'state.db'), isolation_level=None, check_same_thread=False)
     writer.execute('BEGIN IMMEDIATE')
 
     def release():
-        time.sleep(_HOLD_S)
+        go.wait(_HOLD_CEILING_S)
         released.set()
         writer.rollback()
         writer.close()
     threading.Thread(target=release, daemon=True).start()
-    return released
+    return released, go
 
 
 async def _loop_stays_free(tmp_path, operation):
-    released = _hold_writer(tmp_path)
+    released, go = _hold_writer(tmp_path)
     ticks = []
     asyncio.get_running_loop().call_later(0.05, lambda: ticks.append(released.is_set()))
     task = asyncio.create_task(operation())
-    await asyncio.sleep(0.3)
-    assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+    try:
+        await async_wait_until(lambda: ticks, timeout=_HOLD_CEILING_S + 5, what='the 50 ms callback')
+        assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+    finally:
+        go.set()
     return await asyncio.wait_for(task, 10)
 
 
@@ -244,8 +248,7 @@ async def test_admission_schedules_its_drain_in_the_admitting_callers_step(tmp_p
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        while mutation_tasks(authority):
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='the mid-commit write to finish')
         # The commit's done-callback schedules the drain, and the drain task runs a step after
         # that: wait for the observable, not for one particular tick.
         async with asyncio.timeout(5):

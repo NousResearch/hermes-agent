@@ -7,6 +7,8 @@ from pathlib import Path
 import sqlite3
 import threading
 
+from tests.waiting import async_wait_until
+
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
 
@@ -52,13 +54,12 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
                 return response['result']
             async def turn(sid, text):
                 await call('prompt.submit', session_id=sid, input_id=text, text=text)
-                async with asyncio.timeout(30):
-                    while True:
-                        with sqlite3.connect(home / 'state.db') as db:
-                            status = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
-                        if status and status[0] == 'terminal':
-                            return await call('session.resume', session_id=sid)
-                        await asyncio.sleep(.03)
+                def terminal():
+                    with sqlite3.connect(home / 'state.db') as db:
+                        status = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
+                    return status and status[0] == 'terminal'
+                await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                return await call('session.resume', session_id=sid)
             sid = (await call('session.create', source='cli', request_id='owner', toolsets=[]))['session_id']
             before = await turn(sid, 'ORIGINAL_HISTORY')
             params = dict(session_id=sid, request_id='switch', operation='model', payload={'model': 'switched'},
@@ -114,7 +115,6 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     """A drain that runs while the model receipt commits off-loop sees the new stored policy beside
     the old live one and pauses; publishing the policy must wake it, or the input stays queued
     until another submit or a restart."""
-    import time
     from types import SimpleNamespace
     from gateway import run
     from gateway.config import GatewayConfig
@@ -145,23 +145,30 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
                                                             model='frozen', toolsets=[]))
     # A contended receipt transaction: the commit thread holds it open while the loop runs.
-    entered = threading.Event()
-    db._conn.create_function('hold_receipt', 1, lambda s: (entered.set(), time.sleep(s))[1] or 0)
+    entered, release = threading.Event(), threading.Event()
+    db._conn.create_function('hold_receipt', 1, lambda s: (entered.set(), release.wait(s))[1] and 0)
     db._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
-                                          "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(0.4); END"))
+                                          "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(30); END"))
     snap = db.get_session(ref.session_id)
     try:
         mutation = asyncio.create_task(owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
             'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'switched'}}}))
         await asyncio.to_thread(entered.wait, 5)
-        queued = await authority.submit(owner.actor, Submission('during-switch', ref, {'text': 'FOLLOWER'}, 'queue'))
+        # The follower is submitted while the receipt transaction is still open: hold it until
+        # that submit is parked behind the session's mutation lock.
+        submit = asyncio.create_task(authority.submit(owner.actor, Submission('during-switch', ref, {'text': 'FOLLOWER'}, 'queue')))
+        lock = authority.sessions[ref.session_id].mutation_lock
+        await async_wait_until(lambda: getattr(lock, '_waiters', None), timeout=10, what='the follower submit queued')
+        release.set()
+        queued = await submit
         assert (await mutation)['result']['model'] == 'switched'
-        async with asyncio.timeout(10):
-            while rt.get_session_admission(db, admission_id=queued.admission_id)['status'] != 'terminal':
-                await asyncio.sleep(0.05)
+        await async_wait_until(
+            lambda: rt.get_session_admission(db, admission_id=queued.admission_id)['status'] == 'terminal',
+            timeout=10, what='the queued follower ran after the policy was published')
         assert executed == ['FOLLOWER']
     finally:
+        release.set()
         await owner.close()
         store.close_all_db_handles()
 

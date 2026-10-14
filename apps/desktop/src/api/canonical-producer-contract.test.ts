@@ -80,6 +80,13 @@ function answer(frame: { method: string; params: Record<string, unknown> }): Rec
   return { status: 'settled', delivery_id: p.id, value: 'x' }
 }
 
+// The owner edit each mutating site must send (fenced by the attached snapshot's revision/generation).
+const MUTATIONS: Record<string, Record<string, unknown>> = {
+  rewind: { operation: 'rewind', payload: { target_message_id: 9 } },
+  reasoning: { operation: 'reasoning', payload: { effort: 'high' } },
+  workspace: { operation: 'workspace', payload: { cwd: '/repo' } }
+}
+
 // [label, Desktop method, exact producer params, expected: wire methods sent (after attach) or a named refusal]
 const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]> = [
   [
@@ -99,32 +106,38 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'reasoning-slash.ts /reasoning --global',
     'config.set',
     { key: 'reasoning', session_id: 's', value: 'high', scope: 'global' },
-    /reasoning .*not available/
+    ['config.set']
   ],
   [
-    'reasoning-step.ts keybind step',
+    'reasoning-step.ts keybind step (B14)',
     'config.set',
     { key: 'reasoning', session_id: 's', value: 'high' },
-    /reasoning is not available/
+    ['session.mutate']
   ],
-  ['model-presets.ts fast', 'config.set', { key: 'fast', session_id: 's', value: 'fast' }, /fast is not available/],
+  [
+    'reasoning-slash.ts /reasoning show (display word: the /reasoning handler)',
+    'config.set',
+    { key: 'reasoning', session_id: 's', value: 'show' },
+    ['config.set']
+  ],
+  ['model-presets.ts fast', 'config.set', { key: 'fast', session_id: 's', value: 'fast' }, ['config.set']],
   [
     'approval-mode.ts menu',
     'config.set',
     { key: 'approvals.mode', value: 'manual', profile: 'default' },
-    /approvals\.mode is not available/
+    ['config.set']
   ],
   [
     'voice-live.ts engine',
     'config.set',
     { key: 'voice.voice_chat_mode', value: 'chained' },
-    /voice\.voice_chat_mode is not available/
+    ['config.set']
   ],
   [
     'yolo-session.ts Shift+click zap',
     'config.set',
     { key: 'yolo', scope: 'global', value: '1' },
-    /yolo \(global\) is not available/
+    ['config.set']
   ],
   ['yolo-session.ts session toggle', 'config.set', { key: 'yolo', session_id: 's', value: '1' }, ['config.set']],
   [
@@ -166,6 +179,18 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     /preview\.restart is not available/
   ],
   [
+    'projects.ts moveSessionToProject (B21 / C-hx-2)',
+    'session.workspace.move',
+    { cwd: '/repo', session_key: 's' },
+    ['session.mutate']
+  ],
+  [
+    'use-cwd-actions.ts changeSessionCwd (composer folder picker on an open chat)',
+    'session.cwd.set',
+    { session_id: 's', cwd: '/repo' },
+    ['session.mutate']
+  ],
+  [
     'connector-tool.tsx in-chat connect',
     'connectors.connect',
     { connectors: ['gh'], owner: { session_id: 's', type: 'session' } },
@@ -205,6 +230,13 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   try {
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
+
+    // Typed /reasoning, the keybind and the composer's folder picker act on the open (attached)
+    // session, as the model picker does.
+    if ((method === 'config.set' && params.key === 'reasoning') || method === 'session.cwd.set') {
+      await client.request('session.resume', { session_id: 's' })
+    }
+
     const call = client.request(method, params)
 
     if (expected instanceof RegExp) {
@@ -225,10 +257,12 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
     }
 
     if (Array.isArray(expected) && expected[0] === 'session.mutate') {
+      const edit =
+        MUTATIONS[method === 'prompt.submit' ? 'rewind' : method === 'config.set' ? 'reasoning' : 'workspace']
+
       expect(sent.find(frame => frame.method === 'session.mutate').params).toMatchObject({
         session_id: 's',
-        operation: 'rewind',
-        payload: { target_message_id: 9 },
+        ...edit,
         expected_revision: 4,
         expected_generation: 2
       })

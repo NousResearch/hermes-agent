@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -45,9 +46,10 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
         payload = {"runtime_protocol": 1, "state": "starting", "instance_id": "peer",
                    "served_profiles": [{"profile_id": str(home), "home": str(home)}]}
         stalled = False
+        unstall = threading.Event()  # set at teardown so the stalled handler thread exits
         def identify():
             if stalled:
-                time.sleep(4)  # longer than the caller's deadline: a stalled owner is 'starting', never ready
+                unstall.wait(30)  # outlives the caller's deadline: a stalled owner is 'starting', never ready
             return payload
         server = GatewayControlServer(home, verb_handlers={"identify": identify})
         assert await server.start()
@@ -67,6 +69,7 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
             assert result.state == "starting" and result.reason_code == "deadline"
             assert not (home / "logs").exists()
         finally:
+            unstall.set()
             await server.stop()
     asyncio.run(probe())
 
@@ -199,6 +202,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
         f"home=Path({str(home)!r})\n"
         "real=start.subprocess.Popen\n"
         "def boundary(argv, **kw):\n"
+        " if 'hermes_cli.main' not in argv: return real(argv, **kw)  # e.g. git from the env builder\n"
         " assert argv[-3:] == ['gateway','run','--quiet']\n"
         " assert '--replace' not in argv and '--force' not in argv\n"
         " assert kw['env']['HERMES_HOME'] == str(home)\n"

@@ -19,6 +19,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 PEER = '''import json, sys
 for line in sys.stdin:
@@ -94,9 +95,8 @@ def test_existing_session_keeps_frozen_mcp_transport_after_profile_edit(tmp_path
         before = len(peer.requests)
         submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text='HELLO')
         assert 'result' in submitted, submitted
-        async with asyncio.timeout(120):
-            while status(request_id) != [('terminal',)]:
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: status(request_id) == [('terminal',)], timeout=120, interval=.05,
+                               what=f'{request_id} to settle')
         tools = json.dumps([r.get('tools') for r in peer.requests[before:]])
         return [tag for tag in ('echo_FROZEN_A', 'echo_LIVE_B') if tag in tools]
 

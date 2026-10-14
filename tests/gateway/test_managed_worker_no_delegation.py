@@ -13,6 +13,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -69,9 +70,8 @@ def test_managed_worker_turn_does_not_offer_delegate_task(tmp_path):
             sid = session['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='run', text='hello')
             assert 'result' in submitted, submitted
-            async with asyncio.timeout(90):
-                while rows("SELECT status FROM session_admissions WHERE request_id='run'") != [('terminal',)]:
-                    await asyncio.sleep(.1)
+            await async_wait_until(lambda: rows("SELECT status FROM session_admissions WHERE request_id='run'") == [
+                ('terminal',)], timeout=90, interval=.1, what='run terminal')
     try:
         with daemon(root, home, env, barrier=False) as (_owner, desc):
             asyncio.run(exercise(desc))

@@ -240,6 +240,9 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Re-dump exported env into the snapshot after each command (see __init__).
+    _persist_env: bool = True
+
     # Opt in only when a timed-out probe can kill its command without tearing
     # down the whole backend. SDK adapters cancel by stopping the sandbox.
     _sudo_nopasswd_probe_supported: bool = False
@@ -257,10 +260,13 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
-    def __init__(self, cwd: str, timeout: int, env: dict | None = None):
+    def __init__(self, cwd: str, timeout: int, env: dict | None = None, persist_env: bool = True):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        # False: each command sources only the login-time snapshot, so exported vars do not
+        # carry over (terminal.persistent_shell / TERMINAL_LOCAL_PERSISTENT). CWD still does.
+        self._persist_env = persist_env
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -420,6 +426,7 @@ class BaseEnvironment(ABC):
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
             snapshot_ready=self._snapshot_ready,
+            persist_env=self._persist_env,
             **self._snapshot_script_kwargs(cwd))
 
     @staticmethod

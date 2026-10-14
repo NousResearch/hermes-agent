@@ -12,6 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from tests.waiting import wait_until
+
 
 def _clear_clarify_state():
     """Reset module-level state between tests."""
@@ -281,8 +283,7 @@ class TestUnlimitedWait:
 
         t = threading.Thread(target=waiter, daemon=True)  # a regression must fail, not hang exit
         t.start()
-        while "tid" not in box:
-            time.sleep(0.01)
+        wait_until(lambda: "tid" in box, timeout=5, what="the waiter thread to start")
         try:
             set_interrupt(True, box["tid"], reason="gateway shutdown")
             t.join(timeout=5.0)

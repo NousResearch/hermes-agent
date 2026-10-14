@@ -4,10 +4,10 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
-import threading
 
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import list_session_admissions
+from tests.waiting import async_wait_until, wait_until
 
 
 def rows(authority, sid):
@@ -54,9 +54,8 @@ async def prepare_crash(runner, adapter, source, peer):
     sid = authority.register(source).session_id
     follower = asyncio.create_task(adapter.handle_message(MessageEvent(
         text='UNKNOWN_FOLLOWER', source=source, message_id='unknown-follower')))
-    async with asyncio.timeout(5):
-        while not any(r['request_id'] == 'unknown-follower' for r in rows(authority, sid)):
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: any(r['request_id'] == 'unknown-follower' for r in rows(authority, sid)),
+                           timeout=5, what='unknown-follower committed')
     # The receive coroutine is released at durable commit (serial IRC/Signal loops keep
     # reading); the follower itself stays queued behind the started head until the crash.
     await asyncio.wait_for(follower, 5)
@@ -76,8 +75,10 @@ async def prepare_crash(runner, adapter, source, peer):
     ready = Path(os.environ['HERMES_HOME'], 'crash-ready.json')
     ready.with_suffix('.tmp').write_text(json.dumps(evidence))
     os.replace(ready.with_suffix('.tmp'), ready)
-    threading.Event().wait(60)
-    raise AssertionError('parent did not kill the actual owner')
+    # Hold the loop frozen until the parent's SIGKILL; end early if the parent itself went away.
+    parent = os.getppid()
+    wait_until(lambda: os.getppid() != parent, timeout=60, interval=.05, what='the parent to SIGKILL this owner')
+    raise AssertionError('parent exited without killing the actual owner')
 
 
 async def recover_probe(runner, adapter, source, peer):

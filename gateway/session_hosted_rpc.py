@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, replace
+from functools import partial
 import hashlib
 import json
 
@@ -77,7 +78,10 @@ class HostedRoomAuthorityRPC:
             return await self._resume(params)
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.session_policy import build_policy
-        from gateway.session_local import create_local_session
+        from gateway.session_local import stage_local_session
+        from gateway.session_local_recovery import restore_local_session
+        from gateway.session_runtime_workers import tracked_write
+        from hermes_state_local import commit_local_session
         from agent.skill_utils import parse_config_string_list
         private = {}
         config = _load_gateway_config()
@@ -91,14 +95,19 @@ class HostedRoomAuthorityRPC:
         policy = replace(policy, source='bot_room', platform='bot_room',
                          model=policy.model or _resolve_gateway_model(policy.config()),
                          toolsets=tuple(sorted(set(policy.toolsets) | {'bot_room'})))
-        create_local_session(self.authority, self.principal, {'request_id': self.creation_id},
-                             trusted_policy=policy, trusted_secrets=private)
+        staged = stage_local_session(self.authority, self.principal, {'request_id': self.creation_id},
+                                     trusted_policy=policy, trusted_secrets=private)
+        # Creation commit and label run off the owner loop (N90); a concurrent duplicate converges.
+        if isinstance(staged, dict):
+            await tracked_write(self.authority, partial(
+                commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=staged))
+            restore_local_session(self.authority, staged['session_id'])
         from hermes_state_runtime import _epoch
         def label(conn):
             _epoch(conn, self.authority.epoch)
             conn.execute('UPDATE sessions SET title=?, hidden=1 WHERE id=?',
                          (f'Group: {self.room_id}', self.ref.session_id))
-        self.authority.db._execute_write(label)
+        await tracked_write(self.authority, partial(self.authority.db._execute_write, label))
         return await self._resume(params)
 
     async def _resume(self, params):
@@ -249,8 +258,8 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-        else:
+            row = await self.authority.cancel_or_claimed(self.principal, self.ref, row['admission_id'])
+        if row is not None:
             await self.authority.interrupt(self.principal, self.ref, row['generation'])
         return {'interrupted': True, 'status': 'interrupted'}
 

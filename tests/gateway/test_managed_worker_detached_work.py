@@ -19,6 +19,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def test_registered_worker_process_cannot_receive_async_completions(monkeypatch):
@@ -97,9 +98,9 @@ def test_managed_turn_runs_detachable_work_inline_and_leaves_no_orphan(tmp_path)
             sid = session['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='run', text='run the job')
             assert 'result' in submitted, submitted
-            async with asyncio.timeout(90):
-                while rows("SELECT status FROM session_admissions WHERE request_id='run'") != [('terminal',)]:
-                    await asyncio.sleep(.1)
+            await async_wait_until(
+                lambda: rows("SELECT status FROM session_admissions WHERE request_id='run'") == [('terminal',)],
+                timeout=90, interval=.1, what='the run admission to settle')
             return (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
     try:
         with daemon(root, home, env, barrier=False) as (_owner, desc):

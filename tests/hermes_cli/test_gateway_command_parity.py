@@ -24,7 +24,8 @@ def test_committed_parity_table_matches_every_client_verdict():
     from hermes_cli.commands import COMMAND_REGISTRY
     rows = [line for line in rendered.splitlines() if line.startswith("| `/")]
     assert len(rows) == len(COMMAND_REGISTRY)
-    # Toggles stay refused on the gateway this round (they would print success and do nothing).
+    # Per-session settings run their gateway handler for a local session (an admission-fenced control;
+    # tests/gateway/test_session_setting_commands.py proves each lands on the session).
     for name in gen.TOGGLES:
         row = next(line for line in rows if line.startswith(f"| `/{name}`"))
-        assert "| refused |" in row and "port: per-session setting" in row, row
+        assert row.split(" | ")[1] == "control" and "per-session setting (gateway handler)" in row, row

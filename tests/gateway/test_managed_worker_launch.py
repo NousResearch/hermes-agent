@@ -8,10 +8,12 @@ from pathlib import Path
 import sqlite3
 import sys
 import threading
+import time
 
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -153,13 +155,14 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             assert 'result' in submitted, submitted
             if peer.control_mode:
                 async def prompt(kind):
-                    async with asyncio.timeout(20):
-                        while True:
-                            snapshot = await rpc(ws, 'session.resume', session_id=sid)
-                            found = next((p for p in snapshot['result']['prompts'] if p['kind'] == kind), None)
-                            if found:
-                                return found
-                            await asyncio.sleep(.05)
+                    deadline = time.monotonic() + 20
+                    while True:
+                        snapshot = await rpc(ws, 'session.resume', session_id=sid)
+                        found = next((p for p in snapshot['result']['prompts'] if p['kind'] == kind), None)
+                        if found:
+                            return found
+                        assert time.monotonic() < deadline, ('no open ' + kind + ' prompt', snapshot)
+                        await asyncio.sleep(.05)
                 approval = await prompt('approval')
                 assert target.exists()
                 answered = await rpc(ws, 'approval.respond', session_id=sid,
@@ -172,9 +175,8 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                                         execution_generation=clarify['execution_generation'])
                     assert 'result' in stopped, stopped
                     peer.release.set()
-                    async with asyncio.timeout(15):
-                        while query('SELECT status FROM session_admissions WHERE request_id=?', ('managed-input',)) == [('started',)]:
-                            await asyncio.sleep(.05)
+                    await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
+                        'managed-input',)) != [('started',)], timeout=15, interval=.05, what='stopped turn settled')
                     assert query('SELECT status FROM session_admissions') == [('terminal',)], (home / 'restart.log').read_text()
                     return
                 answered = await rpc(ws, 'clarify.respond', session_id=sid,
@@ -196,9 +198,8 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                 follower = await rpc(ws, 'prompt.submit', session_id=sid, input_id='follower', text='NEVER_REPLAY')
                 assert 'result' in follower, follower
                 children[0].kill()
-                async with asyncio.timeout(10):
-                    while query('SELECT status FROM session_admissions WHERE request_id=?', ('managed-input',)) == [('started',)]:
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
+                    'managed-input',)) != [('started',)], timeout=10, interval=.05, what='killed worker turn unknown')
                 assert query('SELECT request_id,status FROM session_admissions ORDER BY seq') == [
                     ('managed-input', 'unknown'), ('follower', 'queued')]
                 restored = await rpc(ws, 'session.resume', session_id=sid)
@@ -210,9 +211,8 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         # Viewer connection is gone while the real model still holds the turn.
         assert psutil.Process(pid).is_running()
         peer.release.set()
-        async with asyncio.timeout(40):
-            while query('SELECT status FROM session_admissions WHERE request_id=?', ('managed-input',)) != [('terminal',)]:
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
+            'managed-input',)) == [('terminal',)], timeout=40, interval=.05, what='managed turn terminal')
         async with websocket(home, desc) as ws:
             restored = await rpc(ws, 'session.resume', session_id=sid)
             history = restored['result']['messages']
@@ -248,9 +248,9 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             # The next admission's worker adopts it from the profile checkpoint (process_manage).
             assert started['pid'] in [e['pid'] for e in json.loads((home / 'processes.json').read_text())]
             gate.touch()
-            async with asyncio.timeout(10):
-                while psutil.pid_exists(background.pid) and psutil.Process(background.pid).status() != psutil.STATUS_ZOMBIE:
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: not psutil.pid_exists(background.pid)
+                                   or psutil.Process(background.pid).status() == psutil.STATUS_ZOMBIE,
+                                   timeout=10, interval=.05, what='background process exited')
         else:
             assert any(role == 'tool' and 'MANAGED_TOOL_EFFECT' in content for role, content in rows), rows
         assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)]
@@ -272,9 +272,8 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                 await rpc(ws, 'session.resume', session_id=sid)
                 next_turn = await rpc(ws, 'prompt.submit', session_id=sid, input_id='history', text='RESUME_HISTORY')
                 assert 'result' in next_turn, next_turn
-                async with asyncio.timeout(30):
-                    while query('SELECT status FROM session_admissions WHERE request_id=?', ('history',)) != [('terminal',)]:
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
+                    'history',)) == [('terminal',)], timeout=30, interval=.05, what='history turn terminal')
                 restored = await rpc(ws, 'session.resume', session_id=sid)
                 assert 'MANAGED_HISTORY_DONE' in json.dumps(restored['result']['messages']), restored
             request = peer.requests[-1]

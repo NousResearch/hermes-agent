@@ -7,7 +7,12 @@ import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-ac
 import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
+import {
+  type ConnectionRequest,
+  normalizeConnectionRequest,
+  setConnectionRequest,
+  updateConnectionRequest
+} from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
@@ -82,6 +87,10 @@ function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
   return true
 }
 
+// A display card has no targets to name.
+const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
+  request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
+
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
  *  backend withdrawing an open request (timeout / interrupt / session close):
@@ -111,7 +120,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       }
 
       dispatchNativeNotification({
-        body: request.targets.map(target => target.name).join(', '),
+        body: connectionRequestNoticeBody(request),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

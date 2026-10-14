@@ -11,6 +11,7 @@ from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
 from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
+from tests.waiting import async_wait_until
 
 
 class Peer:
@@ -64,8 +65,10 @@ async def test_resolve_unknown_releases_the_paused_follower_exactly_once(tmp_pat
     try:
         resumed = (await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}}))['result']
         assert [r['status'] for r in resumed['pending']] == ['unknown', 'queued']
-        # The follower stays paused behind the unknown head; nothing runs on its own.
-        await asyncio.sleep(0.05)
+        # The follower stays paused behind the unknown head; nothing runs on its own. Only a drain
+        # runs a turn, so once no drain is live (none scheduled, or it paused) none can run later.
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is None or live.task.done(), what='no live drain')
         assert executed == []
         reply = await viewer.dispatch({'id': 2, 'method': 'prompt.resolve_unknown', 'params': {
             'session_id': 's', 'admission_id': unknown['admission_id'],
@@ -112,7 +115,8 @@ async def test_resolve_unknown_is_fenced_by_generation_and_capability(tmp_path, 
         foreign = await owner.dispatch({'id': 4, 'method': 'prompt.resolve_unknown',
                                        'params': {**params, 'session_id': 'other'}})
         assert 'error' in foreign
-        await asyncio.sleep(0.05)
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is None or live.task.done(), what='no live drain')
         rows = {r['admission_id']: r['status'] for r in list_session_admissions(authority.db, session_id='s')}
         assert rows[unknown['admission_id']] == 'unknown' and rows[follower.admission_id] == 'queued'
         assert executed == []

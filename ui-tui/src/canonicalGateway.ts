@@ -28,8 +28,13 @@ export function canonicalRequest(method: string, original: Record<string, unknow
 
   if (method === 'session.resume' || method === 'session.activate') {
     method = 'session.resume'
+    // A rendering resume asks for main's display projection of the same rows (`display_messages`);
+    // a metadata-only activation (`omit_messages`) never paints a transcript.
+    const renders = !params.omit_messages
     delete params.cols
     delete params.omit_messages
+
+    if (renders) { params.display_projection = true }
   }
 
   return { method, params }
@@ -48,17 +53,32 @@ export function canonicalResult(method: string, value: any, request: Record<stri
     // Canonical snapshots contain stored conversation rows (`content`), not
     // the legacy TUI's display rows (`text`). Without this translation only
     // live events render, making reconnect depend on catching the final delta.
-    const messages = Array.isArray(value.messages) ? value.messages.map((row: any) =>
+    const stored = Array.isArray(value.messages) ? value.messages.map((row: any) =>
       row && typeof row === 'object'
-        ? { ...row, text: row.content, name: row.tool_name }
+        ? { ...row, text: rowText(row.content), name: row.tool_name }
         : row) : value.messages
 
-    return { ...value, messages, info: { ...value.info, stored_session_id: value.stored_session_id,
+    // Renderers read `messages`: main's display projection when the owner sent it (compaction
+    // handoffs stripped, /steer unwrapped, tool rows labelled), as the sidecar's resume did.
+    // `stored_messages` keeps the raw rows (content + row_id) the rewind controls target.
+    const { display_messages: display, ...rest } = value
+    const messages = Array.isArray(display) ? display : stored
+
+    return { ...rest, messages, stored_messages: stored, info: { ...value.info, stored_session_id: value.stored_session_id,
       execution_epoch: String(value.authority_epoch), execution_generation: value.execution_generation,
       running: value.running, pending_submissions: pendingSubmissions(value.pending) } }
   }
 
   return value
+}
+
+// A stored multipart row (`content` is a parts list) as display text: text parts joined, an image
+// part as `[image]` (N94). `content` itself stays on the row for /undo targeting.
+function rowText(content: unknown): unknown {
+  if (!Array.isArray(content)) { return content }
+
+  return content.map(part => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text
+    : part?.type ? (String(part.type).includes('image') ? '[image]' : `[${part.type}]`) : '').filter(Boolean).join('\n')
 }
 
 // The authority's durable FIFO rows (`pending` on snapshots and session.info

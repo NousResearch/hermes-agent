@@ -13,6 +13,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -80,9 +81,8 @@ def test_managed_worker_trims_checkpoints_to_the_configured_max_snapshots(tmp_pa
             for request_id in ('first', 'second'):
                 submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text='WRITE')
                 assert 'result' in submitted, submitted
-                async with asyncio.timeout(90):
-                    while status(request_id) != [('terminal',)]:
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: status(request_id) == [('terminal',)], timeout=90, interval=.05,
+                                       what=request_id + ' terminal')
         with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
             return db.execute('SELECT COUNT(*) FROM worker_executions WHERE session_id=?', (sid,)).fetchone()[0]
     try:

@@ -9,6 +9,8 @@ export interface SubmissionDestination {
   readonly storedSid?: string | null
   readonly profile: string
   readonly profileHome: string
+  /** The owner's profile identity its receipts name (`target_profile_home`). */
+  readonly ownerHome?: string
 }
 
 // Resolve existing ancestors too: a new profile may not have been created yet.
@@ -28,12 +30,18 @@ function canonicalHome(path: string): string {
 
 export function captureDestination(): SubmissionDestination {
   const { sid, info } = getUiState()
+  const profileHome = canonicalHome(resolve(process.env.HERMES_HOME ?? join(homedir(), '.hermes')))
+  // An explicit HERMES_TUI_GATEWAY_URL may serve another home or machine: its receipts name the
+  // owner's profile_id (from the session snapshot), not this client's HERMES_HOME (C22). The local
+  // home still keys the offline journal and image cache.
+  const owner = process.env.HERMES_TUI_GATEWAY_URL?.trim() ? (info as { profile_id?: unknown } | null)?.profile_id : undefined
 
   return Object.freeze({
     sid,
     storedSid: info?.stored_session_id || null,
     profile: info?.profile_name || 'default',
-    profileHome: canonicalHome(resolve(process.env.HERMES_HOME ?? join(homedir(), '.hermes')))
+    profileHome,
+    ownerHome: typeof owner === 'string' && owner ? owner : profileHome
   })
 }
 

@@ -6,10 +6,10 @@ no execution id at all (its stamper returned early) and the firer never stamped,
 run was swept ``unknown`` once the derived stale bound passed."""
 import asyncio
 import threading
-import time
 from types import SimpleNamespace
 
 import cron.executions as executions_mod
+from tests.waiting import wait_until
 
 
 def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
@@ -42,12 +42,17 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
 
+    def firer_stamped():
+        with _transaction() as conn:
+            return conn.execute('SELECT progress_at FROM executions WHERE id=?', (execution['id'],)).fetchone()[0]
+
     def run_job(job, *, extra_prompt, execution_id, cancel_event):
         stamper = scheduler_liveness.ExecutionProgressStamper(
             str(job.get('execution_id') or ''), 'job', idle_seconds=lambda: 0.0, every_seconds=0.001)
-        time.sleep(0.01)
+        stamper._last -= 1  # its stamp cadence has elapsed
         stamper.tick()
-        time.sleep(0.6)  # the firer polls status while the agent works
+        # The agent keeps working until the firer, polling status, has refreshed its own row.
+        wait_until(firer_stamped, timeout=20, what="the firer's ledger row stamped with progress")
         return (True, 'doc', 'answer', None)
     monkeypatch.setattr(scheduler, 'run_job', run_job)
 

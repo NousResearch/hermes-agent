@@ -80,6 +80,7 @@ def _row(row):
     result['payload'] = json.loads(result.pop('payload_json'))
     result.pop('payload_digest')
     result.pop('lineage_json')
+    result.pop('retired_at', None)  # tombstone retention stamp, not admission state
     return result
 
 
@@ -91,6 +92,10 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
             ON CONFLICT(singleton) DO UPDATE SET epoch=runtime_epoch.epoch+1, instance_id=excluded.instance_id''', (instance_id,))
         return conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()[0]
     return db._execute_write(write)
+
+
+# Main's busy-queue cap (GatewayRunner._BUSY_QUEUE_MAX_PENDING): queued inputs one session holds.
+ADMISSION_QUEUE_MAX = 32
 
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
@@ -122,6 +127,12 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
             return _row(old)
+        queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
+            AND status='queued' ''', (session_id,)).fetchone()[0]
+        # Main's cap holds in both states: a FIFO paused behind an unknown turn runs every accepted
+        # input after Discard, so it must not grow without bound while nobody resolves it.
+        if queued >= ADMISSION_QUEUE_MAX:
+            raise RuntimeStoreError('queue_full')
         if _authorize_write is not None:
             _authorize_write(conn)
         admission_id = uuid.uuid4().hex

@@ -22,6 +22,12 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
         'far-model', 'custom', far_url, api_key='sk-far-literal'))
     monkeypatch.setitem(model_switch.DIRECT_ALIASES, 'far-ref', model_switch.DirectAlias(
         'far-model', 'custom', far_url, api_key='${FAR_ALIAS_KEY}'))
+    # The owner reads the alias credential from its own profile's config.yaml (N48).
+    (tmp_path / 'config.yaml').write_text(
+        'model_aliases:\n'
+        f'  far-env: {{model: far-model, provider: custom, base_url: "{far_url}", key_env: FAR_ALIAS_KEY}}\n'
+        f'  far-literal: {{model: far-model, provider: custom, base_url: "{far_url}", api_key: sk-far-literal}}\n'
+        f'  far-ref: {{model: far-model, provider: custom, base_url: "{far_url}", api_key: "${{FAR_ALIAS_KEY}}"}}\n')
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
         runner = SimpleNamespace(session_authority=authority,

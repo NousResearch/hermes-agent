@@ -365,8 +365,9 @@ def release_admission_media(db, admission_id):
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
-    if row['payload'].get('api_turn_v1', {}).get('media'):
-        # Settled: the inline base64 copy of these committed images is redundant row weight.
+    api_turn = row['payload'].get('api_turn_v1', {})
+    if api_turn.get('media') or isinstance(api_turn.get('history'), list):
+        # Settled: inline base64 of committed images and the client history are redundant row weight.
         from gateway.session_api_media import compact_settled_api_payloads
         compact_settled_api_payloads(db, admission_id)
     # Native and hosted inputs are named in the prompt the transcript keeps ("It is saved at: <path>"),

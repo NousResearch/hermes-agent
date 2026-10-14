@@ -9,6 +9,7 @@ import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
 from tests.gateway.test_normal_runtime_boot import control
+import time
 
 
 def test_managed_turn_finishes_inside_configured_restart_drain(tmp_path):
@@ -45,9 +46,10 @@ def test_managed_turn_finishes_inside_configured_restart_drain(tmp_path):
             assert await asyncio.to_thread(peer.blocked.wait, 30)
             accepted = await asyncio.to_thread(control, home, 'pause-for-update')
             assert accepted['pausing'] is True, accepted
-            async with asyncio.timeout(15):
-                while (await asyncio.to_thread(control, home, 'identify'))['state'] != 'draining':
-                    await asyncio.sleep(.05)
+            deadline = time.monotonic() + 15
+            while (await asyncio.to_thread(control, home, 'identify'))['state'] != 'draining':
+                assert time.monotonic() < deadline, 'owner never reported draining'
+                await asyncio.sleep(.05)
             peer.release.set()
             await asyncio.to_thread(process.wait, 50)
     try:

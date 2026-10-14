@@ -6,7 +6,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
-from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult
+from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
 
@@ -18,6 +18,9 @@ class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
     source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
     cwd: str | None = None
+    # The sessions-row ``cwd`` when it differs from the execution ``cwd`` (the classic CLI records
+    # main's stamp: the launch dir, ``""`` = none); ``cwd`` stays where the tools run.
+    row_cwd: str | None = None
     model: str | None = None
     provider: str | None = None
     base_url: str | None = None
@@ -37,6 +40,12 @@ class CanonicalCreateParams(ProfileParams):
     title: str | None = None
     hidden: bool = False
     follow_profile_config: bool | None = None
+    service_tier: str | None = None
+    cwd_explicit: bool | None = None
+    # Wall-clock budget per run in seconds (the classic CLI's `--run-budget`).
+    run_budget: float | None = None
+    # The classic CLI's `-v`: the session agent's status lines are not quieted.
+    verbose: bool = False
 
 
 class CanonicalResumeParams(ProfileParams):
@@ -53,6 +62,9 @@ class CanonicalResumeParams(ProfileParams):
     defer_history: bool = False
     omit_messages: bool = False
     cols: int | None = None
+    # A renderer (the Ink TUI) asks for main's display projection of the same rows
+    # (``tui_gateway.session_history._history_to_messages``) as ``display_messages``.
+    display_projection: bool = False
 
 
 class CanonicalSessionHandle(Result):
@@ -79,9 +91,11 @@ class CanonicalPendingPrompt(Result):
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None
+    # Local viewer turns: the seconds the gateway waits before it gives up on this prompt.
+    timeout_s: int | None = None
 
 
-class CanonicalSnapshotInfo(Result):
+class CanonicalSnapshotInfo(SessionInventoryFields):
     desktop_protocol: Literal['hermes-gateway-v1']
     source: str | None = None
     model: str | None = None
@@ -90,12 +104,25 @@ class CanonicalSnapshotInfo(Result):
     profile_name: str | None = None
     cwd: str | None = None
     launch_request: dict[str, JsonValue] | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_wire: str | None = None
+    service_tier: str | None = None
+    fast: bool | None = None
+    title: str | None = None
+    started_at: float | None = None
+    last_active_at: float | None = None
+    yolo: bool | None = None
+    api_mode: str | None = None
+    tool_count: int | None = None
+    credential_hint: str | None = None
 
 
 class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
+    display_messages: list[TranscriptMessage] | None = None
     message_count: int
     running: bool
     authority_epoch: int
@@ -110,6 +137,7 @@ class CanonicalSnapshot(Result):
 
 
 class CanonicalListParams(ProfileParams):
+    scope: Literal['live', 'stored'] = 'live'
     limit: int = 200
     title: str | None = None
     include_hidden: bool = False
@@ -123,6 +151,7 @@ class CanonicalSessionListRow(Result):
     started_at: float | None
     message_count: int
     running: bool
+    model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
 
@@ -135,6 +164,18 @@ class CanonicalListResult(Result):
 class CanonicalAttachment(Params):
     path: str
     mime: str
+
+
+class CanonicalTurnAuthor(Params):
+    id: str | None = None
+    name: str | None = None
+    is_bot: bool = False
+    origin: str | None = None
+
+
+class CanonicalModelOverride(Params):
+    model: str
+    provider: str | None = None
 
 
 class CanonicalSubmitParams(CanonicalSessionParams):
@@ -154,6 +195,15 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     # titler input only, never model input.
     display_kind: Literal['hidden'] | None = None
     title_preview: str | None = None
+    # Classic CLI per-turn inputs, committed per admission (``cli_turn_v1``): who wrote the turn
+    # (memory attribution only), the model-facing text when it differs from the persisted ``text``
+    # (voice prefix, model-switch / skills-reload notes) and a one-turn ``/model --once`` override.
+    turn_author: CanonicalTurnAuthor | None = None
+    api_text: str | None = None
+    model_override: CanonicalModelOverride | None = None
+    # The submitter answers the clarify tool's whole batch in one ``clarify`` server request (main's
+    # batch panel); without it the turn's viewers get one ``clarify.request`` card per question.
+    clarify_batch: bool = False
 
 
 class CanonicalControlParams(CanonicalSessionParams):

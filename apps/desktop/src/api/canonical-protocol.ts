@@ -139,15 +139,22 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // reaped runtime). Refused by name until the owner serves them.
 const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
 
-// `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams).
-const CANONICAL_CONFIG_KEYS = new Set(['busy', 'verbose', 'yolo', 'model'])
+// `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
+// gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
+// Shift+click global yolo zap).
+const CANONICAL_CONFIG_KEYS = new Set([
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
+])
+
+const SCOPED_CONFIG_KEYS = new Set(['reasoning', 'yolo'])
 
 // The one guard between a Desktop producer and the owner's closed contracts: translate a legacy
 // shape the owner has a canonical form for, refuse by name what it does not serve.
 function canonicalProducerFrame(method: string, params: Record<string, unknown>): Record<string, unknown> {
-  // No verb for other settings (reasoning, fast, approvals.mode, voice, display.*) nor a global
-  // scope: refuse before the wire, like Ink, instead of a bare invalid_params.
-  if (method === 'config.set' && (!CANONICAL_CONFIG_KEYS.has(String(params.key)) || 'scope' in params)) {
+  // Any other key, or a scope on a key without one: refuse before the wire, like Ink, instead of a
+  // bare invalid_params.
+  if (method === 'config.set' && (!CANONICAL_CONFIG_KEYS.has(String(params.key)) || ('scope' in params && !SCOPED_CONFIG_KEYS.has(String(params.key))))) {
     throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
   }
 
@@ -162,9 +169,31 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
   return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
 }
 
+// The levels `hermes_constants.parse_reasoning_effort` accepts: a session `/reasoning <level>` is the
+// owner's `reasoning` mutation; the display words (show/hide/full/clamp) are config.yaml writes.
+const REASONING_EFFORTS = new Set(['none', 'false', 'disabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+
+// Frozen-policy edits: a session-scope `/reasoning <level>` (`--global` stays the named refusal, no
+// owner config-write verb) and Move to project, which re-homes the execution cwd and TERMINAL_CWD
+// with the row (`session_key` names the sidebar row).
+function policyEdit(method: string, params: Record<string, unknown>): { session: unknown; operation: string; payload: Record<string, unknown> } | null {
+  const effort = String(params.value ?? '').trim().toLowerCase()
+
+  if (method === 'config.set' && params.key === 'reasoning' && params.scope !== 'global' && REASONING_EFFORTS.has(effort)) {
+    return { session: params.session_id, operation: 'reasoning', payload: { effort } }
+  }
+
+  // The composer's folder picker on an open chat (main's session.cwd.set) is the same re-home.
+  if (method === 'session.cwd.set') { return { session: params.session_id, operation: 'workspace', payload: { cwd: params.cwd } } }
+
+  return method === 'session.workspace.move' ? { session: params.session_key, operation: 'workspace', payload: { cwd: params.cwd } } : null
+}
+
+// Desktop methods that become `session.mutate` once prepareMutation chose an operation.
+const POLICY_EDIT_METHODS = new Set(['slash.exec', 'config.set', 'session.workspace.move', 'session.cwd.set'])
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 // Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
-const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model'])
+const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model', 'reasoning', 'workspace'])
 const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
@@ -194,8 +223,8 @@ export class CanonicalDesktopProtocol {
     // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
-    // A typed busy refusal of a rewind wrote nothing either; the caller interrupts and retries at the new revision.
-    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && params.operation === 'rewind')) { return }
+    // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
+    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
     // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
@@ -213,7 +242,7 @@ export class CanonicalDesktopProtocol {
     // rebinds the live event transport and returns the same snapshot shape.
     if (method === 'session.activate') { return 'session.resume' }
 
-    return (method === 'slash.exec' || method === 'config.set') && typeof prepared.operation === 'string' ? 'session.mutate' : method
+    return POLICY_EDIT_METHODS.has(method) && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
   private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
@@ -264,6 +293,14 @@ export class CanonicalDesktopProtocol {
       return { session_id: params.session_id, source: 'desktop', ...(params.profile ? { profile: params.profile } : {}) }
     }
 
+    // N93: a watch window's legacy `lazy` attach is not in the owner's resume contract (the owner
+    // holds the agent; nothing to defer). It skipped the REST prefetch, so it takes the transcript.
+    if (method === 'session.resume' && 'lazy' in params) {
+      const { lazy: _lazy, ...resume } = params
+
+      return { ...resume, omit_messages: false }
+    }
+
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
       const generation = params.execution_generation ?? this.generations.get(canonicalSessionKey(params.session_id, params.profile))
 
@@ -307,6 +344,10 @@ export class CanonicalDesktopProtocol {
 
       return this.retainedMutation(parent, params.profile, 'branch', payload, true)
     }
+
+    const policy = policyEdit(method, params)
+
+    if (policy) { return this.retainedMutation(policy.session, params.profile, policy.operation, policy.payload, true) }
 
     if (method === 'config.set' && params.key === 'model') {
       const pick = pickerModelMutation(params.value)
@@ -357,14 +398,27 @@ export class CanonicalDesktopProtocol {
     if (this.modelConfirmations.get(key)?.token === payload.confirm) { this.modelConfirmations.delete(key) }
   }
 
-  private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
-    const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
+  // The composer's per-session create options in the owner's create contract: the effort is the
+  // frozen launch `reasoning`; a manual model pick keeps its `provider`; the speed pick is `service_tier` (main: an explicit tier wins, Fast
+  // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
+  // provenance that lets a named profile's own workspace beat an inherited cwd.
+  private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
+    const { reasoning_effort: effort, fast, service_tier: picked, ...params } = input
+    const tier = typeof picked === 'string' && picked ? picked : fast === true ? 'priority' : fast === false ? 'normal' : undefined
+
+    if (typeof effort === 'string' && effort) { params.reasoning = effort }
+
+    if (tier) { params.service_tier = tier }
+
+    if (typeof params.cwd_explicit !== 'boolean') { delete params.cwd_explicit }
+
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'])
+    const unsupported = Object.keys(params).filter(key => !allowed.has(key))
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
@@ -400,6 +454,24 @@ export class CanonicalDesktopProtocol {
     }
   }
 
+  // Turns advance the CAS revision without a session.updated event; the pending session.info fanout
+  // is where a viewer learns the value its next mutation must present. N91: another viewer's
+  // committed mutation broadcasts its receipt as session.updated: adopt it monotonically (a
+  // replayed older receipt never rewinds) and settle this viewer's superseded retained edits.
+  private adoptEventRevision(type: string, sid: string, profile: string, payload: Record<string, unknown>): void {
+    const owner = canonicalSessionKey(sid, profile)
+    const revision = payload.revision
+
+    if (typeof revision !== 'number') { return }
+
+    if (type === 'session.info') { this.revisions.set(owner, revision) }
+
+    if (type === 'session.updated' && (payload.session_id ?? sid) === sid && revision > (this.revisions.get(owner) ?? -1)) {
+      this.revisions.set(owner, revision)
+      this.retireSupersededMutations({ session_id: sid, profile }, revision)
+    }
+  }
+
   event(event: { type: string; session_id?: string; profile?: string; execution_generation?: unknown; payload?: unknown }) {
     const payload = event.payload as Record<string, unknown> | undefined
 
@@ -408,11 +480,7 @@ export class CanonicalDesktopProtocol {
     const profile = canonicalProfile(event.profile)
     const owner = canonicalSessionKey(sid, profile)
 
-    if (Array.isArray(payload.pending)) {
-      payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text }))
-
-      this.reconcileUnknownAdmissions(sid, profile, payload.pending)
-    }
+    if (Array.isArray(payload.pending)) { payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text })) }
 
     const generation = event.execution_generation ?? payload.execution_generation
 
@@ -423,9 +491,10 @@ export class CanonicalDesktopProtocol {
       this.generations.set(owner, generation)
     }
 
-    // Turns advance the CAS revision without a session.updated event; the
-    // pending fanout is where a viewer learns the value its next mutation must present.
-    if (event.type === 'session.info' && typeof payload.revision === 'number') { this.revisions.set(owner, payload.revision) }
+    // C20: only a frame that passed the generation fence may retire a live Discard action.
+    if (Array.isArray(payload.pending)) { this.reconcileUnknownAdmissions(sid, profile, payload.pending) }
+
+    this.adoptEventRevision(event.type, sid, profile, payload)
 
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
@@ -442,7 +511,7 @@ export class CanonicalDesktopProtocol {
   result(method: string, params: Record<string, unknown>, value: any): any {
     if (!value || typeof value !== 'object') { return value }
 
-    const mutation = MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set') && typeof params.operation === 'string')
+    const mutation = MUTATION_METHODS.has(method) || (POLICY_EDIT_METHODS.has(method) && typeof params.operation === 'string')
     this.adoptRevision(params, value, mutation)
 
     if (mutation) { return this.mutationReceipt(method, params, value) }
@@ -510,7 +579,8 @@ export class CanonicalDesktopProtocol {
 
     if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
 
-    return { ...value, ok: true }
+    // The legacy config.set answer every reasoning caller reads (`result.value`).
+    return params.operation === 'reasoning' ? { ...value, ok: true, value: value.effort } : { ...value, ok: true }
   }
 
   // An acknowledged mutation at revision R settles every older retained value-setting request of

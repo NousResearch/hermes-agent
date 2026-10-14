@@ -1,4 +1,5 @@
 import type { TranslationOverrides } from './define-locale'
+import { jaSessionCommands } from './ja_session_commands'
 
 // Shell notices (remote-display toast, butterbar), spread into ja.ts.
 export const jaNotices = {
@@ -18,6 +19,7 @@ export const jaNotices = {
   },
   promptNotices: {
     legacySendUnconfirmed:
-      'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。'
+      'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。',
+    sessionCommands: jaSessionCommands
   }
 } satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

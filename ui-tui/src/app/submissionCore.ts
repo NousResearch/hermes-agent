@@ -168,7 +168,7 @@ function settleAdmissionReply(item: QueueItem, r: PromptSubmitResponse, ctx: Adm
     (r?.input_id ?? r?.admission_id) === item.submissionId &&
     Boolean(destination.storedSid) &&
     r?.target_session_id === destination.storedSid &&
-    r?.target_profile_home === destination.profileHome &&
+    r?.target_profile_home === (destination.ownerHome ?? destination.profileHome) &&
     ['queued', 'started', 'terminal', 'unknown'].includes(r?.status ?? '')
 
   item.settle?.(accepted)

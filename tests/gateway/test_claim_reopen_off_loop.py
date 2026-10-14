@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_reopening_a_finalized_local_row_behind_a_contended_writer_keeps_the_loop_live(tmp_path, monkeypatch):
@@ -62,16 +64,15 @@ async def test_reopening_a_finalized_local_row_behind_a_contended_writer_keeps_t
     async def ticker():
         last = time.monotonic()
         while True:
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.02)  # health: allow HX013 -- the ticker measures event-loop stalls; its fixed period IS the probe
             now = time.monotonic()
             gaps.append(now - last)
             last = now
     tick = asyncio.create_task(ticker())
     try:
         queued = await authority.submit(owner.actor, Submission('first', ref, {'text': 'FIRST'}, 'queue'))
-        async with asyncio.timeout(10):
-            while rt.get_session_admission(db, admission_id=queued.admission_id)['status'] != 'terminal':
-                await asyncio.sleep(0.02)
+        await async_wait_until(lambda: rt.get_session_admission(db, admission_id=queued.admission_id)['status'] == 'terminal',
+                               timeout=10, what='the first turn to settle')
         assert executed == ['FIRST']
         assert db.get_session(ref.session_id)['end_reason'] is None
         assert max(gaps) < 0.5, f'the owner loop stalled {max(gaps):.2f}s behind the reopen writer'

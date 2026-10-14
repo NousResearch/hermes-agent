@@ -78,7 +78,7 @@ def _owner(tmp_path):
         crashed = status()[marker]
         with daemon(root, home, env, barrier=False):
             wait_for(lambda: status().get(marker) != 'started', diagnostic)
-            time.sleep(3)  # a (second) delivery would arrive inside this window
+            time.sleep(3)  # health: allow HX013 -- proves NO (second) delivery arrives in this window; absence has no event
         prompts = [next(m['content'] for m in reversed(r['messages']) if m['role'] == 'user')
                    for r in model.requests]
         return crashed, len(replies('RECOVERY_ACK_' + marker)), sum(marker in p for p in prompts)

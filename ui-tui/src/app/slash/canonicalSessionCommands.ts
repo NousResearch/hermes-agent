@@ -3,14 +3,14 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
-import type { SlashExecResponse } from '../../gatewayTypes.js'
+import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
-import type { PanelSection } from '../../types.js'
-import { getUiState, patchUiState } from '../uiStore.js'
+import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
+import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -24,9 +24,46 @@ const isUserTurn = (row: Record<string, unknown>) =>
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */
 export function lastTurnRewind(snapshot: MutationSnapshot): null | { target_message_id: number } {
-  const target = (snapshot.messages ?? []).findLast(isUserTurn)
+  const target = (snapshot.stored_messages ?? snapshot.messages ?? []).findLast(isUserTurn)
 
   return target ? { target_message_id: target.row_id as number } : null
+}
+
+const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
+
+/** Lossless /retry text (agent/context_compressor_retry.py::retryable_user_text): '' when the turn has
+ * no text, null when it carries media, unknown or annotated parts (no replay protocol: fail closed). */
+function retryText(content: unknown): null | string {
+  let text = ''
+
+  for (const part of typeof content === 'string' ? [content] : Array.isArray(content) ? content : [null]) {
+    if (typeof part === 'string') {
+      text += part
+    } else if (
+      part?.type &&
+      TEXT_PARTS.has(part.type) &&
+      typeof part.text === 'string' &&
+      Object.keys(part).length === 2
+    ) {
+      text += part.text
+    } else {
+      return null
+    }
+  }
+
+  return text.trim() ? text : ''
+}
+
+/** /retry's rewind payload: validated on the CAS snapshot, so a refusal archives nothing. */
+export function retryTurnRewind(snapshot: MutationSnapshot): null | { target_message_id: number } {
+  const target = (snapshot.stored_messages ?? snapshot.messages ?? []).findLast(isUserTurn)
+  const text = target ? retryText(target.content) : ''
+
+  if (text === null) {
+    throw new Error(t('canonical.controls.retryUnsupported'))
+  }
+
+  return target && text ? { target_message_id: target.row_id as number } : null
 }
 
 // sid → the last admission whose completion this view saw; `/usage` reads its committed result.
@@ -78,11 +115,44 @@ export async function renameCanonicalSession(
   return mutation?.result ? String(mutation.result.title ?? title).trim() : undefined
 }
 
+// The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml writes.
+const REASONING_EFFORTS = new Set([
+  'none',
+  'false',
+  'disabled',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
+/** Session-scope `/reasoning <level>`: the owner's revision-fenced `reasoning` mutation of the frozen
+ * policy. False when the shared gateway has no verb for it (`--global`, a display word). */
+export function canonicalReasoning(payload: { scope?: string; value: string }, ctx: SlashRunCtx): boolean {
+  const effort = payload.value.trim().toLowerCase()
+
+  if (payload.scope === 'global' || !REASONING_EFFORTS.has(effort)) {
+    return false
+  }
+
+  void mutateCanonical(ctx.gateway.gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
+    .then(
+      mutation =>
+        mutation?.result && !ctx.stale() && ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+    )
+    .catch(ctx.guardedErr)
+
+  return true
+}
+
 /** `/undo` and `/retry`: rewind to before the newest user turn; `/retry` then resubmits its text. */
 export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
-  void mutateCanonical(ctx.gateway.gw, sid, 'rewind', lastTurnRewind, ctx.stale)
+  void mutateCanonical(ctx.gateway.gw, sid, 'rewind', intent === 'retry' ? retryTurnRewind : lastTurnRewind, ctx.stale)
     .then(mutation => {
       if (!mutation || ctx.stale()) {
         return
@@ -104,8 +174,7 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
-      const content = (result.target_message as undefined | { content?: unknown })?.content
-      const text = typeof content === 'string' && content.trim() ? content : ctx.local.getLastUserMsg()
+      const text = retryText((result.target_message as undefined | { content?: unknown })?.content)
 
       return text ? ctx.transcript.send(text) : ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
     })
@@ -121,84 +190,83 @@ interface CommittedResult {
   total_tokens?: number
 }
 
-/** `/usage`: session totals are the owner's own `/usage` report for this session (a reviewed read,
- * as the classic CLI shows it); every settled turn also commits its own usage with the admission,
- * so the last one this view saw follows. */
+/** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
+ * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
+ * and rendered exactly as main's sidecar `/usage` did (Usage panel, or "no API calls yet", then the
+ * plan CTA). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
-  const admissionId = lastAdmission.get(sid)
-  const unavailable = () => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageTotalsUnavailable'))
 
-  const totals = ctx.gateway.gw
-    .request<SlashExecResponse>('slash.exec', { command: 'usage', session_id: sid })
-    .then(r => {
-      if (!r?.output) {
-        return unavailable()
-      }
-
-      if (!ctx.stale()) {
-        ctx.transcript.page(r.output, t('slashCmd.session.usage.usageTitle'))
-      }
-    }, unavailable)
-
-  if (!admissionId) {
-    return void totals.then(() => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageNoTurn')))
-  }
-
-  void totals
-    .then(() =>
-      ctx.gateway.gw.request('prompt.receipt', { admission_id: admissionId, include_result: true, session_id: sid })
-    )
+  void ctx.gateway.gw
+    .request('session.stats', { session_id: sid })
     .then(raw => {
       if (ctx.stale()) {
         return
       }
 
-      const result = asRpcResult<{ result?: CommittedResult }>(raw)?.result
+      const usage = usageFromTick(asRpcResult<Record<string, unknown>>(raw))
 
-      if (!result) {
-        return ctx.transcript.sys(t('canonical.controls.usageNoTurn'))
+      if (!usage?.calls) {
+        ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+
+        return
       }
 
-      const f = (value: number | undefined) => (value ?? 0).toLocaleString()
-
-      const rows: [string, string][] = [
-        [t('slashCmd.session.usage.rowModel'), result.model ?? getUiState().info?.model ?? ''],
-        [t('slashCmd.session.usage.rowInputTokens'), f(result.input_tokens)],
-        [t('slashCmd.session.usage.rowOutputTokens'), f(result.output_tokens)],
-        [t('slashCmd.session.usage.rowTotalTokens'), f(result.total_tokens)],
-        [t('slashCmd.session.usage.rowApiCalls'), f(result.api_calls)],
-        ...(typeof result.estimated_cost_usd === 'number'
-          ? ([[t('canonical.controls.rowCost'), `$${result.estimated_cost_usd.toFixed(4)}`]] as [string, string][])
-          : [])
-      ]
-
-      const sections: PanelSection[] = [{ rows }]
-
-      ctx.transcript.panel(t('canonical.controls.usageLastTurnTitle'), sections)
+      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
     })
     .catch(ctx.guardedErr)
 }
 
-/** `/tools`: a canonical session's toolsets are frozen at launch (`session.info.launch_request`);
- * listing and toggling them live has no canonical verb yet. */
+interface ToolsShowResult {
+  sections?: { name: string; tools?: { description?: string; name: string }[] }[]
+  total?: number
+}
+
+/** Main's `/tools` text (hermes_cli/cli_info_mixin.py show_tools): kawaii header box, one
+ *  `[toolset]` block per section with the first description sentence, then the total. */
+export function renderToolsListing(result: ToolsShowResult): string {
+  const sections = result.sections ?? []
+
+  if (!sections.some(section => section.tools?.length)) {
+    return '(;_;) No tools available'
+  }
+
+  const title = '(^_^)/ Available Tools'
+  const pad = 78 - title.length
+  const rule = `+${'-'.repeat(78)}+`
+  const lines = [rule, `|${' '.repeat(Math.floor(pad / 2))}${title}${' '.repeat(pad - Math.floor(pad / 2))}|`, rule, '']
+
+  for (const section of sections) {
+    lines.push(`  [${section.name}]`)
+
+    for (const tool of section.tools ?? []) {
+      lines.push(`    * ${tool.name.padEnd(20)} - ${tool.description ?? ''}`)
+    }
+
+    lines.push('')
+  }
+
+  lines.push(`  Total: ${result.total ?? 0} tools  ヽ(^o^)ノ`)
+
+  return lines.join('\n')
+}
+
+/** `/tools`: the session's catalog from the owner's `tools.show` (its toolsets, MCP and plugin
+ *  tools), rendered as main's listing in the pager. */
 export function canonicalTools(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
   void ctx.gateway.gw
-    .request<{ launch_request?: { toolsets?: unknown } }>('session.info', { session_id: sid })
-    .then(info => {
+    .request<ToolsShowResult>('tools.show', { session_id: sid })
+    .then(raw => {
       if (ctx.stale()) {
         return
       }
 
-      const toolsets = info?.launch_request?.toolsets
-
-      if (Array.isArray(toolsets) && toolsets.length) {
-        ctx.transcript.sys(t('canonical.controls.launchToolsets', toolsets.join(', ')))
-      }
-
-      ctx.transcript.sys(t('canonical.controls.notAvailable', 'tools'))
+      ctx.transcript.page(renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}), t('slashCmd.ops.slashWorker.toolsTitle'))
     })
     .catch(ctx.guardedErr)
 }

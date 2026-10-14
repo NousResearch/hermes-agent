@@ -205,7 +205,7 @@ def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
     entry = tmp_path / "bin" / "hermes"  # the argv a gateway identity check accepts
     entry.parent.mkdir()
     entry.write_text(textwrap.dedent("""
-        import sys
+        import os, sys
         from gateway import status
         from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
         record_multiplex_decision(MultiplexDecision(False, "guard", "profile 'coder' runs its own gateway"))
@@ -214,7 +214,7 @@ def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
         assert status.acquire_gateway_runtime_lock()
         from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
         publish_pending_multiplex_decision()
-        print("claimed", flush=True)
+        print("claimed", os.getpid(), flush=True)  # the lock owner (Popen.pid is the venv launcher on Windows)
         sys.stdin.readline()
     """), encoding="utf-8")
     env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
@@ -236,8 +236,9 @@ def test_pre_lock_decision_never_publishes_a_rival_gateway_owner(tmp_path):
         assert rival() == [None, None]  # nothing claims to own the home before the lock does
         child.stdin.write("\n")
         child.stdin.flush()
-        assert child.stdout.readline().strip() == "claimed"
-        assert rival() == [child.pid, "profile 'coder' runs its own gateway"]
+        claimed, owner = child.stdout.readline().split()
+        assert claimed == "claimed"
+        assert rival() == [int(owner), "profile 'coder' runs its own gateway"]
     finally:
         child.kill()
         child.wait(timeout=30)

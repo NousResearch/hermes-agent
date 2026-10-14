@@ -20,6 +20,8 @@ import time
 import pytest
 from websockets.asyncio.client import connect
 
+from tests.waiting import wait_until
+
 ROOT = Path(__file__).resolve().parents[2]
 # The daemon is a foreground child of the test (never detached), boots a disposable custom root
 # with HOME redirected (no systemd unit, no webhook port) and is reaped in every path below.
@@ -132,6 +134,13 @@ def recorded_served(root):
     return json.loads((root / 'gateway_state.json').read_text(encoding='utf-8')).get('served_profiles')
 
 
+def wait_recorded(root, predicate, what):
+    """gateway_state.json is written by the runtime-status writer thread after the control reply
+    (publish_runtime_status enqueues, never waits), so the recorded set is eventually consistent."""
+    wait_until(lambda: predicate(recorded_served(root) or []), timeout=20, interval=.05, what=what)
+    return recorded_served(root)
+
+
 async def open_session_for(root, home, desc):
     """A ticket bound to *home* opens a session the multiplexer commits into *home*'s state.db."""
     grant = control(root, 'session-ticket', {'profile_id': str(home.resolve()),
@@ -164,7 +173,7 @@ def test_profile_created_under_live_multiplexer_is_served_and_owned(mux):
             time.sleep(.2)
             desc = control(root, 'identify')
         assert fresh.resolve() in served_homes(desc), (desc, tail(mux))
-        assert recorded_served(root) == ['default', 'boot', 'fresh']
+        assert wait_recorded(root, lambda r: r == ['default', 'boot', 'fresh'], 'fresh recorded') == ['default', 'boot', 'fresh']
         # The new profile's sessions are this multiplexer's: same instance, its own state.db.
         sid = asyncio.run(open_session_for(root, fresh, desc))
         import sqlite3
@@ -192,13 +201,15 @@ def kill_recorded_gateway(root, timeout=45):
     if pid:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGINT)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        def gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                return
-            time.sleep(.2)
+                return True
+            return False
+        with contextlib.suppress(AssertionError):
+            wait_until(gone, timeout=timeout, interval=.2, what=f'gateway {pid} exited')
+            return
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
 
@@ -284,7 +295,7 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         assert result['parked'] == ['invalid-hot'], (result, tail(mux))
         assert added.resolve() not in served_homes(desc), desc
         assert 'invalid-hot' in desc.get('parked_profiles', {}), desc
-        assert 'invalid-hot' not in recorded_served(root)
+        wait_recorded(root, lambda r: 'invalid-hot' not in r, 'invalid-hot never recorded')
 
         # The same contract applies to a secondary that was already published and then edited
         # into an invalid configuration.
@@ -298,6 +309,6 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         assert added.resolve() not in served_homes(desc), desc
         assert mux['boot'].resolve() not in served_homes(desc), desc
         assert 'boot' in desc.get('parked_profiles', {}), desc
-        assert 'boot' not in recorded_served(root)
+        wait_recorded(root, lambda r: 'boot' not in r, 'parked boot withdrawn from the recorded set')
     finally:
         stop(proc, expect=None)

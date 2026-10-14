@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def _reply(handler, body, text):
@@ -99,9 +100,9 @@ def run_pair(tmp_path, extra_config, turn, **create_params):
     async def settle(ws, sid, request_id, text):
         submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text=text)
         assert 'result' in submitted, submitted
-        async with asyncio.timeout(120):
-            while query('SELECT status FROM session_admissions WHERE request_id=?', (request_id,)) != [('terminal',)]:
-                await asyncio.sleep(.05)
+        await async_wait_until(
+            lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (request_id,)) == [('terminal',)],
+            timeout=120, interval=.05, what=f'admission {request_id} terminal')
         [(admission,)] = query('SELECT admission_id FROM session_admissions WHERE request_id=?', (request_id,))
         receipt = await rpc(ws, 'prompt.receipt', session_id=sid, admission_id=admission, include_result=True)
         return receipt['result']['result']

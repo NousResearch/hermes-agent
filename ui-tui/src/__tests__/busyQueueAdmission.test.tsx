@@ -122,7 +122,7 @@ it('renders the queue from the session.info pending fanout, excluding the starte
 
   try {
     h.fanout([row('adm-1', 'in-1', 'currently running', 'started'), row('adm-2', 'in-2', 'second in line')])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] second in line'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['second in line'])
     h.fanout([row('adm-1', 'in-1', 'currently running', 'started')])
     await expect.poll(() => h.queue.queuedDisplay).toEqual([])
   } finally { h.cleanup() }
@@ -133,12 +133,12 @@ it('deletes a server-queued row through prompt.cancel rather than local removal'
 
   try {
     h.fanout([row('adm-9', 'in-9', 'cancel me')])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] cancel me'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['cancel me'])
     h.queue.removeQ(0)
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
     expect(h.calls.find(c => c.method === 'prompt.cancel')!.params).toEqual({ session_id: 'owner', admission_id: 'adm-9' })
     // Only the authority's next fanout retires the row.
-    expect(h.queue.queuedDisplay).toEqual(['[queued] cancel me'])
+    expect(h.queue.queuedDisplay).toEqual(['cancel me'])
     h.fanout([])
     await expect.poll(() => h.queue.queuedDisplay).toEqual([])
   } finally { h.cleanup() }
@@ -239,7 +239,7 @@ it('does not admit an edited replacement while the original row is still being r
 
   try {
     h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_EFFECT')])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_EFFECT'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['ORIGINAL_EFFECT'])
     h.queue.setQueueEdit(0)
     h.submission.dispatchSubmission('EDITED_EFFECT')
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
@@ -257,14 +257,14 @@ it('keeps the edited text as an unconfirmed durable draft when the store refuses
 
   try {
     h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_EFFECT')])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_EFFECT'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['ORIGINAL_EFFECT'])
     h.queue.setQueueEdit(0)
     h.submission.dispatchSubmission('EDITED_EFFECT')
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
     await expect.poll(() => $uiState.get().status).toContain('discard failed')
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
-    expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', '[queued] ORIGINAL_EFFECT'])
+    expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', 'ORIGINAL_EFFECT'])
     expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([['EDITED_EFFECT', true]])
   } finally { h.cleanup() }
 })
@@ -275,7 +275,7 @@ it('re-admits an edited row to the session it was edited in, even when the user 
 
   try {
     h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_A')])
-    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_A'])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['ORIGINAL_A'])
     h.queue.setQueueEdit(0)
     h.submission.dispatchSubmission('EDITED_A')
     await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)

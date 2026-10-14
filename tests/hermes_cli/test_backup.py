@@ -801,7 +801,8 @@ class TestImport:
         # inode which must remain after release, or concurrent openers can split ownership.
         assert not (hermes_home / "cron.pid").exists()
         lock = json.loads((hermes_home / "gateway.lock").read_text())
-        assert lock["hermes_home"] == str(hermes_home.resolve())
+        from gateway.runtime_ownership import canonical_home  # the identity the lock stores (normcase)
+        assert lock["hermes_home"] == str(canonical_home(hermes_home))
 
 
 

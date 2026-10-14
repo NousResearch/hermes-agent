@@ -123,7 +123,14 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
     }
 
-    const handleDispatch = (raw: unknown): void => {
+    // Main's sidecar slash output: a long reply opens the pager, a short one is a system line.
+    const showOutput = (text: string) => {
+      const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+      long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+    }
+
+    const handleDispatch = (raw: unknown, fromExec = false): void => {
       const d = parseCommandDispatch(raw)
 
       if (!d) {
@@ -131,7 +138,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        // The shared owner answers its slash.exec reads as `{type: 'exec'}`; they page like
+        // main's bare `{output}` did. command.dispatch output keeps its system line.
+        return fromExec && d.output ? showOutput(d.output) : sys(d.output || '(no output)')
       }
 
       if (d.type === 'alias') {
@@ -190,14 +199,12 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         }
 
         if (parseCommandDispatch(r)) {
-          return handleDispatch(r)
+          return handleDispatch(r, true)
         }
 
         const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
-        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+        showOutput(r?.warning ? `warning: ${r.warning}\n${body}` : body)
       })
       .catch((execErr: unknown) => {
         if (stale()) {

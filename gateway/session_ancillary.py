@@ -17,6 +17,7 @@ _SUBAGENT_FIELDS = (
     'started_at', 'status', 'tool_count', 'last_tool', 'accepting_steer',
 )
 _TAIL_BYTES = 16384
+_PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
 
 
 def handlers(connection):
@@ -27,7 +28,108 @@ def handlers(connection):
         'approval.received': partial(approvals, connection, ack=True),
         'process.stop': partial(stop_processes, connection),
         'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
-        'file.attach': partial(attach_file, connection)}
+        'file.attach': partial(attach_file, connection), 'tools.show': partial(show_tools, connection),
+        'skills.reload': partial(reload_skills, connection),
+        **{name: partial(subagent_control, connection, steer=name == 'subagent.steer')
+           for name in ('subagent.steer', 'subagent.interrupt')}}
+
+
+async def subagent_control(connection, ref, params, *, steer):
+    """Desktop's per-child Steer / Stop: only a child of THIS session's live agent (the
+    ``subagent.list`` rule). The sidecar handler never held an authority session."""
+    fields = {'session_id', 'profile', 'subagent_id'} | ({'text'} if steer else set())
+    if (set(params) - fields or not ref.session_id or any(not isinstance(params.get(k), str) or not params[k]
+                                                           for k in fields - {'profile'})):
+        raise RuntimeStoreError('invalid_params')
+    if ref.session_id not in connection.authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:control')
+    live, sub = connection.authority.sessions[ref.session_id], params['subagent_id']
+    with live.event_stream.lock:
+        _require_current_route(connection.authority, ref)
+        child = next((r['agent'] for r in _owner_objects(connection.authority, ref)[1] if r.get('subagent_id') == sub), None)
+    if not steer:
+        from agent.interrupt_compat import request_hard_interrupt
+        return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
+                'subagent_id': sub}
+    from tools import delegate_tool_registry as registry
+    with registry._active_subagents_lock:  # linearized with the child's final steer drain
+        record = registry._active_subagents.get(sub)
+        queued = bool(child is not None and record and record.get('agent') is child and record.get('accepting_steer')
+                      and child.steer(params['text']))
+    return {'status': 'queued' if queued else 'rejected', 'subagent_id': sub, 'text': params['text']}
+
+
+async def show_tools(connection, ref, params):
+    """``/tools``: the session's catalog as main's CLI listed it (``get_tool_definitions`` with the
+    session's toolsets, pre tool_search assembly), resolved in the owner, where the MCP and plugin
+    tools live. Rows carry the first description sentence, grouped by toolset."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:read')
+    from gateway.session_authorities import owner_scope
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    agent = authority.agent(ref)
+
+    def build():
+        import model_tools
+        from agent.skill_utils import parse_config_string_list
+        from toolsets import session_disabled_toolsets
+        with owner_scope(authority):
+            if agent is not None:
+                enabled, disabled = getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
+            else:
+                config = policy.config(authority, secrets=False) if policy is not None else {}
+                enabled = list(policy.current_toolsets(config)) if policy is not None else None
+                disabled = session_disabled_toolsets(parse_config_string_list(
+                    (config.get('agent') or {}).get('disabled_toolsets')) or None,
+                    policy.platform if policy is not None else 'cli')
+            tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                                     quiet_mode=True, skip_tool_search_assembly=True)
+            sections = {}
+            for tool in sorted(tools or [], key=lambda item: item['function']['name']):
+                name = tool['function']['name']
+                desc = str(tool['function'].get('description', '') or '').split('\n')[0]
+                if '. ' in desc:
+                    desc = desc[:desc.index('. ') + 1]
+                sections.setdefault(model_tools.get_toolset_for_tool(name) or 'unknown', []).append(
+                    {'name': name, 'description': desc})
+        return {'sections': [{'name': n, 'tools': rows} for n, rows in sorted(sections.items())],
+                'total': len(tools or [])}
+    return await asyncio.to_thread(build)
+
+
+async def reload_skills(connection, ref, params):
+    """``/reload-skills`` (and the CLI's ``/skills install``): rescan the skill dirs in the owner,
+    whose skill-command map serves this session's skill and bundle invocations. The CLI renders
+    main's lines from ``result`` and queues main's next-turn note itself."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:control')
+    from gateway.session_authorities import owner_scope
+    from gateway.session_policy import policy_for_source, policy_scope
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+
+    def rescan():
+        from agent.skill_commands import reload_skills as rescan_skills
+        with owner_scope(authority), policy_scope(policy, authority=authority):
+            return rescan_skills()
+    result = await asyncio.to_thread(rescan)
+    added, removed = result.get('added') or [], result.get('removed') or []
+    lines = ['Reloading skills...'] + ([] if added or removed else ['No new skills detected.'])
+    for label, items in (('Added skills:', added), ('Removed skills:', removed)):
+        if items:
+            lines.append(label)
+            lines.extend(f"  - {item.get('name', '')}" for item in items)
+    lines.append(f"{int(result.get('total') or 0)} skill(s) available")
+    return {'output': '\n'.join(lines), 'result': result}
 
 
 async def attach_file(connection, ref, params):
@@ -134,14 +236,15 @@ def _owned_targets(connection, ref, params, *, select):
 
 async def kill_process(connection, ref, params):
     """Desktop's per-process Stop: one process THIS session owns (the ``process.list`` rule); any
-    other id, another chat's included, is ``not_found``. The legacy sidecar handler looked the
+    other id, another chat's included, is ``process_not_found``. The legacy sidecar handler looked the
     session up in its own table, which never holds an authority session."""
     if (set(params) - {'session_id', 'process_id', 'profile'} or not ref.session_id
             or not isinstance(params.get('process_id'), str) or not params['process_id']):
         raise RuntimeStoreError('invalid_params')
     registry, ids = _owned_targets(connection, ref, params, select=lambda p: p.id == params['process_id'])
     if not ids:
-        raise RuntimeStoreError('not_found')
+        # Never ``not_found``: Desktop reads that reason as "this chat is gone" (dokterdok N64).
+        raise RuntimeStoreError('process_not_found')
     return await asyncio.to_thread(registry.kill_process, ids[0])
 
 
@@ -184,7 +287,18 @@ async def stop_processes(connection, ref, params):
         results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
         return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
                    for r in results)
-    return {'killed': await asyncio.to_thread(kill) if targets else 0}
+    killed = await asyncio.to_thread(kill) if targets else 0
+    return {'killed': killed, 'delegations': await asyncio.to_thread(_interrupt_delegations, connection.authority, ref)}
+
+
+def _interrupt_delegations(authority, ref):
+    """Main's ``/stop`` also interrupted the background (async) delegations; here only the ones this
+    session dispatched (its route or its durable id), never another chat's."""
+    module = sys.modules.get('tools.async_delegation')
+    if module is None:
+        return 0
+    return module.interrupt_for_session(session_key=authority.sessions[ref.session_id].route,
+                                        parent_session_id=physical_target(authority, ref), reason='/stop')
 
 
 def _require_current_route(authority, ref):
@@ -305,4 +419,7 @@ def process_snapshot(authority, ref, agent, records):
     with registry._lock:
         return [{'session_id': p.id, 'command': p.command[:200],
                  'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,
-                 'output_tail': p.output_buffer[-4000:]} for p in _owned_locked(registry, keys, owners)]
+                 # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
+                 'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
+                 'completion_reason': p.completion_reason if p.exited else None,
+                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]

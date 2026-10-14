@@ -260,7 +260,9 @@ def gate_manifest(
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name), then the caller-supplied installed
     plugin recall lookup. Discovery owns routing; catalogue policy and storage stay with the caller."""
     lookup_key = manifest_key(manifest)
-    names = {lookup_key, manifest.name}
+    from hermes_cli.left_core_migration import legacy_plugin_keys
+    # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
+    names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
 
     def _placeholder(error: Optional[str], level: int, message: str, *args, enabled: bool = False) -> ManifestGate:
         return ManifestGate("placeholder", enabled=enabled, error=error, log=(level, message, lookup_key, *args))

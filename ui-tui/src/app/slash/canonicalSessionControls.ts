@@ -45,11 +45,13 @@ function modelPayload(arg: string) {
   return payload
 }
 
-export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'rename' | 'rewind'
+export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'rename' | 'rewind' | 'reasoning'
 
 /** The snapshot a mutation's CAS tuple was read from; `payload` may derive its target from it. */
 export interface MutationSnapshot {
   messages?: Array<Record<string, unknown>>
+  /** The stored rows (content + row_id) behind a display-projected `messages`. */
+  stored_messages?: Array<Record<string, unknown>>
   revision: number
   execution_generation: number
 }
@@ -207,13 +209,27 @@ function isSupersededControl(
   )
 }
 
-function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
+async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
   if (!result.branched_session_id) {
     throw new Error(t('session.common.invalidResponse', 'branch'))
   }
 
-  ctx.session.resumeById(result.branched_session_id)
-  ctx.transcript.sys(t('slashCmd.session.branch.branched', arg || result.branched_session_id))
+  // The child resume repaints the transcript; main's "branched →" line is printed after it, or the
+  // reset wipes it.
+  const child = result.branched_session_id as string
+
+  await ctx.session.resumeById(child)
+
+  // Main named the child by its title ("Slash lane #2" for an untitled branch of "Slash lane").
+  const info = await ctx.gateway.gw
+    .request<{ title?: null | string }>('session.info', { session_id: child })
+    .catch(() => null)
+
+  // The resume moved this view to the child, so the slash's own staleness check no longer applies:
+  // print only while the child is still the view's session.
+  if (getUiState().sid === child) {
+    ctx.transcript.sys(t('slashCmd.session.branch.branched', asRpcResult(info)?.title?.trim() || arg || child))
+  }
 }
 
 function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
@@ -232,6 +248,19 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     }
   }))
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
+}
+
+type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+
+/** The authority's report (headline, token line, note), as the native /compress prints it. */
+function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
+  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+
+  for (const line of [summary?.token_line, summary?.note]) {
+    if (line) {
+      ctx.transcript.sys(`  ${line}`)
+    }
+  }
 }
 
 async function applyCompressResult(gw: MutationGateway, sid: string, result: CanonicalControlResult, ctx: SlashRunCtx) {
@@ -257,16 +286,7 @@ async function applyCompressResult(gw: MutationGateway, sid: string, result: Can
 
   ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot.messages)])
   patchUiState({ info })
-  // The authority's report (headline, token line, note), as the native /compress prints it.
-  const summary = result.summary as { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
-
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
-
-  for (const line of [summary?.token_line, summary?.note]) {
-    if (line) {
-      ctx.transcript.sys(`  ${line}`)
-    }
-  }
+  printCompressSummary(result.summary as CompressSummary, ctx)
 }
 
 export async function runCanonicalSessionControl(
@@ -301,12 +321,15 @@ export async function runCanonicalSessionControl(
     if (operation === 'model' && needsModelConfirmation(result)) {
       askModelConfirmation(result, arg, ctx, Boolean(confirm))
     } else if (operation === 'branch') {
-      applyBranchResult(result, arg, ctx)
+      await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
       applyModelResult(result, ctx)
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))
+    } else if (result.status === 'noop') {
+      // Nothing removable: main's "No changes from compression" report; the transcript is untouched.
+      printCompressSummary(result.summary as CompressSummary, ctx)
     } else {
       await applyCompressResult(gw, ctx.sid, result, ctx)
     }

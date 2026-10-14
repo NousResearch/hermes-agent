@@ -8,12 +8,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from types import SimpleNamespace
 
 import pytest
 
 from tests import conftest as suite_conftest
+from tests.waiting import wait_until
 
 
 def _detached(env_home, marker):
@@ -32,7 +32,9 @@ def test_session_teardown_terminates_daemons_under_the_session_basetemp_only(tmp
     inside = _detached(basetemp / "t0" / "hermes", "inside")
     outside = _detached(elsewhere, "outside")
     try:
-        time.sleep(0.3)
+        # Both children have exec'd with their HERMES_HOME (what the reaper reads from /proc).
+        wait_until(lambda: {inside.pid, outside.pid} <= set(suite_conftest._processes_with_hermes_home_under(
+            [basetemp, elsewhere])), timeout=10, what='both detached children started')
         config = SimpleNamespace(_tmp_path_factory=SimpleNamespace(_basetemp=basetemp))
         reaped = suite_conftest._reap_session_hermes_processes(config)
         assert inside.pid in reaped and outside.pid not in reaped

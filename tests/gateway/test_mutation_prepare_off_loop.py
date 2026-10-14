@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(tmp_path, monkeypatch):
@@ -56,22 +58,29 @@ async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(t
     monkeypatch.setattr(session_mutations, 'mutate_runtime_session', contended)
     gaps = []
 
+    stopped = asyncio.Event()
+
     async def ticker():
+        # A fixed-cadence probe until the test stops it: a gap beyond the tick is a blocked loop.
         last = time.monotonic()
-        while True:
+        while not stopped.is_set():
             await asyncio.sleep(0.02)
             now = time.monotonic()
             gaps.append(now - last)
             last = now
+    # The first dispatch imports the wire-contract registry (a one-time cold import of a few hundred
+    # ms on a loaded runner); warm it so the probe measures the prepare writer wait, not module load.
+    import tui_gateway.contracts.registry
     tick = asyncio.create_task(ticker())
     try:
-        await asyncio.sleep(0.05)
+        await async_wait_until(lambda: gaps, timeout=10, what='the loop-stall probe ticking')
         response = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
             'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'switched'}}})
         assert response['result']['model'] == 'switched', response
         assert held.is_set() and max(gaps) < 0.5, f'the owner loop stalled {max(gaps):.2f}s behind the prepare writer'
     finally:
+        stopped.set()
         tick.cancel()
         release.set()
         if holder.is_alive():

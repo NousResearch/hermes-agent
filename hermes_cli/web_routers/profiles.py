@@ -228,6 +228,14 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
     return targets
 
 
+def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tuple[str, Path]]:
+    """Every profile, or only ``profile``: a native grant may read just the profile it names,
+    so the Desktop assembles the all-profiles view from one scoped read per profile."""
+    scope = (profile or "all").strip() or "all"
+    targets = _profile_targets(log_label)
+    return targets if scope == "all" else [(name, home) for name, home in targets if name == scope]
+
+
 def _tag_rows(rows: list[dict[str, Any]], name: str, now: float) -> list[dict[str, Any]]:
     """Stamp session rows with their owning profile and the 300s active heuristic; SQLite
     stores flags as 0/1 and the sidebar needs booleans."""
@@ -670,6 +678,8 @@ def _merge_profile_tree(
         # so the cross-profile merge agrees by construction with the trees it merges.
         from tui_gateway.project_tree import _path_key
         key = _path_key(project.get("path") or project["id"])
+        # A per-profile read is merged again by its caller, which cannot compute this key.
+        project["mergeKey"] = key
         existing = merged.get(key)
         if existing is None:
             merged[key] = project
@@ -694,7 +704,7 @@ def _merge_profile_tree(
 
 @sessions_router.get("/api/profiles/projects/tree")
 @_sidebar_singleflight_cache
-def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
+def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000, profile: Optional[str] = None):
     """Project tree for every profile at once, for the all-profiles sidebar.
 
     ``projects.tree`` over JSON-RPC answers for the backend's own profile only; this runs the
@@ -703,13 +713,16 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     off: a repo with zero sessions is the same repo in every profile (the disk scan would
     multiply empty lanes by the profile count), and discovery is the one part of the builder
     that writes (policy reconciliation), which a read-only fan-out must not do.
+
+    ``profile`` limits the scan to that one profile: a native grant may read only its own, so
+    the Desktop merges one such read per profile by each project's ``mergeKey``.
     """
     from tui_gateway import server as gateway_server
     merged: dict[str, dict[str, Any]] = {}
     scoped_session_ids: list[str] = []
     errors: list[dict[str, str]] = []
 
-    for name, home in _profile_targets("GET /api/profiles/projects/tree"):
+    for name, home in _scoped_profile_targets("GET /api/profiles/projects/tree", profile):
         def _read(db, name=name, home=home):
             with _hermes_home_scope(home):
                 tree, _active_id = gateway_server._build_project_tree(
@@ -743,7 +756,7 @@ def _pr_url_from_tool_output(content: str) -> Optional[tuple[int, str]]:
 
 
 @sessions_router.post("/api/profiles/sessions/pull-requests")
-def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
+def post_profiles_sessions_pull_requests(body: SessionPrScanBody, profile: Optional[str] = None):
     """The PR each of these sessions opened, recovered from its own transcript: a session
     that starts in the main checkout and works in a worktree has no branch of its own, so
     its PR is invisible to the branch join — but ``gh pr create`` ran in the conversation
@@ -761,7 +774,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
                 # Oldest-first, so a later `gh pr create` (the replacement PR) wins.
                 found[pr["session_id"]] = {"number": parsed[0], "url": parsed[1]}
 
-    for name, home in _profile_targets("POST /api/profiles/sessions/pull-requests"):
+    for name, home in _scoped_profile_targets("POST /api/profiles/sessions/pull-requests", profile):
         _read_profile_db(name, home, None, _read)
 
     # ``scanned``: every id looked at, so the caller can remember "nothing there".
@@ -804,7 +817,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         path = profiles_mod.create_profile(
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
-            clone_channels=body.clone_channels)
+            clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
         # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
         # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
         # ~/.local/bin wrapper when the alias is safe.
@@ -855,7 +868,7 @@ async def create_profile_endpoint(body: ProfileCreate):
 
     return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
             "mcp_written": mcp_written, "skills_disabled": skills_disabled,
-            "hub_installs": hub_installs}
+            "hub_installs": hub_installs, "soul_set": body.soul is not None}
 
 
 @router.get("/api/profiles/active")

@@ -225,8 +225,11 @@ class CLIChatTurnMixin:
         from hermes_cli.setup_profile import primary_profile
         from hermes_constants import get_hermes_home
         print("\n" + t("cli.commands.initiate_setup.starting"))
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
-                                     quiet_mode=True, skip_tool_search_assembly=True)
+        from hermes_cli.gateway_tools import session_tools
+        remote = session_tools()  # tool names from the gateway session that will run the turn
+        tools = remote[0] if remote is not None else get_tool_definitions(
+            enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+            quiet_mode=True, skip_tool_search_assembly=True)
         names = [tool["function"]["name"] for tool in tools]
         primary = primary_profile(get_hermes_home())
         self._queue_prompt_turn(build_initiate_setup_prompt("cli", names, primary), "/initiate-setup")

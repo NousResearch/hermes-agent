@@ -81,5 +81,5 @@ async def test_retired_authority_refuses_writes_before_successor_epoch(tmp_path,
                 await call(authority, receipt)
             assert untouched(db, tmp_path)
     finally:
-        await asyncio.sleep(.05)
+        await asyncio.sleep(0)  # a yield for done-callbacks; retirement already joined every task and thread
         db.close()

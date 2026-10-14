@@ -193,6 +193,9 @@ def _authority_tasks(authority):
 # How long a Stopped turn gets to settle durably before shutdown refuses to release ownership: a managed worker
 # acknowledges Stop within STOP_ACK_SECONDS (30) or is terminated, then closed (<=10).
 TURN_SETTLE_SECONDS = 45.0
+# What a stop keeps of its watchdog leash for the phases after the settle (adapter teardown, executor
+# quiesce, SessionDB close, exit-state writes): the settle never spends it.
+STOP_TAIL_RESERVE_SECONDS = 10.0
 
 
 def managed_turn_count(runner):
@@ -448,25 +451,28 @@ async def drain_gateway_runtime(runner):
             adapter.set_message_handler(None)
 
 
-async def settle_gateway_runtime(runner):
+async def settle_gateway_runtime(runner, budget=None):
     """Keep authority tasks alive until their last durable settlement write, within a bound.
 
     A managed turn still running here gets its Stop first (its worker acknowledges or is
     terminated, and the admission settles interrupted or ``unknown``); a task that still misses
-    TURN_SETTLE_SECONDS is logged and left running for recovery. The stop sequence continues:
+    TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
+    STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
     the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
     stop_managed_turns(runner)
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
+    wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
+                                                                   budget - STOP_TAIL_RESERVE_SECONDS))
     if tasks:
-        done, pending = await asyncio.wait(tasks, timeout=TURN_SETTLE_SECONDS)
+        done, pending = await asyncio.wait(tasks, timeout=wait) if wait > 0 else (set(), set(tasks))
         for task in done:
             if not task.cancelled():
                 task.exception()
         if pending:
             logger.warning('%d authority task(s) did not settle within %.0fs; left for recovery',
-                           len(pending), TURN_SETTLE_SECONDS)
+                           len(pending), wait)
     from gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
         try:

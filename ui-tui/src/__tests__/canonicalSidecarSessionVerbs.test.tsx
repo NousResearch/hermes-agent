@@ -35,7 +35,7 @@ const sidecarCalls = (request: ReturnType<typeof vi.fn>) =>
 
 afterEach(() => resetUiState())
 
-async function overlayKey(gw: GatewayClient, key: string) {
+async function overlayKey(gw: GatewayClient, key: string, expected = '/agents kill is not available on the shared gateway yet') {
   patchUiState({ sid: 'owner' })
   applyAgentSnapshot('owner', {
     delegations: [],
@@ -61,7 +61,7 @@ async function overlayKey(gw: GatewayClient, key: string) {
   try {
     await vi.waitFor(() => expect(frame).toContain('child'))
     stdin.write(key)
-    await vi.waitFor(() => expect(frame).toContain('/agents kill is not available on the shared gateway yet'))
+    await vi.waitFor(() => expect(frame).toContain(expected))
   } finally {
     view.unmount()
     view.cleanup()
@@ -71,7 +71,7 @@ async function overlayKey(gw: GatewayClient, key: string) {
 
 const SITES: [string, () => Promise<void>][] = [
   [
-    'session.ts::/voice tts (read-aloud runs only in a sidecar turn)',
+    'session.ts::/voice tts (the owner\'s /voice handler holds the session state)',
     async () => {
       patchUiState({ sid: 'owner' })
       const { gw, request } = owner()
@@ -86,7 +86,9 @@ const SITES: [string, () => Promise<void>][] = [
         voice: { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
       } as never)('/voice tts')
       await new Promise(resolve => setImmediate(resolve))
-      expect(sys).toHaveBeenCalledWith('/voice tts is not available on the shared gateway yet')
+      // The session's voice state is the owner's: `/voice tts` runs its `/voice` handler, never the
+      // sidecar's voice.toggle.
+      expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
       expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
     }
   ],
@@ -112,6 +114,15 @@ const SITES: [string, () => Promise<void>][] = [
     async () => {
       const { gw, request } = owner()
       await overlayKey(gw, 'X')
+      expect(sidecarCalls(request)).toEqual([])
+    }
+  ],
+  [
+    'agentsOverlay::togglePause (p) is the owner\'s delegation.pause',
+    async () => {
+      const { gw, request } = owner(method => (method === 'delegation.pause' ? { paused: true } : {}))
+      await overlayKey(gw, 'p', 'spawning paused')
+      expect(request).toHaveBeenCalledWith('delegation.pause', { paused: true })
       expect(sidecarCalls(request)).toEqual([])
     }
   ],

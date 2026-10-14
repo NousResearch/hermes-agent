@@ -38,6 +38,10 @@ def compact_result(result, *, user_message=None):
                     and isinstance(messages[anchor], dict) and messages[anchor].get('role') == 'user'):
                 anchor = reanchor_current_turn_user_idx(messages, user_message)
             value['messages'] = messages[anchor + 1:]
+            if anchor >= 0 and isinstance(messages[anchor], dict) and messages[anchor].get('api_content'):
+                # The user row as the model saw it (memory prefetch, plugin context): a chained
+                # Responses turn replays it instead of a row rebuilt from the raw request text.
+                value['_turn_user_row'] = {k: messages[anchor][k] for k in ('role', 'content', 'api_content')}
             # Recovery/verification nudges are later user-role rows within this same turn.
             # Consumers must not infer a new boundary from them after the real anchor is gone.
             value['_messages_are_turn_suffix'] = True

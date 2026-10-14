@@ -1,3 +1,4 @@
+import { arSessionCommands } from './ar_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
 export const arBoot = {
@@ -69,7 +70,8 @@ export const arBoot = {
   },
   promptNotices: {
     legacySendUnconfirmed:
-      'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.'
+      'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    sessionCommands: arSessionCommands
   },
   updates: {
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',

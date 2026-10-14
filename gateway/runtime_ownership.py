@@ -1,8 +1,9 @@
 """Nonblocking, all-or-nothing reservations of canonical profile homes.
 
 A held lock inode is never removed: unlinking it creates a second owner. The one exception is a
-stale inode this user cannot use (left by a gateway that ran as root, #42685) that is provably
-unheld; it is replaced once, and every winner checks that the path still names the inode it locked.
+stale inode this user cannot write (left by a gateway that ran as root, #42685) that a flock through
+a read-only descriptor proves unheld; it is replaced once, and every winner checks that the path
+still names the inode it locked.
 """
 from __future__ import annotations
 
@@ -56,23 +57,12 @@ def _open_checked(path: Path, flags: int) -> int:
     return fd
 
 
-def _inode_locked_per_proc(ino: int) -> bool | None:
-    """Linux ``/proc/locks``: whether any lock names inode *ino* (on any device, so a btrfs/overlay
-    st_dev mismatch can only refuse, never miss a holder). None where the table is unavailable."""
-    try:
-        table = Path('/proc/locks').read_text(encoding='ascii', errors='replace')
-    except OSError:
-        return None
-    suffix = f':{ino}'
-    return any(field.endswith(suffix) and field.count(':') == 2
-               for line in table.splitlines() for field in line.split())
-
-
 def _unlink_stale_lock(path: Path) -> bool:
-    """Unlink a ``gateway.lock`` this user cannot use (unopenable, or another uid's) when no process
-    holds it: a flock probe through a read-only descriptor, else Linux ``/proc/locks``. Symlinks,
-    hardlinks, non-regular files, a home whose ``gateway.pid`` names a live process and anything not
-    provably unheld are left in place (False)."""
+    """Unlink a ``gateway.lock`` this user cannot write (another uid's) once a flock taken through a
+    read-only descriptor proves it unheld. Symlinks, hardlinks, non-regular files, a home whose
+    ``gateway.pid`` names a live process and anything not provably unheld are left in place (False).
+    An inode this user cannot even open is refused with the recovery command: an unheld snapshot
+    (``/proc/locks``) does not stop a holder locking it between the read and the unlink."""
     from gateway.status import _live_pid_from_record, _read_pid_record
     if os.name == 'nt':
         return False  # a sharing violation is a live holder there
@@ -84,10 +74,7 @@ def _unlink_stale_lock(path: Path) -> bool:
     try:
         probe = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK)
     except PermissionError:
-        held = _inode_locked_per_proc(info.st_ino)
-        if held is None:  # no /proc/locks (macOS/BSD): nothing can prove it unheld, so never guess
-            raise PermissionError(foreign_lock_recovery(path)) from None
-        return held is False and _unlink_if_same(path, info)
+        raise PermissionError(foreign_lock_recovery(path)) from None
     import fcntl
     try:
         if not _same_inode(os.fstat(probe), info):

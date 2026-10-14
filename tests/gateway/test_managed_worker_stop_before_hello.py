@@ -9,6 +9,7 @@ import psutil
 import pytest
 
 from gateway.session_contract import Principal, SessionRef
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -34,9 +35,8 @@ def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch)
 
     async def scenario():
         turn = asyncio.create_task(managed.execute_managed(authority, ref, row, policy=None))
-        async with asyncio.timeout(10):
-            while ref.session_id not in getattr(authority, '_managed_workers', {}):
-                await asyncio.sleep(.01)
+        await async_wait_until(lambda: ref.session_id in getattr(authority, '_managed_workers', {}),
+                               timeout=10, what='the managed worker to be registered')
         assert managed.interrupt_managed(authority, actor, ref, 3) is True
         async with asyncio.timeout(10):
             return await turn

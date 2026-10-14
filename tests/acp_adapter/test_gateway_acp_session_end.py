@@ -89,9 +89,10 @@ async def test_acp_session_left_mid_turn_ends_once_its_fifo_drains(tmp_path, mon
     from gateway.session_local import create_local_session
     from hermes_state_local import local_receipt
 
-    release = asyncio.Event()
+    release, started = asyncio.Event(), asyncio.Event()
 
     async def execute(authority, ref, row):  # the model turn; drain + settlement stay real
+        started.set()
         await release.wait()
         return 'done'
 
@@ -111,8 +112,9 @@ async def test_acp_session_left_mid_turn_ends_once_its_fifo_drains(tmp_path, mon
             target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
             reply = await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
             assert 'result' in reply, reply
+            started.clear()
             await authority.submit(viewer.actor, Submission(source + '-turn', ref, {'text': 'work'}, 'queue'))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(started.wait(), 10)  # the turn is running, not merely queued
             await viewer.close()
             assert authority.db.get_session(target)['ended_at'] is None, 'running work keeps the session open'
             rows[source] = ref, target

@@ -221,9 +221,39 @@ def _update_fenced(homes) -> bool:
     return False
 
 
+_REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
+# ``draining`` reasons after which the owner is going away by itself: its own idle exit, or the
+# older-Hermes owner this call just stopped. Ensure waits it out and starts the current owner.
+_RETIRING = frozenset({"idle_exit", "replaced"})
+
+
+def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -> GatewayDiscovery:
+    """Discovery, except that a gateway an older Hermes left on this home is stopped once (like
+    ``hermes gateway stop``) and reported as retiring; a refusal keeps ``incompatible`` + its remedy."""
+    from hermes_cli.gateway_runtime_service import remaining
+    observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
+    if observed.state != "incompatible" or observed.reason_code != "runtime_protocol":
+        return observed
+    if home in replaced:
+        return GatewayDiscovery("incompatible", reason_code="runtime_protocol", detail=_REPLACE_FAILED_DETAIL)
+    from hermes_cli import gateway_runtime_replace as replace
+    replaced.add(home)
+    refusal = replace.replace_incompatible_owner(home, deadline=deadline)
+    if refusal is not None:
+        return GatewayDiscovery("incompatible", reason_code="runtime_protocol",
+                                detail=replace.REFUSAL_DETAIL.get(refusal, _REPLACE_FAILED_DETAIL))
+    return GatewayDiscovery("draining", reason_code="replaced")
+
+
 def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT_ENSURE_TIMEOUT,
                            idle_exit: bool = False) -> GatewayDiscovery:
-    """Ensure once, never install/replace; pending remains pending at deadline.
+    """Ensure once; pending remains pending at deadline.
+
+    Never installs anything. The one owner it replaces is a gateway an older Hermes left running on
+    this install's own home (``incompatible``/``runtime_protocol``, the upgrade case): it is stopped
+    the way ``hermes gateway stop`` stops it, once, and the current one started like any absent
+    owner. Another install's or a newer Hermes's gateway stays refused, with the reason in ``detail``
+    (``hermes_cli.gateway_runtime_replace``).
 
     A successful service command or Popen is not session readiness. After an
     owner/start request is observed this invocation never launches another.
@@ -249,6 +279,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     # still held for a moment after its control socket closes, which reads as "starting"), then
     # start the replacement this call owes the client.
     retiring = False
+    replaced: set[Path] = set()
     delay = 0.025
     try:
         while True:
@@ -258,10 +289,10 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
             # Poll BEFORE discovering: an exit observed first, then "absent", cannot be a child that
             # published its owner a moment later. A winning racer shows up as starting/ready instead.
             status = child.poll() if child is not None else None
-            observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
+            observed = _observe_replacing_stale(home, deadline, replaced)
             if observed.reason_code == "control_timeout":
                 return GatewayDiscovery("starting", reason_code="deadline")
-            if observed.state == "draining" and observed.reason_code == "idle_exit":
+            if observed.state == "draining" and observed.reason_code in _RETIRING:
                 retiring, requested, child = True, False, None
                 time.sleep(min(0.1, remaining(deadline)))
                 continue

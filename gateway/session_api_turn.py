@@ -11,7 +11,7 @@ import uuid
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, _epoch, _json
+from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
@@ -41,8 +41,10 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control',
+                         'relay_metadata'}
                 or not {'history', 'settings'} <= set(data)
+                or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))
                 or ('browser_control' in data and not _valid_browser_control(data['browser_control']))):
@@ -208,6 +210,10 @@ def admit_api_steps(adapter, **kwargs):
         if author is None:
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
+    if kwargs.get('relay_metadata'):
+        # The request's Relay metadata rides the admission to the turn it describes (main passed it
+        # to ``run_conversation``); it is client JSON, so it is part of the exact-retry identity.
+        payload['api_turn_v1']['relay_metadata'] = kwargs['relay_metadata']
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     if not isinstance(kwargs['user_message'], list):
         return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
@@ -243,8 +249,17 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
-                        _authorize_write=authority._admission_gate(partial(_one_target, sid, request_id)))
+                        _authorize_write=authority._admission_gate(partial(_admit_target, sid, request_id, payload['api_turn_v1']['settings'])))
     return authority, ref, row
+
+
+def _admit_target(session_id, request_id, settings, conn):
+    """Inside the admission's own off-loop transaction: one target per request id, and the
+    session's settings for its later payload-less (internal) turns, committed with the admitted
+    turn rather than by the drain on the owner loop (N50)."""
+    _one_target(session_id, request_id, conn)
+    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                 (_SETTINGS_PREFIX + session_id, _json(settings)))
 
 
 def _one_target(session_id, request_id, conn):
@@ -394,7 +409,12 @@ def observe_api_controls(admitted, sink):
     either in the snapshot or arrives live (never both), and one already answered is absent."""
     from hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
-    live = authority.sessions[ref.session_id]
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        # Deleted or pruned: only an exact retry of a settled (retired) receipt reaches here,
+        # and a settled admission has no prompts left to project.
+        yield
+        return
     events = live.event_stream
 
     def observer(frame):
@@ -418,19 +438,13 @@ def prepare_api_execution(authority, ref, payload):
     adapter = check_api_turn(authority, ref, payload)
     data = payload.get('api_turn_v1')
     settings = data['settings'] if data else api_settings(authority, ref)
-    if data:
-        def write(conn):
-            _epoch(conn, authority.epoch)
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
-                         'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
-        authority.db._execute_write(write)
     content = payload['text']
     if data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
+            'relay_metadata': data.get('relay_metadata') if data else None,
             'browser_control': _rebind_browser_control(adapter, data)}
 
 
@@ -490,7 +504,7 @@ def wire_api_observers(agent, owner, want_interim):
 
 
 def publish_api_event(authority, session_id, event_type, payload):
-    if event_type == 'message.delta':
+    if event_type == 'message.delta' and payload['text'] is not None:  # a None segment boundary is viewer-only
         return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
     return False
 
@@ -508,6 +522,14 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
             _notify_observers(authority, session_id, 'tool_start_callback', call_id, tool_name, args or {})
         elif event_type == 'tool.complete':
             _notify_observers(authority, session_id, 'tool_complete_callback', call_id, tool_name, args or {}, result)
+
+
+def api_runtime_locked():
+    """The executing API admission's settings when they carry a confirmed Browser model lock, else
+    None. Main's ``_create_agent`` passes ``fallback_model=None`` under the lock and refuses a
+    settled turn whose served runtime differs from it (``_turn_runtime_metadata``)."""
+    current = api_execution.get()
+    return current if current and current['settings'].get('confirmed_runtime_lock') else None
 
 
 def prepare_api_runtime(model, runtime_kwargs):

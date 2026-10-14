@@ -1,4 +1,5 @@
-"""Title-keyed resume on the canonical CLI client against an ordinary daemon."""
+"""Title-keyed resume on the classic CLI (main's HermesCLI, gateway-backed) against an ordinary daemon.
+The CLI process may read state.db but never writes it: the gateway is the single writer."""
 import json
 import os
 from pathlib import Path
@@ -33,10 +34,24 @@ def test_title_create_if_missing_then_resume_by_title_is_deterministic(tmp_path,
     wrapper.write_text(encoding='utf-8', data=f'''import json, runpy, sys
 owners = []
 def trace(frame, event, arg):
+    # A read-only state.db reader is allowed in the CLI (maintainer ruling); a writer is not.
     if event == 'call' and frame.f_code.co_name == '__init__':
-        if type(frame.f_locals.get('self')).__name__ in {{'AIAgent', 'SessionDB', 'GatewayRunner'}}:
-            owners.append(type(frame.f_locals.get('self')).__name__)
+        name = type(frame.f_locals.get('self')).__name__
+        if name in {{'AIAgent', 'GatewayRunner'}} or (name == 'SessionDB' and not frame.f_locals.get('read_only')):
+            owners.append(name)
 sys.setprofile(trace)
+import sqlite3
+_connect = sqlite3.connect
+def connect(database, *a, **k):
+    conn = _connect(database, *a, **k)
+    if 'state.db' in str(database):
+        def deny(action, table, *rest):
+            if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and table != 'sqlite_master':
+                owners.append('write:' + str(table))
+            return sqlite3.SQLITE_OK
+        conn.set_authorizer(deny)
+    return conn
+sqlite3.connect = connect
 try:
     runpy.run_module('hermes_cli.main', run_name='__main__')
 finally:
@@ -48,8 +63,9 @@ finally:
         result = subprocess.run([sys.executable, str(wrapper), "--cli", "chat", *args, "-Q"], env=env,
                                 cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
         assert json.loads(witness.read_text(encoding="utf-8")) == [], witness.read_text(encoding="utf-8")
-        sid = next((line.split("Session: ", 1)[1].strip() for line in result.stderr.splitlines()
-                    if "Session: " in line), None)
+        # Main's -Q prints `session_id: <id>` on stderr.
+        sid = next((line.split("session_id: ", 1)[1].strip() for line in result.stderr.splitlines()
+                    if line.startswith("session_id: ")), None)
         return result, sid
 
     title = "wave36 titled thread"

@@ -34,12 +34,15 @@ def commit_api_images(content):
     from gateway.platforms.base import get_inbound_media_max_bytes
     from gateway.session_ingress_media import capture_native_media, sniff_image_mime
     from hermes_state_runtime import RuntimeStoreError
-    images = [decoded for decoded in map(_data_url_bytes, _image_urls(content)) if decoded is not None]
+    # The bytes decide the committed type: SDKs often label JPEG bytes ``data:image/png`` and
+    # main forwarded those to the provider; only bytes that are no supported image are refused.
+    images = [(sniff_image_mime(decoded[1]), decoded[1])
+              for decoded in map(_data_url_bytes, _image_urls(content)) if decoded is not None]
     # Validate the whole batch before one byte lands on disk: a refused request must not
-    # leave staged or committed bytes behind, and the declared type must be the real one.
+    # leave staged or committed bytes behind.
     limit = max(0, get_inbound_media_max_bytes())
     if (len(images) > _IMAGE_LIMIT or (limit and sum(len(data) for _, data in images) > limit)
-            or any(sniff_image_mime(data) != mime for mime, data in images)):
+            or any(mime is None for mime, _ in images)):
         raise RuntimeStoreError('invalid_params')
     staged = []
     for mime, data in images:

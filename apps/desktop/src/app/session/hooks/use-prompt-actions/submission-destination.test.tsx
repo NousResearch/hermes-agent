@@ -367,6 +367,44 @@ describe('submission intent destinations', () => {
     }
   )
 
+  it.each([true, false])('submits a fresh draft to the owner its create published after activation (owner known: %s)', async ownerKnown => {
+    const { deps, requestGateway } = setup()
+    deps.activeSessionIdRef.current = null
+    deps.selectedStoredSessionIdRef.current = null
+    deps.getRuntimeIdForStoredSession = () => 'runtime-new'
+    $connection.set({ connectionId: 'local', profile: 'default', mode: 'local' } as never)
+    deps.createBackendSessionForSend.mockImplementation(async () => {
+      // A newly created profile finishes activating while session.create is in flight.
+      $activeGatewayProfile.set('fresh-profile')
+      $connection.set({ connectionId: 'local', profile: 'fresh-profile', mode: 'local' } as never)
+      deps.activeSessionIdRef.current = 'runtime-new'
+      deps.selectedStoredSessionIdRef.current = 'stored-new'
+
+      if (ownerKnown) {
+        $sessions.set([{ id: 'stored-new', connection_id: 'local', profile: 'fresh-profile' }] as never)
+      }
+
+      return 'runtime-new' as never
+    })
+    const { result } = renderHook(() => useSubmitPrompt(deps))
+
+    await act(async () => {
+      expect(await result.current('first message in the new profile')).toBe(ownerKnown)
+    })
+
+    expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')).toHaveLength(0)
+    const routed = wire.request.mock.calls.filter(call => call[2] === 'prompt.submit')
+
+    if (ownerKnown) {
+      expect(routed).toHaveLength(1)
+      expect(routed[0].slice(0, 2)).toEqual(['local', 'fresh-profile'])
+      expect(routed[0][3]).toMatchObject({ session_id: 'runtime-new', text: 'first message in the new profile' })
+    } else {
+      // Without a published owner the write keeps the entry authority, which has moved.
+      expect(routed).toHaveLength(0)
+    }
+  })
+
   it('assigns one direct ID before preprocessing and keeps it through busy retries', async () => {
     const { deps, requestGateway } = setup()
     let attempts = 0

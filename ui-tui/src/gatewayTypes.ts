@@ -206,6 +206,11 @@ export interface SessionActiveListResponse {
   sessions?: SessionActiveItem[]
 }
 
+export interface SessionHistoryResponse {
+  count: number
+  messages: TranscriptMessage[]
+}
+
 export interface SessionActivateResponse {
   inflight?: null | InflightTurn
   info?: SessionInfo

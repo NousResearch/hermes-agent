@@ -199,9 +199,12 @@ class CLICommandsSessionToolsMixin:
             _cp(_dim_line(_t("paste.extract_failed")))
 
     def _handle_copy_command(self, cmd_original: str) -> None:
-        """Handle /copy [number] — copy assistant output to clipboard."""
+        """Handle /copy [number] | /copy code [n] | /copy cmd [n] — copy assistant output."""
         from cli import _assistant_copy_text
         arg = _command_arg(cmd_original)
+        scope, _, pick = arg.partition(" ")
+        if scope.lower() in ("code", "cmd"):
+            return self._copy_scoped_item(scope.lower(), pick.strip())
         assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
         if not assistant:
             return _cp(f"  {_t('copy.nothing_yet')}")
@@ -220,6 +223,9 @@ class CLICommandsSessionToolsMixin:
         text = _assistant_copy_text(assistant[idx].get("content"))
         if not text:
             return _cp(f"  {_t('copy.nothing_in_response')}")
+        self._copy_text_out(text, "copy.copied", "copy.copied_osc52", index=idx + 1)
+
+    def _copy_text_out(self, text: str, ok_key: str, osc52_key: str, **kw) -> None:
         try:
             from hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
             # Over SSH native tools write the REMOTE clipboard; OSC 52 reaches the user's terminal.
@@ -227,11 +233,37 @@ class CLICommandsSessionToolsMixin:
             if is_remote_shell_session() or not write_clipboard_text(text):
                 # Fixes #31528.
                 self._write_osc52_clipboard(text)
-                _cp(f"  {_t('copy.copied_osc52', index=idx + 1)}")
+                _cp(f"  {_t(osc52_key, **kw)}")
             else:
-                _cp(f"  {_t('copy.copied', index=idx + 1)}")
-        except Exception as e:
+                _cp(f"  {_t(ok_key, **kw)}")
+        except OSError as e:  # the OSC 52 terminal write (subprocess errors are absorbed upstream)
             _cp(f"  {_t('copy.failed', error=e)}")
+
+    def _copy_scoped_item(self, scope: str, pick: str) -> None:
+        """/copy code [n] — one fenced block of the latest response that has any (raw content, no
+        fences); /copy cmd [n] — one shell command the latest command-running turn executed.
+        One item copies at once; several list numbered with their previews."""
+        from hermes_cli.copy_targets import latest_code_blocks, latest_commands
+        if scope == "code":
+            fences = latest_code_blocks(self.conversation_history)
+            items = [f["raw_content"] for f in fences]
+            labels = [f["language"] or "text" for f in fences]
+        else:
+            items = latest_commands(self.conversation_history)
+            labels = ["$"] * len(items)
+        if not items:
+            return _cp(f"  {_t(f'copy.no_{scope}')}")
+        if pick and not (pick.isdecimal() and 1 <= int(pick) <= len(items)):
+            return _cp(f"  {_t('copy.invalid_item', max=len(items))}")
+        if not pick and len(items) > 1:
+            _cp(f"  {_t(f'copy.pick_{scope}', count=len(items))}")
+            for n, (label, item) in enumerate(zip(labels, items), start=1):
+                first = item.strip().split("\n", 1)[0]
+                _cp(f"  {n:>2}  {label:<10} {first[:60] + '…' if len(first) > 60 else first}")
+            return _cp(_dim_line(_t("copy.pick_hint", scope=scope, max=len(items))))
+        n = int(pick or 1)
+        self._copy_text_out(items[n - 1], f"copy.copied_{scope}", f"copy.copied_{scope}_osc52",
+                            index=n, label=labels[n - 1])
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""

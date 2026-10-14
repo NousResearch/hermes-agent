@@ -77,6 +77,10 @@ class _FakeGateway:
     def _update_runtime_status(self, *_a, **_kw):
         pass
 
+    def _increment_restart_failure_counts(self, *_a, **_kw):
+        # Every stop rewrites the stuck-loop counters; this fake keeps no counter file.
+        pass
+
     def _clear_plugin_message_injector(self):
         pass
 

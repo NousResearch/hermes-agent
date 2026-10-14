@@ -19,7 +19,9 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
-from agent.turn_context import _review_fork_first_request_pending
+from agent.turn_context import (
+    _review_fork_compression_disallowed, _review_fork_first_request_pending,
+)
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
     _reanchor, _reset_retry_state_after_compaction,
@@ -96,6 +98,7 @@ def run_preflight_compression(
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
+        and not _review_fork_compression_disallowed(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
@@ -299,6 +302,7 @@ def compress_after_tool_results(
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
+        and not _review_fork_compression_disallowed(agent)
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
@@ -362,9 +366,15 @@ def compress_after_tool_results(
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn
-        # budget is spent (#101889).
+        # budget is spent (#101889). A detached review fork over threshold skipped
+        # compression BY DESIGN (#118438): name that gate explicitly so the
+        # deliberate skip never surfaces as a false attempts_exhausted lockout.
         _block_reason = _blocked_compress_reason(
-            _compressor, _real_tokens, attempts_spent=compression_attempts
+            _compressor, _real_tokens,
+            attempts_spent=compression_attempts,
+            disallowed_reason=(
+                "fork_disallowed" if _review_fork_compression_disallowed(agent) else None
+            ),
         )
         if _block_reason:
             agent._warn_context_overflow_blocked(

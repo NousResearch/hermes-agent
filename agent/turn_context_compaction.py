@@ -65,7 +65,8 @@ def _reset_retry_state_after_compaction(agent: Any) -> None:
 
 
 def _blocked_compress_reason(
-    compressor: Any, tokens: int, attempts_spent: Optional[int] = None
+    compressor: Any, tokens: int, attempts_spent: Optional[int] = None,
+    disallowed_reason: Optional[str] = None,
 ) -> Optional[str]:
     """Why an over-threshold request is blocked (``None`` below threshold or when the
     engine lacks ``should_compress_info`` / raises).
@@ -73,7 +74,11 @@ def _blocked_compress_reason(
     ``attempts_spent``: when given and the engine says compression SHOULD run
     (``(True, None)``) yet the caller skipped it, the per-turn attempt budget is
     spent — name it ``attempts_exhausted:<n>`` instead of dropping the
-    ``(True, None)`` on the floor (silent-lockout case, #101889)."""
+    ``(True, None)`` on the floor (silent-lockout case, #101889).
+
+    ``disallowed_reason``: when given, the caller skipped compression BY DESIGN
+    (e.g. a detached review fork, #118438) — name that gate instead of a false
+    ``attempts_exhausted`` lockout. Takes precedence over ``attempts_spent``."""
     _info = getattr(compressor, "should_compress_info", None)
     if not callable(_info):
         return None
@@ -81,8 +86,11 @@ def _blocked_compress_reason(
         _should_now, _reason = _info(tokens)
     except Exception:
         return None
-    if attempts_spent is not None and _should_now and not _reason:
-        return f"attempts_exhausted:{attempts_spent}"
+    if _should_now and not _reason:
+        if disallowed_reason is not None:
+            return disallowed_reason
+        if attempts_spent is not None:
+            return f"attempts_exhausted:{attempts_spent}"
     return _reason
 
 
@@ -152,6 +160,10 @@ def _idle_compaction(
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
+        return
+    # A detached review fork never owns a compression pass (#118438), idle-triggered
+    # included: the pass would be discarded whole if a live turn supersedes the fork.
+    if _tc._review_fork_compression_disallowed(agent):
         return
     _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
@@ -241,7 +253,11 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
-    if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
+    # A detached review fork never owns a compression pass (#118438): a supersede
+    # would discard it whole and the next live turn's preflight restarts from zero.
+    if _tc._review_fork_first_request_pending(agent) or _tc._review_fork_compression_disallowed(
+        agent
+    ) or not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
     ):

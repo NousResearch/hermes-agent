@@ -52,12 +52,15 @@ KANBAN_SHOW_SCHEMA = _schema(
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "verbatim in your reasoning; it carries the newest comments' text, "
+        "so ``comments`` lists only their id, author and time, and "
+        "``comments_omitted`` counts older ones. Outside a dispatcher-spawned worker "
         "there is no default task: a bare call returns a pointer to "
         "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "include_all_comments": _prop("boolean", "Return every comment with its full, untruncated body; omitted by default."),
     },
     [],
 )

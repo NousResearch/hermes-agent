@@ -53,3 +53,25 @@ def test_list_comments_after_cursor(fresh_home):
         assert kb.list_comments_after(conn, tid, after_id=c2) == []
     finally:
         conn.close()
+
+
+def test_worker_context_renders_recent_comments(fresh_home, monkeypatch):
+    """``recent_comments`` is the one bounded read: count cap, body cap, omitted
+    count; ``build_worker_context`` renders exactly that set."""
+    monkeypatch.setattr(kb, "_CTX_MAX_COMMENTS", 2)
+    monkeypatch.setattr(kb, "_CTX_MAX_COMMENT_BYTES", 5)
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="chat")
+        for body in ("first", "second", "third"):
+            kb.add_comment(conn, tid, author="alice", body=body)
+        shown, omitted = kb.recent_comments(conn, tid)
+        assert omitted == 1
+        assert [c.body for c in shown] == ["secon… [truncated, 1 chars omitted]", "third"]
+        assert [c.body for c in kb.list_comments(conn, tid)] == ["first", "second", "third"]
+        thread = kb.build_worker_context(conn, tid).split("## Comment thread\n", 1)[1].splitlines()
+        assert thread[0] == "_(1 earlier comment omitted; showing most recent 2)_"
+        assert [thread[2], thread[5]] == [c.body for c in shown]
+        assert "first" not in "\n".join(thread)
+    finally:
+        conn.close()

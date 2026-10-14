@@ -427,6 +427,8 @@ _TASK_SUMMARY_FIELDS = tuple(
     "created_at started_at completed_at current_run_id model_override provider_override".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
+# kanban_show's default comment rows: worker_context already renders the bodies.
+_COMMENT_REF_FIELDS = ("id", "author", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(
     "id filename content_type size uploaded_by stored_path created_at".split())
@@ -661,7 +663,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Full task state: row, parents, children, comments, runs, last 50 events.
+    Comments: worker_context's bounded set, listed without bodies (worker_context
+    renders them); every comment with its full body only on request."""
+    include_all_comments = _parse_bool_arg(args, "include_all_comments")
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         # No dispatcher task in scope and no explicit id: the caller asked "what
@@ -676,6 +681,11 @@ def _handle_show(args: dict, **kw) -> str:
         })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
+        if include_all_comments:
+            comments, omitted, comment_fields = kb.list_comments(conn, tid), 0, _COMMENT_FIELDS
+        else:
+            comments, omitted = kb.recent_comments(conn, tid)
+            comment_fields = _COMMENT_REF_FIELDS
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
@@ -684,7 +694,8 @@ def _handle_show(args: dict, **kw) -> str:
             "unsatisfied_parents": [
                 {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
-            "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
+            "comments": [_fields(c, comment_fields) for c in comments],
+            "comments_omitted": omitted,
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],

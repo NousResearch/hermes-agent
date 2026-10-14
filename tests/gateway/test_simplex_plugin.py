@@ -148,6 +148,26 @@ async def test_send_dm():
     assert result.success is True
 
 
+@pytest.mark.asyncio
+async def test_send_never_uploads_media_tags_left_in_the_text(tmp_path):
+    """The gateway pipeline (and send_message / cron) extract, VALIDATE and dispatch MEDIA: tags
+    before send(). A tag still in the text was left there on purpose: a code example, or a path the
+    delivery policy rejected (a credential file). send() must deliver it as text, never upload it."""
+    from gateway.config import PlatformConfig
+    secret = tmp_path / ".env"
+    secret.write_text("OPENROUTER_API_KEY=sk-live\n", encoding="utf-8")
+    adapter = SimplexAdapter(PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"}))
+    adapter._ws = AsyncMock()
+    adapter._send_command = AsyncMock(return_value={})  # the file-upload path, if reached
+
+    for text in (f"Here you go: MEDIA:{secret}", f"Example:\n```\nMEDIA:{secret}\n```"):
+        assert (await adapter.send("contact-42", text)).success is True
+
+    sent = [json.loads(call[0][0])["cmd"] for call in adapter._ws.send.call_args_list]
+    assert not adapter._send_command.called and all("filePath" not in cmd for cmd in sent), sent
+    assert len(sent) == 2 and all(f"MEDIA:{secret}" in cmd for cmd in sent)
+
+
 
 @pytest.mark.asyncio
 async def test_send_group():

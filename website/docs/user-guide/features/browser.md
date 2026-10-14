@@ -137,7 +137,7 @@ hermes plugins install mrscraper
 hermes plugins enable mrscraper
 ```
 
-The installer prompts for `MRSCRAPER_API_TOKEN`. Each request uses the MrScraper API and may consume account credits. This tool does not create a persistent browser session, so interactive actions such as `browser_click` and `browser_type` still need one of the browser backends above. For structured extraction, crawling, and Google SERP, see [MrScraper in Web Search & Extract](web-search.md#mrscraper-plugin).
+The installer prompts for `MRSCRAPER_API_TOKEN`. Start a new Hermes session after enabling the plugin to load its tools. Each request uses the MrScraper API and may consume account credits. This tool does not create a persistent browser session, so interactive actions such as `browser_click` and `browser_type` still need one of the browser backends above. For structured extraction, crawling, and Google SERP, see [MrScraper in Web Search & Extract](web-search.md#mrscraper-plugin).
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

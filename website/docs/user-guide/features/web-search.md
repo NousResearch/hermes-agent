@@ -345,7 +345,7 @@ hermes plugins install mrscraper
 hermes plugins enable mrscraper
 ```
 
-The installer prompts for `MRSCRAPER_API_TOKEN` from the [MrScraper dashboard](https://app.mrscraper.com). Then select MrScraper under **Web Search & Extract** in `hermes tools`, or set the provider explicitly:
+The installer prompts for `MRSCRAPER_API_TOKEN` from the [MrScraper dashboard](https://app.mrscraper.com). Start a new Hermes session after enabling the plugin to load its tools. Select MrScraper under **Web Search & Extract** in `hermes tools`, or set the provider explicitly:
 
 ```yaml
 # ~/.hermes/config.yaml

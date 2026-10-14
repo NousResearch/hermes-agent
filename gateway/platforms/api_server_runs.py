@@ -1181,6 +1181,10 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
     room_scoped = bool(self._room_grant_token(request))
     raw_request_id = body.get("request_id")
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
+    # Same one-line cap as ``/deny <reason>`` (gateway/slash_commands.py): relayed to the
+    # agent in the BLOCKED result instead of being silently dropped.
+    raw_reason = body.get("reason")
+    reason = raw_reason.strip()[:280].strip() if isinstance(raw_reason, str) else ""
     # Room grants may resolve exactly one request and never widen to session/always.
     allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
     resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
@@ -1191,6 +1195,8 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         (choice not in allowed,
          "Invalid approval choice; expected one of: " + ", ".join(sorted(allowed)),
          "invalid_approval_choice", 400),
+        (raw_reason is not None and (not isinstance(raw_reason, str) or choice != "deny"),
+         "A reason is accepted only as a string with choice 'deny'.", "invalid_approval_reason", 400),
         (room_scoped and resolve_all,
          "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
         (room_scoped and not request_id,
@@ -1202,7 +1208,8 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
     try:
         from tools.approval import resolve_gateway_approval
         resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None,
+            reason=reason or None)
     except Exception as exc:
         logger.exception("[api_server] approval resolution failed for run %s", run_id)
         return _json_error(_openai_error, str(exc), status=500)
@@ -1213,7 +1220,7 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
     _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
     return web.json_response({
         "object": "hermes.run.approval_response", "run_id": run_id, "choice": choice, **request_id_field,
-        "resolved": resolved})
+        "resolved": resolved, "reason_relayed": bool(reason)})
 
 
 async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.Response:

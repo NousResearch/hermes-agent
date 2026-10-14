@@ -1955,6 +1955,90 @@ class TestHostedRoomRuns:
         assert "approval" not in auth_adapter._run_statuses[run_id]
 
     @pytest.mark.asyncio
+    async def test_deny_reason_is_relayed_and_validated(self, auth_adapter):
+        run_id = "run-deny-reason"
+        current = approval_gateway_wait._ApprovalEntry({
+            "request_id": "approval-R",
+            "command": "rm -rf build",
+        })
+        auth_adapter._run_approval_sessions[run_id] = run_id
+        auth_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_approval",
+            "approval": dict(current.data),
+        }
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [current]
+        app = _create_runs_app(auth_adapter)
+        try:
+            with (
+                patch.object(auth_adapter, "_check_run_auth", return_value=None),
+                patch.object(auth_adapter, "_request_owns_run", return_value=True),
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    once_with_reason = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "once", "request_id": "approval-R", "reason": "no"})
+                    not_a_string = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "deny", "request_id": "approval-R", "reason": 42})
+                    plain_deny = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "deny", "request_id": "approval-R"})
+                    once_body, bad_body, plain_body = (
+                        await once_with_reason.json(), await not_a_string.json(), await plain_deny.json())
+        finally:
+            approval_mod.unregister_gateway_notify(run_id)
+
+        # A reason is accepted only with choice 'deny', and only as a string.
+        assert once_with_reason.status == 400
+        assert once_body["error"]["code"] == "invalid_approval_reason"
+        assert not_a_string.status == 400
+        assert bad_body["error"]["code"] == "invalid_approval_reason"
+        # A bare deny still works and reports that no reason was relayed.
+        assert plain_deny.status == 200
+        assert plain_body["reason_relayed"] is False
+        assert current.result == "deny"
+        assert current.reason is None
+
+    @pytest.mark.asyncio
+    async def test_deny_reason_is_capped_and_relayed_to_the_entry(self, auth_adapter):
+        run_id = "run-deny-reason-cap"
+        current = approval_gateway_wait._ApprovalEntry({
+            "request_id": "approval-R",
+            "command": "rm -rf build",
+        })
+        auth_adapter._run_approval_sessions[run_id] = run_id
+        auth_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_approval",
+            "approval": dict(current.data),
+        }
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [current]
+        app = _create_runs_app(auth_adapter)
+        try:
+            with (
+                patch.object(auth_adapter, "_check_run_auth", return_value=None),
+                patch.object(auth_adapter, "_request_owns_run", return_value=True),
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    denied = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "deny", "request_id": "approval-R",
+                              "reason": "  check the backup first " + "x" * 400})
+                    denied_body = await denied.json()
+        finally:
+            approval_mod.unregister_gateway_notify(run_id)
+
+        assert denied.status == 200
+        assert denied_body["reason_relayed"] is True
+        assert current.result == "deny"
+        # Stripped then capped at the same 280-char one-liner as ``/deny <reason>``.
+        assert current.reason.startswith("check the backup first")
+        assert len(current.reason) <= 280
+
+    @pytest.mark.asyncio
     async def test_room_grant_cannot_create_session_or_permanent_approval_policy(
         self, auth_adapter
     ):

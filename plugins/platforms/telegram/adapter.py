@@ -180,6 +180,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_stream_extras import TelegramStreamExtrasMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -387,6 +388,8 @@ def _strip_mdv2(text: str) -> str:
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
+    cleaned = re.sub(r'(?m)^(?:\*\*)?>{1,3} ', '', cleaned)  # blockquote / expandable-quote markers
+    cleaned = re.sub(r'(?m)\|\|$', '', cleaned)  # expandable-quote terminator
     return cleaned
 
 
@@ -511,7 +514,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramStreamExtrasMixin, TelegramHeldInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -606,6 +609,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
+        # Bot API 10.3: stop button on draft previews (can_stop) + ephemeral group whispers.
+        self._stop_button_enabled: bool = self._coerce_bool_extra("stop_button", False)
+        self._ephemeral_messages_enabled: bool = self._coerce_bool_extra("ephemeral_messages", False)
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
         self._telegram_typing_cooldown_until: dict[str, float] = {}
         self._telegram_typing_cooldown_seconds: float = self._coerce_float_extra(
@@ -1491,6 +1497,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # Only non-None routing keys: direct_messages_topic_id is paired with message_thread_id=None.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        # Completion effect (private chats only) rides the rich send as well — the same
+        # metadata gate as the legacy path; the consumer sets it only on turn-final sends.
+        _effect_id = self._message_effect_id_for(chat_id, metadata)
+        if _effect_id:
+            payload["message_effect_id"] = _effect_id
         if reply_to_id is not None:
             # sendRichMessage takes reply_parameters, NOT reply_to_message_id (silently ignored → anchor dropped).
             payload["reply_parameters"] = {"message_id": reply_to_id}
@@ -2749,6 +2760,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         admission = getattr(self, "_update_admission", None)
         if admission is None or admission.get() is None:
             self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1
+        await self._maybe_handle_generation_stopped(update)
         handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = getattr(self, "_platform_event_handler", None)
         if handler is None:
             return
@@ -2771,6 +2783,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception:
             self._fail_update_preparation()
             logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
+
 
     def _source_for_platform_event_auth(self, update):
         """Route a supported update to its event-specific auth-source extractor (reactor / editor);
@@ -3474,7 +3487,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _send_chunk_with_retries(
         self, chat_id: str, chunk: str, index: int, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
-        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple):
+        thread_id: Optional[str], used_thread_fallback: bool, error_types: tuple,
+        message_effect_id: Optional[str] = None):
         """Deliver one chunk: routing, up to 3 attempts, thread-not-found / deleted-anchor / flood handling.
 
         Returns ``(msg, used_thread_fallback)`` on success or a ``SendResult`` to return verbatim (fail-loud DM-topic
@@ -3495,6 +3509,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 send_kwargs = {
                     "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id, **thread_kwargs,
                     **self._link_preview_kwargs(), **self._notification_kwargs(metadata)}
+                if message_effect_id:
+                    send_kwargs["message_effect_id"] = message_effect_id
                 return await self._send_chunk_markdown_or_plain(chunk, send_kwargs), used_thread_fallback
             except _NetErr as send_err:
                 # BadRequest subclasses NetworkError in PTB but is permanent; handle specific cases.
@@ -3615,6 +3631,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             tracked.add(task)
             task.add_done_callback(tracked.discard)
 
+
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a message to a Telegram chat."""
@@ -3662,6 +3680,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         error_types = self._telegram_error_types()
         chunks: list[str] = []
         delivered: list[str] = []
+        ephemeral_result = await self._maybe_send_ephemeral(chat_id, content, metadata)
+        if ephemeral_result is not None:
+            return ephemeral_result
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
@@ -3712,9 +3733,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         requested_thread_id = self._message_thread_id_for_send(thread_id)
         used_thread_fallback = False
         prior = len(delivered)
+        message_effect_id = self._message_effect_id_for(chat_id, metadata) if len(chunks) == 1 else None
         for chunk in chunks:
             outcome = await self._send_chunk_with_retries(
-                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types)
+                chat_id, chunk, len(delivered), reply_to, metadata, thread_id, used_thread_fallback, error_types,
+                message_effect_id=message_effect_id)
             if isinstance(outcome, SendResult):
                 # Every SendResult returned here is a DEFINITE non-delivery (flood cap, DM-topic refusal);
                 # ambiguous timeouts raise instead, so the remainder is safe to resume from.
@@ -4069,48 +4092,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return False
         return (chat_type or "").lower() in {"dm", "private"}
 
-    async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
-        ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
-        if not self._bot:
-            return SendResult(success=False, error="not_connected")
-        # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-        if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-            return SendResult(success=True, message_id=None)
-        if not hasattr(self._bot, "send_message_draft"):
-            return SendResult(success=False, error="api_unavailable")
-        # Drafts share the regular-send UTF-16 length contract.
-        text = content if len(
-            content) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
-        # Same MarkdownV2 conversion as ``send`` (MarkdownV2 then plain) so the draft doesn't snap at the end. Exception: a Rich
-        # final with rich drafts disabled previews raw — the legacy formatter would turn pipe tables into bullets.
-        plain_rich_preview = bool(
-            getattr(self, "_rich_messages_enabled", False) and not getattr(self, "_rich_drafts_enabled", False)
-            and self._needs_rich_rendering(text))
-        draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
-        for use_markdown in ((False,) if plain_rich_preview else (True, False)):
-            kwargs: dict[str, Any] = {
-                "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),
-                "text": self.format_message(text) if use_markdown else text}
-            if use_markdown:
-                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            kwargs.update(draft_thread_kwargs)
-            try:
-                if await _await_with_thread_deadline(
-                    self._bot.send_message_draft(**kwargs), timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False):
-                    return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
-            except Exception as e:
-                # MarkdownV2 parse failure → retry once as plain text; anything else returns to the caller,
-                # which falls back to edit-based streaming for this response.
-                if use_markdown and self._is_bad_request_error(e):
-                    logger.debug(
-                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying as plain text (chat=%s draft_id=%s): %s",
-                        self.name, chat_id, draft_id, _redact_telegram_error_text(e))
-                    continue
-                logger.debug("[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s", self.name, chat_id, draft_id, e)
-                return SendResult(success=False, error=_redact_telegram_error_text(e))
-        return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a control-style message (approval prompts, pickers), retrying once without
@@ -5685,14 +5666,28 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
-        # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
-        def _convert_blockquote(m):
-            prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
-
-        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _convert_blockquote, text, flags=re.MULTILINE)
+        # 9) Blockquotes: protect leading > from escaping; expandable quotes — a line starting
+        # with **> opens the quote and the trailing || on a later line ends it. The state
+        # resets outside quote runs, so a plain quote line that happens to end with || keeps
+        # its pipes escaped as literal text. ``checklist_emoji`` metadata keeps its leading
+        # '-' list marker (a bare ✅ would break the same conversion).
+        _expandable_quote_open = False
+        _quote_lines = []
+        for _line in text.split('\n'):
+            _qm = re.match(r'^((?:\*\*)?>{1,3}) (.+)$', _line)
+            if _qm is None:
+                _expandable_quote_open = False
+                _quote_lines.append(_line)
+                continue
+            _prefix, _content = _qm.group(1), _qm.group(2)  # prefix: >, >>, >>>, **>, **>> …
+            if _prefix.startswith('**'):
+                _expandable_quote_open = True
+            if _expandable_quote_open and _content.endswith('||'):
+                _expandable_quote_open = False
+                _quote_lines.append(_ph(f'{_prefix} {_escape_mdv2(_content[:-2])}||'))
+            else:
+                _quote_lines.append(_ph(f'{_prefix} {_escape_mdv2(_content)}'))
+        text = '\n'.join(_quote_lines)
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
         # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.

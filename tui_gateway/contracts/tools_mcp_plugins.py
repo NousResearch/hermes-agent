@@ -205,9 +205,11 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills);
+    ``profile`` scopes a session-less rescan."""
 
     session_id: str | None = None
+    profile: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -265,7 +267,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
+    fullLabel: str
     meta: str
     body: str
     style: str
@@ -587,13 +589,15 @@ class PluginsAction(WireEnum):
     remove = "remove"
     settings = "settings"
     onboarding = "onboarding"
+    presence = "presence"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
-    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
+    ``presence``: ``names`` (catalog names, answered in that order)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -606,6 +610,7 @@ class PluginsManageParams(ProfileParams):
     ref: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
+    names: list[str] | None = None
 
 
 class PluginSettingFieldType(WireEnum):
@@ -637,10 +642,12 @@ class PluginSettingField(Result):
 class PluginServerState(WireEnum):
     connected = "connected"
     app_not_running = "app_not_running"
+    hermes_not_connected = "hermes_not_connected"
     endpoint_unavailable = "endpoint_unavailable"
     no_interactive_session = "no_interactive_session"
     version_too_old = "version_too_old"
     missing_app = "missing_app"
+    unsupported_gpu = "unsupported_gpu"
     unknown = "unknown"
 
 
@@ -696,7 +703,8 @@ class PluginLiveNow(Result):
 
 class PluginActivation(Result):
     """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
-    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
+    language-pack layers), ``gateway_transforms`` / ``hooks`` (hook
     names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
     (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
     error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
@@ -722,6 +730,18 @@ class OnboardingCatalogPlugin(Result):
     platforms: list[str]
     app_state: CatalogAppState
     sentence: str
+
+
+class CatalogPluginPresence(Result):
+    """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
+    on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
+    catalog description's ``Disclosure:`` sentence (empty when it has none)."""
+
+    name: str
+    title: str
+    state: CatalogAppState
+    sentence: str
+    disclosure: str
 
 
 class PluginsManageResult(Result):
@@ -750,6 +770,8 @@ class PluginsManageResult(Result):
     missing_env: list[str] | None = None
     # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
     python_dependencies: list[str] | None = None
+    # ``install`` from the catalog → the entry's informational ``known_issues`` (``[]`` when none).
+    known_issues: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
@@ -760,8 +782,43 @@ class PluginsManageResult(Result):
     written: list[str] | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.
     onboarding: list[OnboardingCatalogPlugin] | None = None
+    # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
+    presence: list[CatalogPluginPresence] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
        doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
            "or remove a user install.")
+
+
+class PluginCatalogLookupStatus(WireEnum):
+    found = "found"
+    invalid_name = "invalid_name"
+    unknown = "unknown"
+    unavailable = "unavailable"
+
+
+class PluginCatalogLookupParams(ProfileParams):
+    name: str
+
+
+class PluginCatalogLookupEntry(Result):
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+
+    name: str
+    repo: str
+    sha: str
+    subdir: str
+
+
+class PluginCatalogLookupResult(Result):
+    """``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;
+    ``unavailable`` means neither the live catalog nor the in-tree fallback could be read."""
+
+    status: PluginCatalogLookupStatus
+    entry: PluginCatalogLookupEntry | None = None
+
+
+method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
+       doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
+           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")

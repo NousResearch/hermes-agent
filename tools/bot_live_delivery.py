@@ -240,6 +240,12 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
+    """Whether the canonical live owner is still one that could claim ``record``."""
+    owner = find_canonical_live_owner(profile_home)
+    return owner is not None and _matches(profile_home, record, owner)
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -288,6 +294,25 @@ def complete_delivery(
         if record["status"] != "claimed":
             raise ValueError("delivery must be claimed before completion")
         record.update(outcome, completed_at=time.time_ns())
+        _write(path, record)
+        return record
+
+
+def cancel_queued_delivery(
+    profile_home: Path | str, delivery_id: str, *, error: str, reason: str,
+) -> dict[str, Any] | None:
+    """Cancel an ownerless queued receipt without racing a consumer's claim.
+
+    A claim or terminal result that won the mailbox lock is returned unchanged.
+    """
+    key = _delivery_id(delivery_id)
+    with _locked(profile_home) as root:
+        path = root / f"{key}.json"
+        record = _read(path)
+        if record is None or record["status"] != "queued":
+            return record
+        record.update(status="cancelled", reply="", error=error, reason=reason,
+                      completed_at=time.time_ns())
         _write(path, record)
         return record
 

@@ -1,4 +1,5 @@
 import type { ComposerToken } from '../app/interfaces.js'
+import { t } from '../i18n/runtime.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 
 /**
@@ -13,7 +14,7 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
  *   - Position in the text is meaningful: the model sees the payload where the
  *     token sat, not stapled to the front of the turn.
  */
-export const imageToken = (index: number) => `[[ Image ${index} ]]`
+export const imageToken = (index: number) => t('libText.attachments.imageToken', index)
 
 /** Highest image token index handed out so far, so a new one never collides. */
 export const nextImageIndex = (tokens: ComposerToken[]) =>

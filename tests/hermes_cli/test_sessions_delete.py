@@ -76,11 +76,13 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
             return rows
 
         def count_open_prune_matches(self, **kwargs):
-            assert kwargs == seen
+            # Same filters as the preview. `whole_lineages` is the preview's selection mode, not a
+            # filter: an open row is never a compression ancestor, so the count never takes it.
+            assert kwargs == {k: v for k, v in seen.items() if k != "whole_lineages"}
             return skipped_open
 
-        def count_prune_matches(self, **kwargs):
-            return len(rows)
+        def count_prune_matches(self, pinned_only=False, **kwargs):
+            return 0 if pinned_only else len(rows)
 
         def prune_sessions(self, **kwargs):
             return len(rows)

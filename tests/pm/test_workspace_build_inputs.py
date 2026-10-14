@@ -240,3 +240,45 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"
     assert (baseline / "uv.lock").read_bytes() == first_lock
+
+
+def test_member_uv_lock_travels_with_its_member(tmp_path):
+    """pm/runtime.py::_inputs reads <workspace>/pm/uv.lock; the snapshot must carry it."""
+    core = tmp_path / "core"
+    member = core / "pm"
+    member.mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["pm"]\n',
+        encoding="utf-8",
+    )
+    (core / "uv.lock").write_text("version = 1\n# root lock\n", encoding="utf-8")
+    (member / "pyproject.toml").write_text('[project]\nname="pm"\nversion="1"\n', encoding="utf-8")
+    (member / "uv.lock").write_text("version = 1\n# member lock\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "pm/uv.lock").read_text(encoding="utf-8") == "version = 1\n# member lock\n"
+    assert not (destination / "uv.lock").exists(), "the root lock is seeded by lock_and_sync, not copied"
+
+
+def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
+    """Bundled dashboard plugins ship a tracked dashboard/dist/ the snapshot's code serves."""
+    core = tmp_path / "core"
+    bundle = core / "plugins" / "kanban" / "dashboard" / "dist"
+    bundle.mkdir(parents=True)
+    (core / "dist").mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["*"]\n',
+        encoding="utf-8",
+    )
+    (bundle / "index.js").write_text("ENTRY\n", encoding="utf-8")
+    (core / "dist" / "core-1.whl").write_text("OUTPUT\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
+    assert not (destination / "dist").exists(), "root build output never enters the snapshot"

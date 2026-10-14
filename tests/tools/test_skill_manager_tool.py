@@ -74,6 +74,20 @@ description: Use when deploying multi-region Kubernetes clusters with custom CNI
 Step 1.
 """
 
+# Directory name deliberately differs from the frontmatter name — the
+# mismatch scenario from #99609. Nothing at creation time forces the two
+# to agree, and skills_list displays the frontmatter name.
+MISMATCHED_NAME_CONTENT = """\
+---
+name: keeta-eng-conduct
+description: Frontmatter name differs from the directory name.
+---
+
+# Mismatched Name Skill
+
+Step 1: Do the thing under the other name.
+"""
+
 
 # ---------------------------------------------------------------------------
 # _validate_name
@@ -161,6 +175,16 @@ class TestCreateSkill:
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+
+    def test_create_rejects_name_colliding_with_existing_frontmatter_name(self, tmp_path):
+        """A new skill's directory name must not collide with an existing
+        skill's displayed (frontmatter) name — skills_list dedups by that
+        name, so the new skill would be silently hidden."""
+        with _skill_dir(tmp_path):
+            _create_skill("eng-conduct", MISMATCHED_NAME_CONTENT)
+            result = _create_skill("keeta-eng-conduct", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "already exists" in result["error"]
 
@@ -294,6 +318,79 @@ class TestEditSkill:
             found = _find_skill("my-skill")
         assert found is not None
         assert found["path"] == tmp_path / "mlops" / "my-skill"
+
+    def test_find_skill_accepts_frontmatter_name(self, tmp_path):
+        """The name ``skills list`` displays must resolve in skill_manage.
+
+        skills_list shows the frontmatter ``name:`` when it diverges from
+        the directory name, but ``_find_skill`` matched only the directory
+        name — so every mutating action called with the displayed name
+        failed with a misleading "not found in active profile" error while
+        the skill sat visibly enabled in the correct profile (#99609).
+        """
+        with _skill_dir(tmp_path):
+            _create_skill(
+                "eng-conduct", MISMATCHED_NAME_CONTENT, category="example-category"
+            )
+            found = _find_skill("keeta-eng-conduct")
+        assert found is not None
+        assert found["path"] == tmp_path / "example-category" / "eng-conduct"
+
+    def test_edit_existing_skill_by_frontmatter_name(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill(
+                "eng-conduct", MISMATCHED_NAME_CONTENT, category="example-category"
+            )
+            result = _edit_skill("keeta-eng-conduct", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True, result.get("error")
+        content = (tmp_path / "example-category" / "eng-conduct" / "SKILL.md").read_text()
+        assert "Updated description" in content
+
+    def test_find_skill_directory_name_wins_over_foreign_frontmatter(self, tmp_path):
+        """One skill's frontmatter name must not shadow another skill's dir.
+
+        The conflicting pair is written directly to disk: _create_skill's
+        duplicate check now also consults the frontmatter fallback, so it
+        refuses to create a skill whose directory name collides with an
+        existing skill's frontmatter name — the same collision
+        skills_list's seen-names dedup would silently hide.
+        """
+        claiming = tmp_path / "real-target"
+        claiming.mkdir()
+        (claiming / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        claimed = tmp_path / "test-skill"
+        claimed.mkdir()
+        (claimed / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        with _skill_dir(tmp_path):
+            found = _find_skill("test-skill")
+        assert found is not None
+        assert found["path"] == claimed
+
+    def test_find_skill_ambiguous_display_name_refuses_to_guess(self, tmp_path):
+        """Two distinct skills sharing a frontmatter display name (#61172).
+
+        The display-name fallback must not silently pick one of them — the
+        caller would mutate the wrong skill. Like skill_view's same-tier
+        collision refusal, the shared display name resolves to nothing while
+        a UNIQUE display name resolves and each skill stays reachable by its
+        directory name.
+        """
+        for dir_name in ("alpha-home", "beta-office"):
+            skill = tmp_path / dir_name
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        unique = tmp_path / "gamma-solo"
+        unique.mkdir()
+        (unique / "SKILL.md").write_text(
+            MISMATCHED_NAME_CONTENT.replace("keeta-eng-conduct", "solo-display"))
+        with _skill_dir(tmp_path):
+            assert _find_skill("keeta-eng-conduct") is None
+            assert _find_skill("solo-display")["path"] == unique
+            assert _find_skill("alpha-home")["path"] == tmp_path / "alpha-home"
+            assert _find_skill("beta-office")["path"] == tmp_path / "beta-office"
+            result = _edit_skill("keeta-eng-conduct", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "not found" in result["error"]
 
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -830,37 +927,42 @@ class TestExternalSkillMutations:
         assert not (local / "ext-skill").exists()
 
 
-    def test_background_review_refuses_to_patch_pinned_skill(self, tmp_path):
-        """#25839: the autonomous review fork respects pin like the curator
-        does — a pinned skill is off-limits to background maintenance, even
-        for patch/edit (which a foreground user-directed call is allowed to
-        perform). Without a user in the loop there is no one to consent."""
+    def test_background_review_improves_any_skill_but_deletes_only_managed_ones(self, tmp_path):
+        """#134289: the review fork improves every skill it learns from (user-owned with no usage
+        record, pinned, bundled, hub-installed), while delete keeps the ownership/pin guard."""
+        from tools.skill_manager_guards import mark_background_review_skill_read
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
             set_current_write_origin,
         )
 
-        def _fake_get_record(skill_name):
-            return {"pinned": True} if skill_name == "my-skill" else {"pinned": False}
-
-        with _skill_dir(tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_usage.load_usage", return_value={}), \
+             patch("tools.skill_usage.get_record", return_value={"pinned": True}), \
+             patch("tools.skill_usage.is_bundled", return_value=True), \
+             patch("tools.skill_usage.is_hub_installed", return_value=True):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
-                with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
-                    raw = skill_manage(
-                        action="patch",
-                        name="my-skill",
-                        old_string="Do the thing.",
-                        new_string="Do the new thing.",
-                    )
+                mark_background_review_skill_read(tmp_path / "my-skill" / "SKILL.md")
+                patched = json.loads(skill_manage(
+                    action="patch", name="my-skill",
+                    old_string="Do the thing.", new_string="Do the new thing."))
+                written = json.loads(skill_manage(
+                    action="write_file", name="my-skill",
+                    file_path="references/lesson.md", file_content="# Lesson\n"))
+                deleted = json.loads(skill_manage(
+                    action="delete", name="my-skill", absorbed_into="my-skill"))
             finally:
                 reset_current_write_origin(token)
 
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "pinned" in result["error"].lower()
+        assert patched["success"] is True, patched
+        assert written["success"] is True, written
+        assert "Do the new thing." in (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+        assert deleted["success"] is False
+        assert "Refusing background curator delete" in deleted["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
 
     def test_background_review_fails_closed_when_ownership_lookup_errors(self, tmp_path):
@@ -879,10 +981,7 @@ class TestExternalSkillMutations:
                     side_effect=ValueError("corrupt usage data"),
                 ):
                     raw = skill_manage(
-                        action="patch",
-                        name="manual-skill",
-                        old_string="Do the thing.",
-                        new_string="Changed.",
+                        action="delete", name="manual-skill", absorbed_into="manual-skill",
                     )
             finally:
                 reset_current_write_origin(token)
@@ -895,18 +994,16 @@ class TestExternalSkillMutations:
         ).read_text(encoding="utf-8")
 
 class TestBackgroundOwnershipPolicyConsistency:
-    """The autonomous write policy must not depend on its own side effects.
+    """The autonomous delete policy must not depend on its own side effects.
 
     Issue #67140: the ownership guard keyed on ``isinstance(usage_rec, dict)``,
-    so a local skill with NO usage record passed. The successful write then
-    called ``bump_patch()``, creating a ``created_by: null`` record — and the
-    identical write was refused from then on. "Allowed exactly once" is a race
-    with our own bookkeeping, not a policy.
+    so a local skill with NO usage record passed once and was refused after
+    the first write created a ``created_by: null`` record. Ownership now gates
+    only delete (#134289), and that verdict must stay stable.
     """
 
     @staticmethod
-    def _bg_patch(tmp_path, name, old, new):
-        from tools.skill_manager_guards import mark_background_review_skill_read
+    def _bg_delete(name):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -915,32 +1012,22 @@ class TestBackgroundOwnershipPolicyConsistency:
 
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
-            mark_background_review_skill_read(tmp_path / name / "SKILL.md")
-            return json.loads(skill_manage(
-                action="patch", name=name, old_string=old, new_string=new,
-            ))
+            return json.loads(skill_manage(action="delete", name=name, absorbed_into="umbrella"))
         finally:
             reset_current_write_origin(token)
 
-    def test_repeated_identical_write_gets_the_same_answer(self, tmp_path, monkeypatch):
-        """The real #67140 shape: no stubbing of load_usage, so the first write's
-        telemetry side effect is live. Both attempts must agree."""
+    def test_repeated_identical_delete_gets_the_same_answer(self, tmp_path, monkeypatch):
+        """No stubbing of load_usage: telemetry side effects are live. Both attempts agree."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes" / "skills").mkdir(parents=True, exist_ok=True)
         with _skill_dir(tmp_path):
             _create_skill("flip-skill", VALID_SKILL_CONTENT)
-            first = self._bg_patch(
-                tmp_path, "flip-skill", "Do the thing.", "Do the new thing.",
-            )
-            second = self._bg_patch(
-                tmp_path, "flip-skill", "Do the thing.", "Do the new thing.",
-            )
+            first = self._bg_delete("flip-skill")
+            second = self._bg_delete("flip-skill")
 
-        assert first["success"] == second["success"], (
-            "autonomous write policy flipped between two identical attempts: "
-            f"first={first.get('success')} second={second.get('success')}"
-        )
-        assert first["success"] is False
+        assert first["success"] is second["success"] is False
+        assert "not curator-managed" in first["error"]
+        assert "not curator-managed" in second["error"]
 
     def test_foreground_write_to_unmanaged_skill_still_allowed(self, tmp_path, monkeypatch):
         """Fail-closed applies to AUTONOMOUS writes only. A user-directed
@@ -955,15 +1042,13 @@ class TestBackgroundOwnershipPolicyConsistency:
                 ))
         assert res["success"] is True
 
-    def test_adopted_skill_becomes_writable_by_autonomous_curation(self, tmp_path, monkeypatch):
-        """Adoption is the documented path from refused to allowed."""
+    def test_adoption_lifts_the_autonomous_delete_refusal(self, tmp_path, monkeypatch):
+        """Adoption is the documented path from refused to allowed for archival."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         with _skill_dir(tmp_path):
             _create_skill("adopt-me", VALID_SKILL_CONTENT)
             with patch("tools.skill_usage.load_usage", return_value={}):
-                before = self._bg_patch(
-                    tmp_path, "adopt-me", "Do the thing.", "Do the new thing.",
-                )
+                before = self._bg_delete("adopt-me")
             with patch(
                 "tools.skill_usage.load_usage",
                 return_value={"adopt-me": {"created_by": "agent"}},
@@ -971,12 +1056,10 @@ class TestBackgroundOwnershipPolicyConsistency:
                 "tools.skill_usage.get_record",
                 side_effect=lambda n: {"created_by": "agent", "pinned": False},
             ):
-                after = self._bg_patch(
-                    tmp_path, "adopt-me", "Do the thing.", "Do the new thing.",
-                )
+                after = self._bg_delete("adopt-me")
 
-        assert before["success"] is False
-        assert after["success"] is True, after
+        assert "not curator-managed" in before["error"]
+        assert "curator-managed" not in after.get("error", ""), after
 
 
 # ---------------------------------------------------------------------------

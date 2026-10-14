@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -359,6 +360,47 @@ class TestSupervisedBackendRestart:
         restart.assert_not_called()
         assert result == {"matched": [], "killed": [], "failed": []}
 
+    @pytest.mark.parametrize("main_pid, restarted", [("991", False), ("4321", True)],
+                             ids=["foreign-unit-cgroup", "unit-main-process"])
+    def test_only_the_unit_whose_main_process_is_the_backend_is_restarted(self, main_pid, restarted):
+        """A dashboard started by hand from a shell inside some unit (CI runner agent, cron, tmux,
+        the gateway's terminal tool) sits in that unit's cgroup. Only a unit whose MainPID IS the
+        backend supervises it; any other unit is not restarted and the backend is respawned from
+        its argv instead."""
+        live = self._live()
+        argv = ["hermes", "dashboard", "--port", "8300"]
+        unit_cgroup = "/system.slice/hosted-compute-agent.service"
+        probes: list[list[str]] = []
+
+        def fake_probe(cmd, *, timeout):
+            probes.append(list(cmd))
+            out = main_pid if cmd[-2:] == ["--property=MainPID", "--value"] else ""
+            return MagicMock(returncode=0, stdout=out, stderr="")
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(main_dashboard, "_pid_unified_cgroup_entries", lambda pid: iter([unit_cgroup])), \
+             patch.object(main_dashboard, "_run_probe", side_effect=fake_probe), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        restarts = [c for c in probes if "restart" in c]
+        if restarted:
+            assert restarts == [["systemctl", "restart", "hosted-compute-agent.service"]]
+            respawn.assert_not_called()
+        else:
+            assert restarts == [], f"restarted a unit that does not supervise the dashboard: {restarts}"
+            respawn.assert_called_once_with([argv])
+        assert result["unrecovered"] == []
+
 
 class TestManualBackendRespawn:
     """Manually-started dashboards/serves have their argv captured before the
@@ -455,7 +497,11 @@ class TestManualBackendRespawn:
             def __init__(self, cmd, **kwargs):
                 spawned.append(list(cmd))
 
-        with patch.object(live.subprocess, "Popen", _FakePopen):
+            def poll(self):
+                return None
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"):
             failed = live._respawn_dashboard_processes([
                 ["hermes", "dashboard", "--port", "8300"],
                 ["hermes", "serve", "--host", "0.0.0.0"],
@@ -469,10 +515,68 @@ class TestManualBackendRespawn:
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")):
+        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")), \
+             patch.object(live.time, "sleep"):
             failed = live._respawn_dashboard_processes([["hermes", "serve"]])
 
         assert failed == [["hermes", "serve"]]
+
+    def test_pre_takeover_interpreter_launcher_argv_is_rebuilt(self, tmp_path, monkeypatch):
+        """A kernel-captured ``[old venv python, launcher, ...]`` argv is respawned through
+        this install's launcher command instead of being replayed verbatim after the PM
+        takeover rewrote the launcher into a shell shim (#124778)."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+            def poll(self):
+                return None
+
+        captured = [
+            "/old/venv/bin/python", "/home/u/.local/bin/hermes",
+            "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "34553",
+        ]
+        from hermes_cli import _launchers
+        from hermes_cli._launchers import runtime_command
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"), \
+             patch.object(_launchers, "resolve_store_python", return_value=None):
+            failed = live._respawn_dashboard_processes([captured])
+            expected = runtime_command(Path(live.__file__).resolve().parents[1], captured[2:])
+
+        assert failed == []
+        assert spawned == [expected]
+
+    def test_child_exiting_within_the_grace_window_is_a_reported_failure(
+            self, tmp_path, monkeypatch, capsys):
+        """A respawn that dies at once (parse error on a stale argv, port already bound)
+        must surface as a failure, never as ``✓ restarted`` (#124778), reported with the
+        caller's argv so it matches the stopped PID's cmdline (#109290)."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        class _DyingPopen:
+            returncode = 1
+
+            def __init__(self, cmd, **kwargs):
+                pass
+
+            def poll(self):
+                return 1
+
+        with patch.object(live.subprocess, "Popen", _DyingPopen), \
+             patch.object(live.time, "sleep"):
+            failed = live._respawn_dashboard_processes([["hermes", "dashboard", "--port", "8300"]])
+
+        out = capsys.readouterr().out
+        assert failed == [["hermes", "dashboard", "--port", "8300"]]
+        assert "✓ restarted" not in out
+        assert "✗ failed to restart" in out
 
 
 class TestFilterDashboardRespawnCandidates:

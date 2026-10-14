@@ -563,3 +563,28 @@ def test_close_terminates_every_live_session_process(tmp_path):
     client.close()
 
     assert all(proc.poll() is not None for proc in spawned)
+
+
+_CRASHING_ACP_CLI = """
+import subprocess, sys
+# Hand stderr to a straggler that writes the crash text after this process has exited, so
+# poll() reports the exit before the client has read a single stderr line.
+subprocess.Popen([sys.executable, "-c",
+                  "import sys, time; time.sleep(0.3); print('fatal: agent segfaulted', file=sys.stderr)"])
+sys.exit(3)
+"""
+
+
+def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
+    """A CLI that dies must surface its crash text even when stderr lags the exit: the old path
+    raised TimeoutError there, which the agent loop retries on a different (larger) budget."""
+    server = tmp_path / "crashing_acp.py"
+    server.write_text(_CRASHING_ACP_CLI, encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    try:
+        with client._session(30):
+            pass
+    except RuntimeError as exc:
+        assert "exited early: fatal: agent segfaulted" in str(exc)
+    else:
+        raise AssertionError("session on a dead CLI must raise")

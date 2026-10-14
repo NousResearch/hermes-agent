@@ -359,6 +359,40 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
 
 
+def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkeypatch, timers):
+    """The warm/release hook runs on its own thread; under the multiplexer that thread must carry
+    the caller's secret scope or ``resolve_passthrough_value`` fails closed and the hook never
+    runs (#120481)."""
+    from agent import secret_scope as ss
+    from tools.env_passthrough import resolve_passthrough_value
+
+    seen: list = []
+    done = threading.Event()
+
+    def _fake_run(command, timeout, env_passthrough=None):
+        try:
+            seen.extend(resolve_passthrough_value(k, None) for k in env_passthrough)
+        except Exception as exc:
+            seen.append(exc)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(tts_command_provider, "run_command_provider", _fake_run)
+    cfg = {"provider": "srv", "providers": {"srv": {
+        "command": "srv say {input_path} {output_path}", "warm_command": "curl -s localhost:5002/load",
+        "env_passthrough": ["MY_TTS_TOKEN"]}}}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"MY_TTS_TOKEN": "tok-work"})
+    try:
+        assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+        assert done.wait(5)
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+    assert seen == ["tok-work"]
+
+
 # --------------------------------------------------------------------------
 # Keep-warm window (#118037): the last release schedules the unload on a
 # cancellable timer instead of dropping the model inline, so a wake-word loop

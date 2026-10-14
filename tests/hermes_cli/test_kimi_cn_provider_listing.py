@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 from hermes_cli.model_switch import (
     list_authenticated_providers,
-    parse_model_flags,
     switch_model,
 )
 from hermes_cli.providers import resolve_provider_full

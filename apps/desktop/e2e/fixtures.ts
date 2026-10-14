@@ -133,11 +133,10 @@ export function createSandbox(prefix: string): Sandbox {
     'utf8',
   )
 
-  // Pin Chromium actual-size zoom (level 0) for the suite. Fresh installs
-  // ship DEFAULT_ZOOM_LEVEL at the Appearance 90% preset, but Playwright
-  // click hit-testing and the committed visual baselines were calibrated at
-  // 100%. Without this file every sandbox would inherit the product default
-  // and fail pointer interception + snapshot diffs.
+  // Pin Chromium actual-size zoom (level 0) for the suite. Playwright click
+  // hit-testing and the committed visual baselines were calibrated at 100%,
+  // so the suite must not drift if the product default (DEFAULT_ZOOM_LEVEL)
+  // ever moves off 100% again.
   fs.writeFileSync(
     path.join(userDataDir, 'zoom-state.json'),
     JSON.stringify({ zoomLevel: 0 }, null, 2),
@@ -178,7 +177,7 @@ function writeEmptyConfig(hermesHome: string): void {
  * Key env vars:
  *  - HERMES_HOME → sandbox hermes-home (isolated config/sessions)
  *  - HERMES_DESKTOP_USER_DATA_DIR → sandbox electron-user-data
- *  - HERMES_DESKTOP_IGNORE_EXISTING=1 → don't pick up `hermes` from PATH
+ *  - HERMES_DESKTOP_IGNORE_EXISTING=1 → skip the installed runtime
  *    (we want the dev checkout at REPO_ROOT)
  *  - HERMES_DESKTOP_HERMES_ROOT → REPO_ROOT (dev checkout resolution)
  *  - HERMES_DESKTOP_APP_NAME → unique-ish per test (avoids single-instance lock)

@@ -7,7 +7,12 @@ import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-ac
 import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
-import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
+import {
+  type ConnectionRequest,
+  normalizeConnectionRequest,
+  setConnectionRequest,
+  updateConnectionRequest
+} from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
@@ -26,6 +31,8 @@ import {
 } from '@/store/prompts'
 import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
+import { clearSetupBeat } from '@/store/setup-beat'
+import { clearThemePick } from '@/store/theme-pick'
 
 import type { GatewayEventContext } from './types'
 
@@ -41,6 +48,10 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
 
+// A display card has no targets to name.
+const connectionRequestNoticeBody = (request: ConnectionRequest): string =>
+  request.targets.map(target => target.name).join(', ') || translateNow('connectors.title')
+
 /** The blocking-input family arrives as server→client REQUESTS (see
  *  `server-requests.ts`); the one EVENT in the family is `request.cancel`, the
  *  backend withdrawing an open request (timeout / interrupt / session close):
@@ -51,6 +62,13 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
 
   if (isConnectionRequestEvent(event)) {
+    // An interrupted/deleted session's runtime has no turn left to consent to a
+    // connection; the backend withdraws its request on the same boundary. Drop
+    // the frame rather than parking a stale consent card (#75587).
+    if (sessionId && deps.sessionInterrupted(sessionId)) {
+      return true
+    }
+
     // Park per-session and upsert a stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(event.payload, sessionId ?? null)
 
@@ -63,7 +81,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       }
 
       dispatchNativeNotification({
-        body: request.targets.map(target => target.name).join(', '),
+        body: connectionRequestNoticeBody(request),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')
@@ -175,7 +193,15 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     clearVaultSaveLoginRequest(sessionId, id)
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
+  } else {
+    clearParkedCard(ctx, id)
   }
 
   return true
+}
+
+function clearParkedCard({ deps, sessionId }: GatewayEventContext, requestId: string) {
+  if (sessionId && (clearThemePick(requestId, sessionId) || clearSetupBeat(requestId, sessionId))) {
+    deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+  }
 }

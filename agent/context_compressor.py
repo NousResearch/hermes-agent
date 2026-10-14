@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -2296,6 +2297,7 @@ class ContextCompressor(
         self._ineffective_compression_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        self._structural_no_op_len = 0
         # Observability only; never feeds the strike latch or the fallback streak.
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
@@ -2494,11 +2496,14 @@ class ContextCompressor(
         self._ineffective_compression_count = count
         self._persist_ineffective_compression_count()
 
-    def _record_structural_no_op(self, reason: str) -> None:
+    def _record_structural_no_op(self, reason: str, n_messages: int = 0) -> None:
         """Defer retries after a structural no-op WITHOUT striking the anti-thrash breaker.
         Nothing eligible existed, so nothing was "ineffective"; striking would permanently disarm
-        auto-compaction on short sessions. The backoff still stops per-turn re-scans."""
+        auto-compaction on short sessions. The backoff still stops per-turn re-scans. It is a
+        verdict about THIS transcript shape: a serving process that keeps the compressor across
+        turns (the gateway daemon) lifts it as soon as the transcript has grown (``compress``)."""
         self._structural_no_op_backoff_until = time.monotonic() + self._STRUCTURAL_NO_OP_BACKOFF_SECONDS
+        self._structural_no_op_len = int(n_messages or 0)
         if not self.quiet_mode:
             logger.warning(
                 "Compression skipped (%s): retrying in %.0fs (structural no-op backoff)", reason,
@@ -5278,11 +5283,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_backoff_until = 0.0
         return telemetry
 
-    def _structural_no_op_result(self, telemetry: dict[str, Any], failure_class: str, reason: str) -> None:
+    def _structural_no_op_result(self, telemetry: dict[str, Any], failure_class: str, reason: str,
+                                 n_messages: int = 0) -> None:
         """Nothing eligible to compress: transient backoff (#93022), never an ineffectiveness strike."""
         telemetry["failure_class"] = failure_class
         self._last_compression_savings_pct = 0.0
-        self._record_structural_no_op(reason)
+        self._record_structural_no_op(reason, n_messages)
+
+    def lift_structural_backoff_if_grown(self, n_messages: int) -> None:
+        """A structural no-op said "nothing eligible among N messages"; more messages is new evidence."""
+        if self._structural_no_op_backoff_until and n_messages > getattr(self, "_structural_no_op_len", 0):
+            self._structural_no_op_backoff_until = 0.0
 
     def _drop_blank_echoes(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove blank platform echoes trailing the latest actionable user turn."""
@@ -5563,6 +5574,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         if n_messages <= _min_for_compress:
             self._structural_no_op_result(
                 telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
+                n_messages,
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
@@ -5587,6 +5599,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_result(
                 telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
+                n_messages,
             )
             return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
@@ -5605,6 +5618,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_result(
                 telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
+                n_messages,
             )
             return canonical_messages
         if not self.quiet_mode:
@@ -5784,30 +5798,6 @@ def history_before_user_originated_turn(
         raise ValueError("selected row is not a user-originated turn")
     prefix = [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else [])
     return prefix, live_view
-
-
-def retryable_user_text(content: Any) -> str:
-    """Lossless retry text, or raise before destructive mutation (media/unknown parts fail closed: no replay protocol)."""
-    if not isinstance(content, (str, list)):
-        raise ValueError("retry does not support non-text content")
-    chunks: list[str] = []
-    for part in [content] if isinstance(content, str) else content:
-        if isinstance(part, str):
-            chunks.append(part)
-            continue
-        if not isinstance(part, dict):
-            raise ValueError("retry does not support non-text content")
-        if part.get("type") not in {"text", "input_text", "output_text"}:
-            raise ValueError("retry does not support media or unknown content parts")
-        if set(part) - {"type", "text"}:
-            raise ValueError("retry cannot losslessly flatten annotated text parts")
-        if not isinstance(part.get("text"), str):
-            raise ValueError("retry text parts must contain text")
-        chunks.append(part["text"])
-    text = "".join(chunks)
-    if not text.strip():
-        raise ValueError("retry found no text to send")
-    return text
 
 
 def _handoff_carries_live_user_content(message: Any) -> bool:

@@ -539,6 +539,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /rollback [diff] <N> [<file>|--all] — list, diff, or restore checkpoints.
         A restore also undoes the last chat turn; ``--all`` overwrites user hand-edits too."""
         from tools.checkpoint_manager import format_checkpoint_list
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            # Checkpoints are taken by the gateway's tools: list/diff/restore are the owner's.
+            from hermes_cli.gateway_rollback import rollback
+            return rollback(self, connection, command)
         mgr = self._checkpoint_manager(_lines(_t("rollback.not_enabled")))
         if mgr is None:
             return
@@ -1097,7 +1102,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        new_session_id = mint_session_id(now)
+        new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id
@@ -1378,54 +1383,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         getattr(self, handler)(subcommand, opts)
 
     def _cron_overview(self) -> None:
-        _pr("", "+" + "-" * 68 + "+", "|" + _t("cron.overview_title").center(68) + "|",
-            "+" + "-" * 68 + "+", "", f"  {_t('cron.overview_commands')}",
-            *_lines(_t("cron.overview_usage"), pad="    "), "")
-        result = _cron_api(action="list")
-        jobs = result.get("jobs", []) if result.get("success") else []
-        if jobs:
-            from hermes_cli.cron import _next_run_row
-            _pr(f"  {_t('cron.current_jobs')}", "  " + "-" * 63)
-            for job in jobs:
-                print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
-                if job.get("skills"):
-                    print(f"      {_t('cron.skills', skills=', '.join(job['skills']))}")
-                print(f"      {job.get('prompt_preview', '')}")
-                if job.get("next_run_at"):
-                    # A stamp parked past the scheduler grace must not read as upcoming (#114309).
-                    label, value = _next_run_row(job)
-                    print(f"      {_t('cron.next_short') if label == 'Next run' else label}: {value}")
-                print()
-        else:
-            print(f"  {_t('cron.no_jobs_hint')}")
-        print()
+        from hermes_cli.cli_cron_lines import cron_overview_lines
+        _pr(*cron_overview_lines())
 
     def _cron_list(self, subcommand: str, opts: dict) -> None:
-        result = _cron_api(action="list", include_disabled=opts["all"])
-        jobs = result.get("jobs", []) if result.get("success") else []
-        if not jobs:
-            return print(_t("cron.no_jobs"))
-        from hermes_cli.cron import _next_run_row
-        print()
-        _pr(_t("cron.list_header"), "-" * 80)
-        for job in jobs:
-            _pr(f"  {_t('cron.id', job_id=job['job_id'])}", f"  {_t('cron.name', name=job['name'])}",
-                f"  {_t('cron.state', state=job.get('state', '?'))}",
-                f"  {_t('cron.schedule_repeat', schedule=job['schedule'], repeat=job.get('repeat', '?'))}",
-                "  {}: {}".format(*_next_run_row(job)) if job.get("next_run_at") else f"  {_t('cron.next_run_na')}")
-            if job.get("skills"):
-                print(f"  {_t('cron.skills', skills=', '.join(job['skills']))}")
-            print(f"  {_t('cron.prompt', prompt=job.get('prompt_preview', ''))}")
-            if job.get("last_run_at"):
-                status = job.get("last_status") or "?"
-                # delivery_failed: the run succeeded but delivery didn't — the reason lives
-                # in last_delivery_error (last_error is None).
-                if status == "delivery_failed" and job.get("last_delivery_error"):
-                    status = _t("cron.status_delivery_failed", error=job["last_delivery_error"])
-                elif status == "error" and job.get("last_error"):
-                    status = _t("cron.status_error", error=job["last_error"])
-                print(f"  {_t('cron.last_run', when=job['last_run_at'], status=status)}")
-            print()
+        from hermes_cli.cli_cron_lines import cron_list_lines
+        _pr(*cron_list_lines(include_disabled=opts["all"]))
 
     def _cron_add(self, subcommand: str, opts: dict) -> None:
         positionals = opts["positionals"]
@@ -1576,7 +1539,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             )
             if out is not None:
                 return print(out)
-        from hermes_cli.skills_hub import handle_skills_slash
+        from hermes_cli.gateway_tools import handle_skills_slash  # + the gateway's rescan
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_memory_command(self, cmd: str):
@@ -1604,9 +1567,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
-    def _queue_prompt_turn(self, msg: str, command: str) -> None:
+    def _queue_prompt_turn(self, msg: str, command: str, ack: str = "") -> None:
         """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
-        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe)."""
+        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
+        paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
+        if ack:
+            __import__("cli")._cli_visible_print("\n" + ack)
         if hasattr(self, "_pending_input"):
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)
@@ -1618,16 +1584,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         tools it already has and authors the skill via ``skill_manage``."""
         from agent.learn_prompt import build_learn_prompt
         user_request = _command_arg(cmd)
-        print("\n" + _t("learn.from_description" if user_request else "learn.from_conversation"))
-        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn")
+        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", _t("learn.from_description" if user_request else "learn.from_conversation"))
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent
         inspects the workspace read-only and saves the plan under ``.hermes/plans/``."""
         from agent.plan_prompt import build_plan_prompt
         task = _command_arg(cmd)  # optional — empty infers the task from conversation context
-        print("\n" + (_t("plan.planning", task=_ellipsize(task, 80)) if task else _t("plan.from_conversation")))
-        self._queue_prompt_turn(build_plan_prompt(task), "/plan")
+        self._queue_prompt_turn(build_plan_prompt(task), "/plan", _t("plan.planning", task=_ellipsize(task, 80)) if task else _t("plan.from_conversation"))
 
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan performed by the
@@ -1636,24 +1600,32 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # session_key="" targets the single-session CLI's "default" cwd record, which tracks
         # `cd` and workspace switches, so /init follows the directory the user works in.
         msg = build_init_prompt_for_cwd(extra=_command_arg(cmd), session_key="")  # optional user emphasis
-        print("\n" + _t("init.updating" if "UPDATE the existing AGENTS.md" in msg else "init.generating"))
-        self._queue_prompt_turn(msg, "/init")
+        self._queue_prompt_turn(msg, "/init", _t("init.updating" if "UPDATE the existing AGENTS.md" in msg else "init.generating"))
 
     # ---- side-session handlers: /bg, /btw -------------------------------------------------
     def _handle_background_command(self, cmd: str):
         """Handle /bg <prompt> — run a prompt in a separate background session (its own AIAgent
         on a thread); the result prints here without touching the active history."""
-        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        from run_agent import AIAgent
         prompt = _command_arg(cmd)
         if not prompt:
             return _cp(*_lines(_t("background.usage")))
         self._background_task_counter += 1
         task_num = self._background_task_counter
+        preview = _ellipsize(prompt, 60)
+        from hermes_cli import gateway_side
+        connection = gateway_side.connection_for(self)
+        if connection is not None:
+            # The gateway runs the side agent on this session's route (prompt.background); this
+            # process never builds one.
+            task_id, wait = gateway_side.start(connection, self.session_id, "background", prompt)
+            _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
+                f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
+            return self._start_background_worker(task_id, task_num, preview, wait)
+        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from run_agent import AIAgent
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('background.no_credentials')}")
-        preview = _ellipsize(prompt, 60)
         _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
             f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
         turn_route = self._resolve_turn_agent_config(prompt)
@@ -1716,6 +1688,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     set_save_login_prompt_callback(None)
                     set_code_prompt_callback(None)
 
+        self._start_background_worker(task_id, task_num, preview, produce)
+
+    def _start_background_worker(self, task_id, task_num, preview, produce):
+        """The /bg result panel's daemon thread (``produce()`` returns the answer text)."""
         def done():
             self._background_tasks.pop(task_id, None)
             if not self._agent_running:  # clear spinner only if no foreground agent owns it
@@ -1808,6 +1784,19 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         question = _command_arg(cmd)
         if not question:
             return _cp(*_lines(_t("btw.usage")))
+        from hermes_cli import gateway_side
+        connection = gateway_side.connection_for(self)
+        if connection is not None:
+            # The gateway answers from its own copy of the conversation (prompt.btw): the live
+            # agent's fork when it has one, else the stored transcript.
+            _task_id, wait = gateway_side.start(connection, self.session_id, "btw", question)
+            preview = _ellipsize(question, 60)
+            _cp(*_lines(_gt("btw.started", preview=preview)), "")
+            self._side_worker(wait, name="btw-side-question", fail_label="/btw",
+                              header_lines=[f"  {_t('btw.header', preview=preview)}"],
+                              title_suffix=_t("btw.title_suffix"),
+                              empty_note=f"  {_t('btw.no_answer')}").start()
+            return
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('btw.no_credentials')}")
         # Snapshot NOW, on the UI thread — the foreground turn keeps appending to
@@ -1978,7 +1967,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:
-        from hermes_cli.goal_command import dispatch_goal_command
+        from hermes_cli.gateway_automation import dispatch_goal_command  # /goal draft drafts on the gateway
         from hermes_cli.goals import last_user_message_content
 
         mgr = self._session_manager(self._get_goal_manager, _t("goal.label"))
@@ -2017,8 +2006,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _cp(f"  {line}")
         if result.get("created"):
             with suppress(Exception):
-                from hermes_cli.loops import goal_blocks_loop_tick
-                if goal_blocks_loop_tick(mgr.session_id):
+                from hermes_cli.cli_loops_mixin import _goal_blocks_loop_tick
+                if _goal_blocks_loop_tick(mgr):
                     _cp(_dim_line(_t("loop.goal_defers_note")))
 
     def _handle_subgoal_command(self, cmd: str) -> None:
@@ -2305,6 +2294,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                        _dim_line(_t("reasoning.valid_levels")), _dim_line(_t("reasoning.valid_display")),
                        _dim_line(_t("reasoning.valid_scope")))
         self.reasoning_config = parsed
+        self._reasoning_user_set = True  # the rebuilt gateway agent commits it to the session
         _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:

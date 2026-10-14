@@ -11,8 +11,10 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 """
 
 import asyncio
+from pathlib import Path
 
 from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -22,12 +24,18 @@ from hermes_cli import kanban_db_notify as kbn
 class RecordingAdapter:
     """Push-capable adapter (no supports_async_delivery attr => push)."""
 
+    extract_local_files = staticmethod(BasePlatformAdapter.extract_local_files)
+
     def __init__(self):
         self.sent = []
         self.handled = []
+        self.documents = []
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+    async def send_document(self, chat_id, file_path, metadata=None, **_kw):
+        self.documents.append(file_path)
 
     async def handle_message(self, event):
         self.handled.append(event)
@@ -64,7 +72,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _make_completed_task(delivery_mode):
+def _make_completed_task(delivery_mode, summary="done"):
     conn = kbc.connect()
     try:
         tid = kb.create_task(
@@ -81,7 +89,7 @@ def _make_completed_task(delivery_mode):
             chat_type="dm",
             delivery_mode=delivery_mode,
         )
-        kb.complete_task(conn, tid, summary="done")
+        kb.complete_task(conn, tid, summary=summary)
         return tid
     finally:
         conn.close()
@@ -201,3 +209,22 @@ def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     assert runner._kanban_sub_fail_counts == {}, (
         "counter entry must clear when the subscription is dropped"
     )
+
+
+def test_wake_only_uploads_handoff_files_once_across_wake_retries(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-files.db"))
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-fake")
+    kb.init_db()
+    _make_completed_task("wake", summary=f"report at {report}")
+
+    adapter = FailingWakeAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert len(adapter.handled) == 2
+    assert [Path(path).name for path in adapter.documents] == ["report.pdf"]

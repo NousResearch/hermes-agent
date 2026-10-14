@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "/{name} komutunu çalıştır"
     limits:
       response_truncated: "⚠️ **Yanıt kısaltıldı** — bu yanıt teslim sınırını ({max_messages} mesaj) aştı. {dropped_chars} karakter teslim edilmedi; yanıtın tamamı oturum günlüklerinde."
+      response_attached: "⚠️ **Yanıt kısaltıldı** — bu yanıt teslim sınırını ({max_messages} mesaj) aştı. Yanıtın tamamı full-reply.md olarak eklendi."
     forum:
       default_title: "Yeni Gönderi"
     voice:

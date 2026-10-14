@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "Виконати /{name}"
     limits:
       response_truncated: "⚠️ **Відповідь обрізано** — вона перевищила ліміт доставки ({max_messages} повідомлень). {dropped_chars} символів не доставлено; повна відповідь є в журналах сеансу."
+      response_attached: "⚠️ **Відповідь обрізано** — вона перевищила ліміт доставки ({max_messages} повідомлень). Повну відповідь додано файлом full-reply.md."
     forum:
       default_title: "Новий допис"
     voice:

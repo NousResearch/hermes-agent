@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_db_blocks import BLOCK_RECURRENCE_LIMIT, block_recurrence_limit
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 
@@ -109,9 +110,6 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
-# Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
-BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -3250,8 +3248,8 @@ def _route_block(
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    (un-typed None compares equal to a prior un-typed block). At the
+    configured :func:`block_recurrence_limit` the task routes to ``triage``.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -3259,8 +3257,8 @@ def _route_block(
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
-    if recurrences >= BLOCK_RECURRENCE_LIMIT:
-        payload["limit"] = BLOCK_RECURRENCE_LIMIT
+    if (limit := block_recurrence_limit()) > 0 and recurrences >= limit:
+        payload["limit"] = limit
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 

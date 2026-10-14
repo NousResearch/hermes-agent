@@ -654,7 +654,10 @@ class _KanbanNotification:
         # dashboard/group flows). handle_message() get_or_create_session's the target, so a mismatch only
         # ever degrades to a fresh session, never an exception.
         _delivery_meta = sub.get("delivery_metadata") or {}
-        _chat_type = str(sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip()
+        from hermes_cli.kanban_db_notify import session_chat_type
+        # Rows stored before add_notify_sub normalized Discord's "channel" label still wake the chat.
+        _chat_type = session_chat_type(getattr(self.plat, "value", self.plat), str(
+            sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip())
         _source = SessionSource(
             platform=self.plat, chat_id=sub["chat_id"], chat_type=_chat_type or "group",
             thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
@@ -673,7 +676,7 @@ class _KanbanNotification:
         self._log_woke()
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
-        """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+        """Send one text ping (wake-only: just its files); raises on adapter exception or SendResult(success=False)."""
         from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
@@ -684,7 +687,8 @@ class _KanbanNotification:
         async def send_ping():
             nonlocal _send_res
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+        if self.send_passive and not await present_notification(
+                send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
@@ -724,8 +728,8 @@ class _KanbanNotification:
                     "on wake self-post instead", self.platform_str, self.task_id,
                 )
                 continue
-            if not self.send_passive:
-                # Wake-only: the wake path is the sole delivery and resolves the counter.
+            if not self.send_passive and ev.kind not in ("completed", "review_requested"):
+                # Wake-only: the wake path is the sole text delivery and resolves the counter.
                 continue
             if ev.id <= self.sub.get("last_ping_event_id", 0):
                 continue
@@ -736,7 +740,8 @@ class _KanbanNotification:
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
                 ))
-                self.clear_failures()
+                if self.send_passive:
+                    self.clear_failures()
             except Exception as exc:
                 await self.delivery_failed(
                     "kanban notifier: send failed for %s on %s (attempt %d/%d): %s", (self.task_id, self.platform_str),

@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "Выполнить /{name}"
     limits:
       response_truncated: "⚠️ **Ответ обрезан** — этот ответ превысил лимит доставки ({max_messages} сообщений). Не доставлено символов: {dropped_chars}; полный ответ есть в логах сеанса."
+      response_attached: "⚠️ **Ответ обрезан** — этот ответ превысил лимит доставки ({max_messages} сообщений). Полный ответ приложен файлом full-reply.md."
     forum:
       default_title: "Новый пост"
     voice:

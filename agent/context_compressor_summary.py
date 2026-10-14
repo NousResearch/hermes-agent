@@ -26,6 +26,24 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     )
 
 
+def summary_language_rule(default_rule: str, has_user_turn: bool) -> str:
+    from hermes_cli.config import load_config_readonly
+
+    compression = load_config_readonly().get("compression")
+    language = str(compression.get("summary_language") or "").strip() if isinstance(compression, dict) else ""
+    if not language:
+        return default_rule
+    rule = (
+        f"Write the summary in {language}, whatever language the turns use; keep quoted text, "
+        "identifiers, commands and tool output verbatim. "
+    )
+    if has_user_turn:
+        return rule
+    return rule + (
+        "This session contains no user-authored turns: do not invent a user or attribute any request to a user. "
+    )
+
+
 class SummaryDispatchMixin:
     def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.

@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "Executar /{name}"
     limits:
       response_truncated: "⚠️ **Resposta truncada** — esta resposta excedeu o limite de entrega ({max_messages} mensagens). {dropped_chars} caracteres não foram entregues; a resposta completa está nos logs da sessão."
+      response_attached: "⚠️ **Resposta truncada** — esta resposta excedeu o limite de entrega ({max_messages} mensagens). A resposta completa está anexada como full-reply.md."
     forum:
       default_title: "Nova publicação"
     voice:

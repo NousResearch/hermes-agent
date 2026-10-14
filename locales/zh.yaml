@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "运行 /{name}"
     limits:
       response_truncated: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。有 {dropped_chars} 个字符未能送达；完整回复见会话日志。"
+      response_attached: "⚠️ **回复已截断** — 本次回复超出了投递上限（{max_messages} 条消息）。完整回复已作为 full-reply.md 附上。"
     forum:
       default_title: "新帖子"
     voice:

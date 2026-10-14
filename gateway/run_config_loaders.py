@@ -199,7 +199,8 @@ class GatewayConfigLoadersMixin:
         )
 
     def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
-        """Effective service tier: a session-scoped /fast override beats the config default.
+        """Effective service tier: session /fast override, then ``channel_overrides`` ``service_tier``,
+        then the profile's ``agent.service_tier``.
 
         The override stores "priority" or None (explicit normal), so presence — not truthiness — decides.
         """
@@ -208,7 +209,31 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        channel_tier = self._channel_service_tier(source)
+        if channel_tier is not _SERVICE_TIER_UNSET:
+            return channel_tier
         return self._load_service_tier()
+
+    def _channel_service_tier(self, source) -> Any:
+        """This chat's ``channel_overrides`` ``service_tier`` (None = pinned normal), or the UNSET
+        sentinel when absent/unknown so the profile tier applies. Unknown words warn, like config."""
+        from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
+        if source is None:
+            return _SERVICE_TIER_UNSET
+        override = self._channel_override(
+            source.platform, str(source.chat_id) if source.chat_id else "",
+            str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+        )
+        raw = getattr(override, "service_tier", None)
+        if raw is None:
+            return _SERVICE_TIER_UNSET
+        word = str(raw).strip().lower()
+        tier = parse_service_tier(word)
+        if tier is None and word not in NORMAL_TIER_WORDS:
+            logger.warning("Unknown channel_overrides service_tier '%s', using the profile tier", raw)
+            return _SERVICE_TIER_UNSET
+        return tier
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
         """Set ("priority" / None = explicit normal) or ``clear`` the session-scoped /fast override."""

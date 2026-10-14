@@ -713,6 +713,11 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Language of compaction summaries, e.g. "English" (default: "" = the
+  # language the user writes in). Quoted text, identifiers, commands and tool
+  # output stay verbatim.
+  summary_language: ""
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

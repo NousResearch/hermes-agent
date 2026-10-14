@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "تشغيل /{name}"
     limits:
       response_truncated: "⚠️ **تم اقتطاع الردّ** — تجاوز هذا الردّ حد التسليم ({max_messages} رسائل). لم يتم تسليم {dropped_chars} حرفًا؛ الردّ الكامل موجود في سجلات الجلسة."
+      response_attached: "⚠️ **تم اقتطاع الردّ** — تجاوز هذا الردّ حد التسليم ({max_messages} رسائل). الردّ الكامل مرفق في الملف full-reply.md."
     forum:
       default_title: "منشور جديد"
     voice:

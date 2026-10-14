@@ -1152,6 +1152,7 @@ platform:
       auto_description_fallback: "/{name} を実行"
     limits:
       response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
+      response_attached: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。完全な応答は full-reply.md として添付されています。"
     forum:
       default_title: "新しい投稿"
     voice:

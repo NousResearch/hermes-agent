@@ -1202,6 +1202,7 @@ platform:
       auto_description_fallback: "Run /{name}"
     limits:
       response_truncated: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). {dropped_chars} characters were not delivered; the full response is in the session logs."
+      response_attached: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). The full reply is attached as full-reply.md."
     forum:
       default_title: "New Post"
     voice:

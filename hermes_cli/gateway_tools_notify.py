@@ -49,6 +49,9 @@ def queue_admitted_turn(cli, store) -> None:
         except queue.Empty:
             return
         if isinstance(frame, Exception):
+            from hermes_cli.gateway_connection import lost_before
+            if lost_before(frame, getattr(connection, "epoch", None)):
+                continue  # a connection a reconnect already replaced
             events.put(frame)  # the disconnect belongs to the next turn
             return
         params = frame.get("params") if isinstance(frame, dict) else None

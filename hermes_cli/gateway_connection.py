@@ -23,6 +23,13 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
                 "whether it completed or was interrupted; do not resend the work.")
 
 
+def lost_before(frame, epoch) -> bool:
+    """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
+    so it is no outcome of anything submitted on ``epoch``."""
+    lost = getattr(frame, "connection_epoch", None)
+    return isinstance(frame, Exception) and lost is not None and epoch is not None and lost < epoch
+
+
 class SessionState:
     """What the gateway last told this viewer about one session (plain attributes, GIL-atomic
     reads from the prompt_toolkit render thread; never an RPC per paint)."""
@@ -87,6 +94,10 @@ class GatewayConnection:
         self._stop = None
         self._start_lock = threading.Lock()
         self.closed = False
+        # close() ends the viewer; a gateway hang-up (restart, idle exit, crash) lets the next call
+        # dial again. Each connect bumps ``epoch``, and its loss is tagged with it (``lost_before``).
+        self._detached = False
+        self.epoch = 0
         # /bg and /btw answers by task id (hermes_cli/gateway_side.py); created by whichever of the
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
@@ -109,9 +120,15 @@ class GatewayConnection:
     def start(self, timeout=90):
         with self._start_lock:
             if self._thread is not None:
-                if self._error is not None:
-                    raise self._error
-                return
+                if self._thread.is_alive() or self._detached or (self._error is not None and not self.epoch):
+                    if self._error is not None:
+                        raise self._error
+                    return
+                # The gateway hung up, or the last redial failed: dial again (``connect_gateway``
+                # starts a gateway when none is running) and resubscribe this viewer's sessions.
+                self._error = None
+                self._ready.clear()
+                self.closed = False
             self._thread = threading.Thread(target=self._run, name="hermes-gateway-loop", daemon=True)
             self._thread.start()
         if not self._ready.wait(timeout):
@@ -139,6 +156,9 @@ class GatewayConnection:
             connect = connect_gateway
         try:
             async with connect() as client:
+                if self.epoch:
+                    await self._resubscribe(client)
+                self.epoch += 1
                 self.client = client
                 self._ready.set()
                 pump = asyncio.create_task(self._pump(client))
@@ -151,15 +171,30 @@ class GatewayConnection:
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")
             else:
-                self.events.put(GatewayClientError(DISCONNECTED))
+                self._put_loss(GatewayClientError(DISCONNECTED))
         finally:
             self.client = None
+
+    def _put_loss(self, error):
+        error.connection_epoch = self.epoch
+        self.events.put(error)
+
+    async def _resubscribe(self, client):
+        """A new socket is a new viewer: the gateway streams a session's frames only to connections
+        that resumed it. Resume each session this viewer had open; one deleted meanwhile is skipped."""
+        for session_id, state in list(self.states.items()):
+            if state.subscription_id is None:
+                continue
+            try:
+                state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
+            except (GatewayClientError, TimeoutError) as exc:
+                logger.debug("session.resume %s after reconnect failed: %s", session_id, exc)
 
     async def _pump(self, client):
         while True:
             frame = await client.events.get()
             if isinstance(frame, Exception):
-                self.events.put(frame)
+                self._put_loss(frame)
                 return
             params = frame.get("params") if isinstance(frame, dict) else None
             if isinstance(params, dict) and self._take_side(params):
@@ -190,6 +225,7 @@ class GatewayConnection:
             self._side.pop(task_id, None)
 
     def close(self):
+        self._detached = True
         loop, stop = self.loop, self._stop
         if loop is not None and stop is not None and not self.closed:
             try:

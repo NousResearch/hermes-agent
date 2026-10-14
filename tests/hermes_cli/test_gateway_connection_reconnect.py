@@ -1,0 +1,183 @@
+"""The classic CLI dials the gateway again after it restarts (#134889).
+
+GatewayConnection kept its finished loop thread, so after a gateway restart every call raised
+"Gateway disconnected" and the CLI never re-attached, even once another client had started a new
+gateway. Each prompt then failed with copy that read as a model failure ("Run /model to switch").
+"""
+import asyncio
+from contextlib import asynccontextmanager
+
+import pytest
+
+from hermes_cli.cli_chat_error_copy import chat_error_response
+from hermes_cli.gateway_agent import GatewayAgent
+from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_connection import GatewayConnection, lost_before
+
+SID = "local-abc"
+
+
+def _frame(kind, payload):
+    return {"jsonrpc": "2.0", "method": "event", "params": {
+        "type": kind, "session_id": SID, "admission_id": "adm-1", "execution_generation": 7, "payload": payload}}
+
+
+class Life:
+    """One gateway process as one client sees it: from a dial until it hangs up."""
+
+    def __init__(self, number, *, drop_on_submit=False):
+        self.number = number
+        self.events = asyncio.Queue()
+        self.calls = []
+        self.drop_on_submit = drop_on_submit
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        self.calls.append((method, params))
+        if method == "session.resume":
+            return {"stored_session_id": params["session_id"], "subscription_id": f"sub-{self.number}",
+                    "revision": 1, "execution_generation": 7, "messages": []}
+        if method == "prompt.submit":
+            loop = asyncio.get_running_loop()
+            if self.drop_on_submit:  # restarted mid-turn: the outcome is unknown to this client
+                loop.call_soon(self.events.put_nowait, GatewayClientError("Gateway disconnected"))
+            else:
+                loop.call_soon(self.events.put_nowait, _frame(
+                    "message.complete", {"text": f"reply {self.number}", "outcome": "completed", "status": "complete"}))
+            return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
+        if method == "prompt.receipt":
+            return {"result": {"final_response": f"reply {self.number}", "completed": True}, "usage": {}}
+        return {"status": "ok", "life": self.number}
+
+
+class Gateway:
+    """Each dial reaches a fresh gateway life; ``refusals`` makes the next dials fail first."""
+
+    def __init__(self):
+        self.lives = []
+        self.refusals = 0
+        self.drop_next_submit = False
+
+    @asynccontextmanager
+    async def dial(self):
+        if self.refusals:
+            self.refusals -= 1
+            raise GatewayClientError("Gateway starting: deadline. Your message was not sent.")
+        life = Life(len(self.lives) + 1, drop_on_submit=self.drop_next_submit)
+        self.drop_next_submit = False
+        self.lives.append(life)
+        yield life
+
+    def hang_up(self, conn):
+        """The current life goes away (``gateway restart``); the loop thread ends with it."""
+        thread = conn._thread
+        conn.loop.call_soon_threadsafe(self.lives[-1].events.put_nowait, GatewayClientError("Gateway disconnected"))
+        thread.join(5)
+        assert not thread.is_alive()
+
+
+@pytest.fixture
+def gateway():
+    return Gateway()
+
+
+@pytest.fixture
+def conn(gateway):
+    connection = GatewayConnection(connect=gateway.dial)
+    connection.start(5)
+    connection.state(SID).adopt_snapshot(connection.call("session.resume", session_id=SID))
+    yield connection
+    connection.close()
+
+
+def test_the_next_call_after_a_restart_reconnects_and_resubscribes(gateway, conn):
+    assert conn.epoch == 1
+    gateway.hang_up(conn)
+
+    assert conn.call("status") == {"status": "ok", "life": 2}
+    assert conn.epoch == 2
+    # Resubscribed before the reconnect counts as ready, so no frame of the new life is missed.
+    assert gateway.lives[1].calls[0] == ("session.resume", {"session_id": SID})
+    assert conn.state(SID).subscription_id == "sub-2"
+    lost = conn.events.get_nowait()
+    assert isinstance(lost, GatewayClientError) and lost_before(lost, conn.epoch)
+
+
+def test_close_ends_the_viewer_for_good(gateway, conn):
+    conn.close()
+    with pytest.raises(GatewayClientError, match="disconnected"):
+        conn.call("status")
+    assert len(gateway.lives) == 1
+
+
+def test_a_failed_redial_is_retried_on_the_next_call(gateway, conn):
+    gateway.hang_up(conn)
+    gateway.refusals = 1
+    with pytest.raises(GatewayClientError, match="Gateway starting"):
+        conn.call("status")
+    assert conn.call("status") == {"status": "ok", "life": 2}
+
+
+def test_a_first_connect_failure_is_still_final(gateway):
+    gateway.refusals = 2
+    connection = GatewayConnection(connect=gateway.dial)
+    for _ in range(2):
+        with pytest.raises(GatewayClientError, match="Gateway starting"):
+            connection.call("status")
+    assert gateway.refusals == 1  # never redialed: nothing to come back to
+
+
+def test_a_turn_lost_to_a_restart_is_reported_plainly_and_the_next_turn_runs(gateway, conn):
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    gateway.lives[0].drop_on_submit = True
+
+    lost = agent.run_conversation("first")
+    assert lost["failed"] and lost["failure_reason"] == "gateway_connection"
+    assert "turn outcome is unknown" in lost["error"] or "Gateway disconnected" in lost["error"]
+    # The panel shows the transport error itself, not "The model request failed. Run /model ...".
+    assert chat_error_response(lost["error"], failure_reason=lost["failure_reason"]) == lost["error"]
+
+    conn._thread.join(5)
+    result = agent.run_conversation("second")
+    assert not result.get("failed") and result["final_response"] == "reply 2"
+    assert [method for method, _ in gateway.lives[1].calls][:2] == ["session.resume", "prompt.submit"]
+
+
+def test_the_previous_connections_loss_never_fails_a_live_turn(gateway, conn):
+    """Idle when the gateway restarted: the loss is queued, and the next prompt reconnects and
+    submits. Reading that loss as its own outcome would invite the user to resend accepted work."""
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    gateway.hang_up(conn)
+    result = agent.run_conversation("hi")
+    assert not result.get("failed") and result["final_response"] == "reply 2"
+
+
+def test_lost_before():
+    error = GatewayClientError("Gateway disconnected")
+    assert not lost_before(error, 2)  # untagged: a live loss
+    error.connection_epoch = 1
+    assert lost_before(error, 2) and not lost_before(error, 1) and not lost_before(error, None)
+    assert not lost_before({"connection_epoch": 1}, 2)
+
+
+def test_chat_q_says_why_a_turn_was_interrupted(capsys):
+    """A restart drain settles a running `chat -q` turn interrupted with no reply text: exit 130
+    as before, but no longer silently."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    class Client:
+        def __init__(self):
+            self.events = asyncio.Queue()
+
+        async def rpc(self, method, **params):
+            if method == "prompt.submit":
+                asyncio.get_running_loop().call_soon(self.events.put_nowait, _frame(
+                    "message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"}))
+                return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
+            if method == "prompt.receipt":
+                return {"result": {"final_response": "", "interrupted": True,
+                                   "interrupt_message": "Gateway shutting down"}}
+            return {}
+
+    code = asyncio.run(GatewayChatView(Client(), {"stored_session_id": SID}).run("hi", oneshot=True))
+    assert code == 130
+    assert "Turn interrupted (Gateway shutting down); it was not retried." in capsys.readouterr().err

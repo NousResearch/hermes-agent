@@ -32,9 +32,13 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSW
 # Non-secret runtime-location flags that repo-root modules a sandbox script
 # imports may read at import time. HERMES_DELEGATED_CHILD_CONTEXT must ride
 # along or a child that imports Hermes code loses the Kanban mutation guard
-# while still inheriting HERMES_HOME.
+# while still inheriting HERMES_HOME. HERMES_SCRATCH_DIR is the Hermes-owned
+# marker for TMPDIR/TMP/TEMP: without it a multiplexed backend's child env
+# cannot prove the inherited temp vars are Hermes's own, so apply_scratch_tmp_env
+# treats them as a user override and never re-homes them (#138501).
 _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "HERMES_DELEGATED_CHILD_CONTEXT",
+    "HERMES_SCRATCH_DIR",
 })
 
 # Windows-only: without these the CRT itself fails — socket.socket() raises

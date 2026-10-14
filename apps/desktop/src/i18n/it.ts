@@ -2,7 +2,10 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introIt } from './intro-it'
+import { itClarify } from './it_clarify'
+import { itFirstRun } from './it_first_run'
 import { itModelMenu } from './it_model_menu'
+import { itThemePicker } from './it_theme_picker'
 
 export const itOverrides = {
   sharedMetrics: {
@@ -40,6 +43,7 @@ export const itOverrides = {
       'Le statistiche restano su questo computer a meno che tu scelga Invia. Quelle condivise arrivano a Nous una volta al giorno con un ID casuale per questo profilo. A parte una nota una tantum che Hermes è stato installato, conteggiata solo dopo il tuo consenso, le statistiche precedenti al consenso non vengono mai inviate. Puoi cambiare questa scelta quando vuoi nelle Impostazioni.',
     stripReaskBody: 'Una domanda in più: una versione precedente poteva salvare “No, grazie” prima che vedessi questo.'
   },
+  firstRun: itFirstRun,
   intro: introIt,
   connectors: {
     title: 'Connetti le tue app',
@@ -993,11 +997,16 @@ export const itOverrides = {
         profileLabel: 'Installa per il profilo',
         agentTargetLocal: (profile, dir) => `Si installa nel backend ${profile} (${dir})`,
         agentTargetRemote: profile => `Si installa nel backend ${profile} connesso`,
-        catalogPinned: (name, sha) =>
-          `Voce del catalogo di Hermes “${name}”: il componente dell’agente viene installato alla versione fissata e verificata${sha ? ` ${sha}` : ''}, non alla punta del branch.`,
-        reviewedHeading: 'Voce del catalogo verificata',
-        reviewedIntro:
-          'Una persona ha verificato questa voce al suo commit fissato. Puoi comunque ispezionare il codice esatto qui sotto.',
+        installsOnly: profile => `Si installa per ${profile}.`,
+        installsAndEnables: profile => `Si installa per ${profile} e si attiva subito.`,
+        reviewedByNous: 'Verificato da Nous.',
+        reviewedPin: sha => (sha ? `Pin verificato ${sha}` : 'Pin verificato'),
+        unverified: 'Non verificato',
+        verified: 'Verificato',
+        versionLabel: 'Versione',
+        latestCommit: 'Ultimo commit',
+        nothingToInstall: 'Questo pacchetto non ha niente da installare qui.',
+        advanced: 'Avanzate',
         toolsConnected: n => (n === 1 ? '1 strumento connesso' : `${n} strumenti connessi`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} pronta` : `${names.length} skills pronte`),
         nextChat: 'altri strumenti disponibili nella tua prossima chat',
@@ -1010,13 +1019,11 @@ export const itOverrides = {
         desktopOnlyNote: 'I pacchetti solo desktop non installano un plugin dell’agente nel backend.',
         insecureWarning:
           'Questa URL usa uno schema non sicuro o locale. Per le installazioni di produzione, usa https:// o git@.',
-        securityHeading: 'Prima di installare',
         securityIntro:
           'Installa solo da fonti attendibili; controlla il repository qui sotto se vuoi vedere cosa verrà aggiunto.',
         sourceHeading: 'Codice sorgente',
         viewRepository: 'Visualizza repository',
         viewPluginFiles: 'Visualizza i file del plugin',
-        gitCloneLabel: 'URL di git clone',
         enableAgent: 'Attiva il plugin dell’agente dopo l’installazione',
         forceReinstall: 'Forza reinstallazione (sostituisci se già installato)',
         pinToCommit: 'Fissa a un commit (opzionale)',
@@ -1816,12 +1823,6 @@ export const itOverrides = {
       alwaysExternalLinksTitle: 'Apri sempre i link nel browser esterno',
       alwaysExternalLinksDesc:
         'Apre ogni link su cui fai clic nel browser di sistema invece che nel browser integrato. “Apri nel browser integrato” nel menu contestuale continua a funzionare.',
-      developerTitle: 'Sviluppatore',
-      resetOnboardingTitle: 'Ripristina configurazione iniziale',
-      resetOnboardingDesc:
-        'Elimina le chat di configurazione, ricostruisce il profilo di configurazione ed esegue di nuovo la prima configurazione. I tuoi profili, le chat e i plugin restano.',
-      resetOnboardingAction: 'Ripristina',
-      resetOnboardingFailed: 'Impossibile ripristinare la configurazione iniziale',
       voiceShortcutHintTitle: 'Scorciatoia di registrazione vocale',
       voiceShortcutHintDesc:
         'Imposta la scorciatoia di registrazione vocale in Impostazioni → Scorciatoie da tastiera (“Avvia / interrompi conversazione vocale”). Il valore di configurazione voice.record_key si applica solo a CLI e TUI.'
@@ -4893,19 +4894,6 @@ export const itOverrides = {
         'Il backend non è tornato disponibile. L’aggiornamento potrebbe non essere stato completato; controlla l’host del backend.'
     }
   },
-  handoffTour: {
-    profileTitle: 'La tua prima attività viene eseguita nel profilo predefinito',
-    profileText:
-      'Questa barra cambia profilo. Quello illuminato ora è il predefinito, dove si trova la sessione dell’attività. L’altro è il profilo di configurazione, dove si trova la chat di benvenuto.',
-    sessionsTitle: 'Ogni profilo ha le proprie sessioni',
-    sessionsText:
-      'Questa lista appartiene al profilo predefinito. Nuova sessione ne crea una nel profilo selezionato. Cambia profilo nella barra e la lista cambia di conseguenza.',
-    stayTitle: 'Hermes è a un clic',
-    stayText: 'Passa al profilo di configurazione e apri Benvenuto in Hermes ogni volta che hai bisogno di aiuto. Resta lì.',
-    localTitle: 'Questa macchina può eseguire modelli in locale',
-    localText: model =>
-      `${model} è adatto al tuo hardware. È gratuito e le chat non lasciano mai il tuo computer. Sceglilo qui, nel menu dei modelli, quando vuoi.`
-  },
   install: {
     stageStates: {
       pending: 'In attesa',
@@ -5857,31 +5845,6 @@ export const itOverrides = {
       sendEdited: 'Invia modifica',
       attachingFile: 'Allegamento file…'
     },
-    setupChoose: {
-      loading: 'Caricamento delle opzioni…',
-      unavailable: 'Questo elenco non è disponibile al momento. Rispondi in chat.',
-      startsLater: 'Verranno configurati quando inizi.',
-      findApp: 'Trova un’app',
-      plugin: 'Plugin',
-      customColor: 'Colore personalizzato',
-      kinds: {
-        accent: 'Colore d’accento',
-        connectors: 'App',
-        layout: 'Layout',
-        plugins: 'Plugin',
-        theme: 'Aspetto'
-      }
-    },
-    startChat: {
-      untitled: 'Nuova chat',
-      open: 'Apri',
-      retry: 'Riprova',
-      notStarted: 'Impossibile avviare quella chat.',
-      openFailed: 'Impossibile aprire la chat',
-      startingUntitled: 'Avvio di una chat…',
-      starting: title => `Avvio di “${title}”…`,
-      inProfile: profile => `In ${profile}`
-    },
     approval: {
       gatewayDisconnected:
         'Hermes non è connesso in questo momento. Il comando continua ad attendere la tua risposta (finché non scade il tempo di approvazione). Riconnettiti e inviala di nuovo.',
@@ -5903,24 +5866,8 @@ export const itOverrides = {
         `Questo aggiunge il pattern “${pattern}” alla tua allowlist permanente (~/.hermes/config.yaml). Hermes non chiederà più conferma per comandi come questo, né in questa sessione né in quelle future.`,
       alwaysAllow: 'Consenti sempre'
     },
-    clarify: {
-      notReady: 'La richiesta di chiarimento non è ancora pronta',
-      gatewayDisconnected: 'Hermes non è connesso in questo momento. Riconnettiti e invialo di nuovo.',
-      sendFailed: 'Impossibile inviare la risposta di chiarimento',
-      loadingQuestion: 'Caricamento domanda…',
-      other: 'Altro (scrivi la tua risposta)',
-      placeholder: 'Scrivi la tua risposta…',
-      skip: 'Salta',
-      skipped: 'Saltato',
-      noAnswer: 'Senza risposta',
-      confirmAndContinueLabel: 'Conferma e continua',
-      singleSelectHint: 'Scegline una',
-      multiSelectHint: 'Scegli tutte quelle applicabili',
-      questionProgress: (answered, total) => `${answered} di ${total} risposte`,
-      oneQuestion: '1 domanda',
-      notDelivered:
-        'Questa domanda non è arrivata all’app, quindi non si può rispondere qui. Premi Interrompi per terminare il turno e poi rispondi in chat.'
-    },
+    clarify: itClarify,
+    themePicker: itThemePicker,
     catalogInstall: {
       preparing: 'Preparazione dell’installazione…',
       install: 'Installa',
@@ -6048,16 +5995,6 @@ export const itOverrides = {
         runningTool: action => `Esecuzione di ${action.toLowerCase()}`
       },
       titles: {
-        setup_choose: {
-          pending: 'Porre una domanda di configurazione',
-          done: 'Domanda di configurazione posta',
-          pendingAction: 'Chiedendo'
-        },
-        start_chat: {
-          pending: 'Avviare una chat',
-          done: 'Chat avviata',
-          pendingAction: 'Avviando'
-        },
         browser_click: {
           done: 'Si è fatto clic su un elemento della pagina',
           pending: 'Fare clic su un elemento della pagina',

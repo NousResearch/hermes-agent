@@ -402,7 +402,7 @@ class GatewayTurnMixin:
         except Exception:
             return False
 
-    async def _hmwa_resolve_session(self, event, source):
+    async def _hmwa_resolve_session(self, event, source, run_generation=None):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
         the event."""
@@ -433,12 +433,10 @@ class GatewayTurnMixin:
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
-            session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
-            if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
-                logger.warning(
-                    "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
-                    pinned_session_id or "missing", expected_session_key or "missing",
-                )
+            from gateway.run_turn_strict_lane import strict_lane_session_entry
+            session_entry = await strict_lane_session_entry(
+                self, expected_session_key, pinned_session_id, run_generation)
+            if session_entry is None:
                 return
         else:
             # Internal wakes observe reset policy without counting as user activity, or periodic
@@ -2153,7 +2151,7 @@ class GatewayTurnMixin:
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
-        resolved = await self._hmwa_resolve_session(event, source)
+        resolved = await self._hmwa_resolve_session(event, source, run_generation)
         if resolved is None:
             return
         source, session_entry, session_key = resolved

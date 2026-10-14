@@ -904,6 +904,32 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
+    def get_session_context_state(self, session_id: str) -> Optional[dict[str, Any]]:
+        """Bounded metadata read proving an existing live context, for delivery gates.
+
+        Deliberately not :meth:`get_session`: that resolves the system prompt through a
+        ``system_prompts`` join, selects every session column, and calls
+        :meth:`flush_token_counts` first. A gate on the delivery path must not pay a
+        write-side flush or read a prompt body to answer "is this context live?".
+        No ``messages`` or ``system_prompts`` join; no prompt, preview or body column.
+        """
+        if not session_id:
+            return None
+        row = self._read_one(
+            "SELECT id, message_count, ended_at, end_reason, parent_session_id "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "message_count": int(row["message_count"] or 0),
+            "ended_at": row["ended_at"],
+            "end_reason": row["end_reason"],
+            "parent_session_id": row["parent_session_id"],
+        }
+
     def get_recent_session_model_route(self, session_id: str) -> Optional[dict[str, Any]]:
         """Most recently used main-loop model route as one coherent per-call tuple
         (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).

@@ -53,6 +53,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.tool_result_chaining import remember_tool_result, resolve_tool_result_refs, tool_result_reference_hint
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -703,6 +704,11 @@ def _dispatch_authorized_once(
     ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
     path so later-ordered workers keep moving; blocked calls advance it without a callback.
     """
+    # Resolve {{tool_result:<call_id>.<field>}} refs before policy checks and dispatch so
+    # plugin hooks, the pruned-argument guard and the tool all see the final values.
+    # (Relay/request middleware upstream of this funnel still sees the raw placeholder.)
+    ref.args = resolve_tool_result_refs(agent, ref.args)
+
     def _advance_start_order(callback=None) -> None:
         if begin_execution is not None:
             begin_execution(callback)
@@ -1119,6 +1125,11 @@ def _commit_tool_result(
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
+    # Keep the raw (pre-spill) result available for later {{tool_result:<call_id>.<field>}}
+    # chaining; the map is bounded inside remember_tool_result.
+    if not blocked:
+        remember_tool_result(agent, tool_call_id, function_result)
+
     persisted_result = function_result
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(
@@ -1134,6 +1145,11 @@ def _commit_tool_result(
         )
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
     note_tool_result(agent, function_name, tool_call_id, function_result, persisted_result)
+    # The ref hint is carried as a sibling key, NOT appended to content - tool result
+    # content must stay a parseable JSON string (see _extract_landed_file_mutation_paths,
+    # todo hydration, and the transport JSON contract). Transports inject it for the model.
+    _ref_hint = ("" if blocked or _is_multimodal_tool_result(persisted_result)
+                 else tool_result_reference_hint(tool_call_id, function_result))
 
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:
@@ -1147,6 +1163,8 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    if _ref_hint:
+        tool_message["_tool_result_hint"] = _ref_hint
     # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
     # are told on this new row (outside any untrusted-data wrapper).
     lsp_deferred.forward_to_agent(agent)

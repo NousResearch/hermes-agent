@@ -102,11 +102,12 @@ def test_builtin_name_collision_only_copies_explicit_custom_selection(
     ],
 )
 def test_fresh_profile_keeps_exact_key_provider_tuning(create_from_launch, model):
-    providers = {model["provider"]: {"request_timeout_seconds": 150}}
+    selected = {model["provider"]: {"request_timeout_seconds": 150}}
+    neighbor = {"neighbor": {"request_timeout_seconds": 5}}
 
-    created = create_from_launch({"model": model, "providers": providers})
+    created = create_from_launch({"model": model, "providers": {**selected, **neighbor}})
 
-    assert created["providers"] == providers
+    assert created["providers"] == selected
 
 
 @pytest.mark.parametrize(
@@ -137,6 +138,7 @@ def test_model_seed_keeps_runtime_endpoint_selection(monkeypatch, providers, leg
 
     seed = launch_model_seed(source)
 
+    assert len(seed.get("providers", {})) + len(seed.get("custom_providers", [])) == 1
     monkeypatch.setattr(runtime_provider, "load_config", lambda: seed)
     inherited = runtime_provider._get_named_custom_provider("lab")
     assert inherited is not None

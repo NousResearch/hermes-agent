@@ -294,6 +294,16 @@ $GAPI docs append DOC_ID --text "Additional content to append"
 $GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
 ```
 
+### Forms
+
+```bash
+# Create a new Form (returns the formId and the responderUri to share)
+$GAPI forms create --title "Client Intake Survey"
+```
+
+Form questions are not managed by this script yet — create the Form here, then add
+questions in the Google Forms UI.
+
 ## Output Format
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:

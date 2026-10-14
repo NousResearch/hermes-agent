@@ -18,10 +18,9 @@ def _state_db_integrity_deadline_s() -> float:
     The deadline is the only bound on a pathological store, so anything but a finite positive
     number (unset, unparsable, ``0``, ``.inf``) keeps the default instead of removing it.
     """
-    from gateway.run import _best_effort
-    from hermes_cli.config import read_raw_config_readonly
-    cfg = _best_effort(read_raw_config_readonly, "config.yaml unreadable for the scan deadline: %s")
-    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+    from gateway.run import _load_gateway_config
+    # The gateway's own loader: managed overlay and ``${VAR}`` expansion apply, ``{}`` on error.
+    agent_cfg = _load_gateway_config().get("agent")
     raw = agent_cfg.get("gateway_state_db_integrity_deadline_s") if isinstance(agent_cfg, dict) else None
     try:
         value = float(raw) if raw is not None and not isinstance(raw, bool) else None

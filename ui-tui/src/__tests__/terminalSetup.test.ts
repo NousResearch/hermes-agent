@@ -77,6 +77,9 @@ describe('terminalSetup helpers', () => {
 
 describe('configureTerminalKeybindings', () => {
   it('uses target-native separators for Windows keybindings paths', async () => {
+    // The assertions below are Windows-target path products: APPDATA arrives
+    // with forward slashes to prove the target dialect is applied
+    // unconditionally, so these backslash paths must hold from any host OS.
     const mkdir = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
     const writeFile = vi.fn().mockResolvedValue(undefined)
@@ -419,7 +422,8 @@ describe('configureTerminalKeybindings', () => {
   it('suppresses terminal setup prompts inside SSH sessions', async () => {
     await expect(
       shouldPromptForTerminalSetup({
-        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv
+        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
+        platform: 'linux'
       })
     ).resolves.toBe(false)
   })

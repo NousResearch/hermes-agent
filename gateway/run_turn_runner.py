@@ -747,6 +747,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Delivery receipt (#138133): an acked card was the one silent outcome. Destination and
+                    # thread tell a wrong-lane send from an invisible one; never the command text.
+                    logger.info("Exec approval card delivered (message_id=%s, request_id=%s, session=%s, chat=%s, thread=%s)",
+                                getattr(fut.result(timeout=0), "message_id", None), approval_data.get("request_id"),
+                                ctx.session_key, ctx._status_chat_id, (ctx._status_thread_metadata or {}).get("thread_id"))
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(

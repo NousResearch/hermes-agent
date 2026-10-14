@@ -514,15 +514,18 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
     untested = {**old, "skipTests": True}
     assert validate_claim(untested, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
-        {"docker", "windows", "macos-arm64"})
+        {"docker", "windows", "windows-store", "macos-arm64"})
     # skipBundles built the image and nothing else a bundle touches, tests included.
     bundleless = {**old, "skipBundles": True}
     assert validate_claim(bundleless, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
         {"docker", "ci", "nix", "docker-tests", "windows-live", "install-e2e", "bootstrap-version", "termux-checks"})
     # The keys stay exact, never loose: a non-boolean, an unknown key or a mix of shapes is refused.
     new = {k: v for k, v in old.items() if not k.startswith("skip")}
+    # A lanes claim without a revision was cut when `windows` also meant the Store bundle (rc.2-v0.22.1).
     assert validate_claim({**new, "lanes": ["docker", "windows"]}, version="0.21.7", attempt=11,
-                          commit=commit)["lanes"] == frozenset({"docker", "windows"})
+                          commit=commit)["lanes"] == frozenset({"docker", "windows", "windows-store"})
+    assert validate_claim({**new, "lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION},
+                          version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset({"docker", "windows"})
     for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True},
                   {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["linux"]},
                   {**new, "lanes": "windows"}, {**old, "lanes": ["docker"]}):
@@ -620,7 +623,7 @@ def test_a_windows_only_claim_assembles_a_windows_only_manifest(
     built.mkdir()
     _stage_windows_handoff(built, "x64")
     _stage_windows_handoff(built, "arm64")
-    _stage_universal_bundle(built)
+    _stage_universal_bundle(built, store=False)
     lanes = lane_set.select(only=["windows", "docker"])
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
     calls = _calls(lanes)
@@ -632,6 +635,81 @@ def test_a_windows_only_claim_assembles_a_windows_only_manifest(
     assert manifest["smoke_results"] == {job: {"result": "skipped"} for job in stable.SMOKE_JOBS}
     stable.require_smokes_match_claim(manifest, lanes)
     stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_a_store_only_claim_assembles_a_manifest_with_the_store_bundle_and_no_packages(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--only windows-store: the per-arch handoffs carry unsigned Store MSIX and no metadata."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    for arch in ("x64", "arm64"):
+        (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
+        from scripts.releases import handoff
+        handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
+    _stage_universal_bundle(built, signed=False)
+    lanes = lane_set.select(only=["windows-store"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert manifest["packages"] == []
+    assert [file["path"] for file in manifest["files"] if file["path"].endswith(".msixbundle")] == [
+        "Store-Product-1.2.3-win.msixbundle"]
+    stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base, RELEASE_EPOCH, archive=ATTEMPT)
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_a_store_plus_macos_claim_records_only_the_macos_smoke(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--without windows: the Windows candidate calls run for the Store bundle and succeed, but no
+    Windows package is smoked, so their success is not a smoke result."""
+    from scripts.releases import handoff, stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    for arch in ("x64", "arm64"):
+        (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
+        handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
+    _stage_universal_bundle(built, signed=False)
+    lanes = lane_set.select(without=["windows"])
+    assert lane_set.runs_smokes(lanes) and "windows-store" in lanes
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    calls = _calls(lanes)
+    assert calls["candidates-win32-x64"] == {"result": "success"}
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"macos/arm64"}
+    assert manifest["smoke_results"]["smoke-darwin-arm64"] == {"result": "success"}
+    assert manifest["smoke_results"]["smoke-win32-x64"] == {"result": "skipped"}
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_the_manifest_refuses_a_windows_bundle_the_claims_lanes_did_not_build(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """A signed bundle under a Store-only claim, or a missing Store bundle under `windows` + `windows-store`."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built, store=False)
+    for lanes, message in ((["windows", "windows-store"], "Store bundle"), (["windows-store"], "signed Windows bundle")):
+        lanes = lane_set.select(only=lanes)
+        monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+        env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+        with pytest.raises(ValueError, match=message):
+            stable.main(["candidate-manifest"], env)
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
 
 def _claim_fixture(tmp_path, *, tag, version, lanes=lane_set.DEFAULT):
@@ -1003,16 +1081,18 @@ def _stage_windows_handoff(built, arch, *, with_metadata=True):
     handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, includes)
 
 
-def _stage_universal_bundle(built):
+def _stage_universal_bundle(built, *, signed=True, store=True):
     from scripts.releases import handoff
 
-    bundle = built / "Product-1.2.3-win.msixbundle"
-    with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("AppxMetadata/AppxBundleManifest.xml",
-                         f'<Bundle><Identity Name="test.application" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/>'
-                         '<Packages><Package Type="application" Architecture="arm64"/>'
-                         '<Package Type="application" Architecture="x64"/></Packages></Bundle>')
-    (built / "Store-Product-1.2.3-win.msixbundle").write_bytes(b"Store bundle transport fixture")
+    if signed:
+        bundle = built / "Product-1.2.3-win.msixbundle"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("AppxMetadata/AppxBundleManifest.xml",
+                             f'<Bundle><Identity Name="test.application" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/>'
+                             '<Packages><Package Type="application" Architecture="arm64"/>'
+                             '<Package Type="application" Architecture="x64"/></Packages></Bundle>')
+    if store:
+        (built / "Store-Product-1.2.3-win.msixbundle").write_bytes(b"Store bundle transport fixture")
     handoff.stage(ATTEMPT, RECEIPT_COMMIT, "windows-universal", built, ["*.msixbundle"])
 
 

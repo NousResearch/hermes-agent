@@ -19,6 +19,7 @@ from tests.scripts.test_release_r2 import r2_server
 from tests.scripts.test_stable_release import https_origin
 from tests.scripts.test_release_darwin import _inputs
 from scripts.bundles import release_artifacts as artifacts
+from scripts.releases import lanes as lane_set
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE_RESULTS = {name: {'result': 'success'} for name in (
@@ -121,7 +122,8 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     handoff.fetch(attempt, commit, names, fetched, ['metadata-*.json', '*.msixbundle'])
     r2_server.requests.clear()
     manifest = assemble(fetched, tag, commit, base, tmp_path / 'release-candidates.json',
-                        smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=attempt)
+                        smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=attempt,
+                        lanes=lane_set.NAMES)
     assert manifest['archive'] == attempt and manifest['tag'] == tag
     assert {row['platform'] + '/' + row['arch'] for row in manifest['packages']} == {
         'windows/x64', 'windows/arm64', 'macos/x64', 'macos/arm64', 'termux/aarch64'}
@@ -172,12 +174,14 @@ def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidat
     receipt.unlink()
     with pytest.raises(ValueError, match='handoff'):
         assemble(fetched, tag, commit, base, tmp_path / 'missing.json',
-                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'])
+                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'],
+                 lanes=lane_set.NAMES)
     receipt.write_bytes(original)
     (fetched / 'metadata-windows-x64.json').write_text('{}', encoding='utf-8')
     with pytest.raises(ValueError, match='digest'):
         assemble(fetched, tag, commit, base, tmp_path / 'changed.json',
-                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'])
+                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'],
+                 lanes=lane_set.NAMES)
 
 
 def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):

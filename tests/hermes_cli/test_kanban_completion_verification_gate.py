@@ -49,8 +49,11 @@ def _valid_verification() -> dict:
     }
 
 
-def _running_task(conn) -> str:
-    tid = kb.create_task(conn, title="gated completion", assignee="coder")
+def _running_task(conn, completion_contract="local-only") -> str:
+    tid = kb.create_task(
+        conn, title="gated completion", assignee="coder",
+        completion_contract=completion_contract,
+    )
     assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
     return tid
 
@@ -92,3 +95,38 @@ def test_accepted_completion_preserves_stable_verification_report(conn, monkeypa
     ).fetchone()
     assert event is not None
     assert '"verification_report"' in event["payload"]
+
+
+@pytest.mark.parametrize(
+    ("contract", "artifact"),
+    [
+        ("pr-merged", {"type": "pr-merged", "url": "https://github.com/acme/repo/pull/1", "merged": True, "merge_commit": "deadbeef"}),
+        ("deployed", {"type": "deployed", "url": "https://dev.example.test", "smoke_test": {"command": "curl /health", "exit_code": 0}}),
+        ("document-committed", {"type": "document-committed", "path": "docs/decision.md", "commit": "deadbeef"}),
+        ("decision-recorded", {"type": "decision-recorded", "path": "docs/adr/001.md", "decision": "accepted"}),
+    ],
+)
+def test_typed_card_contract_requires_and_persists_its_artifact(conn, monkeypatch, contract, artifact):
+    monkeypatch.setenv("HERMES_COMPLETION_GATE", "1")
+    tid = _running_task(conn, contract)
+    payload = _valid_verification()
+    payload["artifact"] = artifact
+
+    assert kb.complete_task(conn, tid, result="verified", metadata={"verification": payload}) is True
+    run = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,)
+    ).fetchone()
+    assert run is not None
+    assert '"required_artifact": true' in run["metadata"]
+
+
+def test_typed_card_contract_refuses_missing_artifact(conn, monkeypatch):
+    monkeypatch.setenv("HERMES_COMPLETION_GATE", "1")
+    tid = _running_task(conn, "deployed")
+
+    with pytest.raises(kb.CompletionVerificationError) as error:
+        kb.complete_task(conn, tid, result="not deployed", metadata={"verification": _valid_verification()})
+
+    assert error.value.report["ok"] is False
+    assert any(item["code"] == "missing_artifact" for item in error.value.report["failures"])
+    assert kb.get_task(conn, tid).status == "running"

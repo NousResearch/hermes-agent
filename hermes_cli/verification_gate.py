@@ -6,6 +6,14 @@ from collections.abc import Mapping
 from typing import Any
 
 
+CARD_TYPE_ARTIFACTS = {
+    "pr-merged": "metadata.artifact with type=pr-merged, url, merged=true, and merge_commit",
+    "deployed": "metadata.artifact with type=deployed, url, and a successful smoke_test",
+    "document-committed": "metadata.artifact with type=document-committed, path, and commit",
+    "decision-recorded": "metadata.artifact with type=decision-recorded, path, and decision",
+}
+
+
 def _failure(code: str, detail: str) -> dict[str, str]:
     return {"code": code, "detail": detail}
 
@@ -14,7 +22,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def verify_completion(payload: Any) -> dict[str, Any]:
+def verify_completion(payload: Any, *, card_type: str | None = None) -> dict[str, Any]:
     """Return a stable, side-effect-free verification report."""
     failures: list[dict[str, str]] = []
     checks: dict[str, bool] = {}
@@ -23,6 +31,28 @@ def verify_completion(payload: Any) -> dict[str, Any]:
 
     task, repo = _mapping(payload.get("task")), _mapping(payload.get("repo"))
     preflight, scope = _mapping(payload.get("preflight")), _mapping(payload.get("scope"))
+
+    if card_type in CARD_TYPE_ARTIFACTS:
+        artifact = _mapping(payload.get("artifact"))
+        artifact_type = artifact.get("type") == card_type
+        checks["required_artifact"] = artifact_type
+        if not artifact_type:
+            failures.append(_failure("missing_artifact", f"required artifact: {CARD_TYPE_ARTIFACTS[card_type]}"))
+        else:
+            required = {
+                "pr-merged": ("url", "merged", "merge_commit"),
+                "deployed": ("url", "smoke_test"),
+                "document-committed": ("path", "commit"),
+                "decision-recorded": ("path", "decision"),
+            }[card_type]
+            missing = [key for key in required if not artifact.get(key)]
+            smoke = _mapping(artifact.get("smoke_test"))
+            if card_type == "deployed" and (smoke.get("exit_code") != 0 or not smoke.get("command")):
+                missing.append("smoke_test.exit_code=0")
+            if missing:
+                failures.append(_failure("incomplete_artifact", "artifact is missing: " + ", ".join(missing)))
+    elif card_type:
+        failures.append(_failure("unknown_card_type", f"unsupported card type: {card_type}"))
 
     predicates = [
         ("clean_worktree", repo.get("dirty") is not True, "unsaved_work", "repository worktree is dirty"),

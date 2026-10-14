@@ -2608,8 +2608,12 @@ def _apply_completion_verification_gate(
         return metadata
     from hermes_cli.verification_gate import verify_completion
 
+    task = get_task(conn, task_id)
+    contract = task.completion_contract if task else None
+    from hermes_cli.verification_gate import CARD_TYPE_ARTIFACTS
+    card_type = contract if contract in CARD_TYPE_ARTIFACTS else None
     payload = metadata.get("verification") if isinstance(metadata, dict) else None
-    report = verify_completion(payload)
+    report = verify_completion(payload, card_type=card_type)
     if not report["ok"]:
         with write_txn(conn):
             _append_event(conn, task_id, "completion_blocked_verification", {

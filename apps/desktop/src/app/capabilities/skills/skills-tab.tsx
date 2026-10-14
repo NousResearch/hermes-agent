@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { queryClient } from '@/lib/query-client'
+import { skillCategoryLabel, skillDisplayName } from '@/lib/skill-localization'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $hubActions, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
@@ -47,8 +48,8 @@ import { categoryFor, filteredOfficial, filteredSkills, skillsQueryKey, usageOf 
 const $skillsSortDesc = persistentAtom('hermes.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
 
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): ReactNode {
-  const category = prettyName(categoryFor(skill))
+function skillSubtitle(skill: SkillInfo, locale: string, labels: { agent: string; hub: string }): ReactNode {
+  const category = prettyName(skillCategoryLabel(categoryFor(skill), locale))
   const provenance = skill.provenance
 
   return (
@@ -56,12 +57,12 @@ function skillSubtitle(skill: SkillInfo): ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          learned
+          {labels.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+          {labels.hub}
         </Badge>
       )}
     </>
@@ -81,7 +82,7 @@ interface SkillsTabProps {
 
 /** The Skills tab: installed skills, official optional skills, and learned-skill editing. */
 export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const skillsSortDesc = useStore($skillsSortDesc)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null)
@@ -110,7 +111,10 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
     [profile]
   )
 
-  const visibleSkills = useMemo(() => filteredSkills(skills, query, skillsSortDesc), [query, skills, skillsSortDesc])
+  const visibleSkills = useMemo(
+    () => filteredSkills(skills, query, skillsSortDesc, locale),
+    [query, skills, skillsSortDesc, locale]
+  )
 
   // Installed-name set stays unfiltered so search cannot make a skill look absent.
   const installedSkillNames = useMemo(() => new Set(skills.map(s => s.name)), [skills])
@@ -120,8 +124,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
       skill => !skill.installed && !installedSkillNames.has(skill.name)
     )
 
-    return filteredOfficial(catalog, query)
-  }, [installedSkillNames, officialData, query])
+    return filteredOfficial(catalog, query, locale)
+  }, [installedSkillNames, officialData, query, locale])
 
   const runningInstallKey = useStoreSelector($hubActions, actions =>
     Object.keys(actions)
@@ -313,9 +317,9 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   setSelectedOfficial(null)
                 }}
                 onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
-                title={skill.name}
-                toggleLabel={skill.name}
+                subtitle={skillSubtitle(skill, locale, t.skills.provenance)}
+                title={skillDisplayName(skill.name, locale)}
+                toggleLabel={skillDisplayName(skill.name, locale)}
               />
             ))}
             {visibleOfficial.length > 0 && (
@@ -338,8 +342,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   enabled={false}
                   key={skill.identifier}
                   onSelect={() => setSelectedOfficial(skill.identifier)}
-                  subtitle={prettyName(skill.category)}
-                  title={skill.name}
+                  subtitle={prettyName(skillCategoryLabel(skill.category, locale))}
+                  title={skillDisplayName(skill.name, locale)}
                 />
               )
             })}

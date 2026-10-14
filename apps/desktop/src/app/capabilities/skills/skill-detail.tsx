@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { CountSkeleton } from '@/components/ui/skeleton'
 import { getSkillContent, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { skillCategoryLabel, skillDescription, skillDisplayName } from '@/lib/skill-localization'
 import type { SkillInfo } from '@/types/hermes'
 
 import { PanelPill } from '../../overlays/panel'
@@ -26,7 +27,7 @@ export function SkillDetail({
   profile?: ProfileScope
   skill: SkillInfo
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   // Origin only, never mutability: external mounts stay editable in place —
   // see ./skill-provenance (commit 8c8fc6c1ec).
   const editable = isEditableProvenance(skill.provenance)
@@ -48,10 +49,10 @@ export function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={skillDescription(skill.name, asText(skill.description), locale) || t.skills.noDescription}
         pills={
           <>
-            <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
+            <PanelPill>{prettyName(skillCategoryLabel(categoryFor(skill), locale))}</PanelPill>
             {(skill.provenance === 'agent' || skill.provenance === 'hub') && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}
@@ -59,7 +60,7 @@ export function SkillDetail({
             )}
           </>
         }
-        title={skill.name}
+        title={skillDisplayName(skill.name, locale)}
       />
       {editable && (
         <div className="flex items-center gap-2">

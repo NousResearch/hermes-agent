@@ -17,6 +17,7 @@ import {
   rankSkillCommands,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
+import { skillCommandDescription } from '@/lib/skill-localization'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
@@ -203,7 +204,14 @@ export function useSlashCompletions(options: {
 
           for (const [command, meta] of catalog.pairs ?? []) {
             if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
-              skillRows.push({ text: command, display: command, group: 'Skills', meta })
+              // 技能行的说明来自后端（英文），这里换成对照表里的中文；
+              // text/display 仍是真实的 `/name`，插入与执行不受影响。
+              skillRows.push({
+                text: command,
+                display: command,
+                group: 'Skills',
+                meta: skillCommandDescription(command, meta, locale)
+              })
             }
           }
 
@@ -255,19 +263,29 @@ export function useSlashCompletions(options: {
           .filter(
             item => isArgCompletion || isDesktopSlashSuggestionWithOptions(item.text, { exactAlias: exactAliasQuery })
           )
-          .map(item => ({
-            ...item,
+          .map(item => {
             // Arg suggestions (e.g. `/handoff <platform>`) live under one
             // header; otherwise split skills out from built-in commands.
             // Kind comes from the backend — the desktop table is a visibility
             // gate (`isDesktopSlashSuggestion`), not a classifier.
-            group: isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind),
-            // Arg items carry their own meta (the personality/toolset/platform
-            // blurb). Only command rows get the registry description — looking
-            // one up for `/personality none` would clobber it with the parent
-            // command's text.
-            meta: isArgCompletion ? textValue(item.meta) : desktopSlashDescription(item.text, textValue(item.meta))
-          }))
+            const group = isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind)
+            const meta = textValue(item.meta)
+
+            return {
+              ...item,
+              group,
+              // Arg items carry their own meta (the personality/toolset/platform
+              // blurb). Only command rows get the registry description — looking
+              // one up for `/personality none` would clobber it with the parent
+              // command's text. Skill rows carry the backend skill blurb, which
+              // gets translated here; `text`/`rawText` keep the real `/name`.
+              meta: isArgCompletion
+                ? meta
+                : group === 'Skills'
+                  ? skillCommandDescription(textValue(item.text), meta, locale)
+                  : desktopSlashDescription(item.text, meta)
+            }
+          })
 
         // Keep each group contiguous so headers render once: Commands before
         // Skills (stable within a group, preserving backend relevance order).
@@ -289,7 +307,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin, scopeKey, catalogKey, sessionParams]
+    [gateway, skinThemes, activeSkin, scopeKey, catalogKey, sessionParams, locale]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {

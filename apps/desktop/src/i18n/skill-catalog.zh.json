@@ -1,0 +1,366 @@
+{
+  "categories": {
+    "productivity": "效率办公",
+    "apple": "苹果设备",
+    "creative": "创意",
+    "research": "研究",
+    "web": "网页",
+    "autonomous-ai-agents": "自主 AI 代理",
+    "software-development": "软件开发",
+    "email": "电子邮件",
+    "media": "媒体",
+    "note-taking": "笔记",
+    "devops": "运维部署",
+    "social-media": "社交媒体"
+  },
+  "skills": {
+    "airtable": {
+      "displayName": "Airtable 表格 · airtable",
+      "description": "通过 curl 调用 Airtable REST API：记录增删改查、过滤、更新插入。",
+      "sourceDescription": "Airtable REST API via curl. Records CRUD, filters, upserts.",
+      "category": "productivity"
+    },
+    "apple-notes": {
+      "displayName": "苹果备忘录 · apple-notes",
+      "description": "通过 memo CLI 管理苹果备忘录：创建、搜索、编辑。",
+      "sourceDescription": "Manage Apple Notes via memo CLI: create, search, edit.",
+      "category": "apple"
+    },
+    "apple-reminders": {
+      "displayName": "苹果提醒事项 · apple-reminders",
+      "description": "通过 remindctl 使用苹果提醒事项：添加、列出、完成。",
+      "sourceDescription": "Apple Reminders via remindctl: add, list, complete.",
+      "category": "apple"
+    },
+    "architecture-diagram": {
+      "displayName": "架构图生成 · architecture-diagram",
+      "description": "深色主题 SVG 架构/云/基础设施图，输出为 HTML。",
+      "sourceDescription": "Dark-themed SVG architecture/cloud/infra diagrams as HTML.",
+      "category": "creative"
+    },
+    "arxiv": {
+      "displayName": "arXiv 论文检索 · arxiv",
+      "description": "按关键词、作者、分类或 ID 搜索 arXiv 论文。",
+      "sourceDescription": "Search arXiv papers by keyword, author, category, or ID.",
+      "category": "research"
+    },
+    "ascii-video": {
+      "displayName": "ASCII 视频 · ascii-video",
+      "description": "ASCII 视频：将视频/音频转换为彩色 ASCII MP4/GIF。",
+      "sourceDescription": "ASCII video: convert video/audio to colored ASCII MP4/GIF.",
+      "category": "creative"
+    },
+    "baoyu-infographic": {
+      "displayName": "宝玉信息图 · baoyu-infographic",
+      "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+      "sourceDescription": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+      "category": "creative"
+    },
+    "blocked-page-recovery": {
+      "displayName": "受限页面恢复 · blocked-page-recovery",
+      "description": "当抓取失败时使用：403/429、付费墙、WAF、反爬墙。",
+      "sourceDescription": "Use when a fetch fails: 403/429, paywall, WAF, bot wall.",
+      "category": "web"
+    },
+    "box": {
+      "displayName": "Box 云盘 · box",
+      "description": "Box 管理云文件、分享、搜索与元数据。",
+      "sourceDescription": "Box manages cloud files, sharing, search, and metadata.",
+      "category": "productivity"
+    },
+    "claude-code": {
+      "displayName": "Claude Code 编码 · claude-code",
+      "description": "将编码任务委派给 Claude Code CLI（功能开发、PR）。",
+      "sourceDescription": "Delegate coding to Claude Code CLI (features, PRs).",
+      "category": "autonomous-ai-agents"
+    },
+    "claude-design": {
+      "displayName": "一次性 HTML 设计 · claude-design",
+      "description": "设计一次性 HTML 作品（落地页、演示文稿、原型）。",
+      "sourceDescription": "Design one-off HTML artifacts (landing, deck, prototype).",
+      "category": "creative"
+    },
+    "codebase-inspection": {
+      "displayName": "代码库体检 · codebase-inspection",
+      "description": "用 pygount 检查代码库：LOC、语言、比例。",
+      "sourceDescription": "Inspect codebases w/ pygount: LOC, languages, ratios.",
+      "category": "software-development"
+    },
+    "codex": {
+      "displayName": "Codex 编码 · codex",
+      "description": "将编码任务委派给 OpenAI Codex CLI（功能开发、PR）。",
+      "sourceDescription": "Delegate coding to OpenAI Codex CLI (features, PRs).",
+      "category": "autonomous-ai-agents"
+    },
+    "competitor-news-monitor": {
+      "displayName": "竞品动态监控 · competitor-news-monitor",
+      "description": "监控指定公司的重要动态；输出带引用的摘要。",
+      "sourceDescription": "Watch named companies for material news; cited digests.",
+      "category": "research"
+    },
+    "computer-use": {
+      "displayName": "桌面操控 · computer-use",
+      "description": "以后台优先方式驱动桌面；收到信号时再升级处理。",
+      "sourceDescription": "Drive the desktop background-first; escalate on signal.",
+      "category": "autonomous-ai-agents"
+    },
+    "design-md": {
+      "displayName": "DESIGN.md 令牌 · design-md",
+      "description": "编写/校验/导出 Google 的 DESIGN.md 设计令牌规范文件。",
+      "sourceDescription": "Author/validate/export Google's DESIGN.md token spec files.",
+      "category": "creative"
+    },
+    "document-to-action-items": {
+      "displayName": "文档转行动项 · document-to-action-items",
+      "description": "从文档中提取引用的义务、截止日期与任务。",
+      "sourceDescription": "Extract cited obligations, deadlines, tasks from documents.",
+      "category": "productivity"
+    },
+    "docx": {
+      "displayName": "Word 文档 · docx",
+      "description": "创建、读取、编辑、模板化与审阅 Word .docx 文件。",
+      "sourceDescription": "Create, read, edit, template, and review Word .docx files.",
+      "category": "productivity"
+    },
+    "dogfood": {
+      "displayName": "Web 应用探索测试 · dogfood",
+      "description": "对 Web 应用做探索性 QA：发现缺陷、留证、出报告。",
+      "sourceDescription": "Exploratory QA of web apps: find bugs, evidence, reports.",
+      "category": "software-development"
+    },
+    "email-inbox-triage": {
+      "displayName": "收件箱分拣 · email-inbox-triage",
+      "description": "分拣收件箱：按优先级排列邮件线程，安全起草回复。",
+      "sourceDescription": "Triage an inbox: prioritize threads, draft replies safely.",
+      "category": "email"
+    },
+    "findmy": {
+      "displayName": "查找我的设备 · findmy",
+      "description": "在 macOS 上通过「查找」App 追踪苹果设备与 AirTag。",
+      "sourceDescription": "Track Apple devices/AirTags via FindMy.app on macOS.",
+      "category": "apple"
+    },
+    "gif-search": {
+      "displayName": "GIF 搜索 · gif-search",
+      "description": "通过 curl + jq 从 Tenor 搜索/下载 GIF。",
+      "sourceDescription": "Search/download GIFs from Tenor via curl + jq.",
+      "category": "media"
+    },
+    "github": {
+      "displayName": "GitHub 操作 · github",
+      "description": "通过 gh CLI 使用 GitHub：PR、issue、评审、仓库、登录。",
+      "sourceDescription": "GitHub via gh CLI: PRs, issues, reviews, repos, auth.",
+      "category": "software-development"
+    },
+    "google-workspace": {
+      "displayName": "Google 工作区 · google-workspace",
+      "description": "通过 gws CLI 或 Python 使用 Gmail、日历、云端硬盘、文档、表格。",
+      "sourceDescription": "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.",
+      "category": "productivity"
+    },
+    "grounded-citations": {
+      "displayName": "引用落地 · grounded-citations",
+      "description": "让回答与文档扎根于可核验的引用来源。",
+      "sourceDescription": "Ground answers and documents in cited, verifiable sources.",
+      "category": "research"
+    },
+    "hermes-agent": {
+      "displayName": "Hermes Agent 主控 · hermes-agent",
+      "description": "使用、配置、定制主题、扩展和编排 Hermes Agent。",
+      "sourceDescription": "Use, configure, theme, extend, and orchestrate Hermes Agent.",
+      "category": "autonomous-ai-agents"
+    },
+    "hermes-agent-skill-authoring": {
+      "displayName": "仓库技能编写 · hermes-agent-skill-authoring",
+      "description": "编写仓库内 SKILL.md 文件：frontmatter 与结构。",
+      "sourceDescription": "Author in-repo SKILL.md files: frontmatter and structure.",
+      "category": "software-development"
+    },
+    "himalaya": {
+      "displayName": "Himalaya 邮件 CLI · himalaya",
+      "description": "Himalaya CLI：在终端收发 IMAP/SMTP 邮件。",
+      "sourceDescription": "Himalaya CLI: IMAP/SMTP email from terminal.",
+      "category": "email"
+    },
+    "humanizer": {
+      "displayName": "文本人性化 · humanizer",
+      "description": "人性化文本：去除 AI 腔，加入真实语气。",
+      "sourceDescription": "Humanize text: strip AI-isms and add real voice.",
+      "category": "creative"
+    },
+    "imessage": {
+      "displayName": "iMessage 信息 · imessage",
+      "description": "在 macOS 上通过 imsg CLI 收发 iMessage/短信。",
+      "sourceDescription": "Send and receive iMessages/SMS via the imsg CLI on macOS.",
+      "category": "apple"
+    },
+    "inspecting-hermes-desktop-dom": {
+      "displayName": "桌面 DOM 检查 · inspecting-hermes-desktop-dom",
+      "description": "通过 CDP 读取运行中的 Hermes 桌面 DOM/CSS。",
+      "sourceDescription": "Read the live Hermes desktop DOM/CSS over CDP.",
+      "category": "software-development"
+    },
+    "llm-wiki": {
+      "displayName": "LLM 维基 · llm-wiki",
+      "description": "Karpathy 的 LLM Wiki：构建/查询互链的 markdown 知识库。",
+      "sourceDescription": "Karpathy's LLM Wiki: build/query interlinked markdown KB.",
+      "category": "research"
+    },
+    "manim-video": {
+      "displayName": "Manim 动画 · manim-video",
+      "description": "Manim CE 动画：3Blue1Brown 风格数学/算法视频。",
+      "sourceDescription": "Manim CE animations: 3Blue1Brown math/algo videos.",
+      "category": "creative"
+    },
+    "maps": {
+      "displayName": "地图地理服务 · maps",
+      "description": "通过 OpenStreetMap/OSRM 进行地理编码、POI、路线、时区查询。",
+      "sourceDescription": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.",
+      "category": "productivity"
+    },
+    "meeting-action-items": {
+      "displayName": "会议行动项 · meeting-action-items",
+      "description": "把会议笔记整理成带引用的决策、负责人与工单。",
+      "sourceDescription": "Turn meeting notes into cited decisions, owners, tickets.",
+      "category": "productivity"
+    },
+    "node-inspect-debugger": {
+      "displayName": "Node 调试 · node-inspect-debugger",
+      "description": "通过 --inspect + Chrome DevTools Protocol CLI 调试 Node.js。",
+      "sourceDescription": "Debug Node.js via --inspect + Chrome DevTools Protocol CLI.",
+      "category": "software-development"
+    },
+    "notion": {
+      "displayName": "Notion 笔记库 · notion",
+      "description": "Notion API + ntn CLI：页面、数据库、markdown、Workers。",
+      "sourceDescription": "Notion API + ntn CLI: pages, databases, markdown, Workers.",
+      "category": "productivity"
+    },
+    "obsidian": {
+      "displayName": "Obsidian 笔记 · obsidian",
+      "description": "在 Obsidian 库中读取、搜索、创建和编辑笔记。",
+      "sourceDescription": "Read, search, create, and edit notes in the Obsidian vault.",
+      "category": "note-taking"
+    },
+    "opencode": {
+      "displayName": "OpenCode 编码 · opencode",
+      "description": "将编码任务委派给 OpenCode CLI（功能开发、PR 评审）。",
+      "sourceDescription": "Delegate coding to OpenCode CLI (features, PR review).",
+      "category": "autonomous-ai-agents"
+    },
+    "p5js": {
+      "displayName": "p5.js 草图 · p5js",
+      "description": "p5.js 草图：生成艺术、着色器、交互、3D。",
+      "sourceDescription": "p5.js sketches: gen art, shaders, interactive, 3D.",
+      "category": "creative"
+    },
+    "pdf": {
+      "displayName": "PDF 处理 · pdf",
+      "description": "PDF 文件：创建、读取、合并、填写、OCR、编辑文本。",
+      "sourceDescription": "PDF files: create, read, merge, fill, OCR, edit text.",
+      "category": "productivity"
+    },
+    "popular-web-designs": {
+      "displayName": "流行网页设计集 · popular-web-designs",
+      "description": "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS。",
+      "sourceDescription": "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.",
+      "category": "creative"
+    },
+    "powerpoint": {
+      "displayName": "PPT 演示文稿 · powerpoint",
+      "description": "用 python-pptx 创建、读取、编辑 .pptx 演示文稿。",
+      "sourceDescription": "Create, read, edit .pptx decks with python-pptx.",
+      "category": "productivity"
+    },
+    "product-price-monitor": {
+      "displayName": "商品价格监控 · product-price-monitor",
+      "description": "监控商品、航班或listing价格；达到目标时告警。",
+      "sourceDescription": "Watch product, flight, or listing prices; alert on target.",
+      "category": "productivity"
+    },
+    "python-debugpy": {
+      "displayName": "Python 调试 · python-debugpy",
+      "description": "调试 Python：pdb 交互式调试与 debugpy 远程调试（DAP）。",
+      "sourceDescription": "Debug Python: pdb REPL + debugpy remote (DAP).",
+      "category": "software-development"
+    },
+    "requesting-code-review": {
+      "displayName": "提交前评审 · requesting-code-review",
+      "description": "提交前评审：安全扫描、质量门禁、自动修复。",
+      "sourceDescription": "Pre-commit review: security scan, quality gates, auto-fix.",
+      "category": "software-development"
+    },
+    "sdlc-review": {
+      "displayName": "SDLC 评审 · sdlc-review",
+      "description": "评审看板交接项并路由已验证的产出。",
+      "sourceDescription": "Review Kanban handoffs and route verified outcomes.",
+      "category": "devops"
+    },
+    "simplify-code": {
+      "displayName": "代码精简 · simplify-code",
+      "description": "4 个并行代理清理最近的代码改动。",
+      "sourceDescription": "Parallel 4-agent cleanup of recent code changes.",
+      "category": "software-development"
+    },
+    "songsee": {
+      "displayName": "音频频谱分析 · songsee",
+      "description": "音频频谱图/特征（mel、chroma、MFCC），通过 CLI。",
+      "sourceDescription": "Audio spectrograms/features (mel, chroma, MFCC) via CLI.",
+      "category": "media"
+    },
+    "songwriting-and-ai-music": {
+      "displayName": "写歌与 AI 音乐 · songwriting-and-ai-music",
+      "description": "歌曲创作技巧与 Suno AI 音乐提示词。",
+      "sourceDescription": "Songwriting craft and Suno AI music prompts.",
+      "category": "creative"
+    },
+    "spike": {
+      "displayName": "技术验证 · spike",
+      "description": "构建前用一次性实验验证想法。",
+      "sourceDescription": "Throwaway experiments to validate an idea before build.",
+      "category": "software-development"
+    },
+    "systematic-debugging": {
+      "displayName": "系统化调试 · systematic-debugging",
+      "description": "四阶段根因调试：先理解缺陷再修复。",
+      "sourceDescription": "4-phase root cause debugging: understand bugs before fixing.",
+      "category": "software-development"
+    },
+    "teams-meeting-pipeline": {
+      "displayName": "Teams 会议流水线 · teams-meeting-pipeline",
+      "description": "Teams 会议纪要、任务回放、Graph 订阅。",
+      "sourceDescription": "Teams meeting summaries, job replay, Graph subscriptions.",
+      "category": "productivity"
+    },
+    "test-driven-development": {
+      "displayName": "测试驱动开发 · test-driven-development",
+      "description": "TDD：强制 RED-GREEN-REFACTOR，测试先于代码。",
+      "sourceDescription": "TDD: enforce RED-GREEN-REFACTOR, tests before code.",
+      "category": "software-development"
+    },
+    "weekly-review-planning": {
+      "displayName": "每周复盘规划 · weekly-review-planning",
+      "description": "每周重置：承诺事项、停滞工作、下周计划。",
+      "sourceDescription": "Weekly reset: commitments, stalled work, next-week plan.",
+      "category": "productivity"
+    },
+    "xlsx": {
+      "displayName": "Excel 表格 · xlsx",
+      "description": "创建、读取、编辑 Excel .xlsx 工作簿与 CSV。",
+      "sourceDescription": "Create, read, edit Excel .xlsx workbooks and CSVs.",
+      "category": "productivity"
+    },
+    "xurl": {
+      "displayName": "X/Twitter 操作 · xurl",
+      "description": "通过 xurl CLI 使用 X/Twitter：帖子搜索、发帖、私信、媒体。",
+      "sourceDescription": "X/Twitter via xurl CLI: raw post search, posting, DM, media.",
+      "category": "social-media"
+    },
+    "youtube-content": {
+      "displayName": "YouTube 内容加工 · youtube-content",
+      "description": "将 YouTube 字幕转为摘要、推文串、博客。",
+      "sourceDescription": "YouTube transcripts to summaries, threads, blogs.",
+      "category": "media"
+    }
+  }
+}

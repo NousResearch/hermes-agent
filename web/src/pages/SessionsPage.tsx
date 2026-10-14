@@ -963,6 +963,12 @@ export default function SessionsPage() {
     };
   }, [sourceMenuOpen]);
 
+  // Preserve scroll position across silent background refreshes so the
+  // user doesn't get yanked back to the top of the list when a new session
+  // arrives while they're reading further down.
+  const sessionListScrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollRestore = useRef<number | null>(null);
+
   const loadSessions = useCallback((p: number, silent = false) => {
     // ``silent`` skips the loading spinner so background refreshes
     // (triggered when the overview poll detects a new session from
@@ -973,6 +979,11 @@ export default function SessionsPage() {
       : sessionsRequestRef.current + 1;
     if (!silent) sessionsRequestRef.current = requestId;
     if (!silent) setLoading(true);
+    // Snapshot scroll BEFORE the state update triggers a re-render.
+    if (silent && pendingScrollRestore.current === null) {
+      pendingScrollRestore.current =
+        sessionListScrollRef.current?.scrollTop ?? null;
+    }
     api
       .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
       .then((resp) => {
@@ -986,6 +997,24 @@ export default function SessionsPage() {
         if (!silent) setLoading(false);
       });
   }, [sessionQueryOptions]);
+
+  // Restore scroll after React commits the silent re-render. useLayoutEffect
+  // runs synchronously before paint so the user never sees the jump.
+  useLayoutEffect(() => {
+    const saved = pendingScrollRestore.current;
+    if (saved === null) return;
+    const el = sessionListScrollRef.current;
+    if (el) el.scrollTop = saved;
+    pendingScrollRestore.current = null;
+  }, [sessions]);
+
+  // Tick every 30s so timeAgo() labels update like WhatsApp Web instead of
+  // staying frozen until some unrelated state change triggers a re-render.
+  const [, setTimeTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTimeTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const loadStats = useCallback(() => {
     api
@@ -1969,190 +1998,3 @@ export default function SessionsPage() {
               aria-label={t.sessions.selectAllOnPage}
               title={t.sessions.selectAllOnPage}
             >
-              <span className="font-mondwest normal-case text-xs">
-                {t.sessions.selectAllOnPage}
-              </span>
-            </Button>
-          )}
-          <Button
-            ghost
-            size="sm"
-            onClick={clearSelection}
-            aria-label={t.sessions.clearSelection}
-            title={t.sessions.clearSelection}
-          >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.clearSelection}
-            </span>
-          </Button>
-          <Button
-            outlined
-            destructive
-            size="sm"
-            className="ml-auto"
-            onClick={() => setDeleteSelectedOpen(true)}
-            aria-label={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            title={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            prefix={<Trash2 />}
-          >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.deleteSelected.replace(
-                "{count}",
-                String(selectedIds.size),
-              )}
-            </span>
-          </Button>
-        </div>
-      )}
-
-      {showList ? (
-        filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-            <Clock className="h-8 w-8 mb-3 opacity-40" />
-            <p className="text-sm font-medium">
-              {search
-                ? t.sessions.noMatch
-                : selectedSources !== null || sessionCategory !== "chats"
-                  ? t.sessions.noSessionsInFilter
-                  : t.sessions.noSessions}
-            </p>
-            {!search && sessionCategory === "chats" && selectedSources === null && (
-              <p className="text-xs mt-1 text-text-tertiary">
-                {t.sessions.startConversation}
-              </p>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s, index) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  snippet={snippetMap.get(s.id)}
-                  searchQuery={search || undefined}
-                  isExpanded={expandedId === s.id}
-                  isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
-                  }
-                  onDelete={() => sessionDelete.requestDelete(s.id)}
-                  onRename={handleRename}
-                  onExport={handleExport}
-                  resumeInChatEnabled={resumeInChatEnabled}
-                />
-              ))}
-            </div>
-
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
-              />
-            )}
-          </>
-        )
-      ) : (
-        <div className="flex min-w-0 flex-col gap-4">
-          {platformEntries.length > 0 && status && (
-            <PlatformsCard platforms={platformEntries} />
-          )}
-
-          {recentSessions.length > 0 && (
-            <Card className="min-w-0 max-w-full overflow-hidden">
-              <CardHeader className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
-                </div>
-              </CardHeader>
-
-              <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span
-                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
-                      >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
-                            : t.common.untitled)}
-                      </span>
-
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        {s.model && (
-                          <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
-                            ·{" "}
-                          </>
-                        )}
-                        {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && s.title && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
-                    </Badge>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      )}
-
-      <PluginSlot name="sessions:bottom" />
-    </div>
-  );
-}
-
-interface SessionRowProps {
-  isExpanded: boolean;
-  isSelected: boolean;
-  onDelete: () => void;
-  onExport: (id: string) => void;
-  onRename: (id: string, title: string, profile?: string) => Promise<void>;
-  onSelectClick: (event: React.MouseEvent) => void;
-  onToggle: () => void;
-  resumeInChatEnabled: boolean;
-  searchQuery?: string;
-  session: SessionInfo;
-  snippet?: string;
-}
-
-interface SessionsPaginationProps {
-  className?: string;
-  compact?: boolean;
-  onPageChange: (page: number) => void;
-  page: number;
-  total: number;
-}

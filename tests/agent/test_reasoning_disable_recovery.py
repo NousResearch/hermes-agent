@@ -161,3 +161,22 @@ def test_rejected_reasoning_level_retries_without_the_effort():
     _recover(agent, _REVERSED_400)
     assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
     assert any("rejects disabling reasoning" in n for n in agent.notices)
+
+
+# #129002: an SGLang custom endpoint answers a ladder-legal effort its vocabulary lacks with
+# "Unexpected reasoning effort high. Supported types are xhigh (default), medium, low" — no
+# "unsupported", no underscore field name, no structured param. Before the classifier learned
+# the wording it fell through to format_error and every bot-mode DM resume on that seat died
+# before a turn; it must take the same drop-the-effort rung as #100536.
+_SGLANG_LEVEL_400 = (
+    "Error code: 400 - {'error': {'message': 'Unexpected reasoning effort high. "
+    "Supported types are xhigh (default), medium, low', 'type': 'invalid_request_error'}}"
+)
+
+
+def test_sglang_unexpected_effort_400_retries_without_the_effort():
+    agent = _WireAgent({"enabled": True, "effort": "high"})
+    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}  # the request that 400ed
+    _recover(agent, _SGLANG_LEVEL_400)
+    assert _wire_reasoning_config(agent) is None, "retry must omit reasoning_effort (server default applies)"
+    assert any("rejects reasoning effort high" in n for n in agent.notices)

@@ -34,6 +34,7 @@ import {
 } from '@/store/boot'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
 import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
+import { $foreignLiveSessionIds } from '@/store/foreign-live'
 import {
   $gateway,
   activeGateway,
@@ -49,7 +50,6 @@ import {
   isActivePrimary,
   liveSecondaryConnectionIds,
   parkSecondariesForRetiredBackend,
-  pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   type ScopedServerRequest,
@@ -57,6 +57,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
+import { reconcileLiveGateways } from '@/store/gateway-live-reconcile'
 import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
@@ -1368,7 +1369,12 @@ export function useGatewayBoot({
     // source's liveness without keeping the wrong gateway alive. Feeds the
     // pruner's keep-set and the wake probe's in-flight-work signal.
     const liveWorkScopes = (): Set<string> => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+      const live = new Set([
+        ...$workingSessionIds.get(),
+        ...$attentionSessionIds.get(),
+        ...$foreignLiveSessionIds.get()
+      ])
+
       const scopes = liveSessionScopes()
 
       for (const session of $sessions.get()) {
@@ -1392,11 +1398,16 @@ export function useGatewayBoot({
       // set itself (its `foregroundScopes` hook) so the refcount-0 lease
       // releases agree with this pruner. This recompute only has to RUN when
       // they change — see the tile / selected session / hold subscriptions.
-      pruneSecondaryGateways(keep)
+      // Foreign-live profiles (DB-fresh rows the user never touched) also get
+      // their socket OPENED here, not just spared: reconcileLiveGateways opens
+      // every keep-set profile that isn't open, so their serve's events reach
+      // the renderer while their rows are DB-live.
+      reconcileLiveGateways(keep)
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
+    const offForeignLive = $foreignLiveSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveSession = $activeSessionId.subscribe(() => recomputeKeptGateways())
     const offSessionTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
@@ -1690,6 +1701,7 @@ export function useGatewayBoot({
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()
+      offForeignLive()
       offActiveSession()
       offSessionTiles()
       offActiveProfile()

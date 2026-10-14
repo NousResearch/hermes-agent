@@ -12,8 +12,9 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sessions } from '@/store/session'
 import type * as SessionStore from '@/store/session'
-import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import { $sessionStates, clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
@@ -459,5 +460,68 @@ describe('SidebarSessionRow continuation badge', () => {
     const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
 
     expect(continuationGlyph(branch.container)).toBeNull()
+  })
+})
+
+// #85302: foreign (DB-derived) liveness captions the row with the backend's
+// durable activity stamp — but only when no event-owned runtime is driving
+// the row: a streamed turn owns its own transcript, and the caption would
+// fight the live preview.
+describe('foreign live activity caption', () => {
+  afterEach(() => {
+    act(() => {
+      $sessions.set([])
+      $sessionStates.set({})
+    })
+    clearAllSessionStates()
+  })
+
+  it('captions the live activity of a foreign working session', () => {
+    const session = makeSession({
+      id: 's-cron',
+      is_active: true,
+      last_activity_description: 'executing tool: terminal',
+      title: 'Cron Feed'
+    })
+
+    act(() => {
+      $sessions.set([session as never])
+      $sessionStates.set({})
+    })
+    const { container } = renderRow(session)
+    expect(container.textContent).toContain('executing tool: terminal')
+  })
+
+  it('does not caption a session an event-owned runtime is driving', () => {
+    const session = makeSession({
+      id: 's-local',
+      is_active: true,
+      last_activity_description: 'executing tool: terminal',
+      title: 'Local'
+    })
+
+    act(() => {
+      $sessions.set([session as never])
+      $sessionStates.set({})
+    })
+    publishSessionState('rt1', { ...createClientSessionState('s-local'), busy: true })
+    const { container } = renderRow(session)
+    expect(container.textContent).not.toContain('executing tool: terminal')
+  })
+
+  it('does not caption an idle session even when the stamp is present', () => {
+    const session = makeSession({
+      id: 's-idle',
+      is_active: false,
+      last_activity_description: 'executing tool: terminal',
+      title: 'Idle'
+    })
+
+    act(() => {
+      $sessions.set([session as never])
+      $sessionStates.set({})
+    })
+    const { container } = renderRow(session)
+    expect(container.textContent).not.toContain('executing tool: terminal')
   })
 })

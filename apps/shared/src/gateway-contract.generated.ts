@@ -3269,7 +3269,7 @@ export interface SessionActiveListParams {
 export interface SessionActiveListResult {
   sessions: SessionActiveItem[]
 }
-/** ``server._session_live_item``. */
+/** ``server._session_live_item`` (plus the DB-derived ``foreign`` rows). */
 export interface SessionActiveItem {
   current: boolean
   id: string
@@ -3281,6 +3281,9 @@ export interface SessionActiveItem {
   started_at: number
   status: LiveSessionStatus
   title: string
+  foreign?: boolean | null
+  description?: string | null
+  provider?: string | null
 }
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working' | 'streaming' | 'resuming'
 /** ``session_id`` is the STORED id. */
@@ -5465,7 +5468,7 @@ export interface RpcMethods {
   'rollback.restore': { params: RollbackRestoreParams; result: RollbackRestoreResult }
   /** Attach the frontend to a live session without closing the previously focused one. */
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
-  /** Live sessions in this process, insertion order (not a DB browser). */
+  /** Live sessions in this process, insertion order (not a DB browser), plus DB-derived foreign rows. */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
   /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
   'session.archive': { params: SessionArchiveParams; result: SessionArchiveResult }

@@ -33,7 +33,7 @@ import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
-import { $openStoredSessionIds } from '@/store/session-states'
+import { $openStoredSessionIds, $workingSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -123,6 +123,77 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
 
   // Under a minute reads as "now" — the sidebar never shows a seconds tick.
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
+}
+
+/** The live-activity caption under the title, for a row whose work lives in
+ * another process (a cron run, a CLI one-shot — #85302). Its own store reads:
+ * repainting a row while a sibling streams must not re-render every row, and
+ * null when there is no caption keeps both render sites unconditional. */
+function SessionActivityCaption({ className, session }: { className: string; session: SessionInfo }) {
+  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
+  // Rows whose work streams through events own their own transcript, so the
+  // caption only paints when no event-owned runtime is driving this row.
+  // Selector on $workingSessionIds (the same set the dot ladder's event rung
+  // claims through), so a row repaints when its own membership flips.
+  const eventWorking = useStoreSelector($workingSessionIds, ids => ids.includes(session.id))
+
+  const caption =
+    dotState === 'working' && !eventWorking && session.last_activity_description
+      ? session.last_activity_description
+      : null
+
+  return caption ? (
+    <span className={cn('block truncate text-[0.625rem] text-(--ui-text-tertiary)', className)}>
+      {caption}
+    </span>
+  ) : null
+}
+
+/** The handoff origin badge (a Telegram thread continued here still reads as
+ * Telegram) and the projected-continuation glyph, as one fragment: both ride
+ * the title line in BOTH layouts, so one component keeps them in lockstep. */
+function SessionRowBadges({
+  handoffLabel,
+  handoffSource,
+  r,
+  session
+}: {
+  handoffLabel: string | null
+  handoffSource: string | null
+  r: Translations['sidebar']['row']
+  session: SessionInfo
+}) {
+  // A projected continuation renders as a plain top-level row, which reads as
+  // a brand-new conversation that "appeared by itself" — and the sealed
+  // predecessor it replaced once nested like a branch users deleted as
+  // accidents (#121148). Label the provenance so an automatic rotation is
+  // legible as one.
+  const continuationBadge =
+    session.continuation_kind === 'compression' ? (
+      <Tip label={r.continuationOrigin}>
+        <Codicon
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-(--ui-text-quaternary)"
+          name="layers"
+          size="0.75rem"
+        />
+      </Tip>
+    ) : null
+
+  return (
+    <>
+      {handoffSource && handoffLabel ? (
+        <Tip label={r.handoffOrigin(handoffLabel)}>
+          <PlatformAvatar
+            className="-mt-px size-4 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+            platformId={handoffSource}
+            platformName={handoffLabel}
+          />
+        </Tip>
+      ) : null}
+      {continuationBadge}
+    </>
+  )
 }
 
 function SidebarSessionRowImpl({
@@ -515,41 +586,21 @@ function SidebarSessionRowImpl({
               </SidebarRowLead>
             )
 
-            const handoffBadge =
-              handoffSource && handoffLabel ? (
-                <Tip label={r.handoffOrigin(handoffLabel)}>
-                  <PlatformAvatar
-                    className="-mt-px size-4 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                    platformId={handoffSource}
-                    platformName={handoffLabel}
-                  />
-                </Tip>
-              ) : null
-
-            // A projected continuation renders as a plain top-level row, which
-            // reads as a brand-new conversation that "appeared by itself" — and
-            // the sealed predecessor it replaced once nested like a branch
-            // users deleted as accidents (#121148). Label the provenance so an
-            // automatic rotation is legible as one.
-            const continuationBadge =
-              session.continuation_kind === 'compression' ? (
-                <Tip label={r.continuationOrigin}>
-                  <Codicon
-                    aria-hidden="true"
-                    className="size-3.5 shrink-0 text-(--ui-text-quaternary)"
-                    name="layers"
-                    size="0.75rem"
-                  />
-                </Tip>
-              ) : null
+            const badges = (
+              <SessionRowBadges
+                handoffLabel={handoffLabel}
+                handoffSource={handoffSource}
+                r={r}
+                session={session}
+              />
+            )
 
             if (!card) {
               return (
                 <>
                   {leadNode}
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
-                  {handoffBadge}
-                  {continuationBadge}
+                  {badges}
                   <span className="min-w-0 flex-1 self-center">
                     {/* The row's primary action (#38072 finding 3): the title
                         is the session row's real button — the grabber and ⋯
@@ -593,6 +644,10 @@ function SidebarSessionRowImpl({
                         {details.preview}
                       </span>
                     )}
+                    <SessionActivityCaption
+                      className={cn('mt-0.5', SIDEBAR_TRUNCATED_LEADING)}
+                      session={session}
+                    />
                   </span>
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                 </>
@@ -617,8 +672,7 @@ function SidebarSessionRowImpl({
                   >
                     {context}
                   </span>
-                  {handoffBadge}
-                  {continuationBadge}
+                  {badges}
                   <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>
@@ -652,6 +706,7 @@ function SidebarSessionRowImpl({
                       {session.preview}
                     </span>
                   ) : null}
+                  <SessionActivityCaption className={cn('min-w-0', SIDEBAR_TRUNCATED_LEADING)} session={session} />
                 </div>
                 {model || size || todoProgress ? (
                   <span

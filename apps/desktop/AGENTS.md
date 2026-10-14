@@ -70,6 +70,30 @@ reconnect); a runtime `HERMES_HOME` change is a HARD re-home (reload); a live pr
 lists while background profiles keep streaming. After any swap the active socket, profile and
 connection atoms must agree.
 
+## Session liveness: one ladder, three rungs
+
+A session row's "alive" treatment (working dot + travelling arc) must never disagree between
+surfaces, and it must hold for sessions this window did not start. The renderer resolves liveness
+on a three-rung ladder, weakest first:
+
+1. **DB-derived fallback** (`$foreignLiveSessionIds`, store/foreign-live.ts): a refreshed list row
+with `is_active` (backend: `ended_at IS NULL` and `now - last_active < 300`) and NO runtime in
+`$sessionStates` is claimed as `working`. This is the only rung that sees sessions running in other
+processes — CLI one-shots, cron runs, messaging turns, other profiles' serves — which never emit
+events on this window's transports. It paints within the sessions.changed refresh cadence.
+2. **`session.active_list` rehydration** (use-background-sync.ts): the polled snapshot of this
+gateway's in-memory sessions, plus DB-derived `foreign` rows the backend reports. Restores
+liveness after reconnects; a `foreign` row never publishes runtime state and never clobbers a row
+a real runtime already owns.
+3. **Live stream events** (the normal path): authoritative, always wins — the fallback predicate
+excludes any id with a runtime in `$sessionStates`, and the rehydrate path skips `foreign` rows
+whose id gained a runtime.
+
+Rules: a real event outranks a DB stamp; absence clears (a row leaving the 300s window or gaining
+`ended_at` drops the claim on the next refresh); the fallback never creates runtime state — it
+claims stored ids only, through `lineageAliases`, so compression rotation stays correct. Activity
+captions on foreign rows read `last_activity_description` from the same refreshed rows.
+
 ## Cross everything as an observable ladder
 
 Every seam (versions, profiles, local/remote/cloud, older backends) resolves through ONE ordered

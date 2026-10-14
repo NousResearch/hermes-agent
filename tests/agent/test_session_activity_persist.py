@@ -41,10 +41,12 @@ def test_touch_activity_skips_persist_without_session_db(monkeypatch):
     monkeypatch.setattr(run_agent.time, "time", lambda: 1.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1.0)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
 
     agent._touch_activity("starting API call #1")
     assert agent._last_activity_desc == "starting API call #1"
-    assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
+    # Source-derived default (no platform/env → CLI), never 'unknown'.
+    assert agent._last_activity_provenance is ActivityProvenance.SOURCE_CLI
 
 
 def test_touch_activity_accepts_named_provenance(monkeypatch):
@@ -52,6 +54,7 @@ def test_touch_activity_accepts_named_provenance(monkeypatch):
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1000.0)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
 
     agent._touch_activity(
         "compressing context",
@@ -68,12 +71,13 @@ def test_touch_activity_accepts_named_provenance(monkeypatch):
     agent._session_db.touch_session_activity.reset_mock()
     agent._session_activity_last_persist_mono = 0.0
     agent._touch_activity("starting API call #1")
-    assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
+    # No explicit provenance: the session's OWNER source (CLI here) wins.
+    assert agent._last_activity_provenance is ActivityProvenance.SOURCE_CLI
     agent._session_db.touch_session_activity.assert_called_once_with(
         "sess-1",
         1_700_000_000.0,
         description="starting API call #1",
-        provenance=ActivityProvenance.UNKNOWN,
+        provenance=ActivityProvenance.SOURCE_CLI,
     )
 
 
@@ -263,3 +267,45 @@ def test_compression_transition_provenances_surface_in_activity_summary(monkeypa
         assert summary["provenance"] == provenance.value
         assert summary["last_activity_description"] == desc
         assert summary["last_activity_desc"] == desc
+
+
+def test_normalize_source_provenance_values():
+    """Creator-surface provenance values resolve; garbage falls back to UNKNOWN."""
+    from agent.session_activity import normalize_activity_provenance
+
+    for source in ("cron", "cli", "subagent", "gateway", "acp", "desktop", "tui"):
+        assert normalize_activity_provenance(source) == ActivityProvenance(source)
+
+    assert normalize_activity_provenance("garbage-value") is ActivityProvenance.UNKNOWN
+
+
+def test_touch_activity_defaults_provenance_from_platform(monkeypatch):
+    """The ordinary activity clock stamps the session's OWNER, not 'unknown' —
+    a cron run's DB row says provenance='cron', a subagent's 'subagent'."""
+    from agent.session_activity import provenance_for_source
+
+    assert provenance_for_source("cron") is ActivityProvenance.SOURCE_CRON
+    assert provenance_for_source("subagent") is ActivityProvenance.SOURCE_SUBAGENT
+    assert provenance_for_source("desktop") is ActivityProvenance.SOURCE_DESKTOP
+    assert provenance_for_source("tui") is ActivityProvenance.SOURCE_TUI
+    assert provenance_for_source("something-new") is ActivityProvenance.UNKNOWN
+
+    for platform, expected in (
+        ("cron", ActivityProvenance.SOURCE_CRON),
+        ("subagent", ActivityProvenance.SOURCE_SUBAGENT),
+        ("cli", ActivityProvenance.SOURCE_CLI),
+    ):
+        agent = _agent_with_db()
+        agent.platform = platform
+        monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
+        monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1000.0)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+
+        agent._touch_activity("starting API call #1")
+        agent._session_db.touch_session_activity.assert_called_once_with(
+            "sess-1",
+            1_700_000_000.0,
+            description="starting API call #1",
+            provenance=expected,
+        )

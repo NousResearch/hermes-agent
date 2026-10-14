@@ -214,6 +214,8 @@ jobs:
       release-phase: candidate
       jobs: win32-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
@@ -235,6 +237,8 @@ jobs:
       release-phase: candidate
       jobs: win32-x64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
@@ -258,6 +262,8 @@ jobs:
       release-phase: candidate
       jobs: win32-bundle
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-termux:
     name: Build signed release candidates (termux)
@@ -572,7 +578,7 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: publish
       manifest-sha256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
-      store: ${{ fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   publication:
     name: All artifact publication succeeded

@@ -122,16 +122,18 @@ def message_agent_tool_schema() -> dict:
 
 def message_agent_authorized(agent: Any) -> bool:
     """The ``message_agent`` gate: a protocol-enabled agent whose session is a managed
-    Bot-Mode canonical Bot Chat. Session-stable, so it is prompt-cache safe to re-evaluate
-    on every tool-snapshot rebuild. Never raises."""
+    Bot-Mode canonical Bot Chat, or a handoff session this profile declared
+    (``agent.bot_mode_handoff_titles``). Session-stable, so it is prompt-cache safe to
+    re-evaluate on every tool-snapshot rebuild. Never raises."""
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+        from tools.bot_mode_probe import is_bot_mode_managed, session_has_bot_mode
 
+        home = _agent_home(agent)
         # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
         # legacy protocol text gets an empty section but must still get the tool.
-        return _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(_agent_home(agent))
+        return session_has_bot_mode(_session_title(agent), home) and is_bot_mode_managed(home)
     except Exception:  # pragma: no cover — must never break a turn
         logger.debug("message_agent_authorized failed", exc_info=True)
         return False
@@ -204,13 +206,14 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
-            _roster, is_bot_mode_managed,
+            _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
+            _roster, is_bot_mode_managed, session_has_bot_mode,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
+        if not session_has_bot_mode(_session_title(agent), home):
+            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session, or in a "
+                        "session this profile allowlists via agent.bot_mode_handoff_titles. "
                         "This session is not one; do not retry.")
         if not is_bot_mode_managed(home):
             return _err("This install is not Bot-Mode-managed (no bot roster); "
@@ -291,8 +294,59 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
-    return _start_delivery([_hermes_cli(), "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
-                           stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
+    turn_args = _local_turn_args(roster_homes[resolved])
+    if turn_args is None:
+        # The teammate declared a handoff session that has no session of exactly that title:
+        # refuse, rather than deliver into a "<title> #N" sibling or the canonical chat.
+        from tools.bot_mode_probe import delivery_session_title
+
+        return _err(f"@{_handle(resolved)} declares '{delivery_session_title(roster_homes[resolved])}' as its "
+                    "handoff session, but no session with exactly that title exists there, so nothing was "
+                    "sent and nothing was queued.")
+    return _start_delivery([_hermes_cli(), "-p", resolved, *turn_args], content,
+                           f"@{_handle(resolved)}", stdin_file=False, profile_home=roster_homes[resolved],
+                           author=author, **delivery)
+
+
+def _local_turn_args(target_home: Path) -> list[str] | None:
+    """Turn argv for a local teammate delivery: into the teammate's declared handoff
+    session when it declares exactly one (``agent.bot_mode_handoff_titles``), else its
+    canonical Bot Chat. ``None`` = the declared session does not exist, so the caller must
+    refuse rather than deliver somewhere else.
+
+    A declared session is addressed by EXACT session id (``--resume``), never by title:
+    ``-c <title>`` resolves a non-canonical title to its ``"<title> #N"`` sibling when one
+    exists, which would silently deliver the message into a different chat."""
+    from tools.bot_live_delivery import session_id_for_title
+    from tools.bot_mode_probe import BOT_CHAT_TITLE, delivery_session_title
+    from tools.bot_relay import BOT_CHAT_TURN_ARGS
+
+    title = delivery_session_title(target_home)
+    if title == BOT_CHAT_TITLE:
+        return list(BOT_CHAT_TURN_ARGS)
+    session_id = session_id_for_title(target_home, title)
+    if not session_id:
+        return None
+    # Same leading shape (``-p <profile>``) as the Bot Chat lane, so the profile turn lock
+    # and the delivery runner match it unchanged.
+    return ["chat", "--in", "~", "--resume", session_id, "-Q"]
+
+
+def _delivery_live_owner(profile_home: Path) -> dict | None:
+    """The live owner a NEW local delivery may be admitted to: the selected session's own
+    owner, and nothing else — the profile's declared handoff session when it selects one,
+    else the canonical Bot Chat.
+
+    No cross-chat fallback: an envelope pins the session it was written for, so queuing it
+    for the other chat's owner would leave the sender told 'queued' while nobody can ever
+    claim it. When the selected session is simply not open, ``None`` lets the caller fall
+    through to its exact-ID CLI transport."""
+    from tools.bot_live_delivery import declared_live_owner, find_canonical_live_owner
+    from tools.bot_mode_probe import BOT_CHAT_TITLE, delivery_session_title
+
+    if delivery_session_title(profile_home) == BOT_CHAT_TITLE:
+        return find_canonical_live_owner(profile_home)
+    return declared_live_owner(profile_home)
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
@@ -487,7 +541,7 @@ def _dm_delivery_id(dm_file: str | os.PathLike) -> str:
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from tools.bot_live_delivery import deliver_to_live_owner, read_delivery_result
     from utils import fsync_directory
 
     intent: dict[str, Any]
@@ -496,7 +550,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
-        owner = find_canonical_live_owner(profile_home)
+        owner = _delivery_live_owner(profile_home)
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
@@ -872,14 +926,12 @@ def _agent_home(agent: Any) -> str:
 
 
 def _session_title(agent: Any) -> str:
-    title = str(getattr(agent, "_session_title_hint", "") or "").strip()
-    if title:
-        return title
-    with contextlib.suppress(Exception):
-        sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
-        if sdb and sid:
-            return str(sdb.get_session_title(sid) or "").strip()
-    return ""
+    """The calling session's authoritative title — the shared resolver in
+    :func:`tools.bot_mode_probe.session_title_for` (stored title first; the surface hint
+    only for an unpersisted creation; ``""`` when identity cannot be established)."""
+    from tools.bot_mode_probe import session_title_for
+
+    return session_title_for(agent)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process

@@ -646,7 +646,9 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
+    from tools.bot_live_delivery import (
+        claim_pending_delivery, complete_delivery, find_live_owner_for_session, has_mailbox,
+    )
 
     home = _session_home(session)
     # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
@@ -663,7 +665,7 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
         lease = session.get("active_session_lease")
         if lease is None or getattr(lease, "released", False):
             return False
-        owner = find_canonical_live_owner(home)
+        owner = find_live_owner_for_session(home, session.get("session_key"))
         if (not owner or owner.get("lease_id") != lease.lease_id
                 or owner.get("live_session_id") != sid
                 or owner.get("session_id") != session.get("session_key")):

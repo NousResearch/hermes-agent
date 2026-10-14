@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
@@ -127,6 +128,108 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     ``message_agent`` injection gate — deliberately independent of the protocol section's
     emptiness: a SOUL.md carrying the legacy protocol gets an empty section but still gets the tool."""
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
+
+
+# ── declared handoff sessions (scoped, opt-in) ───────────────────────────────
+# ``agent.bot_mode_handoff_titles`` names EXTRA session titles of THIS profile that
+# carry the Bot Mode messaging surface (protocol section + ``message_agent``) beside
+# the canonical Bot Chat. Profile-scoped and opt-in: a profile that declares nothing
+# keeps the canonical-only gate byte-for-byte. The declaration is an AUTHORIZATION, so
+# it is read from this profile's OWN ``config.yaml`` bytes — never from a merged view
+# (an install-wide managed overlay or a stale last-known-good copy would grant access a
+# profile never declared) — and any read/parse failure yields the empty set, so a
+# damaged config can only ever REMOVE the capability. Titles are compared exactly after
+# stripping, so the canonical title can never be re-declared. Cached briefly per home so
+# the per-turn path stays a dict lookup while a config edit is still adopted without a
+# restart.
+HANDOFF_TITLES_KEY = "bot_mode_handoff_titles"
+_HANDOFF_TTL_SECONDS = 30.0
+_handoff_lock = threading.Lock()
+_handoff_cache: dict[str, tuple[float, frozenset[str]]] = {}
+
+
+def _read_handoff_titles(resolved: str) -> frozenset[str]:
+    def _load() -> frozenset[str]:
+        data = _read_yaml_dict(Path(resolved) / "config.yaml")
+        agent_cfg = data.get("agent") if isinstance(data, dict) else None
+        raw = agent_cfg.get(HANDOFF_TITLES_KEY) if isinstance(agent_cfg, dict) else None
+        if not isinstance(raw, (list, tuple, set)):
+            return frozenset()
+        # Strings only: a YAML number/bool is not a session title, and coercing one
+        # would invent a gate input nobody declared.
+        return frozenset(
+            title for title in (value.strip() for value in raw if isinstance(value, str))
+            if title and title != BOT_CHAT_TITLE
+        )
+
+    return _swallow(_load, frozenset())
+
+
+def handoff_titles(home: str | os.PathLike | None = None) -> frozenset[str]:
+    """Session titles THIS profile explicitly allows to carry the Bot Mode messaging
+    surface beside its canonical Bot Chat. Never raises."""
+    resolved = str(_resolve_home(home))
+    now = time.monotonic()
+    with _handoff_lock:
+        cached = _handoff_cache.get(resolved)
+        if cached is not None and now - cached[0] < _HANDOFF_TTL_SECONDS:
+            return cached[1]
+    titles = _read_handoff_titles(resolved)
+    with _handoff_lock:
+        _handoff_cache[resolved] = (now, titles)
+    return titles
+
+
+def session_has_bot_mode(title: str | None, home: str | os.PathLike | None = None) -> bool:
+    """True when a session carrying ``title`` gets the Bot Mode messaging surface:
+    the canonical Bot Chat, or a title this profile declared as a handoff session."""
+    wanted = str(title or "").strip()
+    if not wanted:
+        return False
+    return wanted == BOT_CHAT_TITLE or wanted in handoff_titles(home)
+
+
+def delivery_session_title(home: str | os.PathLike | None = None) -> str:
+    """The session a NEW local delivery INTO this profile targets: its declared handoff
+    session when exactly one is declared, else the canonical Bot Chat. Two or more
+    declared titles are ambiguous (a DM would have to guess between two inboxes), so the
+    canonical Bot Chat stays the target until the profile narrows to one."""
+    titles = sorted(handoff_titles(home))
+    return titles[0] if len(titles) == 1 else BOT_CHAT_TITLE
+
+
+def messaging_titles(home: str | os.PathLike | None = None) -> list[str]:
+    """EVERY title whose session may carry the messaging surface in this profile: each
+    declared handoff title plus the canonical Bot Chat. Recognition of an already-pinned
+    delivery uses this list — unlike :func:`delivery_session_title`, which picks the target
+    for a NEW message and must stay unambiguous."""
+    return [*sorted(handoff_titles(home)), BOT_CHAT_TITLE]
+
+
+def session_title_for(agent) -> str:
+    """The calling session's AUTHORITATIVE title — one resolver for the gate, the prompt
+    section and the capability refresh.
+
+    Order: this session's STORED title; then, only when no session row exists yet (an
+    unpersisted creation), the ``_session_title_hint`` its surface stamped. A persisted row
+    with no title (cleared/blanked) and a failed read both return ``""`` — unidentified, so
+    callers fail closed instead of inheriting a stale hint."""
+    sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    hint = str(getattr(agent, "_session_title_hint", "") or "").strip()
+    if sdb is None or not sid:
+        return hint
+
+    def _resolve() -> str:
+        stored = str(sdb.get_session_title(sid) or "").strip()
+        if stored:
+            return stored
+        get_row = getattr(sdb, "get_session", None)
+        row = get_row(sid) if callable(get_row) else None
+        # No row at all: a genuinely unpersisted creation, where the hint IS the identity.
+        # A row that exists with no title is unidentified — fail closed.
+        return hint if row is None else ""
+
+    return _swallow(_resolve, "")
 
 
 def _role_line(*parts: str) -> str:
@@ -418,6 +521,10 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
 
     surface["soul"] = _swallow(_soul, "")
     surface["skills"] = _swallow(_skills, [])
+    # Declared handoff sessions change the messaging surface (an extra session carries
+    # the roster section and the tool), so a declaration edit must refresh eternal Bot
+    # Chats once, exactly like a roster or peer change.
+    surface["handoff_titles"] = sorted(_swallow(lambda: handoff_titles(resolved), frozenset()))
     try:
         roster = _roster(root)
         surface["roster"] = sorted(n for n, d in roster if _is_bot_managed(d))
@@ -472,3 +579,5 @@ def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.Path
 def _reset_cache_for_tests() -> None:
     with _lock:
         _cached.clear()
+    with _handoff_lock:
+        _handoff_cache.clear()

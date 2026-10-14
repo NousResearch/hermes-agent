@@ -29,9 +29,12 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
-def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
-    from hermes_cli.active_sessions import active_session_registry_snapshot
+def session_id_for_title(profile_home: Path | str, title: str) -> str | None:
+    """The session id behind an EXACT title — its compression tip — or None.
+
+    Exact, deliberately: ``resolve_session_by_title`` prefers a ``"<title> #N"`` sibling
+    for non-canonical titles, so using it for a declared handoff session could deliver a
+    teammate's message into a different chat that merely shares a name prefix."""
     from hermes_state import SessionDB
 
     home = Path(profile_home).resolve()
@@ -39,10 +42,20 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
         return None
     db = SessionDB(db_path=home / "state.db", read_only=True)
     try:
-        row = db.get_session_by_title("Bot Chat")
-        session_id = db.get_compression_tip(row["id"]) if row else None
+        row = db.get_session_by_title(title)
+        return db.get_compression_tip(row["id"]) if row else None
     finally:
         db.close()
+
+
+def find_owner_by_title(profile_home: Path | str, title: str) -> dict[str, Any] | None:
+    """Return the lease of the session titled ``title`` (its compression tip), including
+    unsupported CLI owners. ``title`` is the canonical Bot Chat or a session the profile
+    declared as a handoff session (``agent.bot_mode_handoff_titles``)."""
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    home = Path(profile_home).resolve()
+    session_id = session_id_for_title(home, title)
     if not session_id:
         return None
     for entry in active_session_registry_snapshot(registry_home=home):
@@ -51,13 +64,56 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     return None
 
 
-def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+def find_live_owner(profile_home: Path | str, title: str) -> dict[str, Any] | None:
     """Only advertised consumers may receive owner-pinned mailbox deliveries."""
-    entry = find_canonical_owner(profile_home)
+    entry = find_owner_by_title(profile_home, title)
     meta = (entry or {}).get("metadata") or {}
     if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
         return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
             "live_session_id": meta["live_session_id"]}
+    return None
+
+
+def declared_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """The advertised live owner of this profile's DECLARED handoff session, if any.
+
+    ``profile_home`` may be a profile directory or a bare home; the declaration is read
+    from that profile's own config (``agent.bot_mode_handoff_titles``)."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE, delivery_session_title
+
+    title = delivery_session_title(profile_home)
+    return None if title == BOT_CHAT_TITLE else find_live_owner(profile_home, title)
+
+
+def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    return find_owner_by_title(profile_home, BOT_CHAT_TITLE)
+
+
+def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    return find_live_owner(profile_home, BOT_CHAT_TITLE)
+
+
+def find_live_owner_for_session(profile_home: Path | str, session_id: str | None) -> dict[str, Any] | None:
+    """The advertised live-delivery owner that ``session_id`` currently IS, if eligible.
+
+    Recognition — not new-message targeting — so it consults EVERY title that may carry the
+    messaging surface in this profile (all declared handoff titles plus the canonical Bot
+    Chat). An already-pinned envelope stays claimable when the profile widens its
+    declaration, and the caller still compares lease, live id and lineage."""
+    if not session_id:
+        return None
+    from tools.bot_mode_probe import messaging_titles
+
+    for title in messaging_titles(profile_home):
+        owner = find_live_owner(profile_home, title)
+        if owner is not None and owner["session_id"] == session_id:
+            return owner
     return None
 
 
@@ -241,9 +297,19 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
 
 
 def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
-    """Whether the canonical live owner is still one that could claim ``record``."""
-    owner = find_canonical_live_owner(profile_home)
-    return owner is not None and _matches(profile_home, record, owner)
+    """Whether a live owner that could still claim ``record`` is present.
+
+    The record pins the session it was addressed to, so this asks EVERY currently eligible
+    title in the profile (all declared handoff titles plus the canonical Bot Chat) whether
+    it still holds that pinned lease/live id/compression lineage. ``_matches`` is what
+    keeps a message from being held open by a different chat."""
+    from tools.bot_mode_probe import messaging_titles
+
+    for title in messaging_titles(profile_home):
+        owner = find_live_owner(profile_home, title)
+        if owner is not None and _matches(profile_home, record, owner):
+            return True
+    return False
 
 
 def claim_pending_delivery(

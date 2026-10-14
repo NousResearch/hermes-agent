@@ -7786,7 +7786,10 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
 
   const deps: GatewayFileSaveDeps = {
     showSaveDialog: (options: GatewaySaveDialogOptions): Promise<GatewaySaveDialogResult> =>
-      dialog.showSaveDialog(mainWindow, options)
+      dialog.showSaveDialog(mainWindow, {
+        ...options,
+        defaultPath: path.join(app.getPath('downloads'), path.basename(options.defaultPath) || 'download')
+      })
   }
 
   return saveGatewayDownload(requestPaths, ctx, {

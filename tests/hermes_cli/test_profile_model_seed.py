@@ -145,6 +145,19 @@ def test_model_seed_keeps_runtime_endpoint_selection(monkeypatch, providers, leg
     assert inherited["base_url"] == selected["base_url"]
 
 
+def test_model_seed_selects_env_referenced_provider(monkeypatch):
+    monkeypatch.setenv("LAB_PROVIDER", "custom:lab")
+    endpoint = {"base_url": "http://127.0.0.1:11434/v1"}
+    source = {
+        "model": {"provider": "${LAB_PROVIDER}", "default": "synthetic-model"},
+        "providers": {"lab": endpoint, "other": {"base_url": "http://127.0.0.1:1/v1"}},
+    }
+
+    seed = launch_model_seed(source)
+
+    assert seed == {"model": source["model"], "providers": {"lab": endpoint}}
+
+
 def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch):
     import hermes_cli.runtime_provider_custom as custom_runtime
 

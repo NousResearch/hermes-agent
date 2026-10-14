@@ -1,6 +1,6 @@
 """Copy the model and its selected custom endpoint when creating an independent profile."""
 
-from hermes_cli.config import find_provider_entry
+from hermes_cli.config import _expand_env_vars, find_provider_entry
 from hermes_cli.config_providers import _normalize_custom_provider_entry
 from hermes_cli.runtime_provider_custom import (
     _get_named_custom_provider,
@@ -22,6 +22,8 @@ def launch_model_seed(source_cfg: dict) -> dict:
     provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
     if not isinstance(provider, str):
         return seed
+    # Runtime expands ``model.provider: ${VAR}`` before resolving; select with the same value.
+    provider = str(_expand_env_vars(provider))
     requested = _normalize_custom_provider_name(provider)
     providers = source_cfg.get("providers")
     providers = providers if isinstance(providers, dict) else {}

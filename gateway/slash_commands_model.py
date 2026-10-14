@@ -688,9 +688,13 @@ class GatewayModelCommandsMixin:
         from hermes_constants import parse_reasoning_effort
 
         value = (value or "").strip().lower()
+        from gateway.session_setting_commands import local_live_for_route
+        live = local_live_for_route(self, session_key)
         show = _REASONING_DISPLAY_TOGGLES.get(value)
         if show is not None:  # per-platform display toggle
             self._show_reasoning = show
+            if live is not None:
+                live.show_reasoning = show  # what this local session's viewers stream (config.get show_reasoning)
             self._save_gateway_config_key(f"display.platforms.{platform_key}.show_reasoning", show)
             key = "gateway.reasoning.display_set_on" if show else "gateway.reasoning.display_set_off"
             return t(key, platform=platform_key)
@@ -708,7 +712,8 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = parsed
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
-                self._set_reasoning_override(session_key, None)
+                # A local session runs its frozen level, not config.yaml's: it takes the level too.
+                self._set_reasoning_override(session_key, parsed if live is not None else None)
                 return t("gateway.reasoning.set_global", effort=value)
             self._set_reasoning_override(session_key, parsed)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
@@ -745,6 +750,9 @@ class GatewayModelCommandsMixin:
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
         self._show_reasoning = self._load_show_reasoning()
+        from gateway.session_setting_commands import local_live
+        if (_live := local_live(self, event.source)) is not None:
+            self._show_reasoning = getattr(_live, "show_reasoning", None) is True
         # Effective model (session /model override wins) so per-model reasoning_overrides display.
         _session_model = str(
             ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
@@ -809,8 +817,13 @@ class GatewayModelCommandsMixin:
         tier, saved_value, label_key = selection
         label = t(label_key) if label_key else value.upper()
         self._service_tier = tier
+        from gateway.session_setting_commands import local_live_for_route
         if persist and self._save_gateway_config_key("agent.service_tier", saved_value):
-            self._set_session_service_tier_override(session_key, None, clear=True)  # global wins
+            if local_live_for_route(self, session_key) is not None:
+                # A local session runs its frozen tier, not config.yaml's: it takes the tier too.
+                self._set_session_service_tier_override(session_key, tier)
+            else:
+                self._set_session_service_tier_override(session_key, None, clear=True)  # global wins
             self._evict_cached_agent(session_key)
             return t("gateway.fast.saved", label=label)
         # Session override — also the fallback after a failed config write (as /reasoning --global).

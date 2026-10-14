@@ -20,6 +20,8 @@ from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pi
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
+# Inverse of _session_key_namespace, defined storage-side (hermes_state must not import gateway).
+from hermes_state_keys import profile_from_session_key_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -538,15 +540,17 @@ class SessionEntry:
     # older positional construction of transport_profile keeps its meaning.
     prompt_pin: Optional[dict[str, Any]] = None
     # Gateway ``/yolo`` bypass for this lane, mirrored from ``tools.approval``'s in-memory set so a restart
-    # keeps it; cleared with it at every conversation boundary (``_clear_session_boundary_security_state``).
-    yolo: bool = False
+    # keeps it. Tri-state: True/False is an explicit toggle (an OFF stays off, even over a ``--yolo`` launch);
+    # None means nobody toggled it (new, branched, reset, migrated, cron entries, and every conversation
+    # boundary, ``_clear_session_boundary_security_state``), so the session's launch policy applies.
+    yolo: Optional[bool] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
     _PLAIN_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "total_tokens", "last_prompt_tokens", "estimated_cost_usd", "cost_status",
-        "expiry_finalized", "suspended", "resume_pending", "resume_reason", "yolo",
+        "expiry_finalized", "suspended", "resume_pending", "resume_reason",
     )
     _RESET_FIELDS = (
         "is_fresh_reset", "was_auto_reset", "auto_reset_reason", "reset_had_activity",
@@ -562,6 +566,8 @@ class SessionEntry:
             "chat_type": self.chat_type, "metadata": self.metadata,
         }
         result.update((name, getattr(self, name)) for name in self._PLAIN_FIELDS)
+        # ``yolo`` keeps the pre-tri-state meaning (ON only) for older readers; ``yolo_toggle`` is authoritative.
+        result["yolo"], result["yolo_toggle"] = self.yolo is True, self.yolo
         result["last_resume_marked_at"] = _iso(self.last_resume_marked_at)
         result["active_turn_token"] = self.active_turn_token
         result["active_turn_started_at"] = _iso(self.active_turn_started_at)
@@ -605,6 +611,9 @@ class SessionEntry:
         defaults = {f.name: f.default for f in fields(cls)}
         plain = {n: data.get(n, defaults[n]) for n in cls._PLAIN_FIELDS + cls._RESET_FIELDS}
         plain["expiry_finalized"] = data.get("expiry_finalized", data.get("memory_flushed", False))
+        # Rows written before the tri-state stored a bare ``yolo`` bool where False also meant "never
+        # toggled": only their ON is a real toggle; False follows the launch policy, as it did then.
+        plain["yolo"] = data["yolo_toggle"] if "yolo_toggle" in data else (True if data.get("yolo") is True else None)
         transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key, session_id=session_id,
@@ -663,14 +672,6 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     if not profile or profile == "default":
         return "agent:main"
     return "agent:main~" if profile == "main" else f"agent:{profile}"
-
-
-def profile_from_session_key_namespace(namespace: str) -> str:
-    """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
-    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
-    if namespace == "main":
-        return "default"
-    return "main" if namespace == "main~" else namespace
 
 
 def _canonical_participant(source: SessionSource) -> Optional[str]:
@@ -1117,8 +1118,9 @@ class SessionStore(
             self._persist_routing_data(data, generation)
             entry.model_override = cleaned
 
-    def set_session_yolo(self, session_key: str, enabled: bool) -> bool:
-        """Persist the lane's ``/yolo`` bypass; False when the key has no entry yet or it is unchanged."""
+    def set_session_yolo(self, session_key: str, enabled: Optional[bool]) -> bool:
+        """Persist the lane's ``/yolo`` bypass (None: back to the launch policy); False when the key has no
+        entry yet or it is unchanged."""
         def _apply(entry: SessionEntry):
             if entry.yolo is enabled:
                 return False
@@ -1139,6 +1141,9 @@ class SessionStore(
                 return None
             now = _now()
             session_id = _new_session_id(now)
+            if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
+                from gateway.session_local_recovery import reset_local_session
+                return reset_local_session(self, old_entry, session_id, now, display_name)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
                 display_name=display_name if display_name is not None else old_entry.display_name,
@@ -1304,8 +1309,9 @@ class SessionStore(
             entries = list(self._entries.values())
         if active_minutes is not None:
             cutoff = _now() - timedelta(minutes=active_minutes)
-            entries = [e for e in entries if e.updated_at >= cutoff]
-        entries.sort(key=lambda e: e.updated_at, reverse=True)
+            entries = [e for e in entries if e.updated_at.timestamp() >= cutoff.timestamp()]
+        # Legacy local timestamps and canonical UTC timestamps can coexist after recovery.
+        entries.sort(key=lambda e: e.updated_at.timestamp(), reverse=True)
         return entries
 
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:

@@ -34,7 +34,7 @@ const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))
 export function completionRequestForInput(
   input: string
 ):
-  | { method: 'complete.path'; params: { word: string; cwd?: string }; replaceFrom: number }
+  | { method: 'complete.path'; params: { word: string; cwd?: string; session_id?: string }; replaceFrom: number }
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
   | null {
   const isSlashCommand = looksLikeSlashCommand(input)
@@ -73,10 +73,12 @@ export function completionRequestForInput(
   }
 
   const cwd = sessionCwd()
+  // The shared gateway lists the session's own folder, so it must know which session is asking.
+  const sid = getUiState().sid
 
   return {
     method: 'complete.path',
-    params: { word: pathWord, ...(cwd ? { cwd } : {}) },
+    params: { word: pathWord, ...(cwd ? { cwd } : {}), ...(sid ? { session_id: sid } : {}) },
     replaceFrom: input.length - pathWord.length
   }
 }

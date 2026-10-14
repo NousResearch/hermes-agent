@@ -50,4 +50,19 @@ describe('completionRequestForInput', () => {
       vi.unstubAllEnvs()
     }
   })
+
+  it('names the asking session, whose folder the shared gateway lists', () => {
+    try {
+      patchUiState({ sid: 'sess-1' })
+      expect(completionRequestForInput('read @file:sr')).toMatchObject({
+        method: 'complete.path',
+        params: { word: '@file:sr', session_id: 'sess-1' }
+      })
+      resetUiState()
+      expect(completionRequestForInput('./sr')?.params).not.toHaveProperty('session_id')
+    } finally {
+      resetUiState()
+      vi.unstubAllEnvs()
+    }
+  })
 })

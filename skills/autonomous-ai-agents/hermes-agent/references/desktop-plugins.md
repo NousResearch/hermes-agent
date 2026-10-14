@@ -59,7 +59,8 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
 
 - `host.state.*` — readonly reactive atoms: `activeSessionId`, `busy`,
   `awaitingResponse`, `busyBySession`, `cwd`, `gateway` (socket state, not
-  turn-busy), `model`, `profile`, `viewport`, plus the tile-aware focused
+  turn-busy), `model`, `onBattery` (true only when Electron reports battery;
+  false before hydration or when unavailable), `profile`, `viewport`, plus the tile-aware focused
   session atoms: `focusedSessionId` (runtime id — key for `session.*` RPC),
   `focusedStoredSessionId` (durable id — navigation / list matching),
   `focusedSessionProfile` (owner profile of the focused chat — prefer over
@@ -71,8 +72,8 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   assistant payload. `busyBySession` maps runtime session id → mid-turn,
   for rosters that watch every session. Prefer the focused atoms for any
   readout that should follow the user between tiles. Read with `.get()`
-  in handlers,
-  `useValue(atom)` in components.
+  in handlers, `useValue(atom)` in components. Plugins supporting older Hermes
+  versions should use `host.state.onBattery?.get() ?? false`.
 - `host.request(method, params)` — gateway JSON-RPC (sessions, config,
   skills, cron — everything the app uses).
 - `host.onEvent(type, fn)` — live gateway events (`'*'` for all). Returns a

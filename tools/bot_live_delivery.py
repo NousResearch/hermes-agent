@@ -121,7 +121,10 @@ def _locked(home: Path | str):
     created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
-    root.chmod(0o700)
+    if os.name != "nt":
+        # NTFS has no POSIX mode: chmod rewrites the directory ACL, and the owner then gets
+        # Permission denied opening ``.lock`` below (the Telegram adapter crash-looped on it).
+        root.chmod(0o700)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two

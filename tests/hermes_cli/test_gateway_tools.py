@@ -97,6 +97,41 @@ def test_stop_kills_the_session_processes_through_the_gateway(gateway, capsys):
     assert any(method == "process.stop" for method, _ in client.calls)
 
 
+def test_agents_lists_the_gateway_sessions_processes_and_subagents(gateway, capsys):
+    """/agents reads where the work runs (tracker #134889 CLI-7): the session's processes and its
+    running background subagents, not this process's empty registries."""
+    from hermes_cli.cli_commands_session_tools import CLICommandsSessionToolsMixin
+    agent, client = gateway
+    agent.connection.state(SID).usage = {"active_subagents": 2}
+    CLICommandsSessionToolsMixin._handle_agents_command(object())
+    out = capsys.readouterr().out
+    assert "proc_1" in out and "sleep 300" in out
+    assert "Background delegations: 2" in out
+    assert ("process.list", {"session_id": SID}) in client.calls
+
+
+def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, capsys):
+    """/stop typed while a turn runs is dispatched inline and interrupts it like Ctrl+C (tracker
+    #134889 N4), instead of being queued until the turn it should stop has finished."""
+    from types import SimpleNamespace
+    from cli import HermesCLI
+    _agent, client = gateway
+    stops = []
+
+    class _Agent:
+        def hard_interrupt(self, message=None):
+            stops.append(message)
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._agent_running, cli.agent = True, _Agent()
+    buffer = SimpleNamespace(reset=lambda **_k: None)
+    event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer, invalidate=lambda: None))
+    assert cli._tui_enter_inline_command(event, "/stop", False) is True
+    assert stops == [None]
+    assert any(method == "process.stop" for method, _ in client.calls)
+    assert "Interrupting agent" in capsys.readouterr().out
+
+
 def test_dock_stop_kills_one_process_through_the_gateway(gateway):
     from hermes_cli import cli_process_dock as dock
     _agent, client = gateway

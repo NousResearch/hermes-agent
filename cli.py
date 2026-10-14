@@ -1194,6 +1194,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         from hermes_cli.gateway_setting_commands import run as run_gateway_setting
         if run_gateway_setting(self, canonical, cmd_original):
             return True  # a per-session setting the gateway's handler applied
+        from hermes_cli.gateway_cli_commands import run as run_gateway_command
+        if run_gateway_command(self, canonical, cmd_original):
+            return True  # state the gateway session owns (checkpoints, .env, handoff)
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()

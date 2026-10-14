@@ -97,11 +97,16 @@ class CLICommandsSessionToolsMixin:
     # ---- /stop, /agents -------------------------------------------------------------------
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and background (async) delegations.
-        Separate from interrupt (stop the current turn), as in Codex.
+        Typed while a turn runs it stops that turn first, as Ctrl+C does (the registry's
+        ``busy_policy="interrupt_then_dispatch"``; the input loop dispatches it inline).
 
         See #14602.
         """
         from hermes_cli.gateway_tools import process_registry as _registry, process_view
+        if getattr(self, "_agent_running", False) and getattr(self, "agent", None):
+            from agent.interrupt_compat import request_hard_interrupt
+            print(f"  {t('cli.tui.interrupting')}")
+            request_hard_interrupt(self.agent)
         process_registry, view = _registry(), process_view()
         if view is not None:
             view.refresh(force=True)
@@ -122,8 +127,13 @@ class CLICommandsSessionToolsMixin:
             print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
     def _handle_agents_command(self):
-        """Handle /agents — show background processes and agent status."""
-        from tools.process_registry import format_uptime_short, process_registry
+        """Handle /agents — show background processes and agent status. On the gateway both run there:
+        the session's ``process.list`` and its usage's running-subagent count (no per-delegation rows)."""
+        from hermes_cli.gateway_tools import process_registry as _registry, process_view
+        from tools.process_registry import format_uptime_short
+        process_registry, view = _registry(), process_view()
+        if view is not None:
+            view.refresh(force=True)
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
         finished = [p for p in processes if p.get("status") != "running"]
@@ -133,36 +143,10 @@ class CLICommandsSessionToolsMixin:
             _cp(f"    {p.get('session_id', '?')} · {up} · {p.get('command', '')[:80]}")
         if finished:
             _cp(f"  {_t('agents.recently_finished', count=len(finished))}")
-        # Background (async) delegations — delegate_task(background=true)
-        delegations = _probe("tools.async_delegation", "list_async_delegations", [])
-        if delegations:
-            running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
-            _cp(f"  {_t('agents.background_delegations', count=len(running_d))}")
-            for d in delegations:
-                status = d.get("status", "?")
-                line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
-                # Live-status detail for in-flight delegations.
-                # See #51690.
-                if status == "stalling":
-                    quiet = d.get("stalled_after_quiet_seconds")
-                    if quiet is not None:
-                        line += _t("agents.no_progress", seconds=f"{quiet:.0f}")
-                elif status == "running":
-                    quiet = d.get("seconds_since_progress")
-                    if quiet is not None and quiet >= 60:
-                        line += _t("agents.quiet", seconds=f"{quiet:.0f}")
-                _cp(line)
-                for i, child in enumerate(d.get("children_activity") or []):
-                    if not isinstance(child, dict):
-                        continue
-                    tool = child.get("current_tool")
-                    doing = _t("agents.in_tool", tool=tool) if tool else _t("agents.between_turns")
-                    part = "      " + _t("agents.child_line", index=i + 1,
-                                         api_calls=child.get("api_calls", "?"), doing=doing)
-                    idle = child.get("seconds_since_activity")
-                    if idle is not None:
-                        part += _t("agents.last_activity", seconds=f"{idle:.0f}")
-                    _cp(part)
+        if view is None:
+            _print_local_delegations()
+        elif n_async := view.active_delegations():
+            _cp(f"  {_t('agents.background_delegations', count=n_async)}")
         agent_running = getattr(self, "_agent_running", False)
         _cp(f"  {_t('agents.agent_running') if agent_running else _t('agents.agent_idle')}")
 
@@ -305,6 +289,40 @@ class CLICommandsSessionToolsMixin:
         reply = execute_command("profile", CommandContext(surface="cli"))
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
+
+
+def _print_local_delegations() -> None:
+    """This process's background (async) delegations — delegate_task(background=true)."""
+    delegations = _probe("tools.async_delegation", "list_async_delegations", [])
+    if not delegations:
+        return
+    running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]
+    _cp(f"  {_t('agents.background_delegations', count=len(running_d))}")
+    for d in delegations:
+        status = d.get("status", "?")
+        line = f"    {d.get('delegation_id', '?')} · {status} · {(d.get('goal') or '')[:60]}"
+        # Live-status detail for in-flight delegations.
+        # See #51690.
+        if status == "stalling":
+            quiet = d.get("stalled_after_quiet_seconds")
+            if quiet is not None:
+                line += _t("agents.no_progress", seconds=f"{quiet:.0f}")
+        elif status == "running":
+            quiet = d.get("seconds_since_progress")
+            if quiet is not None and quiet >= 60:
+                line += _t("agents.quiet", seconds=f"{quiet:.0f}")
+        _cp(line)
+        for i, child in enumerate(d.get("children_activity") or []):
+            if not isinstance(child, dict):
+                continue
+            tool = child.get("current_tool")
+            doing = _t("agents.in_tool", tool=tool) if tool else _t("agents.between_turns")
+            part = "      " + _t("agents.child_line", index=i + 1,
+                                 api_calls=child.get("api_calls", "?"), doing=doing)
+            idle = child.get("seconds_since_activity")
+            if idle is not None:
+                part += _t("agents.last_activity", seconds=f"{idle:.0f}")
+            _cp(part)
 
 
 class _TTYBuf(StringIO):

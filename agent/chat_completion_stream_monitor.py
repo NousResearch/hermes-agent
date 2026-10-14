@@ -46,7 +46,9 @@ class StreamingWaitMonitor:
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
-            if not self._mon.wait_notice.should_emit(phase, watchdog):
+            if not self._mon.wait_notice.should_emit(phase, watchdog,
+                    model=self.api_kwargs.get('model', 'the provider'),
+                    provider=getattr(self.agent, "provider", None), silence_secs=waiting_secs):
                 self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, {phase})")
                 return
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
@@ -82,7 +84,7 @@ class StreamingWaitMonitor:
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
-                self._mon.wait_notice.reset()
+                self._mon.wait_notice.reset(outcome="stale_kill")
                 self._kill_stale_stream(_stale_elapsed)
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)

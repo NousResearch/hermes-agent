@@ -3974,6 +3974,12 @@ class _StreamingCall(StreamingWaitMonitor):
             self.worker = threading.Thread(target=_context_thread_target(self._run_call), daemon=True)
             self.worker.start()
             self._monitor_loop()
+        # Every started notice gets a matching end: the in-loop resumed-reset only
+        # fires on a later chunk, so a request that answers right after its last
+        # notice (or is interrupted) left the log record open with no outcome
+        # (#129229). Idempotent: a no-op once the stale-kill/local-load resets
+        # above already closed it.
+        self._mon.wait_notice.reset(outcome="interrupted" if self._monitor_interrupted["yes"] else "resumed")
         if self._monitor_interrupted["yes"]:
             raise InterruptedError("Agent interrupted during streaming API call")
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag

@@ -91,7 +91,7 @@ export function ComposerControls({
   const primaryKeybindAction = cardWaiting
     ? 'composer.send'
     : busyAction === 'queue'
-      ? 'composer.queue'
+      ? 'composer.send' // Fallback Queue can be triggered by Enter even in Steer/Interrupt mode.
       : busyAction === 'steer'
         ? 'composer.steer'
         : 'composer.send'

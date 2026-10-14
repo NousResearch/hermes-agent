@@ -76,9 +76,9 @@ export function currentGroupActivity(group: string) {
  *  must keep classifying it as transient (never a roster badge). */
 export const GROUP_SLOT_WAIT_REASON = 'slot_wait_timeout'
 
-/** Stable coordinator phrase (`pool-spawn-coordinator.ts`), the
- *  cross-process discriminator — same shape as `isLocalBackendSlotWaitTimeout`
- *  in `store/pool-limits.ts`, kept local because the plugin fence cannot
+/** Stable phrase older Desktop hosts' local backend pool raised on a slot-wait
+ *  timeout (a renderer can still be served by one across an upgrade); same
+ *  shape as the store's classifier, kept local because the plugin fence cannot
  *  import the store. Match narrowly so other backend failures keep their path. */
 export function isGroupSlotWaitTimeoutText(text: unknown): boolean {
   return typeof text === 'string' && text.includes('timed out while waiting for a free slot')

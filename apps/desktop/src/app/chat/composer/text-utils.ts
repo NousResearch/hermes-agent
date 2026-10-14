@@ -35,8 +35,8 @@ const AT_SCOPE_RE = new RegExp(`^(${DIRECTIVE_SCOPES.join('|')}):(.*)$`)
 // and `@file:src/foo` all have to keep the popover live while the user walks
 // into subdirectories. Excluding `/` from the query class would end the token
 // at the first separator, which is exactly the "can't browse into a folder"
-// bug. Restricting the slash command name to `[a-zA-Z][\w-]*` avoids
-// matching file paths like `src/foo/bar`.
+// bug. Restricting the slash command name to `[a-zA-Z0-9][\w-]*` avoids
+// matching file paths like `src/foo/bar` while allowing digit-prefixed skills.
 //
 // `/` triggers fire in two shapes, because a slash means two different things
 // depending on where it sits:
@@ -63,8 +63,8 @@ const AT_SCOPE_RE = new RegExp(`^(${DIRECTIVE_SCOPES.join('|')}):(.*)$`)
 // Lexical DirectivePlugin gets the same semantics from node boundaries), so
 // `@` or `/` typed immediately after a pill still opens the popover.
 const AT_TRIGGER_RE = /(?:^|[\s\uFFFC])(@)([^\s@\uFFFC]*)$/
-const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
-const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z][\w-]*)?$/
+const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z0-9][\w-]*(?:\s+\S*)*)?)$/
+const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z0-9][\w-]*)?$/
 // `:joy` → emoji completions, Slack-style. Boundary-anchored so a mid-word
 // colon (`localhost:8080`, `note:`) never fires; two chars minimum so a bare
 // `:` or `:D` smiley doesn't open a popover the user didn't ask for.

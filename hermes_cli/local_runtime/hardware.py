@@ -323,8 +323,16 @@ def _nvidia_device_selected() -> bool:
     the managed server is using a HIP or Vulkan build on a different adapter. In that case the
     engine's device probe is authoritative and selects its largest discrete GPU.
     """
-    engine = _configured_engine()
-    return engine is None or engine.backend == "cuda"
+    with suppress(Exception):
+        engine = _configured_engine()
+        if engine is not None:
+            return engine.backend == "cuda"
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.local_runtime.binaries import resolve_backend
+
+        section = load_config_readonly().get("local_runtime") or {}
+        return resolve_backend(section.get("backend") or "auto") == "cuda"
+    return False
 
 
 def _engine_device_pool() -> tuple[int, bool | None] | None:

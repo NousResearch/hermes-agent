@@ -568,7 +568,6 @@ class ProcessSession:
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     # Watcher/notification routing (persisted for crash recovery)
-    # (#70716)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_chat_name: str = ""                 # names the chat on an event rebuilt without a stored origin

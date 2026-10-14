@@ -41,6 +41,8 @@ from tests.gateway.test_kanban_wake_scope import (
 from tests.gateway.test_kanban_wake_scope import _runner as _notifier_runner
 
 CHAT_NAME = "Guild / #general"
+RENAMED = "Guild / #renamed"
+OTHER_CHAT_ID = "1513247605675790999"
 
 
 class _RecordingAgent(_TurnAgent):
@@ -85,10 +87,8 @@ def _turn_runner(monkeypatch, *, durable: dict, origin: SessionSource | None):
     return runner, seen_env
 
 
-@pytest.mark.parametrize("known_from", ["live-source", "stored-origin"])
-def test_kanban_wake_builds_its_agent_with_the_sessions_chat_name(tmp_path, monkeypatch, known_from):
-    wake = _kanban_wake_source(tmp_path, monkeypatch)
-    _RecordingAgent.built = []
+def _session_that_knows_the_chat_name(monkeypatch, known_from: str):
+    """A runner after one named human turn, about to build a fresh agent; ``built`` starts empty."""
     durable: dict = {}
     runner, seen_env = _turn_runner(monkeypatch, durable=durable, origin=None)
     asyncio.run(_drive(runner, ((False, _human_source()),)))
@@ -97,11 +97,52 @@ def test_kanban_wake_builds_its_agent_with_the_sessions_chat_name(tmp_path, monk
     else:
         # Gateway restart: no live source, no cached agent; the session entry keeps its origin.
         runner, seen_env = _turn_runner(monkeypatch, durable=durable, origin=_human_source())
+    _RecordingAgent.built = []
+    return runner, seen_env
+
+
+@pytest.mark.parametrize("known_from", ["live-source", "stored-origin"])
+def test_kanban_wake_builds_its_agent_with_the_sessions_chat_name(tmp_path, monkeypatch, known_from):
+    wake = _kanban_wake_source(tmp_path, monkeypatch)
+    runner, seen_env = _session_that_knows_the_chat_name(monkeypatch, known_from)
 
     asyncio.run(_drive(runner, ((True, wake),)))
 
     assert _RecordingAgent.built[-1]["chat_name"] == CHAT_NAME
     assert seen_env[-1] == CHAT_NAME
+
+
+@pytest.mark.parametrize("known_from", ["live-source", "stored-origin"])
+def test_internal_turn_for_another_chat_does_not_take_the_sessions_chat_name(monkeypatch, known_from):
+    runner, seen_env = _session_that_knows_the_chat_name(monkeypatch, known_from)
+    other_chat_wake = SessionSource(**{**_ORIGIN, "chat_id": OTHER_CHAT_ID})
+
+    asyncio.run(_drive(runner, ((True, other_chat_wake),)))
+
+    assert [kw["chat_name"] for kw in _RecordingAgent.built] == [None]
+    assert seen_env[-1] is None
+
+
+@pytest.mark.parametrize("known_from", ["live-source", "stored-origin"])
+def test_internal_turn_that_names_its_chat_keeps_that_name(monkeypatch, known_from):
+    runner, seen_env = _session_that_knows_the_chat_name(monkeypatch, known_from)
+    named_wake = SessionSource(**_ORIGIN, chat_name=RENAMED)
+
+    asyncio.run(_drive(runner, ((True, named_wake),)))
+
+    assert [kw["chat_name"] for kw in _RecordingAgent.built] == [RENAMED]
+    assert seen_env[-1] == RENAMED
+
+
+@pytest.mark.parametrize("known_from", ["live-source", "stored-origin"])
+def test_nameless_human_turn_does_not_inherit_the_sessions_chat_name(monkeypatch, known_from):
+    runner, seen_env = _session_that_knows_the_chat_name(monkeypatch, known_from)
+    nameless_human = SessionSource(**_ORIGIN, user_name="Ace", message_id="1552671843494666331")
+
+    asyncio.run(_drive(runner, ((False, nameless_human),)))
+
+    assert [kw["chat_name"] for kw in _RecordingAgent.built] == [None]
+    assert seen_env[-1] is None
 
 
 def test_agent_built_on_a_nameless_internal_turn_is_not_reused_for_a_named_turn(monkeypatch):

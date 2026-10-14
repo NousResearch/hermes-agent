@@ -39,7 +39,7 @@ def test_every_job_names_real_lanes():
     for target, lane in lane_set.TARGET_LANE.items():
         assert lane in lane_set.NAMES, target
     for handoff, lane in lane_set.HANDOFF_LANE.items():
-        assert lane in lane_set.NAMES, handoff
+        assert lane in {*lane_set.NAMES, *lane_set.DERIVED}, handoff
 
 
 def test_a_job_runs_only_when_every_lane_it_needs_is_on():
@@ -56,6 +56,24 @@ def test_a_job_runs_only_when_every_lane_it_needs_is_on():
     assert not any(lane_set.jobs_to_run([]).values())
 
 
+def test_each_windows_lane_alone_builds_its_own_package_with_the_shared_jobs():
+    shared = {"candidates-win32-arm64", "candidates-win32-x64", "candidates-win32-bundle",
+              "candidate-manifest", "publish-bundles"}
+    for lanes in (["windows"], ["windows-store"]):
+        assert {job for job, runs in lane_set.jobs_to_run(lanes).items() if runs} == shared
+    # The signed pipeline's test arms need the signed lane, never the Store one.
+    store_only = lane_set.jobs_to_run(["windows-store", "smoke", "upgrade"])
+    assert not store_only["transitions-win32"] and not store_only["windows-packaged"]
+    assert lane_set.jobs_to_run(["windows", "upgrade"])["transitions-win32"]
+    # A Store-only release has a manifest and smokes nothing: its bundle is not an install target.
+    assert lane_set.has_bundles(["windows-store"])
+    assert lane_set.targets(["windows-store"]) == frozenset()
+    assert not lane_set.runs_smokes(["windows-store", "smoke"])
+    assert not lane_set.advances_desktop(["windows-store", "macos-arm64"])
+    assert lane_set.handoffs(["windows-store"], ("win32-x64", "windows-universal", "termux")) == \
+        ("win32-x64", "windows-universal")
+
+
 def test_flags_round_trip_and_refuse_anything_loose():
     flags = lane_set.flags(["windows", "docker"])
     assert flags["bundles"] is True and flags["macos-arm64"] is False
@@ -67,6 +85,17 @@ def test_flags_round_trip_and_refuse_anything_loose():
                 {name: flags[name] for name in flags if name != "ci"}):
         with pytest.raises(ValueError, match="boolean for every lane"):
             lane_set.from_flags(bad)
+
+
+def test_a_claim_without_a_lanes_revision_keeps_the_store_bundle_it_was_cut_with():
+    """rc.2-v0.22.1 recorded ["docker","windows"] when `windows` also built and submitted the Store bundle."""
+    legacy = {"lanes": ["docker", "windows"]}
+    assert lane_set.claim_lanes(legacy) == {"docker", "windows", "windows-store"}
+    current = {**legacy, "lanesRevision": lane_set.LANES_REVISION}
+    assert lane_set.claim_lanes(current) == {"docker", "windows"}
+    assert lane_set.claim_lanes({"lanes": ["docker"]}) == {"docker"}
+    with pytest.raises(ValueError, match="invalid"):
+        lane_set.claim_lanes({**legacy, "lanesRevision": 3})
 
 
 def test_targets_and_handoffs_follow_the_build_lanes():

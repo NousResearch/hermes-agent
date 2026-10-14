@@ -142,3 +142,36 @@ def test_native_checkpoint_rearms_read_dedup(served, monkeypatch):
     re_view = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") == "call_view"]
     assert re_view and "Do the demo steps." in re_view[-1]["content"]
     assert _dedup_state()[1] is False  # the file read served before the checkpoint is off the wire too
+
+
+def test_micro_compaction_keeps_stub_for_surviving_skill_body(served, monkeypatch):
+    """A splice that leaves the skill body verbatim keeps its stub; the file read is still released."""
+    with patch("agent.process_bootstrap.OpenAI"):
+        from run_agent import AIAgent
+        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, max_iterations=4)
+    agent.client = MagicMock()
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent._disable_streaming = True
+    compressor = MagicMock()
+    compressor.protect_first_n, compressor.protect_last_n = 3, 20
+    compressor.threshold_tokens, compressor.context_length = 500_000, 1_000_000
+    compressor.last_prompt_tokens = 1_000
+    compressor.awaiting_real_usage_after_compression = False
+    compressor.should_compress.return_value = False
+    compressor.should_compress_info.return_value = (False, None)
+    compressor.should_defer_preflight_to_real_usage.return_value = True
+    compressor.get_active_compression_failure_cooldown.return_value = None
+    compressor._micro_compact_enabled = True
+    compressor._flush_scan_cursor_invalidated = False
+    compressor._micro_compact = lambda messages, **_kw: [{"role": "user", "content": "[MICRO] earlier"}, *messages[1:]]
+    agent.context_compressor = compressor
+    agent.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="done", reasoning_content=None, reasoning=None, tool_calls=None), finish_reason="stop")],
+        model="test/model", usage=None)
+
+    _run(agent, served, monkeypatch)
+
+    assert _dedup_state() == (True, False)

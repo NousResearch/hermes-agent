@@ -141,16 +141,15 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 // instantiateAutomationBlueprint fills the slots and creates a real cron job via
 // the same create_job path as createCronJob.
 //
-// Profile-scoping is intentionally asymmetric: the GET catalog is global (the
-// list endpoint takes no profile — only deliver options are rewritten from the
-// configured gateways), so it carries only the profileScoped() header for
-// routing. instantiate creates a real per-profile job, so it names the target
-// profile explicitly via ?profile=. This mirrors the dashboard's api.ts.
-export function getAutomationBlueprints(): Promise<{ blueprints: AutomationBlueprint[] }> {
+// Both calls name the target profile via ?profile=: the catalog is per profile
+// (built-ins plus that profile's plugin-registered blueprints, deliver options
+// from its gateways), and instantiate creates the job in that profile. Fetch the
+// catalog for the same profile you instantiate into. Mirrors the dashboard's api.ts.
+export function getAutomationBlueprints(profile: string): Promise<{ blueprints: AutomationBlueprint[] }> {
   return hermesApi<{ blueprints: AutomationBlueprint[] }>({
     ...profileScoped(),
     ...connectionScoped(),
-    path: '/api/cron/blueprints',
+    path: `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

@@ -93,9 +93,7 @@ export function WorkspaceShowMoreRow({
             <Codicon name="ellipsis" size={SIDEBAR_LEAD_ICON_SIZE} />
           </SidebarRowLeadGlyph>
         </SidebarRowLead>
-        <SidebarRowLabel className="truncate text-xs leading-[1.35] underline-offset-4 group-hover/more:underline">
-          {label}
-        </SidebarRowLabel>
+        <SidebarRowLabel className="text-xs underline-offset-4 group-hover/more:underline">{label}</SidebarRowLabel>
       </SidebarRowBody>
     </SidebarRowShell>
   )

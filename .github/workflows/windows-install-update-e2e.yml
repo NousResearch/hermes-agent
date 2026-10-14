@@ -7,11 +7,30 @@ name: Windows install + update E2E
 # Each file walks one journey (one install) and asserts several user-visible cells;
 # tracked bugs are message-gated xfails (tests/e2e/core/_pending_fixes.py).
 #
-# Called from tests-os.yml on every Python PR. Pushes to wine2e-install/** run it alone,
-# for sabotage proofs and iteration without the rest of CI.
+# Called from tests-os.yml when a Python PR touches the install/update code
+# (the classifier's e2e_upgrade lane) and on every push to main. Pushes to
+# wine2e-install/** run it alone, for sabotage proofs and iteration without the
+# rest of CI.
 
 on:
   workflow_call:
+    inputs:
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
+  # An acceptance run of an integrated batch on its own: e.g.
+  # `gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptance=upd-txn`.
+  workflow_dispatch:
+    inputs:
+      strict_acceptance:
+        description: >-
+          Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
+        type: string
+        required: false
+        default: ''
   push:
     branches: ['wine2e-install/**']
 
@@ -27,10 +46,10 @@ jobs:
     name: Windows install.ps1 + hermes update E2E
     runs-on: windows-latest-32-core
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
-    timeout-minutes: 50
+    timeout-minutes: 75
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # serve.git is a bare clone of this checkout: the installer's treeless clone and
           # `hermes update` need real history and release tags (version identity), as on GitHub.
@@ -51,6 +70,7 @@ jobs:
             -m "platforms and integration" -v --tb=short -rA
         env:
           HERMES_E2E_WINDOWS_INSTALL: '1'
+          HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
           # Machine work dirs (serve.git, transcripts) stay short under runner.temp. The fake
           # user profiles live in C:\Users itself, where a real one does: the checkout carries
           # 159-character paths, so a deeper profile hits MAX_PATH where no user would (the
@@ -60,11 +80,27 @@ jobs:
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
           HERMES_TEST_WORKERS: '6'
-          HERMES_TEST_FILE_TIMEOUT: '2400'
+          # test_crash_cells.py runs its whole journey (install, gateway phase, six crash cells)
+          # inside one file: ~2,100 s on a normal runner, past 2,400 s on a slow one.
+          HERMES_TEST_FILE_TIMEOUT: '3600'
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
+
+      - name: Every crash cell ran
+        # run_tests.sh passes a file whose tests were all deselected (pytest exit 5) or skipped,
+        # so a lost marker or opt-in would run zero crash cells green. The crash journey writes
+        # this manifest only when it ran (tests/e2e/core/windows_update/test_crash_cells.py).
+        shell: pwsh
+        env:
+          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
+        run: |
+          $manifest = Join-Path $env:HERMES_E2E_ARTIFACTS 'crash-cells-ran.txt'
+          if (-not (Test-Path -LiteralPath $manifest)) {
+            throw "test_crash_cells.py ran no crash cells: $manifest is missing"
+          }
+          Get-Content -LiteralPath $manifest
 
       - name: Upload transcripts, logs and receipts
         if: always()

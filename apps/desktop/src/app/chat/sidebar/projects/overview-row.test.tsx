@@ -64,11 +64,15 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
-  it('keeps long project labels single-line truncated', () => {
-    render(<ProjectOverviewRow project={project} />)
-
+  it('bounds the project label with a single-line block inside its button', () => {
+    const onEnter = vi.fn()
+    render(<ProjectOverviewRow onEnter={onEnter} project={project} />)
     const label = screen.getByText('Test D')
+    expect(label.className).toContain('block')
     expect(label.className).toContain('truncate')
+    expect(label.className).toContain('leading-[1.35]')
+    fireEvent.click(label)
+    expect(onEnter).toHaveBeenCalledWith(project.id)
   })
 
   afterEach(() => {
@@ -136,11 +140,7 @@ describe('ProjectOverviewRow', () => {
     fireEvent.click(screen.getByText('Show all 120 sessions'))
 
     await waitFor(() => expect(shown()).toBe(50))
-    // Paging labels retain one-line truncation independently of session titles.
-    const showMoreLabel = screen.getByText('Show 50 more in Test D')
-    expect(showMoreLabel.className).toContain('truncate')
-    expect(showMoreLabel.className).toContain('leading-[1.35]')
-    fireEvent.click(showMoreLabel)
+    fireEvent.click(screen.getByText('Show 50 more in Test D'))
     expect(shown()).toBe(100)
     fireEvent.click(screen.getByText('Show 20 more in Test D'))
     expect(shown()).toBe(120)

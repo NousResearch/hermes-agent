@@ -226,7 +226,7 @@ def _source_files() -> list[Path]:
     return files
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _is_packaging_copy(top_level: str) -> bool:
     """Whether *top_level* (a dir name under REPO_ROOT) is a build artifact."""
     if top_level in ("build", "dist") or top_level.endswith(".egg-info"):

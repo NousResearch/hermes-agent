@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import tools.browser_tool as browser_tool
+from tools import browser_tool
 from tools import browser_tool_lifecycle as bt_lifecycle
 from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud

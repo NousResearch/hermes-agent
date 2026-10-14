@@ -28,19 +28,20 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 
 describe('session row details', () => {
   it('provides density-aware virtual row estimates', () => {
-    // The 13px title and 10px metadata/preview text produce fractional 13.5px
-    // line boxes. Estimates round the 45.5px/63px content floors upward so
-    // unmeasured virtual rows never begin undersized.
-    expect(sessionRowEstimate('compact')).toBe(30)
-    expect(sessionRowEstimate('comfortable')).toBe(46)
-    expect(sessionRowEstimate('detailed')).toBe(64)
+    // Cover two title lines with glyph-safe leading, then metadata and preview.
+    const titleWithPadding = 2 * 13 * 1.35 + 4
+    const metadata = 10 * 1.35 + 2
+    const preview = 10 * 1.35 + 4
+    expect(sessionRowEstimate('compact')).toBe(Math.ceil(titleWithPadding))
+    expect(sessionRowEstimate('comfortable')).toBe(Math.ceil(titleWithPadding + metadata))
+    expect(sessionRowEstimate('detailed')).toBe(Math.ceil(titleWithPadding + metadata + preview))
   })
 
   it('keeps the detailed estimate even when preview is omitted as a title duplicate', () => {
     const details = sessionRowDetails(session({ title: null }), en)
 
     expect(details.preview).toBeNull()
-    expect(sessionRowEstimate('detailed')).toBe(64)
+    expect(sessionRowEstimate('detailed')).toBeGreaterThanOrEqual(sessionRowEstimate('comfortable'))
   })
 
   it('formats deterministic metadata without ambiguous call wording', () => {

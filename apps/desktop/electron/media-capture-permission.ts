@@ -18,12 +18,7 @@ import type {
  * instead of scattering casts.
  */
 export type MediaCapturePermissionString =
-  | 'media'
-  | 'audioCapture'
-  | 'videoCapture'
-  | 'fullscreen'
-  | 'automatic-fullscreen'
-  | (string & Record<never, never>)
+  'media' | 'audioCapture' | 'videoCapture' | 'fullscreen' | 'automatic-fullscreen' | (string & Record<never, never>)
 
 /**
  * The metadata a media permission request may carry.
@@ -79,7 +74,7 @@ const carriesMediaTypes = (details: unknown): details is MediaCapturePermissionD
 // the same predicate is what keeps the two paths from drifting apart again.
 export function isMediaCapturePermission(
   permission: MediaCapturePermissionString,
-  details: MediaPermissionRequestDetails | undefined,
+  details: MediaPermissionRequestDetails | undefined
 ): boolean {
   // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
   // and the check handler for 'automatic-fullscreen'. Both must be allowed

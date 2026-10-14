@@ -124,12 +124,19 @@ test.each(authCases)(
       'session-token',
       context,
       {
-        showSaveDialog: async (settings: { defaultPath: string; filters?: unknown; title: string }): Promise<GatewaySaveDialogResult> => {
+        showSaveDialog: async (settings: {
+          defaultPath: string
+          filters?: unknown
+          title: string
+        }): Promise<GatewaySaveDialogResult> => {
           // #92480: the dialog must carry the download's file type so Windows has
           // a default extension to append; the resolved name reaches it intact.
           expect(settings.defaultPath).toBe('server.bin')
           expect(settings.title).toBe('Save File')
-          expect(settings.filters).toEqual([{ name: 'BIN File', extensions: ['bin'] }, { name: 'All Files', extensions: ['*'] }])
+          expect(settings.filters).toEqual([
+            { name: 'BIN File', extensions: ['bin'] },
+            { name: 'All Files', extensions: ['*'] }
+          ])
           dialogEntered.resolve()
 
           return decision.promise
@@ -408,7 +415,10 @@ test('the data-url save dialog carries a file type too', async (): Promise<void>
         throw Object.assign(new Error('not found'), { statusCode: 404 })
       },
       readDataUrl: async (): Promise<string> => 'data:application/octet-stream,hello',
-      showSaveDialog: async (settings: { defaultPath: string; filters?: unknown }): Promise<GatewaySaveDialogResult> => {
+      showSaveDialog: async (settings: {
+        defaultPath: string
+        filters?: unknown
+      }): Promise<GatewaySaveDialogResult> => {
         seen.push(settings)
 
         return { canceled: false, filePath: destination }
@@ -420,7 +430,10 @@ test('the data-url save dialog carries a file type too', async (): Promise<void>
   expect(seen).toEqual([
     {
       defaultPath: suggested,
-      filters: [{ name: 'BIN File', extensions: ['bin'] }, { name: 'All Files', extensions: ['*'] }],
+      filters: [
+        { name: 'BIN File', extensions: ['bin'] },
+        { name: 'All Files', extensions: ['*'] }
+      ],
       title: 'Save File'
     }
   ])

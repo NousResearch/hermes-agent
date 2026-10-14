@@ -108,7 +108,7 @@ describe('VirtualSessionList row measurement', () => {
   })
 
   it('covers the full two-line title and card stack before measurement', () => {
-    const tallestCardPx = 2 * 6 + 20 + 2 * 6.4 + 2 * 13 + 2.4 + 2 * (10 * 1.35)
+    const tallestCardPx = 2 * 6 + 20 + 2 * 6.4 + 2 * (13 * 1.35) + 2.4 + 2 * (10 * 1.35)
     expect(SESSION_CARD_ROW_ESTIMATE_PX).toBe(Math.ceil(tallestCardPx))
   })
 

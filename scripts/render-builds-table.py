@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Render the release download tables into <!-- HERMES_BUILDS_TABLE -->, and
 the same rows as standalone pages in the bucket.
 
@@ -53,7 +53,7 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning  # noqa: E402
+from scripts.releases import handoff, r2, semver, stable, versioning
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -724,6 +724,7 @@ def main() -> int:
         ["gh", "release", "view", args.tag, "--repo", args.repo,
          "--json", "body"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False,
     )
     if view.returncode != 0:
         print(f"::error::gh release view failed: {view.stderr.strip()}")
@@ -746,6 +747,7 @@ def main() -> int:
          "--notes-file", "-"],
         input=new_body, capture_output=True, text=True, encoding="utf-8",
         errors="replace",
+        check=False,
     )
     if edit.returncode != 0:
         print(f"::error::gh release edit failed: {edit.stderr.strip()}")

@@ -1979,6 +1979,14 @@ def test_empty_dict_default_sections_are_open_containers():
     assert suggestion == "compression.model_thresholds"
 
 
+def test_gateway_human_silence_key_is_recognized():
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["gateway"].get("allow_human_silence_markers") is False
+    assert _validate_config_key("gateway.allow_human_silence_markers") == (True, None)
+
+
 def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
     """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
     ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""

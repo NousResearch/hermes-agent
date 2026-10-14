@@ -985,7 +985,7 @@ export function ChatBar({
       // Empty Enter never drains the queue. The user can send an individual
       // queued entry from its row or explicitly resume via the queue controls.
       // Read live DOM text so a just-typed message is not mistaken for empty.
-      if (!hasLivePayload) {
+      if (!hasLivePayload && !queueEdit) {
         return
       }
 

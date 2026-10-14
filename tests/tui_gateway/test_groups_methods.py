@@ -324,7 +324,9 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
                 "authority_gateway_id": room["authority_gateway_id"],
                 "authority_epoch": room["authority_epoch"],
                 "member_id": "member-peer",
+                "target_install_id": catalog["installation_id"],
                 "target_profile": "reviewer",
+                "capability_digest": catalog["catalog_digest"],
                 "catalog": catalog,
             }
 

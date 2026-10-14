@@ -2062,6 +2062,7 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            capability_digest="a" * 64,
             issued_at=100,
             ttl_seconds=300,
             status_expires_at=1000,
@@ -2109,6 +2110,7 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            capability_digest="a" * 64,
             permissions=("status",),
             issued_at=100,
             ttl_seconds=300,
@@ -2147,6 +2149,7 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            capability_digest="a" * 64,
             issued_at=100,
             ttl_seconds=10,
             status_expires_at=150,
@@ -2184,6 +2187,7 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            capability_digest="a" * 64,
             execution_policy_digest=stale_digest,
             issued_at=100,
             ttl_seconds=300,
@@ -2231,6 +2235,7 @@ class TestHostedRoomRuns:
             member_id="member-peer",
             target_install_id=local_authority_gateway_id(),
             target_profile="default",
+            capability_digest="a" * 64,
             issued_at=100,
             ttl_seconds=300,
             status_expires_at=1000,
@@ -2263,6 +2268,7 @@ class TestHostedRoomRuns:
             "member_id": "member-reviewer",
             "target_install_id": local_authority_gateway_id(),
             "target_profile": "default",
+            "capability_digest": "a" * 64,
         }
         first = issue_room_grant(
             auth_adapter._room_grant_secret(),
@@ -2323,6 +2329,7 @@ class TestHostedRoomRuns:
             "member_id": "member-peer",
             "target_install_id": local_authority_gateway_id(),
             "target_profile": "default",
+            "capability_digest": "a" * 64,
         }
         old_grant = issue_room_grant(
             auth_adapter._room_grant_secret(),

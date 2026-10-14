@@ -485,3 +485,78 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+class TestContainerAbsolutePathHints:
+    """A session whose host cwd is mounted into a container refers to files by container-absolute
+    paths; discovery has to map that mount point back onto the host tree (#138115)."""
+
+    @pytest.fixture
+    def host_workspace(self, tmp_path):
+        host = tmp_path / "host-workspace"
+        for sub, marker in (("a", "Hints for a"), ("b", "Hints for b")):
+            (host / sub).mkdir(parents=True)
+            (host / sub / "AGENTS.md").write_text(marker, encoding="utf-8")
+            (host / sub / "note.txt").write_text("note", encoding="utf-8")
+        return host
+
+    def test_container_path_discovers_the_host_hint(self, host_workspace):
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        result = tracker.check_tool_call(
+            "read_file",
+            {"path": "/workspace/b/note.txt"},
+            container_mount="/workspace",
+            host_cwd=str(host_workspace),
+        )
+        assert result is not None
+        assert "Hints for b" in result
+
+    def test_container_path_in_shell_command_discovers_the_host_hint(self, host_workspace):
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        result = tracker.check_tool_call(
+            "terminal",
+            {"command": "cd /workspace/a && cat note.txt"},
+            container_mount="/workspace",
+            host_cwd=str(host_workspace),
+        )
+        assert result is not None
+        assert "Hints for a" in result
+
+    def test_without_the_mapping_a_container_path_discovers_nothing(self, host_workspace):
+        """Baseline for the fix: the raw container path is not a host path."""
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        assert tracker.check_tool_call("read_file", {"path": "/workspace/b/note.txt"}) is None
+
+    def test_mount_sibling_is_not_remapped(self, host_workspace):
+        """`/workspace-other` is not under the `/workspace` mount."""
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        assert tracker.check_tool_call(
+            "read_file",
+            {"path": "/workspace-other/b/note.txt"},
+            container_mount="/workspace",
+            host_cwd=str(host_workspace),
+        ) is None
+
+    def test_host_absolute_paths_still_resolve_directly(self, host_workspace):
+        """The mapping never touches a path that is already a host path."""
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        result = tracker.check_tool_call(
+            "read_file",
+            {"path": str(host_workspace / "a" / "note.txt")},
+            container_mount="/workspace",
+            host_cwd=str(host_workspace),
+        )
+        assert result is not None
+        assert "Hints for a" in result
+
+    def test_fallback_mount_uses_the_reported_mount_point(self, host_workspace):
+        """When /workspace is claimed the bind lands elsewhere; the reported mount wins."""
+        tracker = SubdirectoryHintTracker(working_dir=str(host_workspace))
+        result = tracker.check_tool_call(
+            "read_file",
+            {"path": "/host-cwd/a/note.txt"},
+            container_mount="/host-cwd",
+            host_cwd=str(host_workspace),
+        )
+        assert result is not None
+        assert "Hints for a" in result

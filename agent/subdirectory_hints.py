@@ -129,6 +129,33 @@ def _is_home_like_working_dir(working_dir: Path) -> bool:
     return False
 
 
+# Container-absolute tool paths are not host paths. A docker session that binds the host working
+# directory into the container (``host_cwd_mount``, ``/workspace`` by default) reports its ``pwd``
+# as that container path, so the agent refers to files by container-absolute paths while hint
+# discovery resolves against the host tree: ``/workspace/<sub>/note.txt`` never mapped back to
+# ``<host cwd>/<sub>/note.txt`` and the per-directory hint file there was missed (#138115).
+def _host_path_for_container_path(
+    raw_path: str, container_mount: Optional[str], host_root: Optional[str]
+) -> str:
+    """Map *raw_path* under the session's container mount back onto its host directory.
+
+    Returns *raw_path* unchanged when either side of the mapping is unknown, when the mount is
+    the filesystem root (nothing to translate), or when the path is not under that mount —
+    a sibling directory (``/workspace-other``) is not under ``/workspace``.
+    """
+    if not raw_path or not container_mount or not host_root:
+        return raw_path
+    mount = container_mount.rstrip("/") or "/"
+    if mount == "/":
+        return raw_path
+    if raw_path != mount and not raw_path.startswith(mount + "/"):
+        return raw_path
+    remainder = raw_path[len(mount):].lstrip("/")
+    if not remainder:
+        return host_root
+    return str(Path(host_root) / remainder)
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -180,33 +207,61 @@ class SubdirectoryHintTracker:
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
-        """Return formatted hint text for newly visited directories, or None."""
+    def check_tool_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        *,
+        container_mount: Optional[str] = None,
+        host_cwd: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return formatted hint text for newly visited directories, or None.
+
+        *container_mount* / *host_cwd* are the live backend's bind of the session's host working
+        directory (``host_cwd_mount`` / ``host_cwd``); when both are known, tool paths that arrive
+        as container-absolute paths resolve to their host directory first.
+        """
         if not self.enabled:
             return None
         if self._home_is_working_dir:
             return None
-        all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
+        dirs = self._extract_directories(
+            tool_name, tool_args, container_mount=container_mount, host_cwd=host_cwd
+        )
+        all_hints = [h for d in dirs if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
-    def _extract_directories(self, tool_name: str, args: dict[str, Any]) -> list:
+    def _extract_directories(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        container_mount: Optional[str] = None,
+        host_cwd: Optional[str] = None,
+    ) -> list:
         """Extract directory paths from tool call arguments."""
         candidates: set[Path] = set()
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
-                self._add_path_candidate(val, candidates)
+                self._add_path_candidate(val, candidates, container_mount, host_cwd)
         cmd = args.get("command", "") if tool_name in _COMMAND_TOOLS else None
         if isinstance(cmd, str):
-            self._extract_paths_from_command(cmd, candidates)
+            self._extract_paths_from_command(cmd, candidates, container_mount, host_cwd)
         return list(candidates)
 
-    def _add_path_candidate(self, raw_path: str, candidates: set[Path]):
+    def _add_path_candidate(
+        self,
+        raw_path: str,
+        candidates: set[Path],
+        container_mount: Optional[str] = None,
+        host_cwd: Optional[str] = None,
+    ):
         """Add a raw path's directory and its ancestors (up to ``_MAX_ANCESTOR_WALK``
         levels, stopping at the first already-loaded dir) so reading
         ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
         try:
-            p = Path(raw_path).expanduser()
+            p = Path(_host_path_for_container_path(raw_path, container_mount, host_cwd)).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
@@ -223,7 +278,13 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError, RuntimeError):
             pass
 
-    def _extract_paths_from_command(self, cmd: str, candidates: set[Path]):
+    def _extract_paths_from_command(
+        self,
+        cmd: str,
+        candidates: set[Path],
+        container_mount: Optional[str] = None,
+        host_cwd: Optional[str] = None,
+    ):
         """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
             tokens = shlex.split(cmd)
@@ -234,11 +295,11 @@ class SubdirectoryHintTracker:
         # START of a shell segment counts (`echo cd backend` is prose); punctuation-aware tokenizing keeps
         # a quoted `'backend;'` literal while splitting bare `backend;ls` at the operator.
         for target in _nav_targets(cmd):
-            self._add_path_candidate(target, candidates)
+            self._add_path_candidate(target, candidates, container_mount, host_cwd)
         for token in tokens:
             if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue
-            self._add_path_candidate(token, candidates)
+            self._add_path_candidate(token, candidates, container_mount, host_cwd)
 
     def _within_working_dir(self, path: Path) -> bool:
         """Reject paths outside the working-dir tree: loading ~/.codex/AGENTS.md

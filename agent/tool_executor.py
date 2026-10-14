@@ -1131,7 +1131,16 @@ def _commit_tool_result(
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
     note_tool_result(agent, function_name, tool_call_id, function_result, persisted_result)
 
-    subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
+    # The live backend knows which container path holds this session's host working directory
+    # (docker's host_cwd / host_cwd_mount); hint discovery needs the same pair to resolve the
+    # container-absolute paths the agent uses inside that backend (#138115).
+    _hint_env = get_active_env(effective_task_id)
+    subdir_hints = agent._subdirectory_hints.check_tool_call(
+        function_name,
+        function_args,
+        container_mount=getattr(_hint_env, "host_cwd_mount", None),
+        host_cwd=getattr(_hint_env, "host_cwd", None),
+    )
     if subdir_hints:
         if _is_multimodal_tool_result(persisted_result):
             # Hint goes on the text summary part so the model still sees it; image blocks untouched.

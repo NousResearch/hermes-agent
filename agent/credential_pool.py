@@ -223,8 +223,9 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
-    # Epoch of the last deliberate ``hermes auth reset`` of this entry. Sticky: a later exhaustion
-    # stamps a newer ``last_status_at``, so "reset postdates status" stays decidable across processes.
+    # Epoch of the last authoritative status clear for this entry (operator reset or automatic
+    # cooldown recovery). Sticky: a later exhaustion stamps a newer ``last_status_at``, so
+    # "clear postdates status" stays decidable across processes.
     status_cleared_at: Optional[float] = None
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
@@ -2035,8 +2036,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 time.sleep(_REFRESH_SWEEP_SPACING_SECONDS)
             self._refresh_entry(entry, force=False)
 
-    def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
-        """Epoch of a ``hermes auth reset`` persisted by another process AFTER *entry*'s status, else None."""
+    def _status_cleared_after(self, entry: PooledCredential) -> Optional[float]:
+        """Epoch of a persisted status clear newer than *entry*'s in-memory status, else None."""
         try:
             row = next((p for p in read_credential_pool(self.provider)
                         if isinstance(p, dict) and p.get("id") == entry.id), None)
@@ -2052,12 +2053,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         The user may have re-authed (``hermes model`` / ``hermes auth``, the
         Claude Code CLI, another profile) leaving fresh tokens on disk while
         the pool entry is frozen behind ``last_error_reset_at``. A ``hermes auth
-        reset`` run from another process while this pool is live is honoured the
-        same way (#89415): the in-memory cooldown would otherwise outlive it.
+        reset`` or automatic cooldown recovery in another process while this pool is
+        live is honoured the same way (#89415, #119195): the in-memory cooldown would
+        otherwise outlive the persisted recovery.
         """
         if entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
             return entry
-        cleared_at = self._reset_cleared_after(entry)
+        cleared_at = self._status_cleared_after(entry)
         if cleared_at is not None:
             return self._adopt(entry, persist=False, **_MARK_OK, status_cleared_at=cleared_at)
         if entry.source != _RESYNC_SOURCE.get(self.provider):
@@ -2082,6 +2084,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         now = time.time()
         cleared_any = False
+        status_cleared_ids: List[str] = []
         entries_to_prune: list[str] = []
         available: list[PooledCredential] = []
         pending_refresh: list[PooledCredential] = []
@@ -2128,10 +2131,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 ):
                     continue
                 if clear_expired:
-                    # The probe may have rotated this row's single-use token pair: clear the
-                    # cooldown on the live row, not on this pre-probe copy.
+                    # The quota probe may rotate a single-use token pair.
+                    # Clear the live row so recovery never restores stale tokens.
                     entry = self._find(lambda e, i=entry.id: e.id == i) or entry
-                    entry = self._adopt(entry, persist=False, **_MARK_OK)
+                    updated_extra = dict(entry.extra)
+                    updated_extra.pop("failure_reason", None)
+                    entry = self._adopt(
+                        entry,
+                        persist=False,
+                        **_MARK_OK,
+                        status_cleared_at=now,
+                        extra=updated_extra,
+                    )
+                    status_cleared_ids.append(entry.id)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:
@@ -2151,7 +2163,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             pruned_ids = set(entries_to_prune)
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
         if cleared_any:
-            self._persist(removed_ids=entries_to_prune)
+            self._persist(
+                removed_ids=entries_to_prune,
+                status_cleared_ids=status_cleared_ids,
+            )
         return available, pending_refresh
 
     def _log_no_available_entries(self) -> None:

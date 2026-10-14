@@ -79,6 +79,22 @@ class TestHook:
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(provider="Anthropic", id="gen-1-x"), 1) is False
         assert self.switches == ["anthropic_messages"]
 
+    def test_auto_wire_switch_preserves_startup_primary_restore_intent(self, monkeypatch):
+        monkeypatch.setattr(nous_wire, "GMI_NATIVE_WIRE_CLEARED", True)
+        observed = {}
+
+        def fake_switch(agent, model, provider, **kwargs):
+            observed.update(kwargs)
+            agent.api_mode = kwargs["api_mode"]
+
+        monkeypatch.setattr("agent.agent_runtime_helpers.switch_model", fake_switch)
+        intent = {"model": "claude-opus-5", "resolve_kwargs": {"requested": "anthropic"}}
+        a = _agent(_pre_agent_primary=intent)
+        assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is True
+        assert nous_wire.apply_pending_wire_switch(a) is True
+        assert observed["supersede_pre_agent_primary"] is False
+        assert a._pre_agent_primary is intent
+
     def test_openrouter_stays_on_chat(self):
         a = _agent()
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(provider="Anthropic", id="gen-1-x"), 1) is False

@@ -2530,6 +2530,16 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 if fb_api_key := resolve_entry_api_key(entry):
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
+                from agent.fallback_cooldown import candidate_pool_exhausted
+                if candidate_pool_exhausted(
+                    fb_provider, fb_model, pool=runtime.get("credential_pool")
+                ):
+                    logging.getLogger(__name__).warning(
+                        "Fallback skip: %s/%s credential pool is exhausted "
+                        "(every entry in cooldown)",
+                        fb_provider, fb_model,
+                    )
+                    continue
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -2583,6 +2593,13 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         primary_provider = requested_provider or (cfg_model.get("provider") if isinstance(cfg_model, dict) else None)
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
+        # The fallback was selected before agent construction. Keep the intended primary
+        # so a long-lived Desktop session can retry it on a later turn (#119195).
+        resolution.runtime["_pre_agent_primary"] = {
+            "model": model,
+            "resolve_kwargs": dict(resolve_kwargs),
+            "overrides": {k: v for k, v in overrides.items() if v},
+        }
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
@@ -2672,6 +2689,7 @@ def _make_agent(
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    pre_agent_primary = runtime.pop("_pre_agent_primary", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2710,6 +2728,25 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+    if isinstance(pre_agent_primary, dict):
+        # Startup fallback precedes AIAgent construction; keep the configured primary
+        # available to restore_primary_runtime() on subsequent turns.
+        agent._pre_agent_primary = pre_agent_primary
+        agent._fallback_activated = True
+        agent._provider_fallback_active = True
+        selected_provider = str(
+            getattr(agent, "provider", runtime.get("provider")) or runtime.get("provider") or ""
+        ).strip().lower()
+        selected_model = str(getattr(agent, "model", model) or model or "").strip()
+        agent._provider_fallback_route = (selected_model, selected_provider)
+        # Continue after the fallback selected before agent construction.
+        for idx, entry in enumerate(getattr(agent, "_fallback_chain", []) or []):
+            if (
+                str(entry.get("provider") or "").strip().lower() == selected_provider
+                and str(entry.get("model") or "").strip() == selected_model
+            ):
+                agent._fallback_index = idx + 1
+                break
     return agent
 
 

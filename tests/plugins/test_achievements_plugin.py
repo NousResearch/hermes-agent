@@ -69,7 +69,6 @@ class _FakeSessionDB:
         self.scan_delay = scan_delay
         self.last_limit: Optional[int] = None
         self.last_include_children: Optional[bool] = None
-        self.last_include_archived: Optional[bool] = None
         self.list_calls = 0
         self.messages_calls = 0
 
@@ -81,13 +80,12 @@ class _FakeSessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
-        include_archived: bool = False,
+        **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
         self.last_limit = limit
         self.last_include_children = include_children
-        self.last_include_archived = include_archived
         self.list_calls += 1
         # SQLite semantics: LIMIT -1 = unlimited. Honor that here.
         effective = self.session_count if limit == -1 else min(self.session_count, limit)
@@ -340,24 +338,31 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert writable_opens == [], "the achievements scan must attach read-only"
 
 
-def test_scan_sessions_includes_archived_sessions(plugin_api):
-    """Bug regression: archived sessions must still be scanned.
+def test_scan_sessions_counts_archived_sessions_in_lifetime_totals(plugin_api, tmp_path, monkeypatch):
+    """Regression for #138310: archiving a session must not remove it from lifetime totals.
 
-    ``archived`` is a sidebar visibility flag — ``_session_filter_where`` defaults
-    to ``include_archived=False`` because the session list should not show them. The
-    achievements scan reused that default, so every archived session dropped out of the
-    lifetime sums, per-session maxima and event counters. Badges already recorded in
-    ``state.json`` stayed sticky, so the UI kept showing them unlocked while their progress
-    silently shrank back toward the threshold — totals that shrink when the user archives
-    old sessions. On a real install 649 of 719 non-hidden sessions were archived, leaving
-    the scan with 70 sessions and ~2,000 of ~40,000 tool calls.
+    ``archived`` only hides a session from the sidebar, but the scan inherited the session
+    list's ``include_archived=False`` default, so archived work silently dropped out of the
+    lifetime sums while earned badges stayed sticky in ``state.json``. Real store, no fakes.
     """
-    fake_db = _FakeSessionDB(session_count=100)
-    _install_fake_session_db(plugin_api, fake_db)
+    import hermes_state
+    from hermes_state import SessionDB
 
-    plugin_api.scan_sessions()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    seed = SessionDB(db_path=tmp_path / "state.db")
+    for sid in ("kept", "archived"):
+        seed.create_session(sid, source="cli")
+        seed.append_message(sid, "user", "run it")
+        seed.append_message(sid, "assistant", tool_calls=[
+            {"id": f"call-{sid}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+        seed.append_message(sid, "tool", "ok", tool_name="terminal", tool_call_id=f"call-{sid}")
+    before = plugin_api.scan_sessions()
+    assert seed.set_session_archived("archived", True)
+    seed.close()
 
-    assert fake_db.last_include_archived is True, (
-        "scan_sessions() must pass include_archived=True: lifetime achievement totals "
-        "must not shrink when the user archives old sessions"
-    )
+    after = plugin_api.scan_sessions()
+
+    assert after.get("error") is None
+    assert sorted(s["session_id"] for s in after["sessions"]) == ["archived", "kept"]
+    assert after["aggregate"]["total_tool_calls"] == before["aggregate"]["total_tool_calls"] > 0

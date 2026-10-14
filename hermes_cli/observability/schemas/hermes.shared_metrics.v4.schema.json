@@ -2743,6 +2743,7 @@
                     "deps_failed",
                     "detached_head",
                     "disk_full",
+                    "downgrade_refused",
                     "download_failed",
                     "exception",
                     "fetch_failed",

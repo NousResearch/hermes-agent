@@ -33,6 +33,7 @@ export const enProjects: Translations['sidebar']['projects'] = {
   movedTo: name => `Moved to ${name}`,
   moveFailed: 'Could not move session',
   moveNoFolder: 'That project has no folder to move into',
+  moveBusy: 'Stop the running turn, then move the chat',
   moveNoProjects: 'No other projects',
   reveal: 'Reveal in folder',
   copyPath: 'Copy path',

@@ -1,6 +1,6 @@
 /**
  * The profile operations that reach the gateway rather than the screen:
- * two-way avatar sync, duplicate, and delete.
+ * two-way avatar sync, duplicate, export/import, and delete.
  *
  * They sit below every surface because both the roster and the create dialog
  * drive them — the dialog deletes its own draft profile on cancel, the roster
@@ -403,6 +403,42 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
         title: meta.title ? `${meta.title} (copy)` : ''
       }
     )
+  }
+
+  return name
+}
+
+/** Whether `bot` can be saved as an archive from this Desktop: the SDK ships
+ *  the verb and the row is served by the active backend, the one whose
+ *  filesystem the export lands on (the same door the core profile menu uses). */
+export function canExportBot(bot: RosterRow) {
+  return typeof host.exportProfile === 'function' && !bot.remoteSource && !bot.ghost
+}
+
+/** Save a bot as a portable profile archive. Its whole identity lives in the
+ *  profile dir — SOUL.md, skills, cron, `profile.yaml` Bot Mode metadata and
+ *  the avatar asset — so the archive restores the bot after a reinstall or on
+ *  another machine (#121619). Resolves to the archive path, or null when
+ *  cancelled/failed (the host already toasted). */
+export function exportBot(bot: RosterRow) {
+  const route = botConnectionRoute(bot)
+
+  return host.exportProfile(route ? route.targetProfile || route.profile : bot.name)
+}
+
+/** Whether this Desktop build ships the SDK import verb. */
+export function canImportBots() {
+  return typeof host.importProfile === 'function'
+}
+
+/** Restore a bot from an archive as a new profile without leaving Bot Mode,
+ *  then repaint the roster so it appears. Resolves to the new profile name,
+ *  or null when cancelled/failed. */
+export async function importBot() {
+  const name = await host.importProfile()
+
+  if (name) {
+    await queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
   }
 
   return name

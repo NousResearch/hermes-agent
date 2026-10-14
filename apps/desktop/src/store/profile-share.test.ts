@@ -9,6 +9,7 @@ vi.mock('@/store/gateway', async () => {
 
   return {
     $gateway: atom<unknown>(null),
+    activeGatewayConnectionId: () => null,
     ensureGatewayForProfile: vi.fn(async () => undefined),
     openGatewayForProfile: vi.fn(async () => undefined)
   }
@@ -22,8 +23,10 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
-const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle } = await import('./profile-share')
-const { $profileColors, setProfileColor } = await import('./profile')
+const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle, runImportProfileFlow } =
+  await import('./profile-share')
+
+const { $newChatProfile, $profileColors, setProfileColor } = await import('./profile')
 const { modePref, skinPref } = await import('@/themes/context')
 const { $userThemes } = await import('@/themes/user-themes')
 const { $layoutTree } = await import('@/components/pane-shell/tree/store')
@@ -122,5 +125,26 @@ describe('exportProfileBundle', () => {
     const overlay = JSON.parse(call[1]?.extraFiles?.['desktop.json'] ?? '{}') as ProfileDesktopOverlay
     expect(overlay.skin).toBe('mono')
     expect(call[1]?.output).toBe('/tmp/glam.tar.gz')
+  })
+})
+
+describe('runImportProfileFlow', () => {
+  beforeEach(() => {
+    $newChatProfile.set(null)
+    window.hermesDesktop = {
+      ...window.hermesDesktop,
+      selectPaths: vi.fn(async () => ['/tmp/bot.tar.gz'])
+    } as unknown as typeof window.hermesDesktop
+  })
+
+  it('lands the user in the imported profile by default', async () => {
+    expect(await runImportProfileFlow()).toBe('imported')
+    expect($newChatProfile.get()).toBe('imported')
+  })
+
+  // Bot Mode restores a bot into its roster; the app must stay where it is.
+  it('leaves the current profile alone when select is false', async () => {
+    expect(await runImportProfileFlow({ select: false })).toBe('imported')
+    expect($newChatProfile.get()).toBeNull()
   })
 })

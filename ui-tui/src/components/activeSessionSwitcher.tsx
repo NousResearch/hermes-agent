@@ -953,7 +953,12 @@ export function ActiveSessionSwitcher({
         if (row.kind === 'header') {
           const { group, shown, view } = row
           const marker = view === 'collapsed' ? '▸' : view === 'all' ? '▼' : '▾'
-          const count = shown === group.rows.length ? `${group.rows.length}` : `${shown}/${group.rows.length}`
+
+          // A collapsed header shows no sessions by design, so `0/n` would read as an empty project.
+          const count =
+            view === 'collapsed' || shown === group.rows.length
+              ? `${group.rows.length}`
+              : `${shown}/${group.rows.length}`
 
           return (
             <Box

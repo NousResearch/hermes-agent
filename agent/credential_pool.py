@@ -2449,6 +2449,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             self._current_id = entry.id
+            # A sibling sharing this pool object may have rotated the entry after our request left:
+            # our failed key is then no longer the entry's key. Hand back the rotated pair instead
+            # of POSTing again; a forced refresh revokes the access token that sibling now holds.
+            if (
+                api_key_hint
+                and entry.runtime_api_key
+                and entry.runtime_api_key != api_key_hint
+                and not self._entry_needs_refresh(entry)
+            ):
+                return entry
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

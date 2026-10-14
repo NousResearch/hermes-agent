@@ -941,6 +941,20 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent.provider or "provider",
         )
         return False, has_retried_429
+    # The leased entry still fails after its capped refreshes: bench it (401) and rotate to
+    # another entry before failing the call. Checked BEFORE refreshing: a refresh past the cap
+    # only revokes the token every other holder of the entry has (delegate_task children share
+    # one pool object), and once it rotated the entry no longer matches the failed key, so the
+    # rotation below could not bench it.
+    if credential_id and (getattr(agent, "_auth_pool_refresh_counts", None) or {}).get(
+        (agent.provider, credential_id), 0
+    ) >= _MAX_AUTH_REFRESH_ATTEMPTS:
+        _ra().logger.warning(
+            "Credential auth failure persists after %s refreshes for pool entry %s — "
+            "rotating to another entry, or allowing fallback to activate.",
+            _MAX_AUTH_REFRESH_ATTEMPTS, credential_id,
+        )
+        return (True, False) if rotate_and_swap(401, "auth persists after refresh") else (False, has_retried_429)
     # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
     # burns its single-use refresh token for a failure it never had.
     refresh_kwargs = {"api_key_hint": api_key_hint}
@@ -1115,6 +1129,8 @@ def recover_with_credential_pool(
         # match the key that failed, not a different account.
         return (True, False) if _rotate_and_swap(402, "billing") else (False, has_retried_429)
     if effective_reason == FailoverReason.rate_limit:
+        # A 429 means the key authenticated: earlier 401 refreshes worked, so the cap starts over.
+        agent._auth_pool_refresh_counts = {}
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,

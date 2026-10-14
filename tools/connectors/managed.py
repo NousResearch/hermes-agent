@@ -100,6 +100,9 @@ def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reini
             continue
         status = str(entry.get("status") or "")
         detail = str(entry.get("status_reason") or "")
+        if status not in ("active", "initiated"):
+            # A refusal's reason comes in its instruction ("not allowed by your organization's policy").
+            detail = detail or str(entry.get("instruction") or "")
         connection_id = entry.get("connection_id")
         if status == "active":
             operation.transition(name, TargetState.initiated, actor)
@@ -214,12 +217,43 @@ def _mark_misrouted(operation: ConnectionOperation) -> None:
         operation.settle(SettleReason.all_resolved)
 
 
+def _unknown_slug(name: str, known: set[str]) -> str:
+    close = sorted(slug for slug in known if name in slug or slug in name)
+    if close:
+        return f"'{name}' is not a connector slug; use {' or '.join(close)}"
+    return f"'{name}' is not a connector slug; manage_connections status lists them"
+
+
+def _mark_unknown(client: Any, operation: ConnectionOperation) -> None:
+    """The gateway refuses a slug it does not list as a policy block. The model guesses a slug from the
+    app's name (granola for granola_mcp), so the row names the listed slug instead."""
+    unminted = [t for t in operation.targets if t.state == TargetState.failed and not t.connection_id]
+    if operation.settled or not unminted:
+        return
+    catalog = catalog_names()  # a local MCP name already carries its misrouted detail
+    unminted = [t for t in unminted if t.name not in catalog]
+    if not unminted:
+        return
+    try:
+        known = {str(i.get("connector", "")).lower() for i in client.list_connectors()}
+    except ToolGatewayError as exc:
+        logger.debug("connector list for an unminted slug failed: %s", exc)
+        return
+    unknown = [t for t in unminted if t.name not in known]
+    for target in unknown:
+        operation.refresh(target.name, connect_url=None, actor=Actor.backend_watcher,
+                          detail=_unknown_slug(target.name, known))
+    if unknown and len(unknown) == len(operation.targets):
+        operation.settle(SettleReason.all_resolved)
+
+
 def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             _mark_misrouted(operation)
+            _mark_unknown(client, operation)
             return
         # A named account is checked on its own row, read before force so a label resolves to its
         # account either way: the connector-wide flag reports any account.
@@ -229,6 +263,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             account = next((s["connection_id"] for s in (named or {}).values() if s.get("connection_id")), None)
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
             _mark_misrouted(operation)
+            _mark_unknown(client, operation)
             return
         status = named or _status_by_slug(client)
         repair = []
@@ -247,6 +282,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
         account = next((status[n].get("connection_id") for n in repair if status.get(n, {}).get("connection_id")), None)
         mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
         _mark_misrouted(operation)
+        _mark_unknown(client, operation)
 
     return prepare
 
@@ -300,6 +336,8 @@ def _no_card_result(client: Any, action: str, targets: list[HostedTarget], force
 
 def _status_result(client: Any, connectors: list[str]) -> str:
     items = client.list_connectors()
+    known = {str(i.get("connector", "")).lower() for i in items}
+    unknown = {name: _unknown_slug(name, known) for name in connectors if name not in known}
     if connectors:
         wanted = set(connectors)
         items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
@@ -321,7 +359,19 @@ def _status_result(client: Any, connectors: list[str]) -> str:
         "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
         "Use action 'connect' to start an authorization. 'accounts' lists each account by its name "
         "(alias) and the vendor's label; address an unnamed account by its label. A retired account was "
-        "replaced by a reconnect and is kept only for the record.")}, ensure_ascii=False)
+        "replaced by a reconnect and is kept only for the record."), **({"unknown": unknown} if unknown else {})},
+        ensure_ascii=False)
+
+
+def _display_result(client: Any, suggested: list[str], *, session_id: Optional[str], tool_call_id: Optional[str],
+                    connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]], call: Any) -> str:
+    """The desktop card when one can draw; elsewhere the status list and where to connect."""
+    from tools.connectors.display import OFF_DESKTOP_NOTE, run_display
+
+    if connection_callback is None:
+        return json.dumps({**json.loads(_status_result(client, [])), "note": OFF_DESKTOP_NOTE}, ensure_ascii=False)
+    return run_display(client, suggested, session_key=operation_session_key(session_id), tool_call_id=tool_call_id,
+                       connection_callback=connection_callback, call=call)
 
 
 def _rename_result(target: HostedTarget) -> str:
@@ -367,6 +417,7 @@ def run_managed_action(
     turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
+    card_surface: bool = False,
 ) -> str:
     from tools.managed_gateway_identity import CallRef
 
@@ -377,6 +428,9 @@ def run_managed_action(
             return _rename_result(targets[0])
         call = CallRef(turn_id=turn_id, tool_call_id=tool_call_id)
         client = client_factory() if client_factory else managed_client(call=call)
+        if action == "display":
+            return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
+                                   connection_callback=connection_callback if card_surface else None, call=call)
         if action == "status":
             return _status_result(client, [t.name for t in targets])
         if not targets:

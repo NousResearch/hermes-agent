@@ -175,16 +175,16 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
-# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
-# session creation + a prompt.submit.
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session
+# creation + a prompt.submit; onboarding.state = a bounded wait on the boot-time due answer.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
-    "learning.frames", "plugins.manage", "reload.mcp", "mcp.servers.test", "mcp.servers.oauth.start",
+    "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
+    "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
@@ -192,8 +192,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
-    "session.start_chat",
+    "onboarding.start", "onboarding.state",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -2060,10 +2059,6 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
-                from hermes_cli.config import load_config
-                from hermes_cli.tools_config import _get_platform_tools
-                from toolsets import TOOLSET_SESSION_PLATFORMS
-                selection += sorted(_get_platform_tools(load_config(), "cli") & TOOLSET_SESSION_PLATFORMS.keys())
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
@@ -2150,7 +2145,7 @@ def _tool_progress_enabled(sid: str) -> bool:
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
-    "image_generate", "manage_catalog", "delegate_task", "setup_choose", "start_chat",
+    "image_generate", "manage_catalog", "delegate_task", "setup_beat", "set_theme",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })
@@ -2692,7 +2687,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(platform),
+        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
@@ -3563,7 +3558,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact", "initiate-setup", "initiate_setup",
+    "init", "compress", "compact",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -3664,19 +3659,19 @@ from . import (
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
-    session_transports as _session_transports,
+    session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
-    methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
+    methods_tools as _methods_tools, methods_tools_plugin_servers as _methods_tools_plugin_servers,
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
-    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat)
+    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n, methods_machine as _methods_machine,
+    methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3684,10 +3679,10 @@ for _m in (
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
-    _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
+    _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_shared_metrics, _methods_start_chat):
+    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog):
     _m.register(sys.modules[__name__])
 del _m

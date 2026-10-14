@@ -293,6 +293,10 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         # Forward-only pins the target to this checkout's own HEAD, newer than the release.
         # Always present: Desktop names the release only on an explicit False.
         result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
+        # A release HEAD already contains moves the checkout back: Desktop names it a rollback,
+        # not a new update. Local ancestry only; an unknown relation stays an update.
+        result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
+            ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target

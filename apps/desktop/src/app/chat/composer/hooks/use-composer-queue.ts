@@ -436,9 +436,15 @@ export function useComposerQueue({
         // A transient idle render is not proof that the cancellation succeeded.
         // On rejection, leave the selected entry in its parked queue.
         const onCancelFailed = () => {
-          if (pendingManualSendRef.current === pending) {
-            pendingManualSendRef.current = null
+          // A later explicit Stop or new request already superseded this callback.
+          if (
+            pendingManualSendRef.current !== pending ||
+            getQueueParkRevision(pending.sessionKey) !== pending.parkRevision
+          ) {
+            return
           }
+
+          pendingManualSendRef.current = null
           notify({ kind: 'error', title: t.composer.queueStuckTitle, message: t.composer.queueStuckBody })
         }
 

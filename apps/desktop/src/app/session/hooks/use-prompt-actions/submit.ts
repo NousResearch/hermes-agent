@@ -7,6 +7,7 @@ import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/c
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { applyPendingColdResumeModelChoice } from '@/lib/pending-cold-resume-model'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -771,6 +772,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         seedOptimistic(sessionId)
+      }
+
+      if (sessionId && targetStoredSessionId) {
+        // #138492: a manual pick made while this stored conversation had no
+        // runtime is applied to the rebound runtime BEFORE this prompt ships,
+        // so the turn runs on the model the user explicitly selected. A
+        // mismatched or absent pick is a no-op.
+        await applyPendingColdResumeModelChoice(targetStoredSessionId, sessionId, requestGateway)
       }
 
       if (!sessionId) {

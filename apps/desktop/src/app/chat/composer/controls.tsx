@@ -88,7 +88,13 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
   const showQueueButton = busy && busyAction !== 'queue' && busyAction !== 'stop' && hasComposerPayload && !cardWaiting
   const primaryActionLabel = busyAction === 'queue' && !cardWaiting ? c.queueMessage : c.send
-  const primaryKeybindAction = cardWaiting ? 'composer.send' : busyAction === 'queue' ? 'composer.queue' : busyAction === 'steer' ? 'composer.steer' : 'composer.send'
+  const primaryKeybindAction = cardWaiting
+    ? 'composer.send'
+    : busyAction === 'queue'
+      ? 'composer.queue'
+      : busyAction === 'steer'
+        ? 'composer.steer'
+        : 'composer.send'
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
   // narrow tile hits the same wall from the other direction and folds for the

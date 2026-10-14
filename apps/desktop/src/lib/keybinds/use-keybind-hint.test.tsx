@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { $busyInputMode, setBusyInputModeFromConfig } from '@/app/chat/composer/busy-input-mode'
+import { setBusyInputModeFromConfig } from '@/app/chat/composer/busy-input-mode'
 
 import { formatCombo } from './combo'
 import { useKeybindHint } from './use-keybind-hint'

@@ -1,11 +1,10 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
-import { $busyInputMode } from './busy-input-mode'
-
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 
+import { $busyInputMode } from './busy-input-mode'
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
@@ -31,7 +30,10 @@ export function HelpHint({ busy = false }: { busy?: boolean }) {
   const actionLabels: Record<string, string> = t.keybinds.actions
   const actionRows = busy
     ? [
-        { id: busyInputMode === 'queue' ? 'composer.queue' : busyInputMode === 'steer' ? 'composer.steer' : 'composer.send', combos: ['enter'] },
+        {
+          id: busyInputMode === 'queue' ? 'composer.queue' : busyInputMode === 'steer' ? 'composer.steer' : 'composer.send',
+          combos: ['enter']
+        },
         { id: busyInputMode === 'queue' ? 'composer.steer' : 'composer.queue', combos: ['mod+enter'] }
       ]
     : [{ id: 'composer.send', combos: ['enter'] }]
@@ -47,7 +49,11 @@ export function HelpHint({ busy = false }: { busy?: boolean }) {
 
       <Section title={c.hotkeys}>
         {hotkeyRows.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={hotkeyDescriptions[row.id] ?? actionLabels[row.id] ?? ''} key={row.id} />
+          <HotkeyRow
+            combos={[...row.combos]}
+            description={hotkeyDescriptions[row.id] ?? actionLabels[row.id] ?? ''}
+            key={row.id}
+          />
         ))}
       </Section>
 

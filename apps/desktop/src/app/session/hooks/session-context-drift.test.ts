@@ -201,6 +201,24 @@ describe('sessionContextDrift', () => {
     expect(reason).toBe('composer:sess-b->sess-a')
   })
 
+  it('drifts (composer prong) on a fresh-draft scope against a stored target — the re-home is submit.ts business, not this function (#129011)', () => {
+    // This pure function cannot know whether a `__new__:<uuid>` snapshot is the
+    // draft the create pipeline just re-keyed or a stale key from a draft the
+    // user abandoned mid-create. It must stay fail-closed; use-prompt-actions/
+    // submit.ts re-homes the snapshot when it can prove the draft is current.
+    const reason = sessionContextDrift({
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_A,
+      submitTargetStoredId: SESS_A,
+      composerScope: '__new__:draft-a',
+      submitTargetComposerScope: SESS_A
+    })
+
+    expect(reason).toBe('composer:__new__:draft-a->sess-a')
+  })
+
   it('does not drift when the session has rotated via compression (composerScope is the lineage root, submitTargetStoredId is the live tip)', () => {
     const ROOT_ID = 'stored-root'
     const TIP_ID = 'stored-tip-after-compression'

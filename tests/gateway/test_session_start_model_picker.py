@@ -175,6 +175,51 @@ async def test_absent_key_is_a_no_op(gw_config):
 
 
 @pytest.mark.asyncio
+async def test_multiplexed_gateway_uses_the_routed_profile(gw_config, monkeypatch, tmp_path):
+    """Like /model: config is read from the routed profile home, and the click (delivered outside
+    the turn's profile scope) commits inside that profile's runtime scope."""
+    import contextlib
+
+    import gateway.run as gateway_run
+    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+
+    @contextlib.contextmanager
+    def _scope(home, *a, **k):  # the real scope also hydrates secrets/terminal policy; home is what matters here
+        token = set_hermes_home_override(str(home))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _scope)
+    _enable(gw_config, timeout=30)
+    adapter = _FakePickerAdapter()
+    runner = _make_runner(adapter)
+    runner.config = types.SimpleNamespace(multiplex_profiles=True)
+    runner._resolve_profile_home_for_source = lambda source: profile_home
+    seen = {}
+
+    async def _perform(ctx, model_id, provider_slug, source):
+        seen["config_path"] = ctx.config_path
+        seen["home_at_switch"] = get_hermes_home_override()
+        return (model_id, provider_slug), None
+
+    runner._perform_model_switch = _perform
+
+    task = _start(runner, _event())
+    await async_wait_until(lambda: adapter.callback is not None, what="picker sent")
+    await adapter.callback("chat", "gpt-5.5", "openrouter")
+    await asyncio.wait_for(task, timeout=5)
+
+    assert seen["config_path"] == profile_home / "config.yaml"
+    assert seen["home_at_switch"] == str(profile_home)
+    assert runner.committed == [("gpt-5.5", "openrouter")]
+
+
+@pytest.mark.asyncio
 async def test_picker_failure_never_blocks_the_turn(gw_config, monkeypatch):
     import gateway.run as gateway_run
 

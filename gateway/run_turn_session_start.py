@@ -100,8 +100,14 @@ async def _maybe_send_session_start_model_picker(runner, event, source, session_
     from gateway.slash_commands_model import _ModelSwitchContext
     from hermes_cli.model_switch import resolve_persist_behavior
 
+    # Same profile resolution as /model (_handle_model_command_locked): on a multiplexed gateway the
+    # routed profile's config feeds the picker, and the click (which arrives from the adapter outside
+    # the turn's profile scope) commits the switch inside that profile's runtime scope.
+    profile_home = None
+    if getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+        profile_home = runner._resolve_profile_home_for_source(source)
     ctx = _ModelSwitchContext(
-        session_key=session_key, source=source, config_path=_hermes_home / "config.yaml",
+        session_key=session_key, source=source, config_path=(profile_home or _hermes_home) / "config.yaml",
         persist_global=resolve_persist_behavior(False, True, is_once=False, explicit_provider=""),
     )
     ctx.read_config()
@@ -114,12 +120,19 @@ async def _maybe_send_session_start_model_picker(runner, event, source, session_
     )
     selected = asyncio.Event()
 
+    async def _switch(model_id: str, provider_slug: str) -> str:
+        result, error = await runner._perform_model_switch(ctx, model_id, provider_slug, source)
+        if error is not None:
+            return error
+        return await runner._commit_model_switch(result, ctx, source=source, picker=True)
+
     async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
         try:
-            result, error = await runner._perform_model_switch(ctx, model_id, provider_slug, source)
-            if error is not None:
-                return error
-            return await runner._commit_model_switch(result, ctx, source=source, picker=True)
+            if profile_home is None:
+                return await _switch(model_id, provider_slug)
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return await _switch(model_id, provider_slug)
         finally:
             selected.set()  # a failed switch releases the waiting turn too
 

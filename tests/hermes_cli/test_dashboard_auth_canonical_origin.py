@@ -24,9 +24,25 @@ def test_loopback_entry_moves_before_setting_cookie(monkeypatch, host, path):
     client = TestClient(app, base_url="http://127.0.0.1:9119", follow_redirects=False)
     response = client.get(path, headers={"Host": f"{host}:9119"})
     assert response.status_code == 302
-    assert response.headers["location"] == PUBLIC + path
+    assert response.headers["location"] == PUBLIC + path + "&canonical=1"
     assert "set-cookie" not in response.headers
     assert response.headers["cache-control"].startswith("no-store")
+
+
+def test_proxy_without_host_forwarding_takes_one_hop_not_a_loop(monkeypatch):
+    """``public_url`` is documented for reverse proxies that do not forward ``Host``: the backend
+    then sees ``127.0.0.1`` even when the browser is already on the public origin. The canonical
+    hop must settle after one redirect instead of looping."""
+    monkeypatch.setattr(routes._prefix_mod, "resolve_public_url", lambda: PUBLIC)
+    app = FastAPI()
+    app.include_router(routes.router)
+    client = TestClient(app, base_url="http://127.0.0.1:9119", follow_redirects=False)
+    first = client.get("/login?next=%2Fsessions")
+    assert first.status_code == 302
+    hop = urlparse(first.headers["location"])
+    assert f"{hop.scheme}://{hop.netloc}" == PUBLIC
+    second = client.get(f"{hop.path}?{hop.query}")
+    assert second.status_code == 200
 
 
 def test_canonical_origin_sets_pkce_for_same_origin_callback(monkeypatch):
@@ -56,7 +72,7 @@ def test_expired_browser_callback_restarts_without_redeeming_code(monkeypatch):
     callback = "/auth/callback?code=expired-code&state=expired-state&next=https://evil.example"
     browser = client.get(callback, headers={"Accept": "text/html"})
     assert browser.status_code == 302
-    assert browser.headers["location"] == PUBLIC + "/login?reason=pkce_expired"
+    assert browser.headers["location"] == PUBLIC + "/login"
     assert "set-cookie" not in browser.headers
     api = client.get(callback, headers={"Accept": "application/json"})
     assert api.status_code == 400

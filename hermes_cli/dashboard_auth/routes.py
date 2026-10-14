@@ -83,18 +83,27 @@ def _redirect_uri(request: Request) -> str:
     return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
 
 
-def _canonical_login_redirect(request: Request, path: str):
-    """Move loopback browser login to the callback origin before setting host-only cookies."""
+# Query marker on the canonical hop. A reverse proxy that does not forward ``Host`` (the setup
+# ``public_url`` exists for) shows a loopback Host even when the browser is already on the public
+# origin; without the marker that request would bounce back to the same URL forever.
+_CANONICAL_HOP = "canonical"
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _canonical_login_redirect(request: Request, path: str) -> RedirectResponse | None:
+    """Move a loopback browser login onto the ``public_url`` callback origin before any host-only
+    PKCE cookie is set there, so ``/auth/callback`` can read it. At most one hop per entry."""
     public_url = _prefix_mod.resolve_public_url()
-    if not public_url or request.url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+    if (not public_url or request.url.hostname not in _LOOPBACK_HOSTNAMES
+            or _CANONICAL_HOP in request.query_params):
         return None
     public = urlparse(public_url)
     if (request.url.scheme, request.url.netloc) == (public.scheme, public.netloc):
         return None
-    target = public_url.rstrip("/") + path
-    if request.url.query:
-        target += "?" + request.url.query
-    return RedirectResponse(url=target, status_code=302, headers=_NO_STORE)
+    query = f"{request.url.query}&" if request.url.query else ""
+    return RedirectResponse(
+        url=f"{public_url.rstrip('/')}{path}?{query}{_CANONICAL_HOP}=1",
+        status_code=302, headers=_NO_STORE)
 
 
 def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
@@ -370,7 +379,7 @@ async def auth_callback(
             # on the callback origin instead of stranding an expired bookmark.
             base = _prefix_mod.resolve_public_url() or _prefix(request)
             return RedirectResponse(
-                url=base.rstrip("/") + "/login?reason=pkce_expired",
+                url=base.rstrip("/") + "/login",
                 status_code=302, headers=_NO_STORE)
         raise _http(400, "Missing PKCE state cookie")
     # ``next`` and ``broker`` come from the server-set cookie ONLY: the IDP

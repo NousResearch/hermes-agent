@@ -101,6 +101,39 @@ it('settles a matching partial error without discarding richer local parts or di
   ])
 })
 
+it('retains send identity on the anchored in-flight prompt and queue projection', () => {
+  const rows: SessionMessage[] = [{ id: 1, role: 'user', content: 'anchored prompt' }]
+
+  const projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> = {
+    session_id: 'runtime',
+    inflight: {
+      user: 'anchored prompt',
+      assistant: '',
+      streaming: true,
+      client_message_id: 'client-inflight',
+      user_timestamp: 1_790_594_548.125
+    },
+    queued: {
+      user: 'queued prompt',
+      client_message_id: 'client-queued',
+      user_timestamp: 1_790_594_549.25
+    }
+  }
+
+  const reconciled = reconcilePersistedLiveTurn(toChatMessages(rows), [], rows, projection)!
+  const users = reconciled.filter(message => message.role === 'user')
+
+  expect(users[0]).toMatchObject({
+    clientMessageId: 'client-inflight',
+    timestamp: 1_790_594_548.125
+  })
+  expect(users.at(-1)).toMatchObject({
+    id: 'user-queued-runtime',
+    clientMessageId: 'client-queued',
+    timestamp: 1_790_594_549.25
+  })
+})
+
 it('pairs only the queue projection, preserving equal corrections and different local queued occurrences', () => {
   const prompt = 'Inspect this file'
   const correction = 'Also inspect its tests'

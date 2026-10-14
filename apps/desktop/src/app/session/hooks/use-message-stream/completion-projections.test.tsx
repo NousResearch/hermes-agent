@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
-import { appendLiveSessionProjection } from '../use-session-actions/utils'
+import { appendLiveSessionProjection } from '../use-session-actions/live-session-projection'
 
 import { renderMessageStream } from './test-harness'
 

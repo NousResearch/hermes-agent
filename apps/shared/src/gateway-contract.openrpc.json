@@ -16770,6 +16770,30 @@
             "title": "User",
             "type": "string"
           },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
+          "user_timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Timestamp"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -27042,6 +27066,26 @@
             "default": "",
             "title": "Text"
           },
+          "submitted_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submitted At"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -27258,6 +27302,30 @@
             ],
             "default": null,
             "title": "User Row Id"
+          },
+          "user_timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Timestamp"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
           },
           "survivor_user_row_ids": {
             "anyOf": [
@@ -27502,6 +27570,30 @@
           "user": {
             "title": "User",
             "type": "string"
+          },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
+          "user_timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Timestamp"
           }
         },
         "required": [

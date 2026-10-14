@@ -81,4 +81,7 @@ async def control(connection, ref, params):
         result = await execute_command(connection, ref, {**scope, 'name': name, 'arg': arg}, dispatch=True)
     from gateway.session_ancillary import read
     snapshot = await read(connection, ref, scope, kind='control')
+    # Other viewers (another Desktop window, Ink) repaint their cards from this event, not the reply.
+    connection.authority.sessions[ref.session_id].event_stream.publish(
+        ref.session_id, snapshot, event_type='session.control.update')
     return {**snapshot, 'dispatch': {key: result.get(key) for key in _ENVELOPE}}

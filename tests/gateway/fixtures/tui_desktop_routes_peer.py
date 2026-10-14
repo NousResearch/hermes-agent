@@ -107,6 +107,10 @@ async def _control(authority, ws, reader, sid, marker, receipt):
         assert 'result' in typed, (command, typed)
     denied = await _call(reader, 'session.control', session_id=sid, action='goal.pause')
     assert _error(denied) == 'permission_denied', denied
+    # Every other viewer of the session: what its card repaints from.
+    updates = []
+    authority.sessions[sid].event_stream.observers.add(
+        lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']))
     for action, check in [
             ('goal.pause', lambda c: c['goal']['status'] == 'paused'),
             ('goal.resume', lambda c: c['goal']['status'] == 'active'),
@@ -120,6 +124,8 @@ async def _control(authority, ws, reader, sid, marker, receipt):
         assert set(reply['result']['dispatch']) == {'type', 'output', 'notice', 'message', 'display'}, reply
         read = await rpc(ws, 'session.control.read', session_id=sid)
         assert read['result']['control'] == reply['result']['control'], (action, read, reply)
+        assert updates and updates[-1]['session_id'] == sid, (action, updates)
+        assert updates.pop()['payload'] == {'control': reply['result']['control']}, (action, reply)
     # Free subgoal text is a criterion, never a /subgoal verb.
     added = await control('subgoal.add', text='clear the cache first')
     assert added['result']['control']['goal']['subgoals'] == ['clear the cache first'], added

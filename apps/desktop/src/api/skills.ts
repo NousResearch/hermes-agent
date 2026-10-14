@@ -43,9 +43,9 @@ export function setSkillEnabled(
   })
 }
 
-export function getStarmapGraph(): Promise<StarmapGraph> {
-  return hermesApi<StarmapGraph>({
-    ...profileScoped(),
+export function getStarmapGraph(profile?: ProfileScope): Promise<StarmapGraph> {
+  return window.hermesDesktop.api<StarmapGraph>({
+    ...capabilityScoped(profile),
     // Backend REST contract — stays /api/learning even though the UI feature is
     // now "star map". Renaming this would break against an un-upgraded backend.
     path: '/api/learning/graph'

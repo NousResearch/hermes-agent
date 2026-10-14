@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -12,11 +12,17 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
+import {
+  type ApiRequestScopeToken,
+  captureApiRequestScope,
+  deleteLearningNode,
+  editLearningNode,
+  getLearningNode,
+  isApiRequestScopeCurrent,
+  onApiRequestScopeChange
+} from '@/hermes'
 import { notifyError } from '@/store/notifications'
 import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
-
-import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 export interface NodeMenuTarget {
   id: string
@@ -36,29 +42,37 @@ interface EditState {
   content: string
   id: string
   label: string
+  owner: ApiRequestScopeToken
+}
+
+interface DeleteState extends Omit<NodeMenuTarget, 'x' | 'y'> {
+  owner: ApiRequestScopeToken
 }
 
 /** Right-click actions for a star-map node: edit (modal) or delete (confirm). */
 export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextMenuProps) {
   const [editing, setEditing] = useState<EditState | null>(null)
-  const [deleting, setDeleting] = useState<Omit<NodeMenuTarget, 'x' | 'y'> | null>(null)
+  const [deleting, setDeleting] = useState<DeleteState | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
-  // Bumped on profile switch so an in-flight openEdit fetch from profile A can't
-  // reopen the editor with A's node content after switching to B.
+  // Bumped on owner switch so an in-flight openEdit fetch from A can't reopen
+  // the editor with A's node content on a same-named profile from connection B.
   const editEpoch = useRef(0)
 
-  // A profile switch swaps the backend under an open edit/delete dialog — its
-  // node id belongs to the previous profile, so a Save/Delete after the switch
-  // would hit the newly active profile. Close everything on switch.
-  useOnProfileSwitch(() => {
-    editEpoch.current += 1
-    setEditing(null)
-    setDeleting(null)
-    setError(null)
-  })
+  useEffect(
+    () =>
+      onApiRequestScopeChange(() => {
+        editEpoch.current += 1
+        setEditing(null)
+        setDeleting(null)
+        setLoading(false)
+        setSaving(false)
+        setError(null)
+      }),
+    []
+  )
 
   const noun = target?.kind === 'memory' ? 'memory' : 'skill'
 
@@ -68,22 +82,27 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
     }
 
     const epoch = editEpoch.current
+    const owner = captureApiRequestScope()
     setLoading(true)
     setError(null)
 
     try {
-      const detail = await getLearningNode(target.id)
+      const detail = await getLearningNode(target.id, owner)
 
-      if (editEpoch.current !== epoch) {
+      if (editEpoch.current !== epoch || !isApiRequestScopeCurrent(owner)) {
         return
       }
 
-      setEditing({ content: detail.content, id: target.id, label: target.label })
+      setEditing({ content: detail.content, id: target.id, label: target.label, owner })
       onClose()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (isApiRequestScopeCurrent(owner)) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
-      setLoading(false)
+      if (isApiRequestScopeCurrent(owner)) {
+        setLoading(false)
+      }
     }
   }
 
@@ -92,11 +111,17 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
       return
     }
 
+    const { owner } = editing
+
     setSaving(true)
     setError(null)
 
     try {
-      const res = await editLearningNode(editing.id, editing.content)
+      const res = await editLearningNode(editing.id, editing.content, owner)
+
+      if (!isApiRequestScopeCurrent(owner)) {
+        return
+      }
 
       if (!res.ok) {
         throw new Error(res.message)
@@ -105,9 +130,13 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
       setEditing(null)
       void loadStarmapGraph(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (isApiRequestScopeCurrent(owner)) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
-      setSaving(false)
+      if (isApiRequestScopeCurrent(owner)) {
+        setSaving(false)
+      }
     }
   }
 
@@ -139,7 +168,14 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
               Edit {noun}…
             </DropdownMenuItem>
             <DropdownMenuItem
-              onSelect={() => setDeleting({ id: target.id, kind: target.kind, label: target.label })}
+              onSelect={() =>
+                setDeleting({
+                  id: target.id,
+                  kind: target.kind,
+                  label: target.label,
+                  owner: captureApiRequestScope()
+                })
+              }
               variant="destructive"
             >
               {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
@@ -183,11 +219,12 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
           onApply={() => {
             onNodeRemoved()
 
-            return evictStarmapNode(deleting.id)
+            return evictStarmapNode(deleting.id, deleting.owner)
           }}
           onClose={() => setDeleting(null)}
           onFailure={(err, name) => notifyError(err, name)}
           open
+          profile={deleting.owner}
           skillId={deleting.id}
           skillName={deleting.label}
         />
@@ -203,12 +240,12 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
               return
             }
 
-            const { id, label } = deleting
-            const rollback = evictStarmapNode(id)
+            const { id, label, owner } = deleting
+            const rollback = evictStarmapNode(id, owner)
             onNodeRemoved()
 
             fireOptimistic(
-              deleteLearningNode(id).then(res => {
+              deleteLearningNode(id, owner).then(res => {
                 if (!res.ok) {
                   throw new Error(res.message)
                 }

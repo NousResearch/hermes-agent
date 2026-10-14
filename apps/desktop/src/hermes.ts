@@ -5,10 +5,13 @@
 // capabilityScoped are shared across api/ but must not reach call sites, or
 // request scoping stops having a single owner.
 export {
+  captureApiRequestScope,
   getApiRequestConnection,
   getApiRequestProfile,
   hermesApi,
   HermesGateway,
+  isApiRequestScopeCurrent,
+  onApiRequestScopeChange,
   profileScopeKey,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
   resolveOwnerNow,
@@ -16,7 +19,7 @@ export {
   setApiRequestProfile,
   STARTUP_REQUEST_TIMEOUT_MS
 } from './api/client'
-export type { ProfileScope, ResolvedOwner } from './api/client'
+export type { ApiRequestScopeToken, ProfileScope, ResolvedOwner } from './api/client'
 export * from './api/config'
 export * from './api/cron'
 export * from './api/local-models'

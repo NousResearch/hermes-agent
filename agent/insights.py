@@ -284,6 +284,12 @@ class InsightsEngine:
         for s in sessions:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
+            # The ledger's own cost_status wins over the token-only re-estimate for the
+            # bucket counts: a subscription-included session reads "unknown" when
+            # re-estimated from tokens alone — the native cost that says "included" rides
+            # raw usage, not the session row. The stored status is the recorded truth
+            # (#77223 included bucket).
+            status = s.get("cost_status") or status
             total_cost += estimated
             actual_cost += s.get("actual_cost_usd") or 0.0
             status_counts[status] += 1

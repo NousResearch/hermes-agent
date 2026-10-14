@@ -89,6 +89,7 @@ _SESSION_MODEL_USAGE_HEAL_DDL = """CREATE TABLE session_model_usage (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     estimated_cost_usd REAL NOT NULL DEFAULT 0,
     actual_cost_usd REAL NOT NULL DEFAULT 0,
+    list_price_equiv_usd REAL,
     cost_status TEXT,
     cost_source TEXT,
     first_seen REAL,
@@ -898,6 +899,7 @@ class SessionSchemaMixin:
                        billing_mode, task, api_call_count, input_tokens,
                        output_tokens, cache_read_tokens, cache_write_tokens,
                        reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                       list_price_equiv_usd,
                        cost_status, cost_source, first_seen, last_seen
                    )
                    SELECT session_id, model,
@@ -908,6 +910,7 @@ class SessionSchemaMixin:
                           api_call_count, input_tokens,
                           output_tokens, cache_read_tokens, cache_write_tokens,
                           reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                          list_price_equiv_usd,
                           cost_status, cost_source, first_seen, last_seen
                    FROM session_model_usage_legacy_pk""",
                 _SESSION_MODEL_USAGE_INDEX_SQL,
@@ -1156,12 +1159,14 @@ class SessionSchemaMixin:
                                    billing_mode, task, api_call_count, input_tokens,
                                    output_tokens, cache_read_tokens, cache_write_tokens,
                                    reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                   list_price_equiv_usd,
                                    cost_status, cost_source, first_seen, last_seen
                                )
                                SELECT session_id, model, billing_provider, billing_base_url,
                                       billing_mode, '', api_call_count, input_tokens,
                                       output_tokens, cache_read_tokens, cache_write_tokens,
                                       reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                      list_price_equiv_usd,
                                       cost_status, cost_source, first_seen, last_seen
                                FROM session_model_usage_v21""",
                 _SESSION_MODEL_USAGE_INDEX_SQL,

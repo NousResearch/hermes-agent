@@ -415,6 +415,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     billing_mode TEXT,
     estimated_cost_usd REAL,
     actual_cost_usd REAL,
+    -- Subscription routes (Claude Max/DirectSDK): native's list-price equivalent of $0
+    -- out-of-pocket usage — the subscription-allowance gauge. Never summed into spend.
+    list_price_equiv_usd REAL,
     cost_status TEXT,
     cost_source TEXT,
     pricing_version TEXT,
@@ -494,6 +497,8 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     estimated_cost_usd REAL NOT NULL DEFAULT 0,
     actual_cost_usd REAL NOT NULL DEFAULT 0,
+    -- Subscription routes: native's list-price equivalent ($0 out-of-pocket). Gauge only.
+    list_price_equiv_usd REAL,
     cost_status TEXT,
     cost_source TEXT,
     first_seen REAL,

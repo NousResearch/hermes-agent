@@ -39,7 +39,7 @@ KNOWN_SOURCES = frozenset({
 # declares several mid-definition (#101409). Cells are mapped by name through the layout
 # ``infer_physical_layouts`` recovers, never zipped onto declared order.
 SESSIONS_LEGACY_MINIMAL_NFIELD = 14
-SESSION_MODEL_USAGE_NFIELD = 18
+SESSION_MODEL_USAGE_NFIELDS = frozenset({18, 19})  # 19 = + list_price_equiv_usd
 
 # Per-table cells whose salvaged value must look like what the column name
 # says. On stores created at the original schema these sit in the shared
@@ -319,7 +319,7 @@ def classify_lost_and_found_row(nfield: int, cells: tuple[Any, ...]) -> Optional
     if not _is_session_id(cells[0] if cells else None):
         return None
     second = cells[1] if len(cells) > 1 else None
-    if nfield == SESSION_MODEL_USAGE_NFIELD:  # session id first, model string second
+    if nfield in SESSION_MODEL_USAGE_NFIELDS:  # session id first, model string second
         return "session_model_usage" if isinstance(second, str) and second else None
     # Any historical sessions width: session id first + recognizable source second (every sessions
     # layout ever shipped has at least the 14 original columns).

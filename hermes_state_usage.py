@@ -27,9 +27,11 @@ def _token_update_sql(delta: bool) -> str:
         return f"COALESCE({col}, 0) + ?" if delta else "?"
     counters = "".join(f"                   {c} = {add(c)},\n" for c in _TOKEN_COUNTERS)
     estimated = "COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0)" if delta else "COALESCE(?, 0)"
+    list_price = "COALESCE(list_price_equiv_usd, 0) + COALESCE(?, 0)" if delta else "COALESCE(?, 0)"
     return (
         "UPDATE sessions SET\n" + counters
         + f"""                   estimated_cost_usd = {estimated},
+                   list_price_equiv_usd = {list_price},
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE {add0("actual_cost_usd")}
@@ -53,9 +55,10 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
                    task, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
-                   estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   estimated_cost_usd, actual_cost_usd, list_price_equiv_usd,
+                   cost_status, cost_source,
                    first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
@@ -66,6 +69,7 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
                    estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
                    actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   list_price_equiv_usd = list_price_equiv_usd + excluded.list_price_equiv_usd,
                    cost_status = COALESCE(excluded.cost_status, cost_status),
                    cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen"""
@@ -76,7 +80,7 @@ _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
 _MODEL_USAGE_FIELDS = frozenset((
     "model", "billing_provider", "billing_base_url", "billing_mode", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-    "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
+    "actual_cost_usd", "list_price_equiv_usd", "cost_status", "cost_source", "api_call_count"))
 
 
 class SessionUsageMixin:
@@ -273,7 +277,8 @@ class SessionUsageMixin:
     def update_token_counts(
         self, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
-        actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
+        list_price_equiv_usd: Optional[float]=None, actual_cost_usd: Optional[float]=None,
+        cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
         source: Optional[str]=None, task: str = "",
@@ -297,7 +302,8 @@ class SessionUsageMixin:
         has_accounted_usage = bool(has_usage or actual_cost_usd)
         params = (
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-            estimated_cost_usd, actual_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
+            estimated_cost_usd, list_price_equiv_usd, actual_cost_usd, actual_cost_usd,
+            cost_status, cost_source, pricing_version,
             billing_provider if has_accounted_usage else None,
             billing_base_url if has_accounted_usage else None,
             billing_mode if has_accounted_usage else None, model if has_accounted_usage else None,
@@ -340,7 +346,8 @@ class SessionUsageMixin:
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, billing_mode: Optional[str]=None, input_tokens: int=0,
         output_tokens: int=0, cache_read_tokens: int=0, cache_write_tokens: int=0, reasoning_tokens: int=0,
-        estimated_cost_usd: Optional[float]=None, actual_cost_usd: Optional[float]=None,
+        estimated_cost_usd: Optional[float]=None, list_price_equiv_usd: Optional[float]=None,
+        actual_cost_usd: Optional[float]=None,
         cost_status: Optional[str]=None, cost_source: Optional[str]=None, api_call_count: int=0, task: str="",
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage, inside the caller's
@@ -364,13 +371,14 @@ class SessionUsageMixin:
             billing_provider or sess.get("billing_provider") or "",
             billing_base_url or sess.get("billing_base_url") or "",
             billing_mode or sess.get("billing_mode") or "", task or "", api_call_count or 0, *counts,
-            float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0), cost_status, cost_source, now, now))
+            float(estimated_cost_usd or 0.0), float(actual_cost_usd or 0.0),
+            float(list_price_equiv_usd or 0.0), cost_status, cost_source, now, now))
 
     def record_auxiliary_usage(
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, input_tokens: int=0, output_tokens: int=0, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
-        api_call_count: int=1,
+        list_price_equiv_usd: Optional[float]=None, api_call_count: int=1,
     ) -> None:
         """Record an auxiliary LLM call's usage (vision, compression, title generation, ...)
         as a per-(model, provider, task) delta in ``session_model_usage`` WITHOUT touching

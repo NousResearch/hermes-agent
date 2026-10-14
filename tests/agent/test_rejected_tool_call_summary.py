@@ -42,13 +42,25 @@ def test_empty_name_rejection_summarizes_as_not_run():
 
 
 def test_wrong_name_rejection_summarizes_as_not_run():
-    content = (
-        "Tool 'frobnicate_xyz' does not exist. Nothing was executed — the call did not run, "
-        "so do not report its effect as done; call one of these instead. Available tools: terminal, read_file"
-    )
+    from agent.conversation_loop import _invalid_tool_name_error_content
+    content = _invalid_tool_name_error_content("frobnicate_xyz", {"terminal", "read_file"})
     summary = _summarize_tool_result("frobnicate_xyz", "{}", content)
     assert "rejected" in summary
     assert "not run" in summary
+    assert "chars result" not in summary
+
+
+def test_structured_rejection_survives_reworded_prose():
+    # The point of the ``status: rejected`` payload: the compressor reads the outcome
+    # structurally, so a future rewording of the prose can no longer make compaction
+    # render the call as completed. Unrecognized wording must still compress as not-run.
+    from agent.tool_rejection import rejected_result
+
+    content = rejected_result("Some future reworded wording the prose matcher cannot know.")
+    summary = _summarize_tool_result("frobnicate_xyz", "{}", content)
+    assert "rejected" in summary
+    assert "not run" in summary
+    assert "do not report it as done" in summary
     assert "chars result" not in summary
 
 
@@ -83,56 +95,76 @@ def test_blocked_result_contract_still_holds():
 
 
 def test_real_loop_rejection_wording_matches_compressor_contract():
-    """Contract test: every live rejection shape the dispatch loop emits must be
-    recognized by the compressor's rejected-outcome matcher.
+    """Contract test, both directions.
 
-    The two sides are coupled by message text — the compressor prefix-matches
-    prose — so historically a rewording could silently stop the compressor from
-    flagging a rejection, with each side's tests green. Producers and matcher now
-    build from the shared ``agent.tool_rejection`` constants, and this test feeds
-    the real producer output (and representative constant-built continuations)
-    through the real matcher so any divergence fails here first.
+    Structured (live): every rejection the dispatch loop emits now carries
+    ``status: rejected`` (agent.tool_rejection.rejected_result), and the
+    compressor reads that field — the outcome survives any prose rewording.
+
+    Legacy: transcripts recorded before the structured status carry bare
+    rejection prose, matched by the prefix matcher built from the shared
+    ``agent.tool_rejection`` constants.
+
+    Historically the two sides were coupled only by message text, so a rewording
+    could silently stop the compressor from flagging a rejection, with each
+    side's tests green. This test feeds real producer output and representative
+    constant-built continuations through the real summarizer so any divergence —
+    a dropped ``status`` field or a broken legacy fallback — fails here first.
     """
+    import json
+
+    from agent.context_compressor import _summarize_refused_tool_result
     from agent.conversation_loop import _invalid_tool_name_error_content
     from agent.tool_rejection import (
         INVALID_JSON_ARGS_PREFIX,
         LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX,
+        REJECTED_STATUS,
         SKIPPED_SIBLING_INVALID_JSON_PREFIX,
+        rejected_result,
     )
 
     valid_names = {"terminal", "read_file", "search_files"}
 
-    # Empty-name rejection: the live shape must match the matcher…
-    empty_msg = _invalid_tool_name_error_content("", valid_names)
-    assert _rejected_tool_call_outcome(empty_msg) is not None
-    # …and must render as not-run through the summarizer.
-    summary = _summarize_tool_result("", "{}", empty_msg)
-    assert "rejected" in summary
-    assert "not run" in summary
-    assert "do not report it as done" in summary
+    def assert_not_run(tool_name: str, content: str) -> str:
+        summary = _summarize_tool_result(tool_name, "{}", content)
+        assert "not run" in summary, summary
+        assert "chars result" not in summary, summary
+        return summary
 
-    # Unknown-name rejection: the live shape must match the matcher.
-    unknown_msg = _invalid_tool_name_error_content("frobnicate_xyz", valid_names)
-    assert _rejected_tool_call_outcome(unknown_msg) is not None
-    summary = _summarize_tool_result("frobnicate_xyz", "{}", unknown_msg)
-    assert "not run" in summary
+    # --- Structured direction: live producer output. ---
+    for content in (
+        _invalid_tool_name_error_content("", valid_names),  # empty name
+        _invalid_tool_name_error_content("frobnicate_xyz", valid_names),  # unknown name
+    ):
+        payload = json.loads(content)
+        assert payload["status"] == REJECTED_STATUS
+        assert isinstance(payload["error"], str) and payload["error"]
+        summary = assert_not_run("frobnicate_xyz", content)
+        assert "do not report it as done" in summary
 
-    # Invalid-JSON shapes from agent/turn_tool_validation.py's recovery path: a valid
-    # sibling skipped because another call had invalid JSON, and the call whose own
-    # arguments were invalid. Both are pre-execution results that must not compress
-    # as completed actions.
-    skipped_json = SKIPPED_SIBLING_INVALID_JSON_PREFIX + " Nothing was executed for this call."
-    assert _rejected_tool_call_outcome(skipped_json) is not None
-    summary = _summarize_tool_result("read_file", "{}", skipped_json)
-    assert "not run" in summary
-    invalid_json = INVALID_JSON_ARGS_PREFIX + " Expecting value: line 1 column 1 (char 0)."
-    assert _rejected_tool_call_outcome(invalid_json) is not None
-    summary = _summarize_tool_result("read_file", "{}", invalid_json)
-    assert "not run" in summary
-    assert "chars result" not in summary
+    # Invalid-JSON shapes from agent/turn_tool_validation.py's recovery path,
+    # wrapped exactly as the producer wraps them: a valid sibling skipped because
+    # another call had invalid JSON, and the call whose own arguments were invalid.
+    skipped_json = rejected_result(
+        SKIPPED_SIBLING_INVALID_JSON_PREFIX + " Nothing was executed for this call — do not report its effect as done; re-issue it."
+    )
+    summary = assert_not_run("read_file", skipped_json)
+    assert "skipped" in summary
 
-    # Legacy shape: sibling skipped because another call used an invalid name. The
-    # producer path is gone (mixed batches now error only the invalid calls at
-    # execution time) but old transcripts still compress through the matcher.
-    legacy = LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX + " used an invalid name. Please retry this tool call."
-    assert _rejected_tool_call_outcome(legacy) is not None
+    invalid_json = rejected_result(
+        INVALID_JSON_ARGS_PREFIX + " Expecting value: line 1 column 1 (char 0). Nothing was executed — the call did not run."
+    )
+    summary = assert_not_run("read_file", invalid_json)
+    assert "invalid JSON" in summary
+
+    # --- Legacy direction: bare prose, no status field (pre-structure transcripts). ---
+    for prose in (
+        SKIPPED_SIBLING_INVALID_JSON_PREFIX + " Nothing was executed for this call.",
+        INVALID_JSON_ARGS_PREFIX + " Expecting value: line 1 column 1 (char 0).",
+        LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX + " used an invalid name. Please retry this tool call.",
+        "Tool 'frobnicate_xyz' does not exist. Nothing was executed — the call did not run.",
+    ):
+        assert _rejected_tool_call_outcome(prose) is not None, prose
+        assert _summarize_refused_tool_result("read_file", {}, prose) is not None, prose
+        summary = _summarize_tool_result("read_file", "{}", prose)
+        assert "not run" in summary, summary

@@ -39,6 +39,7 @@ from agent.tool_rejection import (
     EMPTY_TOOL_NAME_PREFIX,
     INVALID_JSON_ARGS_PREFIX,
     LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX,
+    REJECTED_STATUS,
     SKIPPED_SIBLING_INVALID_JSON_PREFIX,
     UNKNOWN_TOOL_NAME_TEMPLATE,
 )
@@ -1991,8 +1992,11 @@ def _json_dict(text: Any) -> dict:
 
 
 # Pre-execution rejection shapes and their wordings live in agent.tool_rejection; the
-# matcher is built from those constants (imported above) so a rewording cannot silently
-# decouple the producers from the compressor (each side's tests alone would stay green).
+# prose matcher is built from those constants so a rewording cannot silently decouple
+# the producers from the compressor (each side's tests alone would stay green). Live
+# producers wrap their wordings in rejected_result()'s ``status: rejected`` payload,
+# which _summarize_refused_tool_result reads structurally; this matcher remains for
+# transcripts recorded before the structured status existed.
 _unknown_name = UNKNOWN_TOOL_NAME_TEMPLATE.split("{name}")
 _REJECTED_TOOL_CALL_RE = re.compile(
     "^" + re.escape(_unknown_name[0]) + r"\S+" + re.escape(_unknown_name[1])
@@ -2023,10 +2027,11 @@ def _rejected_tool_call_outcome(content: str) -> str | None:
 def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> str | None:
     """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
     ``blocked``/``pending_approval``), or one the dispatch loop rejected before execution
-    (empty/unknown tool name), else None. The per-tool summarizers describe the call as done
-    ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
-    drop the "do not retry" instruction. Strictly below _PRUNE_MIN_CHARS, like the clarify summary,
-    so later prune passes keep it."""
+    (``status: rejected`` from agent.tool_rejection.producers; bare rejection prose for
+    pre-structure transcripts), else None. The per-tool summarizers describe the call as
+    done ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the
+    action and drop the "do not retry" instruction. Strictly below _PRUNE_MIN_CHARS, like
+    the clarify summary, so later prune passes keep it."""
     payload = _json_dict(content)
     status = payload.get("status")
     error = payload.get("error") if isinstance(payload.get("error"), str) else ""
@@ -2034,8 +2039,15 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
         error = content.strip()
     if status == "pending_approval":
         outcome = "awaiting the user's approval, not run"
+    elif status == REJECTED_STATUS:
+        # Structured rejection (live producers wrap their wording in rejected_result()).
+        # Recover the kind-specific outcome from the error prose via the same matcher —
+        # the prose remains the wording of record; the status is the reliable marker.
+        outcome = _rejected_tool_call_outcome(error or "") or (
+            "rejected, not run — do not report it as done; re-issue the call"
+        )
     elif (rejected := _rejected_tool_call_outcome(content)) is not None:
-        outcome = rejected
+        outcome = rejected  # legacy transcripts: bare rejection prose, no status field
     elif error and (status == "blocked" or error.lstrip().startswith("BLOCKED")):
         outcome = "BLOCKED, not run"
         if "NOT consented" in error:

@@ -216,6 +216,9 @@ def test_empty_tool_name_error_states_not_executed(agent_env, blank):
     assert "Nothing was executed" in joined
     assert "did not run" in joined
     assert "do not report its effect as done" in joined
+    # Structural marker: the rejection carries status "rejected" so the context
+    # compressor reads the outcome without matching prose.
+    assert '"status": "rejected"' in joined
     # The anti-priming contract from the test above still holds.
     assert "Available tools:" not in joined
 
@@ -233,6 +236,7 @@ def test_wrong_tool_name_error_states_not_executed(agent_env):
     assert "does not exist" in joined
     assert "Nothing was executed" in joined
     assert "do not report its effect as done" in joined
+    assert '"status": "rejected"' in joined  # structural marker for the compressor
     assert "Available tools:" in joined  # real typo still self-corrects via the catalog
 
 

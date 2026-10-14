@@ -23,6 +23,7 @@ from plugins.platforms.telegram.adapter import (
     _strip_mdv2,
     _wrap_markdown_tables,
 )
+from gateway.run_turn_progress import _append_progress_repeat_count
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,15 @@ class TestFormatMessageBasic:
 
 class TestFormatMessageCodeBlocks:
 
+    def test_tool_progress_repeat_after_fence_keeps_fence_valid(self, adapter):
+        """Regression for #138148: repeat counts must not trail a closing fence."""
+        progress = "💻 terminal\n```\nssh -F /opt/data/home/.ssh/config fed...\n```"
+
+        repeated = _append_progress_repeat_count(progress, 4)
+
+        assert repeated.endswith("```\n(×4)")
+        assert "\\`\\`\\`" not in adapter.format_message(repeated)
+        assert "```\nssh -F /opt/data/home/.ssh/config fed...\n```" in adapter.format_message(repeated)
 
     def test_code_block_special_chars_not_escaped(self, adapter):
         text = "```\nif (x > 0) { return !x; }\n```"

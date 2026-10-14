@@ -546,6 +546,15 @@ class TestCommandTtsEnvPassthrough:
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
 
+    def test_allowlist_refuses_hermes_provider_credentials(self):
+        """Provider config cannot smuggle Hermes-managed credentials back into the
+        scrubbed command child env (#138361, GHSA-rhgp-j443-p4rf policy)."""
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["MY_TTS_API_KEY", "OPENAI_API_KEY", "anthropic_api_key"]}
+        ) == ["MY_TTS_API_KEY"]
+
 
 class TestCommandProviderSpawnGroupKwargs:
     """The command-provider shell's process-group/no-console spawn kwargs.

@@ -130,9 +130,17 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
 
 
 def command_env_passthrough(config: dict[str, Any]) -> list:
-    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env."""
+    """``env_passthrough`` allowlist: parent env vars copied back into the secret-scrubbed child env.
+
+    Hermes-managed provider credentials are refused: operator provider config must not smuggle
+    hosted credentials into command children (#138361, same policy as ``tools.env_passthrough``)."""
+    from tools.env_passthrough import _accepted
     raw = config.get("env_passthrough")
-    return [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    names = [str(x).strip() for x in raw if str(x).strip()] if isinstance(raw, (list, tuple)) else []
+    return list(_accepted(names, (
+        "tts/stt command provider: refusing env_passthrough of Hermes provider "
+        "credential %r into command children (GHSA-rhgp-j443-p4rf policy)."
+    )))
 
 
 def command_failure_detail(exc: subprocess.CalledProcessError) -> str:

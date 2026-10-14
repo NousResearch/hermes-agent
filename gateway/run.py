@@ -5796,6 +5796,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.run_startup import recover_left_core_at_gateway_start
     await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
 
+    # Periodic process-memory telemetry (port of cline/cline#10343): a daemon thread logs
+    # ``[MEMORY] rss=...MB gc=... threads=... uptime=...`` every 5 min so long-run memory
+    # trends in the gateway show up as a time series in the log instead of only as OOM
+    # forensics after the fact. Fail-open: warns once and continues where RSS
+    # introspection is unavailable; never blocks or crashes startup.
+    from gateway.memory_monitor import start_memory_monitoring
+    start_memory_monitoring()
+
     runner = GatewayRunner(config)
     # Multiplex: swap the launch-home file handlers for per-profile routers so each profile's records
     # land in its own logs/. Must run after the runner resolved (possibly None) config and setup_logging.

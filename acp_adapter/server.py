@@ -635,8 +635,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> ResumeSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+            # ResumeSessionResponse carries no session id: a replacement session would leave the
+            # client prompting an id that no longer exists. Fail so it falls back to session/new.
+            logger.warning("resume_session: session %s not found", session_id)
+            raise acp.RequestError.resource_not_found(session_id)
         await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 
@@ -668,8 +670,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> ForkSessionResponse:
         state = await asyncio.to_thread(self.session_manager.fork_session, session_id, cwd=cwd)
         if state is None:
-            logger.info("Forked session %s -> %s", session_id, "")
-            return ForkSessionResponse(session_id="")
+            logger.warning("fork_session: session %s not found", session_id)
+            raise acp.RequestError.resource_not_found(session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)

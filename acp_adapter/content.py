@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import logging
 from pathlib import Path
 from typing import Any
@@ -101,10 +102,20 @@ def _path_from_file_uri(uri: str) -> Path | None:
     return Path("/mnt") / drive.lower() / rest
 
 
-def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:
-    """Decode resource bytes if they are probably text; return None for binary."""
+def _decode_text_bytes(data: bytes, mime_type: str | None, *, truncated: bool = False) -> str | None:
+    """Decode resource bytes if they are probably text; return None for binary.
+
+    ``truncated``: *data* is a byte-offset cut of a larger resource, so its last UTF-8
+    character may be split; that partial tail is dropped instead of failing UTF-8 and
+    decoding the whole body as latin-1."""
     if b"\x00" in data and not _is_text_resource(mime_type):
         return None
+    if truncated:
+        try:
+            # final=False holds back an incomplete trailing sequence; invalid bytes elsewhere still raise.
+            return codecs.getincrementaldecoder("utf-8-sig")().decode(data, final=False)
+        except UnicodeDecodeError:
+            pass
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
             return data.decode(encoding)
@@ -179,7 +190,7 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
         size = path.stat().st_size
         with path.open("rb") as fh:
             data = fh.read(min(size, _MAX_ACP_RESOURCE_BYTES))
-        text = _decode_text_bytes(data, mime_type)
+        text = _decode_text_bytes(data, mime_type, truncated=size > _MAX_ACP_RESOURCE_BYTES)
         if text is None:
             return _text_parts(**ident, body=f"[Binary file omitted: {size} bytes, mime={mime_type or 'unknown'}]")
         note = f"truncated to {_MAX_ACP_RESOURCE_BYTES} of {size} bytes" if size > _MAX_ACP_RESOURCE_BYTES else None
@@ -215,7 +226,8 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
                 )
             return _image_parts(uri, _resource_display_name(uri), data, mime_type or "image/png")
 
-        body = _decode_text_bytes(data[:_MAX_ACP_RESOURCE_BYTES], mime_type)
+        body = _decode_text_bytes(
+            data[:_MAX_ACP_RESOURCE_BYTES], mime_type, truncated=len(data) > _MAX_ACP_RESOURCE_BYTES)
         if body is None:
             body = f"[Binary embedded file omitted: {len(data)} bytes, mime={mime_type or 'unknown'}]"
         elif len(data) > _MAX_ACP_RESOURCE_BYTES:

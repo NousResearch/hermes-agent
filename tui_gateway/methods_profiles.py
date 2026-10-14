@@ -529,10 +529,19 @@ def _inherit_launch_model(path) -> bool:
         merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
             save_config(merge(read_user_config_raw(), seed))
-    # A bare ``custom`` model is its endpoint: the pin validates it in the empty new profile, where
-    # nothing else names that base_url.
+    # Bare ``custom``/``local`` carries its endpoint into validation (the new profile's config names
+    # none); other providers ignore it. Validation needs the expanded URL, the profile keeps the
+    # launch file's spelling so a ${VAR} URL stays a ref.
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
                        str(model_cfg.get("base_url") or ""))
+    raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
+    if isinstance(raw_url, str) and "${" in raw_url:
+        from hermes_cli.config import save_config
+        with _hermes_home_scope(path):
+            cfg = read_user_config_raw() or {}
+            if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
+                cfg["model"]["base_url"] = raw_url
+                save_config(cfg)
     return True
 
 

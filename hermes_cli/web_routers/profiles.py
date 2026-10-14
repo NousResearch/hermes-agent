@@ -136,8 +136,8 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     through ``get_secret``, which fails closed without a scope and reports the provider as
     unconnected (UnscopedSecretError class, #114676).
 
-    ``base_url`` is the endpoint a bare ``custom`` pick binds to (``switch_model`` has nothing else
-    to resolve it from in a fresh profile); other providers ignore it."""
+    ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
+    names none); other providers ignore it."""
     from hermes_cli.config import load_config, save_config
     with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { SubagentRow } from '@/app/agents'
+import { FrozenEvidenceDot, staleLiveEvidence, SubagentRow } from '@/app/agents'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
@@ -34,34 +34,46 @@ export function SubagentSection({ sessionId }: SubagentSectionProps) {
     return null
   }
 
-  const row = (item: SubagentProgress) => (
-    <StatusRow
-      expanded={selected === item.id}
-      key={item.id}
-      leading={
-        <GlyphSpinner
-          ariaLabel={item.status === 'queued' ? t.agents.queued : t.agents.running}
-          className="text-(--ui-purple)"
-          spinner="braille"
-        />
-      }
-      onActivate={() => setSelected(selected === item.id ? null : item.id)}
-      trailing={
-        <ActivityTimerText
-          className="shrink-0 text-[0.65rem]"
-          seconds={Math.max(0, Math.floor((nowMs - item.startedAt) / 1000))}
-        />
-      }
-      trailingVisible
-    >
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs text-(--ui-text-primary)">{item.goal}</span>
-        <span className="block truncate text-[0.68rem] text-(--ui-text-tertiary)">
-          {item.stream.at(-1)?.text || (item.status === 'queued' ? t.agents.queued : t.agents.waitingActivity)}
+  const row = (item: SubagentProgress) => {
+    // Same frozen-evidence rule as the Agents panel row: a live row whose
+    // updatedAt stopped moving keeps its place and duration, but its spinner
+    // stops animating as if work were happening.
+    const stale =
+      (item.status === 'running' || item.status === 'queued') && staleLiveEvidence(item.updatedAt, nowMs)
+
+    return (
+      <StatusRow
+        expanded={selected === item.id}
+        key={item.id}
+        leading={
+          stale ? (
+            <FrozenEvidenceDot label={item.status === 'queued' ? t.agents.queued : t.agents.running} />
+          ) : (
+            <GlyphSpinner
+              ariaLabel={item.status === 'queued' ? t.agents.queued : t.agents.running}
+              className="text-(--ui-purple)"
+              spinner="braille"
+            />
+          )
+        }
+        onActivate={() => setSelected(selected === item.id ? null : item.id)}
+        trailing={
+          <ActivityTimerText
+            className="shrink-0 text-[0.65rem]"
+            seconds={Math.max(0, Math.floor((nowMs - item.startedAt) / 1000))}
+          />
+        }
+        trailingVisible
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs text-(--ui-text-primary)">{item.goal}</span>
+          <span className="block truncate text-[0.68rem] text-(--ui-text-tertiary)">
+            {item.stream.at(-1)?.text || (item.status === 'queued' ? t.agents.queued : t.agents.waitingActivity)}
+          </span>
         </span>
-      </span>
-    </StatusRow>
-  )
+      </StatusRow>
+    )
+  }
 
   const detail = live.find(item => item.id === selected)
 

@@ -23,6 +23,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { $retainedTodosBySession, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import {
   $transcriptTailBySessionId,
@@ -77,6 +78,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
     clearTranscriptTailPaging()
+    $subagentsBySession.set({})
   })
 
   it('clears lists and arms loading so sidebar skeletons retrigger', () => {
@@ -100,6 +102,27 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it("drops the outgoing backend's in-memory subagent rows while other slices keep their own wipe", () => {
+    upsertSubagent('s1', { goal: 'ghost', status: 'running', subagent_id: 'ghost-1', task_index: 0 })
+    upsertSubagent('s2', { goal: 'ghost-2', status: 'queued', subagent_id: 'ghost-2', task_index: 0 })
+
+    wipeSessionListsForGatewaySwitch()
+
+    // Rows are keyed by runtime ids the next backend re-mints; a survivor would
+    // paint a child the new gateway never started as live (#stale-residue).
+    expect($subagentsBySession.get()).toEqual({})
+    // The wipe still ran the other slices in the same pass.
+    expect($sessions.get()).toEqual([])
+    expect($sessionsLoading.get()).toBe(true)
+  })
+
+  it('runs the subagent wipe as a no-op on an empty store', () => {
+    expect($subagentsBySession.get()).toEqual({})
+
+    expect(() => wipeSessionListsForGatewaySwitch()).not.toThrow()
+    expect($subagentsBySession.get()).toEqual({})
   })
 
   it("drops the outgoing gateway's draft workspace so the next gateway seeds its own (#114306)", () => {

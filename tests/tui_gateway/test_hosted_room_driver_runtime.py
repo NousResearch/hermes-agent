@@ -25,6 +25,7 @@ from tui_gateway.hosted_room_peer_transport import (
     PeerHostedRoomTransport,
     PeerMemberRoute,
 )
+from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 
 
 ROOM_ID = "room-1"
@@ -177,7 +178,7 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal,
-        member_id="",
+        member_id: str,
     ):
         self._assert_lock(profile)
         params = {
@@ -188,6 +189,7 @@ class FakeSessionRPC:
             "task": task,
             "execution_generation": execution_generation,
             "on_terminal": on_terminal,
+            "member_id": member_id,
         }
         self.calls.append(("submit", params))
         with self._lock:
@@ -471,6 +473,69 @@ def test_queued_task_routes_profile_and_credentials_without_overrides(db: Path):
     assert "model" not in create | submit
     assert "provider" not in create | submit
     assert state.get_task(db, identity)["result"]["text"] == "Finished once."
+
+
+def test_member_turn_runs_through_the_real_server_rpc(db: Path):
+    """A member turn must survive the real in-process adapter: HostedRoomServerRPC's
+    submit requires the member_id proof keyword, so a driver that omits it (or passes
+    an unsupported one) raises TypeError and the task can never settle."""
+    submitted: list[dict[str, Any]] = []
+
+    def method(result):
+        def handler(rid, params):
+            return {"id": rid, **result}
+        return handler
+
+    def prompt_submit(rid, params):
+        submitted.append(params)
+        params["_hosted_terminal_callback"]({
+            "status": "settled", "settlement_id": "reply-1",
+            "message_id": "reply-1", "text": "Member reply."})
+        return {"id": rid, "result": {"status": "streaming"}}
+
+    server = SimpleNamespace(
+        _methods={
+            "session.list": method({"result": {"sessions": []}}),
+            "session.create": method(
+                {"result": {"session_id": "runtime-1", "title": room_session_title(ROOM_ID)}}),
+            "session.resume": method({"result": {"session_id": "runtime-1"}}),
+            "prompt.submit": prompt_submit,
+        },
+        _sessions={},
+        _sessions_lock=threading.Lock(),
+        _pending_approval_request_payload=lambda _session_key: None,
+    )
+    identity = _identity()
+    state.admit_task(
+        db,
+        identity,
+        payload={
+            "target_profile": PROFILE,
+            "target_member_id": "member-7",
+            "prompt": "Take the member turn.",
+            "source_event_seq": 1,
+        },
+        clock=time.time,
+    )
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=[BINDING],
+        rpc=HostedRoomServerRPC(server),
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+    )
+
+    runtime.start()
+    try:
+        _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    finally:
+        assert runtime.stop(timeout=5.0)
+
+    proof = next(p["_hosted_task"] for p in submitted if "_hosted_task" in p)
+    assert proof["member_id"] == "member-7"
+    assert proof["room_id"] == ROOM_ID
+    assert proof["task_id"] == identity.task_id
 
 
 def test_worker_settles_without_any_client_transport(db: Path):

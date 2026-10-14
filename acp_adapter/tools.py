@@ -672,26 +672,44 @@ def _parse_unified_diff_content(diff_text: str) -> list[Any]:
     return content
 
 
+def _edit_diff_content(
+    tool_name: str, result: Optional[str], function_args: Optional[Args], snapshot: Any
+) -> list[Any]:
+    """Structured unified-diff content blocks for a tool that edits files, else ``[]``.
+
+    Fail-open: any failure in diff extraction or parsing degrades to no diff rather
+    than breaking the tool-completion notification."""
+    try:
+        from agent.display import extract_edit_diff
+
+        diff_text = extract_edit_diff(tool_name, result, function_args=function_args, snapshot=snapshot)
+        if isinstance(diff_text, str) and diff_text.strip():
+            return _parse_unified_diff_content(diff_text)
+    except Exception:
+        pass
+    return []
+
+
 def _build_tool_complete_content(
     tool_name: str, result: Optional[str], *, function_args: Optional[Args] = None, snapshot: Any = None
 ) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
+    # ``skill_manage`` has no result text worth showing: the diff IS the content.
     if tool_name == "skill_manage":
-        try:
-            from agent.display import extract_edit_diff
-
-            diff_text = extract_edit_diff(tool_name, result, function_args=function_args, snapshot=snapshot)
-            if isinstance(diff_text, str) and diff_text.strip():
-                diff_content = _parse_unified_diff_content(diff_text)
-                if diff_content:
-                    return diff_content
-        except Exception:
-            pass
+        if diff_content := _edit_diff_content(tool_name, result, function_args, snapshot):
+            return diff_content
     if (formatter := _COMPLETION_FORMATTERS.get(tool_name)) is not None:
         text = formatter(tool_name, result, function_args)
     else:
         text = _format_generic_structured_result(tool_name, result, fallback_to_text=tool_name in _POLISHED_TOOLS)
-    return [_text(text)] if text else [_text(_truncate_text(result or ""))]
+    content = [_text(text)] if text else [_text(_truncate_text(result or ""))]
+    # A shell command edits files with no structured result of its own, so surface the
+    # unified diff of what it changed ALONGSIDE the command output — the output alone
+    # hides the mutation, and the diff alone would hide a failure message.
+    if tool_name == "terminal":
+        if diff_content := _edit_diff_content(tool_name, result, function_args, snapshot):
+            content = content + diff_content
+    return content
 
 
 # --- ToolCallStart / ToolCallProgress events ---------------------------------

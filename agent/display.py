@@ -725,6 +725,12 @@ def extract_edit_diff(
         diff = data.get("diff") if isinstance(data, dict) else None
         if isinstance(diff, str) and diff.strip():
             return diff
+    if tool_name == "terminal":
+        # A shell command mutates files with no structured result to inspect and no
+        # success flag to gate on, so the diff comes purely from the before-state
+        # snapshot vs. the files on disk now.  ``_diff_from_snapshot`` already yields
+        # nothing for an unchanged path, so an unrelated command produces no diff.
+        return _diff_from_snapshot(snapshot)
     if tool_name not in {"write_file", "patch", "skill_manage"} or not _result_succeeded(result):
         return None
     return _diff_from_snapshot(snapshot)

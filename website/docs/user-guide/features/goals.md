@@ -188,6 +188,14 @@ After every turn, Hermes calls an auxiliary model with:
 
 The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
 
+### Optional blocked-goal recovery
+
+A policy plugin can subscribe to `goal_blocked` to propose concrete alternatives instead of treating every blocker as impossible. Without a plugin, the existing blocked/pause behavior is unchanged. `/goal options` shows the saved choices, their risk, authority, effects, rollback and verification. An authorized operator selects one with `/goal choose <recovery-id> <option-id>` in the originating session. Choices expire after 24 hours, bind to the exact goal/contract/subgoals/gates and turn revision, and cannot replay.
+
+Automatic recovery requires a low-risk, authorized, reversible, evidenced, useful path with only configured effects. Defaults permit `read_only`; an operator can additionally permit `local_edit` through `goal_recovery.auto_effects`. This only selects a bounded continuation prompt: **it never executes commands, grants approval or bypasses tool/security gates**. Destructive, credential, spend, publication, deployment and scope-changing effects cannot auto-route. At most two distinct automatic recovery attempts occur per explicit goal resume; repeated paths pause. Completion checks, task owners, requirements and turn budget are unchanged. Selecting a scope change requires a new explicit goal, and `/goal choose` never resets a depleted budget.
+
+For transient judge rate limits/timeouts, `goal_recovery.judge_backoff: true` parks the loop for bounded exponential backoff rather than immediately burning another turn. The existing five-consecutive-transport-error stop remains in force; no provider fallback is selected by this setting.
+
 ### Fail-open semantics
 
 If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.

@@ -35,6 +35,21 @@ def _show(mgr, arg, render):
     return GoalCommandResult(f"{mgr.status_line()}\n{mgr.render_contract()}")
 
 
+def _options(mgr, arg, render):
+    from hermes_cli.goal_recovery import render_options
+    return GoalCommandResult(render_options(mgr))
+
+
+def _choose(mgr, arg, authorize):
+    from hermes_cli.goal_recovery import choose_option
+    tokens = arg.split()
+    if len(tokens) != 2:
+        return GoalCommandResult("Usage: /goal choose <recovery-id> <option-id>", error=True)
+    if denial := authorize():
+        return GoalCommandResult(denial, error=True)
+    return choose_option(mgr, *tokens)
+
+
 def _pause(mgr, arg, render):
     state = mgr.pause(reason="user-paused")
     return GoalCommandResult(
@@ -96,7 +111,7 @@ def _gate_clear(mgr, arg):
 
 _GATE_HANDLERS = {"add": _gate_add, "remove": _gate_remove, "rm": _gate_remove, "clear": _gate_clear}
 _EXACT_HANDLERS = {
-    "": _status, "status": _status, "show": _show, "pause": _pause,
+    "": _status, "status": _status, "show": _show, "options": _options, "pause": _pause,
     "resume": _resume, "continue": _resume, "unpause": _resume,
     "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
 }
@@ -105,7 +120,7 @@ _EXACT_HANDLERS = {
 # clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
 _BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
 # First words that make a command goal control (the gateway busy path dispatches these).
-_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
+_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate", "choose", "options"}
 
 
 def _bare_control(mgr, verb, rest, render):
@@ -206,6 +221,11 @@ def dispatch_goal_command(
         if verb == "wait":
             prefix = "/goal wait"
             return _wait(mgr, rest)
+        if verb == "choose":
+            prefix = "/goal choose"
+            return _choose(mgr, rest, authorize_gate)
+        if verb == "options":
+            return _options(mgr, rest, render)
         if verb == "gate":
             prefix = "/goal gate"
             return _gate(mgr, rest, authorize_gate)

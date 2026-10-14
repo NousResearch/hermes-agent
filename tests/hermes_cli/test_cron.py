@@ -48,6 +48,39 @@ class TestCronCommandLifecycle:
         assert updated["provider"] == "nous"
         assert "Updated job" in capsys.readouterr().out
 
+    def test_create_and_edit_schedule_timezone(self, tmp_cron_dir, capsys):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        create_args = parser.parse_args(
+            ["cron", "create", "0 9 * * 1-5", "Market intel", "--tz", "America/New_York"]
+        )
+        assert cron_command(create_args) == 0
+        from cron.jobs import load_jobs
+        jobs = load_jobs()
+        assert len(jobs) == 1
+        job = jobs[0]
+        assert job["schedule"]["tz"] == "America/New_York"
+        assert "(America/New_York)" in job["schedule_display"]
+
+        edit_args = parser.parse_args(
+            ["cron", "edit", job["id"], "--tz", "Europe/London"]
+        )
+        assert cron_command(edit_args) == 0
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["schedule"]["tz"] == "Europe/London"
+
+        clear_args = parser.parse_args(
+            ["cron", "edit", job["id"], "--tz", ""]
+        )
+        assert cron_command(clear_args) == 0
+        cleared = get_job(job["id"])
+        assert cleared is not None
+        assert "tz" not in cleared["schedule"]
+
+
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
             prompt="Combine skill outputs",

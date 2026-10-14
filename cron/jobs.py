@@ -1214,8 +1214,19 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         # wall clock for croniter, then re-attach the zone to the result, so
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
-        # Fall back to the base's own zone only when nothing is configured.
-        zone = get_timezone() or base_time.tzinfo
+        # Respect per-job schedule timezone if configured (e.g. America/New_York for DST adaptation)
+        sched_tz = None
+        if isinstance(schedule, dict) and schedule.get("tz"):
+            try:
+                import zoneinfo
+                sched_tz = zoneinfo.ZoneInfo(schedule["tz"])
+            except Exception:
+                logger.warning(
+                    "Invalid timezone %r on cron schedule %r; falling back to profile timezone.",
+                    schedule["tz"],
+                    schedule.get("expr") or schedule.get("display") or "?",
+                )
+        zone = sched_tz or get_timezone() or base_time.tzinfo
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
@@ -1768,6 +1779,41 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
 }
 
 
+def _normalize_tz(tz: Any) -> Optional[str]:
+    """Validate and normalize an optional schedule timezone string (e.g. 'America/New_York')."""
+    if tz is None:
+        return None
+    val = str(tz).strip()
+    if not val:
+        return None
+    import zoneinfo
+    try:
+        zoneinfo.ZoneInfo(val)
+    except Exception as e:
+        raise ValueError(f"Invalid timezone {val!r}: {e}")
+    return val
+
+
+def _apply_schedule_tz(schedule: dict[str, Any], tz_raw: Any) -> None:
+    """Set or clear a schedule's timezone, rejecting non-cron schedules and keeping display clean."""
+    normalized_tz = _normalize_tz(tz_raw)
+    if normalized_tz and schedule.get("kind") != "cron":
+        raise ValueError(
+            f"Schedule timezone (--tz) is only supported for cron schedules, "
+            f"not {schedule.get('kind', 'unknown')!r} schedules."
+        )
+
+    display = str(schedule.get("display") or schedule.get("expr") or "")
+    clean_display = re.sub(r"(\s*\([A-Za-z0-9_/+\-]+\))+$", "", display).strip()
+
+    if normalized_tz:
+        schedule["tz"] = normalized_tz
+        schedule["display"] = f"{clean_display} ({normalized_tz})"
+    else:
+        schedule.pop("tz", None)
+        schedule["display"] = clean_display
+
+
 def _validate_job_mode_invariants(
     monitor_script: Optional[str],
     monitor_url: Optional[str],
@@ -1836,6 +1882,7 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    tz: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1854,6 +1901,9 @@ def create_job(
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
+    if tz is not None:
+        _apply_schedule_tz(parsed_schedule, tz)
+
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
@@ -2077,14 +2127,37 @@ def _rederive_repeat_for_schedule_change(
     updates["repeat"] = repeat
 
 
-def _apply_schedule_update(updated: dict[str, Any], updates: dict[str, Any], job_id: str) -> None:
+def _apply_schedule_update(
+    updated: dict[str, Any], updates: dict[str, Any], job_id: str, old_schedule: Optional[dict[str, Any]] = None
+) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
     if isinstance(updated_schedule, str):
         updated_schedule = parse_schedule(updated_schedule)
         updated["schedule"] = updated_schedule
-    updated["schedule_display"] = updates.get(
-        "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
+    if "tz" in updates:
+        _apply_schedule_tz(updated_schedule, updates["tz"])
+    elif isinstance(updates.get("schedule"), dict) and "tz" in updates["schedule"]:
+        _apply_schedule_tz(updated_schedule, updates["schedule"]["tz"])
+    elif old_schedule and isinstance(old_schedule, dict) and old_schedule.get("tz"):
+        if updated_schedule.get("kind") == "cron":
+            _apply_schedule_tz(updated_schedule, old_schedule["tz"])
+        else:
+            # On schedule-kind change from cron to non-cron, silently drop existing tz
+            updated_schedule.pop("tz", None)
+            display = str(updated_schedule.get("display") or updated_schedule.get("expr") or "")
+            updated_schedule["display"] = re.sub(r"(\s*\([A-Za-z0-9_/+\-]+\))+$", "", display).strip()
+
+    if updates.get("schedule_display"):
+        updated["schedule_display"] = updates["schedule_display"]
+    else:
+        updated["schedule_display"] = (
+            updated_schedule.get("display")
+            or updated.get("schedule_display")
+            or updated_schedule.get("expr")
+            or ""
+        )
+
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
@@ -2130,14 +2203,15 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
                 _normalize_job_optional_text(updated.get("script")))
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
-        if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
+        if "schedule" in updates or "tz" in updates:
+            _apply_schedule_update(updated, updates, job_id, old_schedule=job.get("schedule"))
+            updated.pop("tz", None)
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
             # the record from the stale-error re-arm while no longer describing where it is
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
             from cron.quota_hold import clear_state as _clear_quota_hold
             _clear_quota_hold(updated)
-        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+        if {"schedule", "tz", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)

@@ -1,20 +1,20 @@
-"""Pre-execution rejection messages for tool calls — one source of truth.
+"""Structured payloads for tool calls that did not complete — one source of truth.
 
-The dispatch loop's rejection shapes (invalid tool name, invalid JSON arguments)
-are stated in the tool-result content the model sees, and the context compressor
-reads them to summarize the call as "not run" — otherwise compaction renders a
-rejected call as a completed action and the post-compaction agent reports its
-effect as done.
+Tool results that are not real outputs (pre-execution rejections, interrupt
+skips, timeouts, orphan recovery) are stated in the tool-result content the model
+sees, and the context compressor reads them to summarize the call as "not run" —
+otherwise compaction renders a never-completed call as a completed action and the
+post-compaction agent reports its effect as done.
 
-Producers (``agent.conversation_loop``, ``agent.turn_tool_validation``) build
-messages from these constants and wrap them with :func:`rejected_result` into a
-``{"status": "rejected", "error": …}`` payload, which the compressor reads
-structurally (the same way it reads ``status: blocked`` / ``pending_approval``).
-The compressor's prose matcher exists only for transcripts recorded before the
-structured status existed; both sides build from these constants, so a rewording
-cannot silently decouple them (each side's tests alone would stay green). This
-module must stay import-light: it is imported by the compressor, which the loop
-imports.
+Producers build messages from these constants and wrap them with the
+:func:`rejected_result` / :func:`outcome_result` builders into a
+``{"status": …, "error": …}`` payload, which the compressor reads structurally
+(the same way it reads ``status: blocked`` / ``pending_approval``). The
+compressor's prose matchers exist only for transcripts recorded before the
+structured statuses existed; both sides build from these constants, so a
+rewording cannot silently decouple them (each side's tests alone would stay
+green). This module must stay import-light: it is imported by the compressor,
+which the loop imports.
 """
 
 import json
@@ -22,6 +22,14 @@ import json
 # Structured marker: rejections carry this ``status`` so the compressor never has
 # to parse prose to know a call did not run.
 REJECTED_STATUS = "rejected"
+
+# Execution-layer outcomes for calls that never returned a result. ``cancelled``
+# matches the payload ``_ToolCallRef.emit_cancelled`` already emits; ``timeout``
+# matches the sequential runner's hook outcome; ``unknown`` marks calls whose
+# effect cannot be determined (orphan recovery, a worker that vanished).
+CANCELLED_STATUS = "cancelled"
+TIMEOUT_STATUS = "timeout"
+UNKNOWN_STATUS = "unknown"
 
 
 def rejected_result(message: str) -> str:
@@ -31,6 +39,28 @@ def rejected_result(message: str) -> str:
     string), plus the ``status`` field the refused-result summarizer keys on.
     """
     return json.dumps({"status": REJECTED_STATUS, "error": message}, ensure_ascii=False)
+
+
+def outcome_result(status: str, message: str) -> str:
+    """Wrap an execution-layer non-completion (skip / timeout / unknown effect)
+    into the structured payload the compressor reads first — same shape as
+    :func:`rejected_result`, for outcomes that are not validation rejections."""
+    return json.dumps({"status": status, "error": message}, ensure_ascii=False)
+
+
+def error_result(message: str) -> str:
+    """Wrap a raised error into the plain ``{"error": …}`` body the compressor's
+    failure suffix reads — the import-light twin of ``tools.registry.tool_error``
+    (registry is import-heavy from the executor's helpers)."""
+    return json.dumps({"error": message}, ensure_ascii=False)
+
+
+# Legacy prose shapes (pre-status transcripts). The compressor builds its legacy
+# matchers from these constants; live producers no longer emit them bare.
+TOOL_EXECUTION_CANCELLED_PREFIX = "[Tool execution cancelled — "
+TOOL_EXECUTION_SKIPPED_PREFIX = "[Tool execution skipped — "
+ERROR_EXECUTING_TOOL_PREFIX = "Error executing tool"
+ORPHAN_RECOVERY_PREFIX = "[Orphan recovery: "
 
 
 # Unknown tool name — str.format template; the compressor builds its matcher from it.

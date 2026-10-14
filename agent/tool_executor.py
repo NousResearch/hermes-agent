@@ -32,6 +32,13 @@ from agent.display import (
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
+from agent.tool_rejection import (
+    CANCELLED_STATUS,
+    TIMEOUT_STATUS,
+    UNKNOWN_STATUS,
+    error_result,
+    outcome_result,
+)
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
@@ -340,7 +347,9 @@ def _append_skipped_tool_results(
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""
     for tc in tool_calls:
         name = _tc_name(tc)
-        result = content.replace("{name}", name)
+        # Not a tool output: carry the structured ``cancelled`` status so the compressor
+        # summarizes the call as never run instead of rendering it as a completed action.
+        result = outcome_result(CANCELLED_STATUS, content.replace("{name}", name))
         messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
@@ -861,9 +870,13 @@ _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connecti
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
     """Emit the terminal post_tool_call for a worker the sequential runner gave up on
-    (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``."""
+    (timeout / interrupt) and wrap ``message`` in its marker ``result_cls``. The message
+    is a non-execution outcome, not a tool output: it carries the structured status
+    (timeout / cancelled) so the compressor summarizes the call as never completed
+    instead of rendering it as a successful run."""
     ref.emit_post(agent, message, **outcome)
-    return _ManagedToolResult(result=result_cls(message), args=ref.args, middleware_trace=ref.trace, blocked=False, dispatched=True)
+    status = TIMEOUT_STATUS if result_cls is _ToolTimeoutResult else CANCELLED_STATUS
+    return _ManagedToolResult(result=result_cls(outcome_result(status, message)), args=ref.args, middleware_trace=ref.trace, blocked=False, dispatched=True)
 
 
 def _poll_sequential_future(agent, future, function_name: str, deadline: float | None, started: float, authorization_gate) -> tuple[str, Any]:
@@ -1367,7 +1380,7 @@ class _ConcurrentBatch:
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
             return _ToolOutcome(ref, result, duration, True, False)
         except Exception as tool_error:
-            result = f"Error executing tool '{ref.name}': {tool_error}"
+            result = error_result(f"Error executing tool '{ref.name}': {tool_error}")
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)
         duration = time.time() - start
         if not blocked and not dispatched:
@@ -1418,7 +1431,10 @@ class _ConcurrentBatch:
                 for skipped_i in skipped:
                     ref = self.parsed_calls[skipped_i].ref(self.effective_task_id)
                     if self.results[skipped_i] is None:
-                        result = f"Error executing tool '{ref.name}': Python interpreter is shutting down; tool was not started"
+                        result = outcome_result(
+                            CANCELLED_STATUS,
+                            f"Error executing tool '{ref.name}': Python interpreter is shutting down; tool was not started",
+                        )
                         self.results[skipped_i] = _ToolOutcome(ref, result, 0.0, True, False)
                 break
             futures.append(f)
@@ -1526,8 +1542,12 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
         tool_duration, effect_disposition = 0.0, None
-    ref.emit_post(agent, function_result, **outcome)
-    return function_result, tool_duration, effect_disposition
+    # Not a tool output: carry the structured status so the compressor summarizes the
+    # call as never completed instead of rendering it as a successful run.
+    status = TIMEOUT_STATUS if timed_out else (CANCELLED_STATUS if agent._interrupt_requested else UNKNOWN_STATUS)
+    structured_result = outcome_result(status, function_result)
+    ref.emit_post(agent, structured_result, **outcome)
+    return structured_result, tool_duration, effect_disposition
 
 
 def _append_batch_results(agent, messages: list, effective_task_id: str, batch: _ConcurrentBatch, budget: BudgetConfig) -> bool:
@@ -1721,7 +1741,9 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         execute=_execute,
         spinner=_start_quiet_tool_spinner(agent, function_name, function_args) if agent.quiet_mode else None,
         middleware_trace_arg=middleware_trace,
-        error_result=lambda e: f"Error executing tool '{function_name}': {e}",
+        # An exception from the tool is a failure payload, not raw output: wrap it so the
+        # compressor's failure suffix marks the call instead of rendering it as a success.
+        error_result=lambda e: error_result(f"Error executing tool '{function_name}': {e}"),
         error_log="handle_function_call raised for %s: %s",
         handles_keyboard_interrupt=True,
         finish_spinner=bool(agent.quiet_mode),

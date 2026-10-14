@@ -503,6 +503,15 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str, metadata: Optional
                 key for key in safe_metadata
                 if any(term in str(key).casefold() for term in evidence_terms)
             ]
+            # Explicit acceptance state is more decisive than free-form evidence
+            # or verification detail, which can be long enough to consume the
+            # judge's response snippet before criteria status is visible.
+            evidence_keys.sort(key=lambda key: (
+                0 if any(term in str(key).casefold() for term in ("acceptance", "criterion", "criteria"))
+                else 1 if "verification" in str(key).casefold()
+                else 2,
+                str(key).casefold(),
+            ))
             ordered_metadata = {key: safe_metadata[key] for key in evidence_keys}
             for key, value in safe_metadata.items():
                 ordered_metadata.setdefault(key, value)

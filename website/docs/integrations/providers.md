@@ -565,29 +565,47 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 ### NVIDIA NIM
 
-Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
+Nemotron and other open source models via NIM. Two ways to connect: the hosted catalog at [build.nvidia.com](https://build.nvidia.com/models), or a local/on-prem NIM endpoint.
+
+Nemotron 3.5 Super VL, used in the examples below, supports text and image input, reasoning, and tool calls.
+
+#### Cloud (build.nvidia.com)
+
+Create a free API key at [build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys), then add it to `~/.hermes/.env`:
 
 ```bash
-# Cloud (build.nvidia.com)
-hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
-# Requires: NVIDIA_API_KEY in ~/.hermes/.env
-
-# Local NIM endpoint — override base URL
-NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+NVIDIA_API_KEY=nvapi-...
 ```
 
-Or set it permanently in `config.yaml`:
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` (no configuration needed). This routes consumption against the correct origin in NVIDIA's billing dashboard.
+
+#### Local NIM
+
+For on-prem deployments (DGX Spark, local GPU), point Hermes at your own NIM endpoint instead. Add both variables to `~/.hermes/.env`:
+
+```bash
+NVIDIA_API_KEY=nvapi-...
+NVIDIA_BASE_URL=http://localhost:8000/v1
+```
+
+```bash
+hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
+
+#### Persisting the model
+
+Either way, set it permanently in `config.yaml` instead of passing `--model` every time:
 ```yaml
 model:
   provider: "nvidia"
-  default: "nvidia/nemotron-3-super-120b-a12b"
+  default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
-
-:::tip Local NIM
-For on-prem deployments (DGX Spark, local GPU), set `NVIDIA_BASE_URL=http://localhost:8000/v1`. NIM exposes the same OpenAI-compatible chat completions API as build.nvidia.com, so switching between cloud and local is a one-line env-var change.
-:::
-
-Hermes automatically attaches the NIM billing-origin header on every request to `build.nvidia.com` — no configuration needed. This routes consumption against the correct origin in NVIDIA's billing dashboard.
 
 ### GMI Cloud
 

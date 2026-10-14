@@ -51,4 +51,18 @@ describe('runComposerMiddleware', () => {
 
     expect(await runComposerMiddleware({ text: 'quiet' })).toEqual({ text: 'QUIET' })
   })
+
+  it('carries the optional draft context through the chain', async () => {
+    addMiddleware('ctx-reader', d => ({ ...d, text: `${d.text}:${d.context?.kind ?? 'app-chat'}` }))
+
+    const draft = { context: { kind: 'group-room' as const, roomId: 'Room', threadId: 'a' }, text: 'x' }
+
+    expect(await runComposerMiddleware(draft)).toEqual({ context: draft.context, text: 'x:group-room' })
+  })
+})
+
+describe('COMPOSER_AREAS', () => {
+  it('exposes the room-scoped chip area', () => {
+    expect(COMPOSER_AREAS.roomBottom).toBe('composer.roomBottom')
+  })
 })

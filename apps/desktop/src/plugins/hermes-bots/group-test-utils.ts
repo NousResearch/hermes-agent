@@ -20,8 +20,15 @@
  * `host` surface instead.
  */
 
+// Test harness only: production plugin code reaches the draft shape through
+// @hermes/plugin-sdk; this file needs the core type to script the same values.
+ 
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { vi } from 'vitest'
+
+// Test harness only: real plugins reach draft shapes via @hermes/plugin-sdk.
+// eslint-disable-next-line no-restricted-imports
+import type { ComposerDraft } from '@/app/chat/composer/contrib'
 
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
@@ -457,6 +464,13 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    // Shared composer seam names — group-chat-view imports these, and vitest
+    // rejects a named import with no matching export on the mock, so they must
+    // be present. Defaults mirror "no plugin middleware registered": the chain
+    // passes the draft through and the room renders no slot contents.
+    COMPOSER_AREAS: { middleware: 'composer.middleware', roomBottom: 'composer.roomBottom' },
+    ComposerSlot: () => null,
+    runComposerMiddleware: async (draft: ComposerDraft): Promise<ComposerDraft | null> => draft,
     host,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

@@ -14,6 +14,7 @@ def _make_env_config(**overrides):
         "cwd": "/workspace",
         "host_cwd": None,
         "timeout": 180,
+        "lifetime_seconds": 300,
         "container_cpu": 2,
         "container_memory": 4096,
         "container_disk": 20480,

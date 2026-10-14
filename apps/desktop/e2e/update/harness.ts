@@ -201,6 +201,8 @@ export function appEnv(facts: InstallFacts, extra: Record<string, string> = {}):
     ...displayEnv(),
     HERMES_DESKTOP_USER_DATA_DIR: userDataDir(facts),
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
+    // Never repoint the user's OS hermes:// handler (HKCU on Windows) at a test checkout.
+    HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
     HERMES_DESKTOP_CDP_PORT: 'off',
     ...extra
   }
@@ -276,14 +278,32 @@ export function desktopMainProcesses(facts: InstallFacts): ProcInfo[] {
 
 /** The `hermes serve` backend(s) of this install (children of the backend excluded). */
 export function backendServeProcesses(facts: InstallFacts): ProcInfo[] {
+  // The local backend is the gateway `hermes gateway ensure` attached to or started
+  // (`hermes_cli.main [--profile X] gateway run --quiet`); `serve` covers a pool backend.
   const serve = installProcesses(facts).filter(
     proc =>
-      / serve( |$)/.test(proc.cmdline) && !/--type=/.test(proc.cmdline) && !exeOf(proc.pid).includes('linux-unpacked')
+      (/ serve( |$)/.test(proc.cmdline) || / gateway run( |$)/.test(proc.cmdline)) &&
+      !/--type=/.test(proc.cmdline) &&
+      !exeOf(proc.pid).includes('linux-unpacked')
   )
 
   const pids = new Set(serve.map(proc => proc.pid))
 
   return serve.filter(proc => !pids.has(proc.ppid))
+}
+
+/** Install processes other than the gateway Desktop attached to (it outlives the app by design). */
+export function nonGatewayProcesses(facts: InstallFacts): ProcInfo[] {
+  const gateways = new Set(backendServeProcesses(facts).map(proc => proc.pid))
+
+  return installProcesses(facts).filter(proc => !gateways.has(proc.pid) && !gateways.has(proc.ppid))
+}
+
+/** `hermes gateway stop` with the install's own CLI: attach-mode Desktop never owns the gateway. */
+export function stopInstallGateway(facts: InstallFacts): { code: number | null; output: string } {
+  const result = spawnSync(facts.hermes, ['gateway', 'stop'], { env: facts.env, encoding: 'utf8', timeout: 90_000 })
+
+  return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
 export function readText(file: string): string {
@@ -484,7 +504,8 @@ export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
 
-    return !/^\S+ \(.*\) Z /.test(readText(`/proc/${pid}/stat`))
+    // Zombie check needs procfs; elsewhere a signalable pid is alive.
+    return !fs.existsSync(`/proc/${pid}/stat`) || !/^\S+ \(.*\) Z /.test(readText(`/proc/${pid}/stat`))
   } catch {
     return false
   }

@@ -52,6 +52,9 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
+# ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
+_launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
@@ -290,6 +293,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
@@ -323,7 +327,10 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return True
+    from gateway.session_finite import unattended_turn
+    return unattended_turn()
 
 
 def _permanent_set() -> set:

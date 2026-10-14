@@ -441,36 +441,20 @@ def _mark_tui_input_modes_active() -> None:
 
 
 def _prepare_deferred_agent_startup() -> None:
-    """Run Termux-deferred agent discovery before the first real agent turn."""
+    """Run Termux-deferred plugin discovery before the first real agent turn. MCP servers, shell
+    hooks and outbound webhooks belong to the gateway that runs the turn (session policy)."""
     global _deferred_agent_startup_done
     if _deferred_agent_startup_done:
         return
     if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
         return
     _deferred_agent_startup_done = True
-    _accept_hooks = os.environ.get("HERMES_ACCEPT_HOOKS", "").lower() in {"1", "true", "yes", "on"}
     try:
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()
     except Exception:
         logger.warning("plugin discovery failed at deferred CLI startup", exc_info=True)
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-        start_background_mcp_discovery(logger=logger, thread_name="termux-cli-mcp-discovery")
-    except Exception:
-        logger.debug("MCP tool discovery failed at deferred CLI startup", exc_info=True)
-    try:
-        from agent.shell_hooks import register_from_config
-        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
-        from hermes_cli.config import load_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug("shell-hook registration failed at deferred CLI startup", exc_info=True)
 
 
 _signal_watchdog_armed = False
@@ -1207,6 +1191,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         entry = self._slash_handler(canonical)
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
+        from hermes_cli.gateway_setting_commands import run as run_gateway_setting
+        if run_gateway_setting(self, canonical, cmd_original):
+            return True  # a per-session setting the gateway's handler applied
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()

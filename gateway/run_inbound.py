@@ -31,6 +31,7 @@ from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
+from gateway.run_inbound_turn_context import prepend_turn_context_note
 from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -1737,7 +1738,11 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        return await prepend_turn_context_note(
+            self, event=event, source=source, session_key=session_key, history=history,
+            message_text=message_text,
+        )
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

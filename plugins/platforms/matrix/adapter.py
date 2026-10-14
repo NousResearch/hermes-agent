@@ -14,19 +14,19 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
-Note: any room with <=2 joined members is auto-classified as a DM (see
-``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
-clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
+Note: only a room with the bot and exactly one other joined member is classified as a DM (see
+``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name.
+When joined membership cannot be read, the room is treated as a group. A DM-classified room
 therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
 and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
-MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
-add a third member so it has >2 joined members.
+MATRIX_SESSION_SCOPE.
 """
 
 from __future__ import annotations
 
 import asyncio
 import array
+import hashlib
 import inspect
 import json
 from contextlib import suppress
@@ -55,7 +55,7 @@ from gateway.platforms._shared import (
 
 try:
     from mautrix.types import (
-        ContentURI, EventID, EventType, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
+        ContentURI, EventID, EventType, Membership, PresenceState, RoomCreatePreset, RoomID, TrustState, UserID)
 except ImportError:
     # Import-safe stubs without mautrix: check_matrix_requirements() gates production use, but
     # tests exercise adapter methods so the attributes must exist.
@@ -63,12 +63,24 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
-        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name",
+        "ROOM_TOPIC": "m.room.topic", "ROOM_CANONICAL_ALIAS": "m.room.canonical_alias",
+        "ROOM_MEMBER": "m.room.member", "ROOM_TOMBSTONE": "m.room.tombstone",
+        "ROOM_ENCRYPTION": "m.room.encryption", "ROOM_JOIN_RULES": "m.room.join_rules",
+        "ROOM_HISTORY_VISIBILITY": "m.room.history_visibility"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
+    Membership = type("_MembershipStub", (), {  # type: ignore[misc,assignment]
+        "JOIN": "join", "INVITE": "invite"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
+
+try:
+    from mautrix.errors import MNotFound
+except ImportError:
+    class MNotFound(Exception):  # type: ignore[no-redef]
+        """Import-safe stand-in for the homeserver's M_NOT_FOUND error."""
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -76,8 +88,10 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.session import SessionSource
+from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -335,6 +349,8 @@ class MatrixRoomIdentity:
     canonical_alias: str | None
     server_name: str | None
     joined_member_count: int | None
+    # None when any state or member read failed. A turn then reports nothing and keeps the saved baseline.
+    room_state: MatrixRoomState | None
     is_direct_account_data: bool
     display_name: str
     has_explicit_name: bool
@@ -413,6 +429,8 @@ def _resolve_max_message_length(config) -> int:
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
+_ROOM_STATE_READ_TIMEOUT_SECONDS = 10.0
+_ROOM_NAME_STATE_KEYS = {"m.room.name": "name", "m.room.topic": "topic", "m.room.canonical_alias": "alias"}
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -827,7 +845,9 @@ class MatrixAdapter(BasePlatformAdapter):
         # default's E2EE device id).
         self._homeserver: str = (config.extra.get("homeserver", "") or _get_scoped_secret("MATRIX_HOMESERVER", "").strip()).rstrip("/")
         self._access_token: str = config.token or _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
-        self._user_id: str = config.extra.get("user_id", "") or _get_scoped_secret("MATRIX_USER_ID", "").strip()
+        self._configured_user_id: str = config.extra.get("user_id", "") or _get_scoped_secret("MATRIX_USER_ID", "").strip()
+        self._user_id: str = self._configured_user_id
+        self._crypto_account_id: str = ""
         self._password: str = config.extra.get("password", "") or _get_scoped_secret("MATRIX_PASSWORD", "").strip()
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
@@ -847,6 +867,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
+        # Last successful state read per room and event type. Kept apart from _room_identities
+        # because _absorb_sync clears that cache whenever a sync response includes joined rooms.
+        self._room_state_values: Dict[str, Dict[str, Optional[str]]] = {}
         self._joined_rooms: set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -1119,6 +1142,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
+                self._crypto_account_id = self._user_id
                 # The configured device_id wins when whoami() reports none, but a token can
                 # only upload keys for its own device — on conflict whoami() wins, loudly.
                 if resolved_device_id and self._device_id and resolved_device_id != self._device_id:
@@ -1156,13 +1180,17 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.error(
                     "Matrix: whoami failed — check MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER: %s", exc, exc_info=True)
                 return await self._abort_connect(api)
-        elif self._password and self._user_id:
+        elif self._password and self._configured_user_id:
             try:
                 resp = await client.login(
-                    identifier=self._user_id, password=self._password, device_name="Hermes Agent",
+                    identifier=self._configured_user_id, password=self._password, device_name="Hermes Agent",
                     device_id=self._device_id or None)
                 if resp and hasattr(resp, "device_id"):
                     client.device_id = resp.device_id
+                # Existing E2EE stores are keyed by the configured spelling. Keying them by the
+                # homeserver's spelling would open an empty store when the two differ in case.
+                self._crypto_account_id = self._configured_user_id
+                self._user_id = str(client.mxid)
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -1201,7 +1229,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
             await crypto_db.start()
             self._crypto_db = crypto_db
-            _acct_id = self._user_id or "hermes"
+            _acct_id = self._crypto_account_id or "hermes"
             # Key on the RESOLVED client.device_id (token's real device), not the configured
             # one, or the Olm account is stored under a key that can never be looked up.
             _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
@@ -1338,6 +1366,14 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
+        for state_type_name in (
+            "ROOM_TOPIC", "ROOM_NAME", "ROOM_CANONICAL_ALIAS", "ROOM_MEMBER",
+            "ROOM_TOMBSTONE", "ROOM_ENCRYPTION", "ROOM_JOIN_RULES",
+            "ROOM_HISTORY_VISIBILITY",
+        ):
+            state_type = getattr(EventType, state_type_name, None)
+            if state_type is not None:
+                client.add_event_handler(state_type, self._on_room_state, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -2173,6 +2209,18 @@ class MatrixAdapter(BasePlatformAdapter):
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: SessionSource | None,
+        acknowledged_state: Dict[str, Any] | None,
+    ) -> TurnContextUpdate | None:
+        if event.internal or event.message_type != MessageType.TEXT or self._client is None:
+            return None
+        current = (await self._resolve_room_identity(event.source.chat_id)).room_state
+        if current is None:
+            return None
+        previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
+        return TurnContextUpdate(format_room_notes(current.changes_since(previous)), current.to_dict())
+
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict) -> None:
@@ -2309,6 +2357,11 @@ class MatrixAdapter(BasePlatformAdapter):
         filename = body or ("video.mp4" if msg_type == MessageType.VIDEO else "document")
         return await cache_document_from_bytes_async(file_bytes, filename)
 
+    async def _on_room_state(self, event: Any) -> None:
+        room_id = str(getattr(event, "room_id", ""))
+        if room_id:
+            self._invalidate_room_identities(room_id)
+
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""
         room_id = str(getattr(event, "room_id", ""))
@@ -2373,8 +2426,8 @@ class MatrixAdapter(BasePlatformAdapter):
             # it, or (for invites that arrived while the gateway was down)
             # is only now seeing it. The invite event object is gone by
             # this point, so the DM signal must be read from the stripped
-            # invite state; without it a direct invite joined here is never
-            # recorded in m.direct and gets misclassified as a group.
+            # invite state. Without it, a direct invite joined here is never
+            # recorded in m.direct.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
             # The inviter allowlist gate from _on_invite must apply here
             # too: an unconditional join would re-admit a live invite that
@@ -2758,32 +2811,118 @@ class MatrixAdapter(BasePlatformAdapter):
                 return str(value)
         return None
 
-    async def _get_room_member_count(self, room_id: str) -> Optional[int]:
-        """state_store first (cached), then a direct joined_members API query."""
+    async def _get_room_members(self, room_id: str) -> Optional[set[str]]:
+        """Read the complete joined member list from the store or homeserver."""
+        client = getattr(self, "_client", None)
+        if client is None:
+            return None
+
+        state_store = getattr(client, "state_store", None)
+        if state_store is not None:
+            with suppress(Exception):
+                if await state_store.has_full_member_list(RoomID(room_id)):
+                    members = await state_store.get_members(
+                        RoomID(room_id), memberships=(Membership.JOIN,)
+                    )
+                    if members is not None:
+                        return {str(member) for member in members}
+
+        with suppress(Exception):
+            members = await asyncio.wait_for(client.get_joined_members(RoomID(room_id)), timeout=10)
+            if isinstance(members, dict):
+                return {str(member) for member in members}
+        return None
+
+    async def _get_room_member_profiles(self, room_id: str) -> Optional[Dict[Any, Any]]:
         state_store = getattr(self._client, "state_store", None) if self._client else None
         if state_store:
             with suppress(Exception):
-                members = await state_store.get_members(room_id)
-                if members is not None:
-                    return len(members)
-        client = getattr(self, "_client", None)  # object.__new__-built test doubles may lack it
-        if client is not None and hasattr(client, "joined_members"):
+                profiles = await state_store.get_member_profiles(
+                    RoomID(room_id), memberships=(Membership.JOIN,)
+                )
+                if profiles:
+                    return dict(profiles)
+
+        client = getattr(self, "_client", None)
+        if client is not None and hasattr(client, "get_joined_members"):
             with suppress(Exception):
-                resp = await client.joined_members(room_id)
-                if getattr(resp, "members", None) is not None:
-                    return len(resp.members)
+                profiles = await asyncio.wait_for(
+                    client.get_joined_members(RoomID(room_id)), _ROOM_STATE_READ_TIMEOUT_SECONDS,
+                )
+                if profiles:
+                    return dict(profiles)
         return None
 
-    async def _get_room_state_value(self, room_id: str, event_type: str, key: str) -> Optional[str]:
-        """Fetch a stripped string field from a room state event, or None."""
+    def _compute_room_display_name(self, profiles: Optional[Dict[Any, Any]]) -> Optional[str]:
+        if not profiles:
+            return None
+
+        own_user_id = (self._user_id or "").strip().lower()
+        names = []
+        for user_id, member in profiles.items():
+            if str(user_id).strip().lower() == own_user_id:
+                continue
+            display_name = getattr(member, "displayname", None)
+            if display_name and display_name.strip():
+                names.append(display_name.strip())
+            elif str(user_id).startswith("@") and ":" in str(user_id):
+                names.append(str(user_id)[1:].split(":", 1)[0])
+            else:
+                names.append(str(user_id))
+
+        if not names:
+            return None
+
+        names.sort()
+        if len(names) == 1:
+            return names[0]
+        if len(names) <= 3:
+            return f"{', '.join(names[:-1])} and {names[-1]}"
+        remaining = len(names) - 3
+        noun = "other" if remaining == 1 else "others"
+        return f"{', '.join(names[:3])} and {remaining} {noun}"
+
+    async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
+        """The content of a room state event, or None when the room has no such event (``M_NOT_FOUND``).
+        Any other failure, including the read deadline, raises."""
         if not self._client or not hasattr(self._client, "get_state_event"):
             return None
         try:
-            event = await self._client.get_state_event(RoomID(room_id), event_type)
-        except Exception:
-            return None
-        value = (self._state_event_value(event, key) or "").strip()
-        return value or None
+            return await asyncio.wait_for(
+                self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            if isinstance(exc, MNotFound) or getattr(exc, "errcode", None) == "M_NOT_FOUND":
+                return None
+            raise
+
+    async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
+        members = await self._get_room_members(room_id)
+        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
+        return members, profiles
+
+    def _remember_room_names(
+        self, room_id: str, reads: Dict[str, Any], profiles: Optional[Dict[Any, Any]],
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """The room's name, topic, canonical alias and member-derived name. *reads* maps each event type
+        in ``_ROOM_NAME_STATE_KEYS`` to its content or to the exception that its read raised, and
+        *profiles* is None when the member read failed. A failed read gives the last value read for the
+        room, so a timeout does not rename the room; a successful read replaces that value, so a removed
+        name or topic applies."""
+        values = self._room_state_values.pop(room_id, {})
+        for event_type, key in _ROOM_NAME_STATE_KEYS.items():
+            event = reads[event_type]
+            if not isinstance(event, Exception):
+                values[event_type] = (self._state_event_value(event, key) or "").strip() or None
+        if profiles is not None:
+            values["m.room.member"] = self._compute_room_display_name(profiles)
+        if len(self._room_state_values) >= self._room_identity_cache_max:
+            del self._room_state_values[next(iter(self._room_state_values))]
+        self._room_state_values[room_id] = values
+        return (
+            values.get("m.room.name"), values.get("m.room.topic"), values.get("m.room.canonical_alias"),
+            values.get("m.room.member"),
+        )
 
     def _invalidate_room_identities(self, room_id: str | None = None) -> None:
         """Drop one cached room identity (or all when *room_id* is None)."""
@@ -2795,28 +2934,74 @@ class MatrixAdapter(BasePlatformAdapter):
             self._room_identity_cached_at.pop(room_id, None)
 
     async def _resolve_room_identity(self, room_id: str, *, force_refresh: bool = False) -> MatrixRoomIdentity:
-        """Resolve room identity; member count is the primary DM signal (see below)."""
+        """Resolve room identity from joined membership and room metadata."""
         cached = self._room_identities.get(room_id)
         ttl = self._room_identity_ttl_seconds
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
         if cached is not None and cache_fresh and not force_refresh:
             return cached
-        room_name = await self._get_room_state_value(room_id, "m.room.name", "name")
-        room_topic = await self._get_room_state_value(room_id, "m.room.topic", "topic")
-        canonical_alias = await self._get_room_state_value(room_id, "m.room.canonical_alias", "alias")
-        member_count = await self._get_room_member_count(room_id)
+        (
+            name_event, topic_event, alias_event, join_rules_event, history_event, encryption_event,
+            tombstone_event, member_read,
+        ) = reads = await asyncio.gather(
+            *(
+                self._read_room_state_event(room_id, event_type) for event_type in (
+                    "m.room.name", "m.room.topic", "m.room.canonical_alias", "m.room.join_rules",
+                    "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
+                )
+            ),
+            self._read_room_member_profiles(room_id),
+            return_exceptions=True,
+        )
+        for result in reads:
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                raise result
+        failed_reads = [result for result in reads if isinstance(result, Exception)]
+        members, profiles = (
+            (None, None) if isinstance(member_read, BaseException) else member_read
+        )
+        if failed_reads:
+            logger.debug("Matrix: room state read failed for %s: %r", room_id, failed_reads[0])
+
+        def state_value(event: Any, key: str) -> Optional[str]:
+            if isinstance(event, Exception):
+                return None
+            return (self._state_event_value(event, key) or "").strip() or None
+
+        room_name, room_topic, canonical_alias, member_name = self._remember_room_names(
+            room_id, dict(zip(_ROOM_NAME_STATE_KEYS, (name_event, topic_event, alias_event))), profiles,
+        )
+        member_count = len(members) if members is not None else None
+        members_digest = None
+        if members is not None and profiles is not None:
+            profile_names = {
+                str(user_id): str(getattr(profile, "displayname", None) or "")
+                for user_id, profile in profiles.items()
+            }
+            member_rows = [(user_id, profile_names.get(user_id, "")) for user_id in sorted(members)]
+            members_digest = hashlib.sha256(
+                json.dumps(member_rows, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # <=2 members is necessarily a DM regardless of m.direct/name (clients auto-name DMs
-        # like "Alice & Bot"); fall back to m.direct + unnamed only when the count is unknown.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (is_direct and not has_explicit_name)
+        is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
+        display_name = room_name or canonical_alias or member_name or room_id
+        room_state = (
+            None if failed_reads or members_digest is None
+            else MatrixRoomState(
+                display_name, room_topic, members_digest,
+                join_rule=state_value(join_rules_event, "join_rule"),
+                history_visibility=state_value(history_event, "history_visibility"),
+                encrypted=encryption_event is not None, tombstoned=tombstone_event is not None,
+            )
+        )
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
-            joined_member_count=member_count,
-            is_direct_account_data=is_direct, display_name=room_name or canonical_alias or room_id,
+            joined_member_count=member_count, room_state=room_state,
+            is_direct_account_data=is_direct, display_name=display_name,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
-            conflict=bool(is_direct and has_explicit_name and (member_count is None or member_count > 2)))
+            conflict=bool(is_direct and not is_likely_dm))
         if len(self._room_identities) >= self._room_identity_cache_max:
             oldest = min(self._room_identity_cached_at, key=self._room_identity_cached_at.get, default=None)
             if oldest:

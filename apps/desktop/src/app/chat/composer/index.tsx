@@ -330,7 +330,6 @@ export function ChatBar({
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
   const {
     beginQueuedEdit,
-    deliverQueuedNow,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
@@ -983,28 +982,10 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
-        void drainNextQueued()
-
-        return
-      }
-
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second delivers them
-      // now — steered into the live turn when a steer can carry them, else
-      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
-      // drain above. With nothing queued it stays a no-op — interrupting is
-      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
-      // DOM payload (not the render-lagged composer state) so a message typed
-      // fast / via IME while busy still reaches submitDraft() and gets queued
-      // instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
-        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
-
-        if (head) {
-          void deliverQueuedNow(head.id)
-        }
-
+      // Empty Enter never drains the queue. The user can send an individual
+      // queued entry from its row or explicitly resume via the queue controls.
+      // Read live DOM text so a just-typed message is not mistaken for empty.
+      if (!hasLivePayload) {
         return
       }
 

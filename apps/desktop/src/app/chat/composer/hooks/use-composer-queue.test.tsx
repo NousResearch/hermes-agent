@@ -24,9 +24,8 @@ import { useComposerQueue } from './use-composer-queue'
 
 // The park ↔ drain contract at the hook level. The store tests pin the pure
 // pieces (shouldAutoDrain, park bookkeeping); these pin the wiring — the
-// auto-drain effect honoring the park, and send-now-while-busy lifting it so
-// the settle drain still flows (the regression that sank the old blanket
-// interrupt latch).
+// auto-drain effect honoring the park, and per-entry Send now preserving the
+// rest of the queue instead of silently resuming it.
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
@@ -189,28 +188,42 @@ describe('useComposerQueue park integration', () => {
     expect(isQueueParked(SESSION_KEY)).toBe(false)
   })
 
-  it('sendQueuedNow while busy unparks so the settle drain flows (no stale latch)', async () => {
-    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send me now' })
-    parkQueuedPrompts(SESSION_KEY)
+  it('sends only the selected entry after interrupt, leaving the other entries parked', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const target = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send me now' })!
 
     const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true })
-    const target = getQueuedPrompts(SESSION_KEY).find(e => e.id !== first!.id)!
 
     act(() => {
       hook.result.current.sendQueuedNow(target.id)
     })
 
-    // The interrupt fired and the park lifted — this interrupt exists to reach
-    // the queue, not to halt it.
     expect(onCancel).toHaveBeenCalledTimes(1)
-    expect(isQueueParked(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+    // Manual Send now must not reorder or drain the first item.
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id, target.id])
 
-    // Turn settles → the promoted entry drains.
     hook.rerender({ busy: false })
-
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0]?.[0]).toBe('send me now')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first'])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+  })
+
+  it('sends only the selected entry while idle without resuming a parked queue', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const selected = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'selected' })!
+    parkQueuedPrompts(SESSION_KEY)
+    const { hook, onSubmit } = renderQueueHook()
+
+    await act(async () => {
+      await hook.result.current.sendQueuedNow(selected.id)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('selected', expect.any(Object))
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.id)).toEqual([first.id])
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
   })
 
   it('steerQueuedNow delivers via onSteer without cancelling and removes the entry', async () => {
@@ -263,7 +276,7 @@ describe('useComposerQueue park integration', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
   })
 
-  it('a delivered steer lifts the park so the rest of the queue flows', async () => {
+  it('a delivered queued steer preserves a pre-existing park', async () => {
     const steerable = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'redirect' })
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'follows after' })
     parkQueuedPrompts(SESSION_KEY)
@@ -275,7 +288,7 @@ describe('useComposerQueue park integration', () => {
       expect(await hook.result.current.steerQueuedNow(steerable!.id)).toBe(true)
     })
 
-    expect(isQueueParked(SESSION_KEY)).toBe(false)
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
   })
 

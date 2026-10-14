@@ -91,3 +91,22 @@ def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, mini
         network.retry_network(fail, wait=cancel)
     assert len(attempts) == len(waits) == 1
     assert minimum <= waits[0] <= network._MAX_DELAY
+
+
+@pytest.mark.parametrize("status,headers,cdn", [
+    pytest.param(403, {"Server": "Vercel", "x-vercel-mitigated": "deny"}, "Vercel", id="vercel-deny"),
+    pytest.param(403, {"Server": "cloudflare", "cf-mitigated": "challenge", "cf-cache-status": "DYNAMIC"},
+                 "Cloudflare", id="cloudflare-challenge"),
+    pytest.param(404, {"Server": "cloudflare"}, None, id="missing-object"),
+    pytest.param(403, {"Server": "AmazonS3"}, None, id="origin-403"),
+])
+def test_edge_block_only_names_a_cdn_firewall_refusal(status, headers, cdn):
+    hdrs = Message()
+    for key, value in headers.items():
+        hdrs[key] = value
+    error = urllib.error.HTTPError("https://portal.example/api/x", status, "failed", hdrs, None)
+    message = network.edge_block(error)
+    if cdn is None:
+        assert message is None
+    else:
+        assert (message or "").startswith(f"portal.example's CDN firewall ({cdn})"), message

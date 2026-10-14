@@ -9,6 +9,7 @@ import socket
 import ssl
 import time
 import urllib.error
+import urllib.parse
 from datetime import timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Callable, TypeVar
@@ -38,6 +39,29 @@ def is_transient(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError, http.client.IncompleteRead)):
         return True
     return isinstance(exc, OSError) and exc.errno in _NETWORK_ERRNOS
+
+
+def edge_block(exc: BaseException) -> str | None:
+    """Explain a 403/429 that a CDN firewall sent instead of the server, else None.
+
+    A bare "HTTP 403" from a regional block reads as a broken install or a missing
+    file (#128295). Cloudflare marks challenges with ``cf-mitigated``, and on an R2
+    custom domain a response without ``cf-cache-status`` never reached the bucket
+    (Cloudflare R2 troubleshooting docs); Vercel's firewall sets ``x-vercel-mitigated``.
+    """
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
+        return None
+    headers = exc.headers or {}
+    if headers.get("x-vercel-mitigated"):
+        cdn = "Vercel"
+    elif headers.get("cf-mitigated") or (
+            (headers.get("server") or "").lower() == "cloudflare" and not headers.get("cf-cache-status")):
+        cdn = "Cloudflare"
+    else:
+        return None
+    host = urllib.parse.urlsplit(exc.filename or "").hostname or "the server"
+    return (f"{host}'s CDN firewall ({cdn}) refused this network. Your install is fine; "
+            "retry from another network, or with your VPN or proxy turned off")
 
 
 def _delay(exc: Exception, attempt: int) -> float:

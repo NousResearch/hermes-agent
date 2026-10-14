@@ -984,6 +984,7 @@ export const esOverrides = {
       appearance: 'Apariencia',
       workspace: 'Espacio de trabajo',
       safety: 'Seguridad',
+      browser: 'Navegador',
       memory: 'Memoria y contexto',
       voice: 'Voz',
       advanced: 'Avanzado'

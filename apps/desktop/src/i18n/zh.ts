@@ -725,6 +725,7 @@ export const zhOverrides = {
       appearance: '外观',
       workspace: '工作区',
       safety: '安全',
+      browser: '浏览器',
       memory: '记忆与上下文',
       voice: '语音',
       advanced: '高级'

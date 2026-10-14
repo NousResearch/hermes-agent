@@ -540,6 +540,7 @@ export const jaOverrides = {
       appearance: '外観',
       workspace: 'ワークスペース',
       safety: '安全性',
+      browser: 'ブラウザ',
       memory: 'メモリとコンテキスト',
       voice: '音声',
       advanced: '詳細'

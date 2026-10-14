@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { setRuntimeI18nLocale } from '@/i18n'
+import { setRuntimeI18nLocale, type ToolTitleKey, TRANSLATIONS } from '@/i18n'
 
 import {
   buildToolView,
@@ -484,6 +484,57 @@ describe('buildToolView title actions', () => {
     expect(read.titleAction).toEqual({ prefix: 'demo.txt を', text: '読み取り中', suffix: '' })
     expect(web.title).toBe('example.com/docs を読み取り中')
     expect(web.titleAction).toEqual({ prefix: 'example.com/docs を', text: '読み取り中', suffix: '' })
+  })
+
+  it('keeps the Korean pending action shimmerable and distinct from the done title', () => {
+    setRuntimeI18nLocale('ko')
+
+    // Dynamic title: the verb comes from `actions.running`.
+    const terminal = buildToolView(part({ args: { command: 'npm test' }, result: undefined, toolName: 'terminal' }), '')
+    const terminalDone = buildToolView(part({ args: { command: 'npm test' }, toolName: 'terminal' }), '')
+
+    expect(terminal.title).not.toBe(terminalDone.title)
+    expect(terminal.titleAction?.text).toBe('실행 중')
+    expect(terminal.title).toContain('실행 중')
+
+    // Static title: the verb comes from `titles.patch.pendingAction`, which has to be a
+    // substring of `titles.patch.pending` for the action to be found. This pair is the
+    // one that regressed.
+    const patch = buildToolView(part({ result: undefined, toolName: 'patch' }), '')
+    const patchDone = buildToolView(part({ toolName: 'patch' }), '')
+
+    expect(patch.title).not.toBe(patchDone.title)
+    expect(patch.titleAction?.text).toBe('적용하는 중')
+    expect(patch.title).toContain('적용하는 중')
+  })
+
+  // `titlePartsFromAction` locates the shimmered span with `pending.indexOf(pendingAction)`,
+  // so every static entry has to satisfy that on its own — checking one tool would let the
+  // other 22 rot.
+  it.each(Object.keys(TRANSLATIONS.ko.assistant.tool.titles))(
+    'keeps ko titles.%s pending distinct from done and containing its action',
+    name => {
+      const meta = TRANSLATIONS.ko.assistant.tool.titles[name as ToolTitleKey]
+
+      expect(meta.pending).not.toBe(meta.done)
+      expect(meta.pending).toContain(meta.pendingAction)
+    }
+  )
+
+  // An unmapped tool falls back to the generic templates, whose pending title has to
+  // carry `actions.running` verbatim or `titlePartsFromAction` finds nothing to shimmer.
+  it('marks the action on generic and prefixed fallback titles in Korean', () => {
+    setRuntimeI18nLocale('ko')
+
+    const generic = buildToolView(part({ result: undefined, toolName: 'some_unmapped_tool' }), '')
+    const genericDone = buildToolView(part({ toolName: 'some_unmapped_tool' }), '')
+    const prefixed = buildToolView(part({ result: undefined, toolName: 'web_unmapped_probe' }), '')
+    const prefixedDone = buildToolView(part({ toolName: 'web_unmapped_probe' }), '')
+
+    expect(generic.titleAction?.text).toBe('실행 중')
+    expect(generic.title).not.toBe(genericDone.title)
+    expect(prefixed.titleAction?.text).toBe('실행 중')
+    expect(prefixed.title).not.toBe(prefixedDone.title)
   })
 })
 

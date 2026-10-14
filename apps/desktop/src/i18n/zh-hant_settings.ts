@@ -248,6 +248,7 @@ export const zhHantSettings = {
       appearance: '外觀',
       workspace: '工作區',
       safety: '安全性',
+      browser: '瀏覽器',
       memory: '記憶與上下文',
       voice: '語音',
       advanced: '進階'

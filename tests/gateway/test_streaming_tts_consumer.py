@@ -690,3 +690,115 @@ class TestEndpointReportedRate:
             assert len(adapter.written_chunks) == 2
 
         _run_test(run)
+
+
+# ---------------------------------------------------------------------------
+# Finalisation budget and end-of-response flush
+# ---------------------------------------------------------------------------
+
+
+class PacedStreamer(FakeStreamer):
+    """Slow provider: one chunk every ``delay`` seconds; ``block`` stalls it before the first chunk."""
+
+    def __init__(self, chunks=6, delay=0.1, block=None):
+        super().__init__(chunks_per_clause=chunks)
+        self.delay, self.block, self.clauses = delay, block, []
+
+    def stream(self, text: str):
+        self.clauses.append(text)
+        if self.block is not None:
+            self.block.wait(5.0)
+        for i in range(self.chunks_per_clause):
+            time.sleep(self.delay)
+            yield f"chunk-{len(self.clauses)}-{i}".encode()
+
+
+def _finalize(monkeypatch, streamer, *, stall=0.3, release=None):
+    """The real runner finalisation over a consumer still synthesising a three-sentence reply.
+    release unblocks a stalled streamer afterwards so its task ends before the loop closes."""
+    import gateway.run_turn as run_turn
+    from gateway.run_turn import GatewayTurnMixin
+
+    monkeypatch.setattr(run_turn, "STREAMING_TTS_STALL_SECONDS", stall)
+
+    async def run(loop):
+        adapter = FakeVoiceAdapter()
+        consumer = _make_consumer(adapter, "chat1", loop, streamer)
+        consumer.start()
+        for sentence in ("First sentence of a long reply. ", "Second sentence keeps going. ",
+                         "Third sentence is still arriving."):
+            consumer.on_delta(sentence)
+        turn_ctx = SimpleNamespace(streaming_tts_consumer_holder=[consumer], session_key="s", run_generation=1)
+        await GatewayTurnMixin._run_agent_finalize_streaming_tts(None, turn_ctx, adapter)
+        if release is not None:
+            release.set()
+            await asyncio.wait_for(asyncio.shield(consumer._task), timeout=5.0)
+        return consumer
+
+    return _run_test(run)
+
+
+class TestFinalizeBudget:
+    """The runner aborted every consumer after a flat 10 s, but TTS usually finishes long after the
+    LLM: long spoken replies were cut off mid-sentence. It now waits while the consumer makes
+    progress, and aborts only after STREAMING_TTS_STALL_SECONDS without any (or the hard cap)."""
+
+    def test_keeps_draining_while_tts_makes_progress(self, monkeypatch):
+        # 3 clauses x 0.6 s of synthesis = 1.8 s, far past the 0.3 s stall budget, never stalled.
+        consumer = _finalize(monkeypatch, PacedStreamer())
+        assert consumer.done and consumer.completed
+        assert len(consumer._streamer.clauses) == 3
+
+    def test_aborts_stalled_tts(self, monkeypatch):
+        release = threading.Event()
+        try:
+            consumer = _finalize(monkeypatch, PacedStreamer(block=release), release=release)
+            assert not consumer.completed and consumer._aborted
+        finally:
+            release.set()
+
+    def test_idle_seconds_measures_time_since_progress(self):
+        consumer = _make_consumer(FakeVoiceAdapter(), "chat1", None, FakeStreamer())
+        consumer._last_progress = time.monotonic() - 2.0
+        assert 1.9 < consumer.idle_seconds() < 5.0
+
+
+class TestFlushAtEndOfModelResponse:
+    """A reply's last sentence has no trailing whitespace, so the chunker held it until turn end,
+    after the gateway's post-reply work. The agent now flushes streaming TTS when a model
+    response finishes streaming (``stream_flush_callback``)."""
+
+    def test_stream_end_flushes_only_on_success(self):
+        from unittest.mock import MagicMock
+        from agent.stream_delivery import StreamDeliveryMixin
+
+        agent = StreamDeliveryMixin()
+        agent.stream_flush_callback = MagicMock()
+        agent._emit_stream_end(final_text="", finished=False, error="boom")  # a retry would repeat it
+        agent.stream_flush_callback.assert_not_called()
+        agent._emit_stream_end(final_text="All good.", finished=True, error=None)
+        agent.stream_flush_callback.assert_called_once_with()
+
+    def test_no_callback_is_a_noop(self):
+        from agent.stream_delivery import StreamDeliveryMixin
+
+        StreamDeliveryMixin()._emit_stream_end(final_text="All good.", finished=True, error=None)
+
+    def test_last_sentence_speaks_on_flush_not_at_turn_end(self):
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            streamer = PacedStreamer(chunks=2, delay=0.0)
+            consumer = _make_consumer(adapter, "chat1", loop, streamer)
+            consumer.start()
+            consumer.on_delta("The array is healthy and nothing needs attention.")
+            await asyncio.sleep(0.2)
+            assert streamer.clauses == []  # held: no whitespace after the final period
+            consumer.on_delta(None)  # what stream_flush_callback sends at the end of the response
+            await asyncio.sleep(0.2)
+            assert streamer.clauses == ["The array is healthy and nothing needs attention."]
+            assert adapter.written_chunks  # speaking before finish()
+            consumer.finish()
+            assert await consumer.wait_complete(timeout=5.0) is True
+            assert len(streamer.clauses) == 1  # the turn-end flush doesn't speak it twice
+
+        _run_test(run)

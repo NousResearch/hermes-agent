@@ -28,11 +28,8 @@ from agent.context_compressor import _rejected_tool_call_outcome, _summarize_too
 
 def _rejected_content() -> str:
     # Byte-for-byte the empty-name rejection the dispatch loop emits.
-    return (
-        "Tool call rejected: the tool name was empty. Nothing was executed — the call did "
-        "not run, so do not report its effect as done or describe results you did not "
-        "receive; re-issue the tool call with a valid name from your tool list."
-    )
+    from agent.conversation_loop import _invalid_tool_name_error_content
+    return _invalid_tool_name_error_content("", {"terminal", "read_file"})
 
 
 def test_empty_name_rejection_summarizes_as_not_run():
@@ -86,16 +83,22 @@ def test_blocked_result_contract_still_holds():
 
 
 def test_real_loop_rejection_wording_matches_compressor_contract():
-    """Contract test: the dispatch loop's ACTUAL rejection wording must be recognized by
-    the compressor's rejected-outcome matcher.
+    """Contract test: every live rejection shape the dispatch loop emits must be
+    recognized by the compressor's rejected-outcome matcher.
 
-    The two sides are coupled only by message text — the compressor prefix-matches
-    prose, and every other test in this file feeds canned strings — so rewording the
-    rejection in ``agent/conversation_loop.py`` would silently stop the compressor from
-    flagging it, with the whole suite green. This feeds the real producer's output
-    through the real matcher so a rewording fails here first.
+    The two sides are coupled by message text — the compressor prefix-matches
+    prose — so historically a rewording could silently stop the compressor from
+    flagging a rejection, with each side's tests green. Producers and matcher now
+    build from the shared ``agent.tool_rejection`` constants, and this test feeds
+    the real producer output (and representative constant-built continuations)
+    through the real matcher so any divergence fails here first.
     """
     from agent.conversation_loop import _invalid_tool_name_error_content
+    from agent.tool_rejection import (
+        INVALID_JSON_ARGS_PREFIX,
+        LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX,
+        SKIPPED_SIBLING_INVALID_JSON_PREFIX,
+    )
 
     valid_names = {"terminal", "read_file", "search_files"}
 
@@ -111,12 +114,25 @@ def test_real_loop_rejection_wording_matches_compressor_contract():
     # Unknown-name rejection: the live shape must match the matcher.
     unknown_msg = _invalid_tool_name_error_content("frobnicate_xyz", valid_names)
     assert _rejected_tool_call_outcome(unknown_msg) is not None
+    summary = _summarize_tool_result("frobnicate_xyz", "{}", unknown_msg)
+    assert "not run" in summary
 
-    # Batch-skip: the message ``agent/turn_tool_validation.py`` emits for valid siblings
-    # of an invalid call. The literal lives inline in that module's batch-error path,
-    # so it is duplicated here; it must keep the prefix the compressor matches on.
-    skip_msg = (
-        "Skipped: another tool call in this turn used an invalid name. "
-        "Please retry this tool call."
-    )
-    assert _rejected_tool_call_outcome(skip_msg) is not None
+    # Invalid-JSON shapes from agent/turn_tool_validation.py's recovery path: a valid
+    # sibling skipped because another call had invalid JSON, and the call whose own
+    # arguments were invalid. Both are pre-execution results that must not compress
+    # as completed actions.
+    skipped_json = SKIPPED_SIBLING_INVALID_JSON_PREFIX + " Nothing was executed for this call."
+    assert _rejected_tool_call_outcome(skipped_json) is not None
+    summary = _summarize_tool_result("read_file", "{}", skipped_json)
+    assert "not run" in summary
+    invalid_json = INVALID_JSON_ARGS_PREFIX + " Expecting value: line 1 column 1 (char 0)."
+    assert _rejected_tool_call_outcome(invalid_json) is not None
+    summary = _summarize_tool_result("read_file", "{}", invalid_json)
+    assert "not run" in summary
+    assert "chars result" not in summary
+
+    # Legacy shape: sibling skipped because another call used an invalid name. The
+    # producer path is gone (mixed batches now error only the invalid calls at
+    # execution time) but old transcripts still compress through the matcher.
+    legacy = LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX + " used an invalid name. Please retry this tool call."
+    assert _rejected_tool_call_outcome(legacy) is not None

@@ -35,6 +35,13 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.tool_rejection import (
+    EMPTY_TOOL_NAME_PREFIX,
+    INVALID_JSON_ARGS_PREFIX,
+    LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX,
+    SKIPPED_SIBLING_INVALID_JSON_PREFIX,
+    UNKNOWN_TOOL_NAME_TEMPLATE,
+)
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -1983,19 +1990,30 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-_REJECTED_TOOL_CALL_RE = re.compile(r"^Tool '\S+' does not exist\.")
+# Pre-execution rejection shapes and their wordings live in agent.tool_rejection; the
+# matcher is built from those constants (imported above) so a rewording cannot silently
+# decouple the producers from the compressor (each side's tests alone would stay green).
+_unknown_name = UNKNOWN_TOOL_NAME_TEMPLATE.split("{name}")
+_REJECTED_TOOL_CALL_RE = re.compile(
+    "^" + re.escape(_unknown_name[0]) + r"\S+" + re.escape(_unknown_name[1])
+)
 
 
 def _rejected_tool_call_outcome(content: str) -> str | None:
-    """Outcome for a call the dispatch loop rejected before execution (empty/unknown tool
-    name, or a call skipped because a sibling in the batch was invalid). The generic
-    summarizer renders those rows as ``[…] (N chars result)`` — indistinguishable from a
-    completed action in the compaction anchors, which invites reporting the call as done;
-    the summary must compress them into "not run" so the post-compaction agent re-issues."""
+    """Outcome for a call the dispatch loop rejected before execution: empty/unknown tool
+    name, invalid JSON arguments, or a valid call skipped because a sibling in the batch
+    was invalid. The generic summarizer renders those rows as ``[…] (N chars result)`` —
+    indistinguishable from a completed action in the compaction anchors, which invites
+    reporting the call as done; the summary must compress them into "not run" so the
+    post-compaction agent re-issues."""
     stripped = (content or "").lstrip()
-    if stripped.startswith("Tool call rejected:"):
+    if stripped.startswith(EMPTY_TOOL_NAME_PREFIX):
         return "rejected, not run — do not report it as done; re-issue the call"
-    if stripped.startswith("Skipped: another tool call in this turn"):
+    if stripped.startswith(SKIPPED_SIBLING_INVALID_JSON_PREFIX):
+        return "skipped, not run — do not report it as done; re-issue the call"
+    if stripped.startswith(INVALID_JSON_ARGS_PREFIX):
+        return "rejected before execution (invalid JSON arguments), not run — do not report it as done; re-issue with valid JSON"
+    if stripped.startswith(LEGACY_SKIPPED_SIBLING_INVALID_NAME_PREFIX):
         return "skipped, not run — re-issue the call"
     if _REJECTED_TOOL_CALL_RE.match(stripped):
         return "rejected, not run — do not report it as done; re-issue with a valid tool name"

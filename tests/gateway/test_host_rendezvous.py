@@ -226,3 +226,70 @@ def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
 
     assert status._get_lock_dir().is_absolute()
     assert status._get_lock_dir() == tmp_path / ".local" / "state" / "hermes" / status._LOCKS_DIRNAME
+
+
+def _stat_with_uid(st: os.stat_result, uid: int) -> os.stat_result:
+    fields = [getattr(st, name) for name in
+              ("st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid",
+               "st_size", "st_atime", "st_mtime", "st_ctime")]
+    fields[4] = uid
+    return os.stat_result(tuple(fields))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="_record_is_own trusts the state root on Windows")
+@pytest.mark.parametrize("foreign", ["parent", "file"])
+def test_foreign_owner_warning_names_the_failing_side(host_dir, monkeypatch, caplog, foreign):
+    """The own-check rejects a foreign file uid OR a foreign parent uid, but the warning used to
+    print only the file's uid — a root-owned state root read back as the self-contradictory
+    "owned by uid 10000 (expected 10000)" with the real culprit invisible (#128497)."""
+    import logging
+
+    locks = host_dir / "locks"
+    locks.mkdir(parents=True)
+    record = locks / "host-gateway.json"
+    record.write_text("{}")
+    monkeypatch.setattr(hr, "_FOREIGN_OWNER_WARNED", {})
+
+    real = os.getuid()
+    fake = real + 424242  # a uid no CI account runs as; asserted verbatim below
+    real_stat = Path.stat
+
+    def foreign_stat(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if (foreign == "parent" and self == locks) or (foreign == "file" and self == record):
+            st = _stat_with_uid(st, fake)
+        return st
+
+    monkeypatch.setattr(Path, "stat", foreign_stat)
+    with caplog.at_level(logging.WARNING, logger="gateway.host_rendezvous"):
+        assert hr._record_is_own(record) is False
+        assert hr._record_is_own(record) is False  # read_record polls: same culprit warns once
+
+    message = caplog.text
+    assert message.count("ignoring host record") == 1
+    file_uid = fake if foreign == "file" else real
+    parent_uid = fake if foreign == "parent" else real
+    assert f"file uid {file_uid}" in message
+    assert f"parent dir {locks} uid {parent_uid}" in message
+    assert f"(expected {real})" in message
+
+    # The file is then repaired but the parent dir goes foreign under a different uid: a
+    # changed culprit on the same path is a different failure (chown the state root, not
+    # the record) and must re-arm the warning — dedup keyed on the path alone used to
+    # silence it for the rest of the process's life.
+    other_fake = real + 777777
+
+    def parent_now_foreign_stat(self, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self == locks:
+            st = _stat_with_uid(st, other_fake)
+        return st
+
+    monkeypatch.setattr(Path, "stat", parent_now_foreign_stat)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="gateway.host_rendezvous"):
+        assert hr._record_is_own(record) is False
+    message_b = caplog.text
+    assert message_b.count("ignoring host record") == 1
+    assert f"file uid {real}" in message_b
+    assert f"parent dir {locks} uid {other_fake}" in message_b

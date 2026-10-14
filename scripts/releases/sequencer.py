@@ -225,7 +225,7 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
 
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
-    from scripts.releases.stable import tagger_epoch, validate_claim, validate_final
+    from scripts.releases.stable import is_claim_run, tagger_epoch, validate_claim, validate_final
 
     log("Fetching stable receipt tags, attempt refs and abandon markers from origin")
     run([
@@ -309,8 +309,9 @@ def discover(repository: str, run=output) -> list[dict]:
                                         or release.get("draft") is not True
                                         or release.get("prerelease") is not False):
                 raise ValueError(f"{claim_tag} draft state is invalid")
-            matching_runs = [row for row in workflow_runs
-                             if row.get("head_branch") == claim_tag and row.get("head_sha") == commit]
+            matching_runs = [row for row in workflow_runs if is_claim_run(
+                title=row.get("display_title"), head_branch=row.get("head_branch"),
+                head_sha=row.get("head_sha"), claim_tag=claim_tag, commit=commit)]
             state, retry = classify_runs(
                 matching_runs,
                 claimed_at=datetime.fromtimestamp(claim_epoch, tz=UTC),
@@ -446,13 +447,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 log(f"Desktop channel head is now {record['version']}")
             else:
                 log(f"{record['version']} skipped bundles: no desktop channel to advance")
-            log(f"Moving Docker stable/latest aliases onto {record['claim_tag']} "
+            log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
                 f"({record['docker_manifest_digest']})")
-            # The stable/latest aliases move onto the attempt's image here, in
+            # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
             # the publication pass with the feed pointer, never in the green
             # build that pushed the image under the attempt ref. A release
             # that skipped bundles moves only these aliases.
-            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
+            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
             log("Docker aliases moved")
             if not record["skip_bundles"]:
                 log("Checking the Microsoft Store submission")

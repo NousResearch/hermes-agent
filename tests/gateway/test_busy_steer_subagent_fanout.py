@@ -43,7 +43,7 @@ async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypa
         outcome = await runner._resolve_busy_steer_or_redirect(event, "key", "steer", parent)
         assert outcome.steered is True
     elif route == "priority":
-        runner._hm_busy_steer(event, parent, "key")
+        await runner._hm_busy_steer(event, parent, "key")
     else:
         await runner._busy_steer_command(event, "key", event.source)
 

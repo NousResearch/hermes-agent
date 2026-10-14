@@ -271,7 +271,22 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            # PEP 621 mandates that a ``[project]`` table declare either a static
+            # ``version`` or a ``dynamic`` list that names ``"version"``. Without
+            # one of these, the package installer rejects the metadata with
+            # "the required project.version field is neither set nor present"
+            # and the plugin is disabled as a misfit (#137483). Inject a
+            # ``version = "0.0.0"`` placeholder — the member is virtual /
+            # metadata-only, so the placeholder is never read; the dynamic
+            # alternative would also satisfy the spec but pulls in a backend
+            # we know is absent (that branch is what made this member
+            # ``virtual`` in the first place). The name rewrite below is
+            # unconditional: every metadata-only member takes the unique
+            # ``hermes-plugin-<key>`` name so two same-named plugins in
+            # different profiles do not collide on ``uv lock``.
+            injected = document.setdefault("project", {})
+            injected["name"] = f"hermes-plugin-{key}"
+            injected.setdefault("version", "0.0.0")
         if virtual or changed:
             import tomli_w
 

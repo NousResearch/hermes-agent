@@ -1346,16 +1346,23 @@ class GatewayAdapterLifecycleMixin:
 
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
-        busy_session_handler=None, authorization_check=None, platform_event_handler=None,
+        busy_session_handler=None, pre_gateway_dispatch_handler=None,
+        authorization_check=None, platform_event_handler=None,
         busy_text_mode: Optional[str] = None, busy_text_timing: Optional[tuple[float, float]] = None,
         human_delay: Optional[tuple[int, int]] | object = _UNSET,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
-        secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
+        secondary wiring passes profile-scoped variants). Newer optional adapter setters are
+        feature-detected so lightweight test and third-party adapter doubles keep working."""
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
+        _set_pre_dispatch = getattr(adapter, "set_pre_gateway_dispatch_handler", None)
+        if callable(_set_pre_dispatch):
+            _set_pre_dispatch(
+                pre_gateway_dispatch_handler or self._primary_pre_gateway_dispatch_handler()
+            )
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -1392,6 +1399,7 @@ class GatewayAdapterLifecycleMixin:
             message_handler=self._make_profile_message_handler(profile_name),
             fatal_error_handler=self._make_profile_fatal_error_handler(profile_name, platform),
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
+            pre_gateway_dispatch_handler=self._make_profile_pre_gateway_dispatch_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
             busy_text_mode=(
@@ -1728,6 +1736,19 @@ class GatewayAdapterLifecycleMixin:
 
         return _handler
 
+    def _make_profile_pre_gateway_dispatch_handler(self, profile_name: str):
+        """Apply pre-dispatch under the owning secondary profile before a busy diversion
+        (canonicalize FIRST, like the busy-path twin, so the hook sees the routed identity)."""
+        from gateway.run import _async_profile_runtime_scope
+        profile_home = self._routed_profile_home(profile_name)
+
+        async def _handler(event):
+            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
+            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
+                return await self._hm_admit_busy_ingress(event)
+
+        return _handler
+
     def _make_default_profile_message_handler(self):
         """Scope primary-adapter messages to their routed multiplex profile. Authorization stays
         with the transport profile (a routed profile may have no credential/allowlist)."""
@@ -1758,6 +1779,21 @@ class GatewayAdapterLifecycleMixin:
                 return await self._handle_active_session_busy_message(
                     event, self._session_key_for_source(source)
                 )
+
+        return _handler
+
+    def _make_default_profile_pre_gateway_dispatch_handler(self):
+        """Apply pre-dispatch under a primary adapter event's routed profile."""
+        from gateway.run import _async_profile_runtime_scope, get_hermes_home
+        default_home = Path(get_hermes_home())
+
+        async def _handler(event):
+            source = event.source
+            profile_home = self._admit_primary_source(source, default_home)
+            if profile_home is None:
+                return None
+            async with _async_profile_runtime_scope(profile_home):
+                return await self._hm_admit_busy_ingress(event)
 
         return _handler
 
@@ -1792,6 +1828,12 @@ class GatewayAdapterLifecycleMixin:
                 return await handler(*args)
 
         return _handler
+
+    def _primary_pre_gateway_dispatch_handler(self):
+        """Return the correctly scoped pre-dispatch handler for busy primary ingress."""
+        if self._multiplex_on():
+            return self._make_default_profile_pre_gateway_dispatch_handler()
+        return self._hm_admit_busy_ingress
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))

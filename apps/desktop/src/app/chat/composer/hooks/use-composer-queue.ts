@@ -13,6 +13,7 @@ import {
   clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  getQueueParkRevision,
   isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
@@ -142,7 +143,13 @@ export function useComposerQueue({
   const drainFailuresRef = useRef(new Map<string, number>())
   // A per-row Send now is a one-shot request, not a "resume the whole queue" gesture.
   // Capture the session key so a late settle cannot dispatch into another session.
-  const pendingManualSendRef = useRef<{ sessionKey: string; entryId: string } | null>(null)
+  const pendingManualSendRef = useRef<{
+    sessionKey: string
+    entryId: string
+    parkRevision: number
+    cancelAcknowledged: boolean
+  } | null>(null)
+  const [manualSendRetryTick, setManualSendRetryTick] = useState(0)
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
@@ -326,6 +333,7 @@ export function useComposerQueue({
       const drainRuntimeSessionId = sessionId ?? null
 
       drainingQueueRef.current = true
+      const parkRevisionAtStart = getQueueParkRevision(drainQueueSessionKey)
 
       try {
         return await withQueueDrainClaim(drainQueueSessionKey, async queue => {
@@ -369,7 +377,8 @@ export function useComposerQueue({
           resetBrowseState(drainRuntimeSessionId)
           // Resuming a queue is different from sending an individual entry.
           // One-shot sends leave the rest parked until the user resumes explicitly.
-          if (resumeQueue) {
+          // A subsequent Stop / Send now must not be undone by this async submit.
+          if (resumeQueue && getQueueParkRevision(drainQueueSessionKey) === parkRevisionAtStart) {
             unparkQueuedPrompts(drainQueueSessionKey)
           }
 
@@ -377,6 +386,10 @@ export function useComposerQueue({
         })
       } finally {
         drainingQueueRef.current = false
+        // An explicitly selected entry may be waiting on this drain lock.
+        if (pendingManualSendRef.current) {
+          setManualSendRetryTick(tick => tick + 1)
+        }
       }
     },
     [activeQueueSessionKey, onSubmit, sessionId, t.composer]
@@ -399,28 +412,66 @@ export function useComposerQueue({
         return false
       }
 
+      // The first per-row request wins until dispatched or explicitly halted.
+      const previous = pendingManualSendRef.current
+
+      if (previous && getQueueParkRevision(previous.sessionKey) === previous.parkRevision) {
+        return false
+      }
+
+      pendingManualSendRef.current = null
+      parkQueuedPrompts(activeQueueSessionKey)
+
+      const pending = {
+        sessionKey: activeQueueSessionKey,
+        entryId: id,
+        parkRevision: getQueueParkRevision(activeQueueSessionKey),
+        cancelAcknowledged: !busy
+      }
+
       if (busy) {
-        // Stop the active turn, then send ONLY this entry after it settles.
-        // Do not promote or unpark: both would unexpectedly drain older messages.
-        parkQueuedPrompts(activeQueueSessionKey)
-        pendingManualSendRef.current = { sessionKey: activeQueueSessionKey, entryId: id }
+        pendingManualSendRef.current = pending
         triggerHaptic('selection')
-        void Promise.resolve(onCancel())
+
+        // A transient idle render is not proof that the cancellation succeeded.
+        // On rejection, leave the selected entry in its parked queue.
+        const onCancelFailed = () => {
+          if (pendingManualSendRef.current === pending) {
+            pendingManualSendRef.current = null
+          }
+          notify({ kind: 'error', title: t.composer.queueStuckTitle, message: t.composer.queueStuckBody })
+        }
+
+        try {
+          void Promise.resolve(onCancel())
+            .then(() => {
+              if (pendingManualSendRef.current === pending) {
+                pending.cancelAcknowledged = true
+                setManualSendRetryTick(tick => tick + 1)
+              }
+            })
+            .catch(onCancelFailed)
+        } catch {
+          onCancelFailed()
+          return false
+        }
 
         return true
       }
 
-      // A manual send clears the auto-drain backoff so a stuck entry the user
-      // taps gets a fresh attempt (and re-enables auto-retry on success).
+      // An older drain may still be settling when the UI first renders idle.
+      // Retain the user's selected item until that lock is released.
+      if (drainingQueueRef.current || sessionsLoading) {
+        pendingManualSendRef.current = pending
+        return true
+      }
+
       drainFailuresRef.current.delete(id)
-      // Same for the persisted budget the background drain keeps on the
-      // entry (#98015) — a user gesture is fresh intent, not a replay.
       clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
-      parkQueuedPrompts(activeQueueSessionKey)
       return runDrain(entries => entries.find(e => e.id === id), false)
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
+    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain, sessionsLoading, t.composer]
   )
 
   // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
@@ -595,21 +646,35 @@ export function useComposerQueue({
     }
   }, [autoDrainNext, busy, drainRetryTick, queueParked, queuedPrompts.length, sessionsLoading])
 
-  // A per-row Send now bypasses the auto-drain gate exactly once. The queue
-  // remains parked afterward; a normal completed turn still auto-drains if
-  // the user has not parked the queue.
+  // A manual one-shot bypasses auto-drain only after cancellation succeeds and
+  // the session is idle. Explicit Stop/Esc (including the transcript's Stop)
+  // increments the park revision and invalidates the pending send.
   useEffect(() => {
     const pending = pendingManualSendRef.current
 
-    if (busy || sessionsLoading || !pending || pending.sessionKey !== activeQueueSessionKey) {
+    if (!pending) {
+      return
+    }
+
+    if (
+      pending.sessionKey !== activeQueueSessionKey ||
+      getQueueParkRevision(pending.sessionKey) !== pending.parkRevision
+    ) {
+      pendingManualSendRef.current = null
+      return
+    }
+
+    if (busy || sessionsLoading || !pending.cancelAcknowledged || drainingQueueRef.current) {
       return
     }
 
     pendingManualSendRef.current = null
     drainFailuresRef.current.delete(pending.entryId)
     clearQueuedPromptDrainFailures(pending.sessionKey, pending.entryId)
-    void runDrain(entries => entries.find(entry => entry.id === pending.entryId), false)
-  }, [activeQueueSessionKey, busy, runDrain, sessionsLoading])
+    void runDrain(entries => entries.find(entry => entry.id === pending.entryId), false).catch(() => {
+      notify({ kind: 'error', title: t.composer.queueStuckTitle, message: t.composer.queueStuckBody })
+    })
+  }, [activeQueueSessionKey, busy, manualSendRetryTick, runDrain, sessionsLoading, t.composer])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

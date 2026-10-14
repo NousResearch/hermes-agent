@@ -283,6 +283,58 @@ async def test_fork_session_writes_branched_from_marker(adapter, session_db):
         cfg = json.loads(cfg)
     assert cfg["_branched_from"] == source_id
 
+
+@pytest.mark.asyncio
+async def test_fork_session_up_to_and_keep_source(adapter, session_db):
+    """``up_to`` copies only the first N messages (branch from message N) and ``keep_source``
+    leaves the parent open; the child keeps the branch marker, so reads of the parent are never
+    redirected to it."""
+    source_id = session_db.create_session("fork-partial-src", "api_server")
+    session_db.replace_messages(source_id, [
+        {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}])
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        features = (await (await cli.get("/v1/capabilities")).json())["features"]
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork", json={"id": "fork-at-2", "up_to": 2, "keep_source": True})
+        assert resp.status == 201
+        child = await (await cli.get("/api/sessions/fork-at-2/messages?order=oldest")).json()
+        parent = await (await cli.get(f"/api/sessions/{source_id}/messages?order=oldest")).json()
+        empty = await cli.post(
+            f"/api/sessions/{source_id}/fork", json={"id": "fork-at-0", "up_to": 0, "keep_source": True})
+        assert empty.status == 201
+        empty_child = await (await cli.get("/api/sessions/fork-at-0/messages")).json()
+
+    assert features["session_fork_up_to"] is True
+    assert features["session_fork_keep_source"] is True
+    assert [m["content"] for m in child["data"]] == ["q1", "a1"]
+    assert parent["session_id"] == source_id
+    assert [m["content"] for m in parent["data"]] == ["q1", "a1", "q2", "a2"]
+    assert empty_child["data"] == []
+    assert session_db.get_session(source_id)["end_reason"] is None
+    assert session_db.get_session("fork-at-2")["parent_session_id"] == source_id
+    assert session_db._is_explicit_branch_session("fork-at-2")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    {"up_to": 3}, {"up_to": -1}, {"up_to": "1"}, {"up_to": True}, {"up_to": 1.5}, {"keep_source": "yes"}])
+async def test_fork_session_rejects_bad_up_to_before_writing(adapter, session_db, body):
+    """An invalid cut is rejected before the child is created or the parent is ended."""
+    source_id = session_db.create_session("fork-bad-src", "api_server")
+    session_db.replace_messages(source_id, [
+        {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}])
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"id": "never-created", **body})
+        assert resp.status == 400
+
+    assert session_db.get_session("never-created") is None
+    assert session_db.get_session(source_id)["end_reason"] is None
+
 @pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""

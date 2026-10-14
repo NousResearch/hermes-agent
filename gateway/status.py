@@ -819,7 +819,8 @@ def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> 
 def _build_runtime_status_record() -> dict[str, Any]:
     return {
         **_build_pid_record(), "gateway_state": "starting", "exit_reason": None,
-        "restart_requested": False, "active_agents": 0, "platforms": {},
+        "restart_requested": False, "active_agents": 0, "oldest_turn_age_s": None,
+        "platforms": {},
         "session_store": {"status": "unknown"}, "updated_at": _utc_now_iso(),
         **_get_code_identity_fields(),
     }
@@ -1109,7 +1110,8 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 
 def _prepare_runtime_status_update(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
+    active_agents: Any = _UNSET, oldest_turn_age_s: Any = _UNSET,
+    active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     multiplex_standalone_reason: Any = _UNSET,
@@ -1148,6 +1150,8 @@ def _prepare_runtime_status_update(
             ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
             ("restart_requested", restart_requested, bool),
             ("active_agents", active_agents, parse_active_agents),
+            ("oldest_turn_age_s", oldest_turn_age_s,
+             lambda v: None if v is None else float(v)),
             ("active_work", active_work, lambda v: list(v) if v else None),
             ("served_profiles", served_profiles, lambda v: list(v or [])),
             ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),

@@ -3945,13 +3945,15 @@ class GatewayRunner(
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
-            active_work=active_work)
+            oldest_turn_age_s=self._oldest_turn_age_s(), active_work=active_work)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
         Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
         would clobber it). Best-effort: a failed write must never disrupt a turn."""
-        _write_runtime_status_quiet(active_agents=self._active_work_count())
+        _write_runtime_status_quiet(
+            active_agents=self._active_work_count(),
+            oldest_turn_age_s=self._oldest_turn_age_s())
 
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
@@ -3961,6 +3963,21 @@ class GatewayRunner(
 
     def _snapshot_running_agents(self) -> dict[str, Any]:
         return {k: a for k, a in self._running_agent_items() if a is not _AGENT_PENDING_SENTINEL}
+
+    def _oldest_turn_age_s(self, now: Optional[float] = None) -> Optional[float]:
+        """Age of the oldest in-flight turn in seconds, PENDING sentinels included:
+        the pre-agent phase has no activity clock, so only wall age exposes a wedge
+        to external monitors (#138358). None when no turn is running."""
+        _now = time.time() if now is None else now
+        _oldest: Optional[float] = None
+        for _state in self._sessions_map().values():
+            _turn = getattr(_state, "turn", None)
+            if getattr(_turn, "agent", None) is None or not getattr(_turn, "started_ts", 0.0):
+                continue
+            _age = _now - _turn.started_ts
+            if _oldest is None or _age > _oldest:
+                _oldest = _age
+        return _oldest
 
     # ---- Tunables consumed by the run_* mixins (kept on the class: tests and plugins patch them) ----
 

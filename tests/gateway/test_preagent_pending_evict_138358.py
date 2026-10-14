@@ -48,3 +48,26 @@ def test_pending_evict_disabled_at_zero(monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_PENDING_SETUP_TIMEOUT", "0")
     gateway._hm_evict_idle_stale_agent(KEY)
     assert gateway._peek_session_state(KEY).turn.agent is _AGENT_PENDING_SENTINEL
+
+
+def test_oldest_turn_age_covers_pending_sentinel():
+    gateway = object.__new__(GatewayRunner)
+    assert gateway._oldest_turn_age_s() is None
+    now = time.time()
+    stale = gateway._session_state("k-stale")
+    stale.turn.agent = _AGENT_PENDING_SENTINEL
+    stale.turn.started_ts = now - 500
+    live = gateway._session_state("k-live")
+    live.turn.agent = object()
+    live.turn.started_ts = now - 50
+    age = gateway._oldest_turn_age_s(now=now)
+    assert age is not None and 499 <= age <= 501
+
+
+def test_status_update_carries_oldest_turn_age():
+    from gateway import status as status_mod
+
+    _, payload, _ = status_mod._prepare_runtime_status_update(
+        oldest_turn_age_s=12.5, load_existing=False)
+    assert payload["oldest_turn_age_s"] == 12.5
+    assert status_mod._build_runtime_status_record()["oldest_turn_age_s"] is None

@@ -525,6 +525,9 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     sourceVersion: res.rollback_to ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
+    channel: res.channel,
+    branch: res.branch ?? undefined,
+    latestTag: res.source_version && !res.rollback_to ? `v${res.source_version}` : undefined,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
     fetchedAt: Date.now()

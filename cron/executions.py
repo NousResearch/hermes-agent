@@ -35,6 +35,7 @@ HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
+logger = logging.getLogger(__name__)
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
@@ -90,6 +91,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "ON executions(status, claimed_at DESC, id DESC)"
     )
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
+    add_column_if_missing(conn, "executions", "output_path", "output_path TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
     conn.execute(
@@ -231,6 +233,18 @@ def create_execution(
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def set_execution_output_path(execution_id: str, output_path: Optional[str]) -> None:
+    """Link saved output to an attempt; warn if the attempt no longer exists."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET output_path=? WHERE id=?",
+            (str(output_path) if output_path is not None else None, execution_id),
+        )
+        if cur.rowcount == 0:
+            logger.warning(
+                "Cannot link cron output: execution %s does not exist", execution_id)
 
 
 def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:

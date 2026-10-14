@@ -76,6 +76,56 @@ _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
 """
 
+# browser_harness.helpers binds its per-CDP timeout at function definition time,
+# separately from browser_exec(timeout_s). Apply an explicit browser config value
+# inside the CLI process without editing the uv-managed installation.
+def _ipc_response_timeout_preamble(seconds: int) -> str:
+    return f"""\
+def _hermes_configure_ipc_timeout():
+    import inspect
+    import sys
+    try:
+        from browser_harness import helpers
+    except ImportError:
+        print('Warning: browser IPC timeout not applied: browser_harness unavailable', file=sys.stderr)
+        return
+    for name, parameter in (('cdp', '_response_timeout'), ('_send', 'response_timeout')):
+        try:
+            func = getattr(helpers, name)
+            if not inspect.isfunction(func):
+                raise TypeError('expected a Python function')
+            params = inspect.signature(func, follow_wrapped=False).parameters
+            target = params[parameter]
+            if target.default is inspect.Parameter.empty:
+                raise ValueError('timeout parameter has no default')
+            if target.kind == inspect.Parameter.KEYWORD_ONLY:
+                func.__kwdefaults__ = dict(func.__kwdefaults__ or {{}}, **{{parameter: {seconds}.0}})
+            else:
+                positional = [p.name for p in params.values() if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+                defaults = list(func.__defaults__ or ())
+                index = positional.index(parameter) - (len(positional) - len(defaults))
+                if not 0 <= index < len(defaults):
+                    raise ValueError('timeout default cannot be located')
+                defaults[index] = {seconds}.0
+                func.__defaults__ = tuple(defaults)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            print(f'Warning: browser IPC timeout not applied to {{name}}.{{parameter}}: {{exc}}', file=sys.stderr)
+_hermes_configure_ipc_timeout()
+del _hermes_configure_ipc_timeout
+"""
+
+
+def _configured_ipc_response_timeout() -> Optional[int]:
+    raw = _read_browser_cfg().get("ipc_response_timeout_seconds")
+    if raw is None:
+        return None  # Browser Use's own default when not explicitly configured
+    if type(raw) is int and 5 <= raw <= 120:
+        return raw
+    logger.warning("browser.ipc_response_timeout_seconds must be an integer between 5 and 120")
+    return None
+
+
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
@@ -568,7 +618,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     return err or None
 
 
-def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
+def _attach_vault_supervisor(env: dict, task_id: Optional[str], ownership=None) -> None:
     """Attach the per-task CDP supervisor to the browser this exec drives so ``browser_vault`` fill has
     a secret-capable WebSocket (never argv) into the SAME browser. Only CDP-routed backends expose an
     endpoint; BU direct-cloud (BU_AUTOSPAWN) does not, and the vault tools report ``supervisor_required``."""
@@ -577,10 +627,16 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         return
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        binding = ((str(ownership.registry.path), ownership.token) if ownership else None)
+        previous = SUPERVISOR_REGISTRY.get(task_id or "default") if ownership else None
+        if previous is not None and ownership:
+            # Invalidate a previous mission even if endpoint attachment fails.
+            previous._vault_owned_call = binding
         from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
+        supervisor = SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=_resolve_cdp_override(cdp),
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
+        supervisor._vault_owned_call = binding
     except Exception as exc:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
@@ -690,11 +746,23 @@ def stop_harness_daemons() -> None:
             _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
 
 
-def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
+def browser_exec(code: str = "", session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
+                 task_id: Optional[str] = None, local: bool = False, session_id: Optional[str] = None,
+                 action: str = "exec"):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
+    if action == "close_owned":
+        if code and code.strip():
+            return tool_error("close_owned does not execute code; pass code='' or omit it.")
+        from tools.browser_tab_lifecycle import close_owned, ensure_scheduled
+        home = get_hermes_home()
+        result = close_owned(home, task_id=task_id, session_id=session_id)
+        if result.get("remaining"):
+            ensure_scheduled(home)
+        return tool_result(result)
+    if action != "exec":
+        return tool_error("Unknown browser action; use exec or close_owned.")
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
 
@@ -730,8 +798,21 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
-    if session and not private_browser:
+    ownership = None
+    if _read_browser_cfg().get("tab_cleanup_enabled") is True:
+        from tools.browser_tab_capture import prepare_exec
+        from tools.browser_tab_lifecycle import Authority, ensure_scheduled
+        try:
+            ownership, code = prepare_exec(env, code, get_hermes_home(), Authority(get_hermes_home()).owner(task_id, session_id))
+            ensure_scheduled(get_hermes_home())
+        except Exception as exc:
+            return tool_error(f"Browser tab ownership admission failed ({type(exc).__name__})")
+    elif session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+
+    ipc_timeout = _configured_ipc_response_timeout()
+    if ipc_timeout is not None:
+        code = _ipc_response_timeout_preamble(ipc_timeout) + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
@@ -746,18 +827,27 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
 
     def dispatch() -> dict[str, Any]:
-        _attach_vault_supervisor(env, task_id)
+        _attach_vault_supervisor(env, task_id, ownership)
         with _driven_daemons_lock:
             _driven_daemons.add(env.get("BU_NAME", "default"))
         try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            proc = _run_cli_killing_process_group(cmd, code, env, timeout)
+            if ownership:
+                # A Python error is not an uncertain request. finish drains only
+                # active calls with no inflight work; existing quarantine stays fenced.
+                ownership.registry.finish(ownership.token)
+            return {"proc": proc}
         except subprocess.TimeoutExpired:
+            if ownership:
+                ownership.registry.quarantine(ownership.token)
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
                 f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
                 "append to workspace files — anything already written to the workspace is preserved."
             )}
         except OSError as e:
+            if ownership:
+                ownership.registry.quarantine(ownership.token)
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
 
     if bot_desktop_browser:
@@ -765,7 +855,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
+    if ownership:
+        from tools.browser_tab_lifecycle import after_call
+        after_call(get_hermes_home())
     if "proc" not in dispatched:
+        if ownership:
+            ownership.registry.quarantine(ownership.token)
         if "error_result" in dispatched:
             return dispatched["error_result"]
         return tool_result(dispatched)
@@ -885,12 +980,14 @@ BROWSER_EXEC_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {"type": "string", "enum": ["exec", "close_owned"], "default": "exec",
+                       "description": "On an explicit request to close used tabs (e.g. Закрой использованные вкладки), use close_owned with no code. Closes only exact creations of the current runtime owner across named sessions; respects holds and busy work, never ends the conversation or stops the shared browser. Requires tab ownership enabled; no URL/snapshot guessing."},
             "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
                           "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
         },
-        "required": ["code"],
+        "required": [],
     },
 }
 
@@ -907,7 +1004,8 @@ registry.register(
     handler=lambda args, **kw: browser_exec(
         code=args.get("code", ""), session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
-        local=bool(args.get("local", False)),
+        local=bool(args.get("local", False)), session_id=kw.get("session_id"),
+        action=args.get("action", "exec"),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

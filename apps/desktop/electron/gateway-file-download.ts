@@ -383,8 +383,18 @@ export interface GatewaySaveDialogResult {
 
 export interface GatewayFileSaveResult {
   canceled?: boolean
+  /** Human-readable reason when `saved` is false and the user did not cancel. */
+  error?: string
   path?: string
   saved: boolean
+}
+
+/** Electron cannot structured-clone arbitrary handler rejection values; an
+ *  uncloneable rejection surfaces renderer-side as the opaque
+ *  "reply was never sent" instead of the real cause (401/404/timeout).
+ *  Normalize every failure to a plain object the renderer can toast. */
+export function toSerializableSaveFailure(error: unknown): GatewayFileSaveResult {
+  return { saved: false, error: error instanceof Error ? error.message : String(error) }
 }
 
 export interface GatewaySaveDialogOptions {

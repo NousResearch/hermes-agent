@@ -106,6 +106,12 @@ def _tick_admitted(
         else:
             drain_in_background()
         _sched._maybe_reap_dead_owners()
+        # Queued Bot Chat receipts may have settled since the last tick; graduate their job
+        # markers now instead of waiting for the job's next run (#134092).
+        try:
+            _sched._reconcile_queued_deliveries()
+        except Exception as _recon_exc:
+            _sched.logger.debug("Delivery receipt reconcile failed: %s", _recon_exc)
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
             _sched._maybe_run_worktree_maintenance()

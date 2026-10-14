@@ -729,3 +729,35 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+class TestRepeatCounterOnFence:
+    """A tool-progress ``(xN)`` repeat counter appended to a fenced block lands on the closing
+    fence line, which the anchored fence regex cannot match; it is moved to its own line before
+    protection runs so the block still converts (#138148)."""
+
+    def test_repeat_counter_on_closing_fence_keeps_pre_block(self, adapter):
+        text = "\U0001f4bb terminal\n```\nssh -F /opt/data/home/.ssh/config fed...\n``` (\u00d73)"
+        result = adapter.format_message(text)
+        # The fence still protects the block: backticks are NOT escaped...
+        assert "\\`" not in result
+        assert "ssh -F /opt/data/home/.ssh/config fed\\." in result or "ssh -F /opt/data/home/.ssh/config fed..." in result
+        # ...and the counter survives as text on its own line (parens escaped outside code).
+        assert "\\(\u00d73\\)" in result
+
+    def test_clean_fence_unchanged_by_separator(self, adapter):
+        text = "\U0001f4bb terminal\n```\nssh fed...\n```"
+        assert adapter.format_message(text) == text
+
+    def test_separator_moves_repeat_counter_off_fence_line(self):
+        from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+        assert _separate_chunk_indicator_from_fence("```cmd```\n``` (\u00d74)") == "```cmd```\n```\n(\u00d74)"
+
+    def test_separator_still_moves_chunk_indicator(self):
+        from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+        assert _separate_chunk_indicator_from_fence("```code``` (1/2)") == "```code``` (1/2)"
+        assert _separate_chunk_indicator_from_fence("```\nbody\n``` (1/2)") == "```\nbody\n```\n(1/2)"
+
+    def test_single_line_counter_stays_inline(self, adapter):
+        text = "\U0001f4bb terminal ssh fed... (\u00d72)"
+        assert adapter.format_message(text) == "\U0001f4bb terminal ssh fed\\.\\.\\. \\(×2\\)"

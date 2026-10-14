@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.i18n import t
+from gateway.run_turn_runner_progress import _suffix_repeat_counter
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
@@ -57,12 +58,6 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
         return bool(probe())
     return getattr(adapter_cls, "send_exec_approval", None) is not None
-
-
-# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
-# Slack click handler shows on a dead entry).
-def _clarify_expired_notice() -> str:
-    return t("gateway.clarify.expired")
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -312,7 +307,7 @@ class TurnRunner:
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(_suffix_repeat_counter(msg, ctx.repeat_count[0] + 1))
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
@@ -649,7 +644,7 @@ class TurnRunner:
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = _suffix_repeat_counter(base_msg, count + 1)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw
@@ -1431,10 +1426,11 @@ class TurnRunner:
         if not answered:
             # No answer arrived (timeout, /new, run end): retire the native card so it stops
             # looking answerable. Adapters without a persistent card have no such method.
+            from gateway.run_turn_runner_clarify_delivery import clarify_expired_notice as _clarify_notice
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
             if callable(retire):
                 self._schedule(
-                    retire(ctx._status_adapter, clarify_id, _clarify_expired_notice()),
+                    retire(ctx._status_adapter, clarify_id, _clarify_notice()),
                     "Clarify card retire failed to schedule")
         elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming

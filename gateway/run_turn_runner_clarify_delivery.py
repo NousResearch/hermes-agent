@@ -182,3 +182,10 @@ class _LateFailureWatch:
     def _release(self, notice: str = UNDELIVERED) -> None:
         self.undeliverable = notice
         self._clarify_mod.clear_session(self._session_key)
+
+
+# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+# Slack click handler shows on a dead entry).
+def clarify_expired_notice() -> str:
+    from agent.i18n import t
+    return t("gateway.clarify.expired")

@@ -9,6 +9,10 @@ import logging
 import os
 import html as _html
 import re
+from plugins.platforms.telegram.telegram_fence_markers import (
+    _CHUNK_INDICATOR_ON_FENCE_RE,
+    _separate_chunk_indicator_from_fence,
+)
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
@@ -390,13 +394,6 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
-
-
-def _separate_chunk_indicator_from_fence(text: str) -> str:
-    """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
-    fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
-    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
@@ -5611,6 +5608,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         modified), markdown constructs become MarkdownV2 syntax, everything else is escaped."""
         if not content:
             return content
+        # A tool-progress repeat counter appended to a fenced block lands on the closing fence
+        # line, which the anchored fence regex below cannot match; move it first (#138148).
+        content = _separate_chunk_indicator_from_fence(content)
         placeholders: dict = {}
         counter = [0]
 

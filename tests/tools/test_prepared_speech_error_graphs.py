@@ -408,3 +408,287 @@ def test_speech_graph_process_roundtrip_and_reference_validation(case):
     edits[case]()
     with pytest.raises(ValueError):
         _decode(payload)
+
+
+def _aiohttp_error(kind: str, status: object, headers: object) -> BaseException:
+    aiohttp = pytest.importorskip("aiohttp")
+    from multidict import CIMultiDict, CIMultiDictProxy
+    from yarl import URL
+
+    request = aiohttp.RequestInfo(
+        URL("https://private-aiohttp-sentinel.invalid/secret"),
+        "GET",
+        CIMultiDictProxy(CIMultiDict({"Authorization": "private-aiohttp-sentinel"})),
+    )
+    if kind == "unknown":
+        error = RuntimeError("private-aiohttp-sentinel")
+    else:
+        error = getattr(aiohttp, kind)(
+            request, (), status=403, message="private-aiohttp-sentinel"
+        )
+    object.__setattr__(error, "status", status)
+    object.__setattr__(error, "headers", headers)
+    return error
+
+
+def _assert_aiohttp_wire(result, expected: _WireFailure, caplog) -> None:
+    payload = result.to_dict()
+    assert payload == expected
+    process = subprocess.run(
+        [sys.executable, "-c", _ROUNDTRIP],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    assert (json.loads(process.stdout), process.stderr) == (expected, "")
+    assert (result.__cause__, result.__context__, vars(result)) == (
+        None,
+        None,
+        {"code": SpeechFailureCode(expected["code"]), "causes": result.causes},
+    )
+    records = [
+        record for record in caplog.records if record.name == "tools.tts_prepared"
+    ]
+    assert records
+    for record in records:
+        assert record.exc_info is not None
+        assert (type(record.exc_info[1]), record.exc_info[2]) == (
+            SpeechSynthesisError,
+            None,
+        )
+        assert record.exc_info[1].to_dict() == expected
+    assert "private-aiohttp-sentinel" not in json.dumps(payload) + caplog.text
+
+
+@pytest.mark.parametrize(
+    "kind,status,headers,expected_status,expected_retry,code,placement",
+    [
+        (
+            "ClientResponseError",
+            401,
+            {"Retry-After": "3"},
+            401,
+            3.0,
+            "authentication",
+            "root",
+        ),
+        (
+            "WSServerHandshakeError",
+            403,
+            {"retry-after": "0"},
+            403,
+            0.0,
+            "authentication",
+            "root",
+        ),
+        (
+            "ClientResponseError",
+            429,
+            {"rEtRy-AfTeR": "2.5"},
+            429,
+            2.5,
+            "rate_limit",
+            "root",
+        ),
+        ("ContentTypeError", 500, None, 500, None, "provider_error", "root"),
+        ("ClientHttpProxyError", 407, None, 407, None, "provider_error", "root"),
+        ("TooManyRedirects", 302, None, 302, None, "provider_error", "root"),
+        ("ClientResponseError", 0, None, None, None, "provider_error", "root"),
+        ("ClientResponseError", True, None, None, None, "provider_error", "root"),
+        ("ClientResponseError", "403", None, None, None, "provider_error", "root"),
+        ("ClientResponseError", 403.0, None, None, None, "provider_error", "root"),
+        ("ClientResponseError", 99, None, None, None, "provider_error", "root"),
+        ("ClientResponseError", 600, None, None, None, "provider_error", "root"),
+        (
+            "ClientResponseError",
+            503,
+            {"Retry-After": "Fri, 01 Jan 2021 00:00:00 GMT"},
+            503,
+            None,
+            "provider_error",
+            "root",
+        ),
+        (
+            "ClientResponseError",
+            503,
+            {"Retry-After": "nan"},
+            503,
+            None,
+            "provider_error",
+            "root",
+        ),
+        (
+            "ClientResponseError",
+            503,
+            {"Retry-After": "inf"},
+            503,
+            None,
+            "provider_error",
+            "root",
+        ),
+        (
+            "ClientResponseError",
+            503,
+            {"Retry-After": "-1"},
+            503,
+            None,
+            "provider_error",
+            "root",
+        ),
+        (
+            "ClientResponseError",
+            503,
+            {"Retry-After": True},
+            503,
+            None,
+            "provider_error",
+            "root",
+        ),
+        ("ClientResponseError", 503, [], 503, None, "provider_error", "root"),
+        pytest.param(
+            "ClientResponseError",
+            403,
+            {"Retry-After": 10**1000},
+            403,
+            None,
+            "authentication",
+            "root",
+            id="overflow_retry",
+        ),
+        ("unknown", 403, {"Retry-After": "3"}, None, None, "provider_error", "root"),
+        ("ClientResponseError", 403, None, 403, None, "authentication", "cause"),
+        ("ClientResponseError", 403, None, 403, None, "provider_error", "suppressed"),
+        ("ClientResponseError", 403, None, 403, None, "provider_error", "cleanup"),
+    ],
+)
+def test_aiohttp_response_facts_use_native_types_and_preserve_primary_policy(
+    native_speech,
+    caplog,
+    kind,
+    status,
+    headers,
+    expected_status,
+    expected_retry,
+    code,
+    placement,
+):
+    fail_with, output = native_speech
+    error = _aiohttp_error(kind, status, headers)
+    identity = "unknown" if kind == "unknown" else "aiohttp_status"
+    expected = [
+        _wire(identity, 0, status_code=expected_status, retry_after=expected_retry)
+    ]
+    if placement != "root":
+        wrapper = RuntimeError("private-aiohttp-sentinel")
+        if placement == "cause":
+            wrapper.__cause__ = error
+            expected = [
+                _wire("unknown", 0, context_suppressed=True),
+                _wire(
+                    identity,
+                    1,
+                    "cause",
+                    0,
+                    status_code=expected_status,
+                    retry_after=expected_retry,
+                ),
+            ]
+        if placement == "suppressed":
+            wrapper.__context__ = error
+            wrapper.__suppress_context__ = True
+            expected = [
+                _wire("unknown", 0, context_suppressed=True),
+                _wire(
+                    identity,
+                    1,
+                    "context",
+                    0,
+                    status_code=expected_status,
+                    retry_after=expected_retry,
+                ),
+            ]
+        if placement == "cleanup":
+            set_command_failure_facts(
+                wrapper,
+                CommandFailureFacts(
+                    CommandOperation.READ,
+                    CommandStream.STDOUT,
+                    (CommandFailureEvent(error, CommandOperation.PROCESS_CLEANUP),),
+                ),
+            )
+            expected = [
+                _wire("unknown", 0, operation="read", stream="stdout"),
+                _wire(
+                    identity,
+                    1,
+                    "cleanup",
+                    0,
+                    status_code=expected_status,
+                    retry_after=expected_retry,
+                    operation="process_cleanup",
+                ),
+            ]
+        error = wrapper
+    result = fail_with(error)
+    _assert_aiohttp_wire(result, {"code": code, "causes": expected}, caplog)
+    assert output.exists() is False
+
+
+@pytest.mark.parametrize(
+    "status,code,attempts",
+    [
+        (403, "authentication", 2),
+        (401, "authentication", 1),
+        (429, "rate_limit", 1),
+        (503, "provider_error", 1),
+    ],
+)
+def test_edge_native_status_retry_reaches_safe_prepared_graph_offline(
+    tmp_path, monkeypatch, caplog, status, code, attempts
+):
+    aiohttp = pytest.importorskip("aiohttp")
+    edge_tts = pytest.importorskip("edge_tts")
+    from edge_tts.drm import DRM
+    from multidict import CIMultiDict, CIMultiDictProxy
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (home / "config.yaml").write_text(json.dumps({"tts": {"provider": "edge"}}))
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: edge_tts)
+    monkeypatch.setattr(DRM, "clock_skew_seconds", 0.0)
+    monkeypatch.setattr(DRM, "get_unix_timestamp", lambda: 1609459200.0)
+    observed = []
+    headers = CIMultiDictProxy(
+        CIMultiDict(
+            {
+                "Date": "Fri, 01 Jan 2021 00:00:00 GMT",
+                "Retry-After": "3",
+                "private-aiohttp-sentinel": "private-aiohttp-sentinel",
+            }
+        )
+    )
+
+    def reject_handshake(*args, **kwargs):
+        observed.append(status)
+        raise _aiohttp_error("WSServerHandshakeError", status, headers)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", reject_handshake)
+    resolution = resolve_prepared_speech()
+    output = tmp_path / "speech.mp3"
+    with pytest.raises(SpeechSynthesisError) as caught:
+        synthesize_prepared_speech(
+            PreparedSpeechRequest("Approved speech.", str(output), resolution)
+        )
+    expected = [_wire("aiohttp_status", 0, status_code=status, retry_after=3.0)]
+    if attempts == 2:
+        expected.append(
+            _wire(
+                "aiohttp_status", 1, "context", 0, status_code=status, retry_after=3.0
+            )
+        )
+    _assert_aiohttp_wire(caught.value, {"code": code, "causes": expected}, caplog)
+    assert (observed, output.exists()) == ([status] * attempts, False)

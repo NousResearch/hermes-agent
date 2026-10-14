@@ -147,6 +147,7 @@ class SpeechCauseType(StrEnum):
     OPENAI_SERVER = "openai_server"
     OPENAI_TIMEOUT = "openai_timeout"
     OPENAI_CONNECTION = "openai_connection"
+    AIOHTTP_STATUS = "aiohttp_status"
     HTTPX_STATUS = "httpx_status"
     HTTPX_TIMEOUT = "httpx_timeout"
     HTTPX_NETWORK = "httpx_network"

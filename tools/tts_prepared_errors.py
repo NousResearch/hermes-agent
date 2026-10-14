@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import ModuleType
 from typing import Any
@@ -43,7 +44,7 @@ def _retry_after(value: object) -> float | None:
         return None
     try:
         seconds = float(value)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
@@ -67,6 +68,26 @@ def _http_cause(
         relation,
         _status(response.status_code),
         _retry_after(response.headers.get("retry-after")),
+    )
+
+
+def _aiohttp_cause(error: Any, relation: SpeechCauseRelation) -> SpeechCause:
+    headers = error.headers
+    retry_after = None
+    if isinstance(headers, Mapping):
+        retry_after = next(
+            (
+                value
+                for key, value in headers.items()
+                if isinstance(key, str) and key.casefold() == "retry-after"
+            ),
+            None,
+        )
+    return SpeechCause(
+        SpeechCauseType.AIOHTTP_STATUS,
+        relation,
+        _status(error.status),
+        _retry_after(retry_after),
     )
 
 
@@ -100,6 +121,8 @@ def _cause(error: BaseException, relation: SpeechCauseRelation) -> SpeechCause:
         return SpeechCause(SpeechCauseType.OPENAI_TIMEOUT, relation)
     if _is_native(error, "openai", "APIConnectionError"):
         return SpeechCause(SpeechCauseType.OPENAI_CONNECTION, relation)
+    if _is_native(error, "aiohttp", "ClientResponseError"):
+        return _aiohttp_cause(error, relation)
     if _is_native(error, "httpx", "HTTPStatusError"):
         return _http_cause(error, SpeechCauseType.HTTPX_STATUS, relation)
     if _is_native(error, "httpx", "TimeoutException"):

@@ -376,6 +376,8 @@ class ToolCallGuardrailController:
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
         *, failed: bool | None = None,
     ) -> ToolGuardrailDecision:
+        if file_mutation_result_landed(tool_name, result):
+            self._no_progress.clear()
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:

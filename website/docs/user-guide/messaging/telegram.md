@@ -656,6 +656,8 @@ A bot that reads every group message can answer exactly `[SILENT]` (or another [
 | Any other message without a `?` | Stays silent |
 | Any other message with a `?` (it may be a question for the bot) | Replaced by the notice |
 
+A message still gets the notice while the bot's own identity is unknown, or when it replies to a message whose author is unknown. A forum topic's root message is not a reply to another member.
+
 ### Multiple Hermes bots in one group
 
 If you run several Hermes profiles in the same Telegram group, create one Telegram bot token per profile and start one gateway per profile. Do not reuse the same bot token in multiple running gateways; Telegram will reject concurrent polling for the same token.

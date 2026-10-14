@@ -45,10 +45,10 @@ def starts_with_other_participant_mention(adapter: "TelegramAdapter", message: "
 
 
 def _replies_to_other_member(adapter: "TelegramAdapter", message: "Message") -> bool:
-    """A reply to someone else's message. In a forum topic Telegram also sets ``reply_to_message``
+    """A reply to another known member's message. In a forum topic Telegram also sets ``reply_to_message``
     to the topic's root on every plain message; that anchor is not a reply to a person."""
     replied = getattr(message, "reply_to_message", None)
-    if replied is None or adapter._is_reply_to_bot(message):
+    if replied is None or getattr(replied, "from_user", None) is None or adapter._is_reply_to_bot(message):
         return False
     topic_root = (
         getattr(message, "is_topic_message", False)
@@ -63,7 +63,7 @@ def group_reply_expected(adapter: "TelegramAdapter", message: "Message", chat_ty
         return True if chat_type == "dm" else None
     text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
     addressed_to_bot = (
-        text.startswith("/")
+        text.lstrip().startswith("/")
         or adapter._is_reply_to_bot(message)
         or adapter._message_mentions_bot(message)
         or adapter._message_matches_mention_patterns(message)

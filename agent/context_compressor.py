@@ -1983,9 +1983,29 @@ def _json_dict(text: Any) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+_REJECTED_TOOL_CALL_RE = re.compile(r"^Tool '\S+' does not exist\.")
+
+
+def _rejected_tool_call_outcome(content: str) -> str | None:
+    """Outcome for a call the dispatch loop rejected before execution (empty/unknown tool
+    name, or a call skipped because a sibling in the batch was invalid). The generic
+    summarizer renders those rows as ``[…] (N chars result)`` — indistinguishable from a
+    completed action in the compaction anchors, which invites reporting the call as done;
+    the summary must compress them into "not run" so the post-compaction agent re-issues."""
+    stripped = (content or "").lstrip()
+    if stripped.startswith("Tool call rejected:"):
+        return "rejected, not run — do not report it as done; re-issue the call"
+    if stripped.startswith("Skipped: another tool call in this turn"):
+        return "skipped, not run — re-issue the call"
+    if _REJECTED_TOOL_CALL_RE.match(stripped):
+        return "rejected, not run — do not report it as done; re-issue with a valid tool name"
+    return None
+
+
 def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> str | None:
     """Summary for a call an approval or write guard refused (``BLOCKED: ...`` / ``status``
-    ``blocked``/``pending_approval``), else None. The per-tool summarizers describe the call as done
+    ``blocked``/``pending_approval``), or one the dispatch loop rejected before execution
+    (empty/unknown tool name), else None. The per-tool summarizers describe the call as done
     ("ran ...", "wrote to ..."), which would turn a user's denial into a record of the action and
     drop the "do not retry" instruction. Strictly below _PRUNE_MIN_CHARS, like the clarify summary,
     so later prune passes keep it."""
@@ -1996,6 +2016,8 @@ def _summarize_refused_tool_result(tool_name: str, args: dict, content: str) -> 
         error = content.strip()
     if status == "pending_approval":
         outcome = "awaiting the user's approval, not run"
+    elif (rejected := _rejected_tool_call_outcome(content)) is not None:
+        outcome = rejected
     elif error and (status == "blocked" or error.lstrip().startswith("BLOCKED")):
         outcome = "BLOCKED, not run"
         if "NOT consented" in error:

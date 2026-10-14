@@ -455,24 +455,14 @@ def match_runtime_outcomes(
             if live_gateway_pids is not None
             else None
         )
-        def _bookkeeping_resolves(r: RuntimeRecord) -> bool:
-            """Terminal verdict already available from the restart phase's bookkeeping."""
-            if r.pid is not None and r.pid in killed:
-                return True
-            if r.profile in relaunched:
-                return True
-            return _gateway_named_in(r, failed_set) or _gateway_named_in(r, restarted_set)
-
         # Baseline identity: the fleet probe publishes at most one row per profile, so successor
-        # evidence is only attributable when ONE planned gateway for that profile still needs a
-        # verdict. Serve/dashboard rows are different processes, and rows bookkeeping already resolved
-        # (killed / relaunched / name-matched) are not candidates either — a stopped orphan must not
-        # make its surviving sibling's successor look ambiguous.
-        pending_gateways: dict[str, int] = {}
+        # evidence is only attributable when the plan holds ONE gateway runtime for that profile.
+        # Counted by kind explicitly: serve/dashboard rows for the same profile are different
+        # processes and must never make a gateway's successor evidence look ambiguous.
+        planned_gateways: dict[str, int] = {}
         for _planned in plan.runtimes:
-            if (isinstance(_planned, RuntimeRecord) and _planned.kind == "gateway"
-                    and not _bookkeeping_resolves(_planned)):
-                pending_gateways[_planned.profile] = pending_gateways.get(_planned.profile, 0) + 1
+            if isinstance(_planned, RuntimeRecord) and _planned.kind == "gateway":
+                planned_gateways[_planned.profile] = planned_gateways.get(_planned.profile, 0) + 1
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -508,14 +498,14 @@ def match_runtime_outcomes(
                 # label/unit may encode the install root (or a hashed home) instead of the served
                 # profile, which the profile-scoped name matcher above can never credit.
                 live = successors.get(r.profile)
-                ambiguous = pending_gateways.get(r.profile, 0) > 1
+                ambiguous = planned_gateways.get(r.profile, 0) > 1
                 if live and r.pid not in live and not ambiguous:
                     return "restarted"
                 if ambiguous:
                     logger.debug(
-                        "%s planned gateway runtimes for profile %r still need a verdict — successor "
-                        "evidence cannot attribute the restart, leaving pid %s on the name path",
-                        pending_gateways[r.profile], r.profile, r.pid,
+                        "%s planned gateway runtimes for profile %r — one successor cannot attribute "
+                        "the restart, leaving pid %s on the name path",
+                        planned_gateways[r.profile], r.profile, r.pid,
                     )
                 elif not live:
                     # No row for this profile: the fallback has nothing to work with and reconciliation

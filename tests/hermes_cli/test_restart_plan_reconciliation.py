@@ -522,20 +522,6 @@ def test_one_successor_cannot_credit_two_planned_runtimes_same_profile():
     assert report_unaccounted_runtimes(outcomes) is True
 
 
-def test_resolved_orphan_sibling_does_not_block_successor_credit():
-    """An orphan row the restart phase already killed has its verdict, so it must not
-    make the surviving same-profile row's successor evidence look ambiguous — both
-    runtimes are accounted for (one stopped, one restarted) and the wire stays quiet."""
-    outcomes = match_runtime_outcomes(
-        _plan(_rt("coder", 100, supervisor="launchd"), _rt("coder", 101, supervisor="launchd")),
-        restarted_services=[], relaunched_profiles=[], externally_supervised_profiles=[],
-        killed_pids={100}, failed_units=[], live_gateway_pids={"coder": {102}},
-    )
-    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
-    assert by_pid == {100: "stopped", 101: "restarted"}
-    assert report_unaccounted_runtimes(outcomes) is False
-
-
 def test_successor_credit_stays_per_profile_with_several_planned_runtimes():
     """The ambiguity guard is per profile: two profiles with one planned runtime each
     are both credited from their own successor."""

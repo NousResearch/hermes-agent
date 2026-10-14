@@ -619,7 +619,7 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
-            probe_words = [rg, flags, "--count-matches", glob_expr_probe,
+            probe_words = [rg, "--no-config", flags, "--count-matches", glob_expr_probe,
                            self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
@@ -938,7 +938,7 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+        rg_cmd = (f"{rg} --no-config --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
@@ -1029,7 +1029,11 @@ class SearchMixin:
         rg_executable = rg_executable or self._resolve_command("rg")
         if not rg_executable:
             return SearchResult(error="Content search requires ripgrep (rg).")
-        cmd_parts = [self._quote_executable(rg_executable), "--line-number", "--no-heading", "--with-filename"]
+        # --no-config on every rg call: a user's RIPGREP_CONFIG_PATH (--color=always,
+        # --smart-case, --glob=!x) would otherwise garble the parsed output or change
+        # which lines match, and the model would read it as "no matches".
+        cmd_parts = [self._quote_executable(rg_executable), "--no-config", "--line-number", "--no-heading",
+                     "--with-filename"]
         # Giant-single-line containment (cline#13525): a match inside a multi-MB
         # single-line dump makes rg emit the ENTIRE line (``head -n`` counts lines).
         # --max-columns bounds each printed line at the rg layer; --max-columns-preview

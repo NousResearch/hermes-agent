@@ -18,10 +18,10 @@ pytestmark = pytest.mark.platforms("posix")  # native rg lane is POSIX-only
 
 @pytest.fixture
 def tree(tmp_path):
-    (tmp_path / "a.py").write_text("needle one\nplain\nneedle two\n")
-    (tmp_path / "b.txt").write_text("needle three\n")
+    (tmp_path / "a.py").write_text("needle one\nplain\nneedle two\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("needle three\n", encoding="utf-8")
     (tmp_path / "sub").mkdir()
-    (tmp_path / "sub" / "c.py").write_text("needle four\n")
+    (tmp_path / "sub" / "c.py").write_text("needle four\n", encoding="utf-8")
     return tmp_path
 
 
@@ -126,3 +126,21 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+@pytest.mark.parametrize("native", ["1", "0"])
+def test_user_ripgrep_config_cannot_change_search_results(tree, ops_factory, monkeypatch, native):
+    """A user's RIPGREP_CONFIG_PATH must not reach the tool's rg: --color=always made every
+    content hit unparseable (0 matches, ANSI in paths) and --glob=!*.py hid files outright."""
+    rc = tree.parent / f"ripgreprc-{native}"
+    rc.write_text("--color=always\n--glob=!*.py\n--smart-case\n", encoding="utf-8")
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(rc))
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", native)
+    (tree / "d.txt").write_text("Needle five\n", encoding="utf-8")  # --smart-case would match it
+    ops = ops_factory(tree, [])
+    content = ops.search(pattern="needle", path=str(tree)).to_dict()
+    assert content["total_count"] == 4, content
+    assert {m["path"] for m in content["matches"]} == {
+        str(tree / "a.py"), str(tree / "b.txt"), str(tree / "sub" / "c.py")}
+    files = ops.search(pattern="*.py", path=str(tree), target="files").to_dict()
+    assert sorted(files["files"]) == [str(tree / "a.py"), str(tree / "sub" / "c.py")], files

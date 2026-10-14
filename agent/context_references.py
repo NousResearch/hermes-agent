@@ -603,7 +603,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     try:
         # Absolute path arg: rg echoes it as the output prefix, so results stay correct even
         # when the folder is outside cwd (a widened allowed_root target).
-        rg = _run_quiet(["rg", "--files", str(path)], cwd, 10)
+        rg = _run_quiet(["rg", "--no-config", "--files", str(path)], cwd, 10)  # ignore RIPGREP_CONFIG_PATH
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         rg = None
     if rg is not None and rg.returncode == 0:

@@ -375,8 +375,9 @@ class SlashCommandCompleter(Completer):
             return self._file_cache
         files: list[str] = []
         for cmd in (
-            ["rg", "--files", "--sortr=modified", cwd],
-            ["rg", "--files", cwd],
+            # --no-config: a user RIPGREP_CONFIG_PATH (--color=always) would garble paths.
+            ["rg", "--no-config", "--files", "--sortr=modified", cwd],
+            ["rg", "--no-config", "--files", cwd],
             ["fd", "--type", "f", "--base-directory", cwd]):
             if not shutil.which(cmd[0]):
                 continue

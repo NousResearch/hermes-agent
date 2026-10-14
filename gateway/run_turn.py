@@ -35,6 +35,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.run_turn_toolsets import TurnToolsetsMixin
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -165,7 +166,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(TurnToolsetsMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -2383,31 +2384,6 @@ class GatewayTurnMixin:
             return await self._run_background_task_inner(
                 prompt, source, task_id, event_message_id, media_urls, media_types,
             )
-
-    def _resolve_enabled_toolsets_for_source(
-        self, user_config: dict, source: SessionSource, platform_key: str,
-    ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
-        from hermes_cli.tools_config import _get_platform_tools
-        try:
-            adapter = self._delivery_adapter_for(source)
-            override = adapter.toolsets_for_source(source) if adapter is not None else None
-        except Exception:
-            override = None
-        if override and isinstance(override, list):
-            pts = dict(user_config.get("platform_toolsets") or {})
-            pts[platform_key] = [str(x) for x in override]
-            user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
-
-    def _resolve_turn_toolsets(self, user_config: dict, source: SessionSource, platform_key: str):
-        """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
-        from agent.skill_utils import parse_config_string_list
-        enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
-        disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
-        return enabled, disabled
 
     async def _run_background_task_inner(
         self, prompt: str, source: SessionSource, task_id: str,

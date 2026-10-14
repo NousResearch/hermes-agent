@@ -136,3 +136,11 @@ def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path)
     assert path_b.read_bytes() == img_bytes_b
     assert path_a.exists() and path_b.exists()
 
+
+@pytest.mark.parametrize("raw, staged", [
+    ("Screenshot 2026-10-09 at 11.37.03\u202fAM.png", "Screenshot 2026-10-09 at 11.37.03 AM.png"),
+    ("a\u00a0b.png", "a b.png"),
+    ("tab\tname.png", "tab_name.png"),
+])
+def test_attachment_names_stage_with_ascii_spaces(raw, staged):
+    assert server._sanitize_attachment_name(raw) == staged

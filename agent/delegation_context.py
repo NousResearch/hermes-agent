@@ -105,7 +105,17 @@ def owned_kanban_task() -> str:
 
 
 def is_delegated_child_process_context() -> bool:
-    """Return True in this process or a subprocess spawned by a child."""
+    """Return True in this process or a subprocess spawned by a child.
+
+    The inherited (``os.environ``) half is deliberately NOT maskable from inside the process:
+    (marker present, no live ContextVar) is the state of BOTH a genuinely spawned descendant
+    (``delegate_task`` child → ``hermes cron run`` — exactly who the fence is for) and a host
+    process that merely inherited a stale marker. The pair cannot be told apart without a
+    spawn edge, so in-process masking would trade a mis-fenced host run for an unfenced real
+    descendant. Contaminated host entry points therefore scrub the marker at their own
+    startup boundary instead (see
+    ``hermes_cli.gateway_restart_env.scrub_delegate_child_env_markers``).
+    """
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
 
 

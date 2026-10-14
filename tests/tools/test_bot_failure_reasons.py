@@ -59,6 +59,34 @@ def test_classify_agent_error_rules(text, code):
     assert fr.classify_agent_error(text) == code
 
 
+@pytest.mark.parametrize("code", ["context_overflow", "payload_too_large"])
+def test_current_rendered_overflow_copy_is_retryable_for_bot_dm(code):
+    """Use the real copy, not a hand-typed fragment that can drift (#130133)."""
+    from agent.turn_failure_copy import site_copy
+
+    rendered = site_copy(code, model="test-model")
+    reason = fr.classify_agent_error(fr.turn_failure_text(rendered, "session_id: existing"))
+    assert reason == fr.CONTEXT_OVERFLOW
+    assert fr.retry_action(reason) == fr.RETRY_COMPRESS_THEN_RESUME
+    # The in-process failure-text fallback and subprocess two-stream lane must agree.
+    assert fr.result_retry_action({"failed": True, "error": rendered}) == (
+        fr.RETRY_COMPRESS_THEN_RESUME
+    )
+
+
+@pytest.mark.parametrize("code, fields", [
+    ("compression_disabled", {"model": "test-model"}),
+    ("server_context_rejection", {"model": "test-model", "tokens": 3000, "window": 180000}),
+])
+def test_nonrecoverable_or_transient_copy_does_not_trigger_compress_retry(code, fields):
+    """A disabled compressor or a transient server-side rejection isn't transcript pressure."""
+    from agent.turn_failure_copy import site_copy
+
+    rendered = site_copy(code, **fields)
+    assert fr.classify_agent_error(rendered) == fr.UNKNOWN
+    assert fr.retry_action(fr.classify_agent_error(rendered)) == fr.RETRY_NONE
+
+
 def test_fixture_anthropic_401_auth_beats_quota():
     # The live 401 body ALSO says "out of funds" — auth wins by precedence.
     assert "out of funds" in FIXTURE_ANTHROPIC_401

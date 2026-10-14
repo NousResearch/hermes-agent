@@ -297,9 +297,9 @@ describe('Hermes REST helpers', () => {
     // Slices reassembled from the legacy per-slice route with the same
     // scoping: every section follows the caller's profile.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
-    // One row back against a 30-row window: the profile is fully loaded, so
-    // the legacy path must not claim there's another page.
-    expect(result.recents.profiles_truncated).toEqual({ default: false })
+    // One row returned against a known total of 7 — the profile still has
+    // more on disk, so the legacy path must claim another page exists.
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
     expect(result.cron.sessions.map(s => s.id)).toEqual(['cron-1'])
     expect(result.messaging.sessions.map(s => s.id)).toEqual(['msg-1'])
 

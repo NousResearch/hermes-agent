@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
+
 import type { SidebarSessionsResponse } from './sessions'
 
-vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
+vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: vi.fn(() => false) }))
 vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   ambientOwnerConnectionId: vi.fn(() => 'prometheus'),
@@ -22,6 +24,7 @@ const {
   getSession,
   getLatestSessionMessages,
   renameSession,
+  resetSidebarBatchCapability,
   searchSessions,
   setSessionArchived,
   setSessionPinnedRemote,
@@ -281,6 +284,132 @@ describe('listSidebarSessions storage health', () => {
     })
 
     expect(result.storage).toEqual({ default: 'corrupt' })
+  })
+})
+
+describe('listSidebarSessions legacy fallback truncation (#72492)', () => {
+  const emptySlice = { errors: [], sessions: [] }
+
+  const legacyRequest = {
+    recentsProfile: 'all',
+    recentsLimit: 50,
+    recentsExclude: ['cron'],
+    cronLimit: 50,
+    messagingLimit: 100,
+    messagingExclude: []
+  }
+
+  beforeEach(() => {
+    // Older backend: the batched /sidebar route 404s, forcing the legacy
+    // per-slice reassembly path.
+    vi.mocked(isMissingRestEndpoint).mockReturnValue(true)
+    resetSidebarBatchCapability()
+  })
+
+  it('marks profiles truncated against exact profile_totals, not the per-profile window', async () => {
+    // default: 30 of 60 rows in the window → truncated; coder: all 20 → complete.
+    // The old per-profile `count >= cap` check reported both false (30 < 50,
+    // 20 < 50), hiding "Load more" even though the global window was full.
+    const sessions = [
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `d-${i}`, profile: 'default' })),
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `c-${i}`, profile: 'coder' }))
+    ]
+
+    hermesApi.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        throw new Error('404: {"detail":"No such API endpoint"}')
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({ ...emptySlice, total: 0 })
+      }
+
+      return Promise.resolve({
+        ...emptySlice,
+        sessions,
+        total: 80,
+        profile_totals: { default: 60, coder: 20 }
+      })
+    })
+
+    const result = await listSidebarSessions(legacyRequest)
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true, coder: false })
+  })
+
+  it('falls back to the global-full heuristic when profile_totals is absent', async () => {
+    const sessions = Array.from({ length: 50 }, (_, i) => ({ id: `s-${i}`, profile: 'default' }))
+
+    hermesApi.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        throw new Error('404: {"detail":"No such API endpoint"}')
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({ ...emptySlice, total: 0 })
+      }
+
+      return Promise.resolve({ ...emptySlice, sessions, total: 200 })
+    })
+
+    const result = await listSidebarSessions(legacyRequest)
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
+  })
+
+  it('marks a totals-only profile truncated when its rows fell out of the window', async () => {
+    // archive has 10 rows on disk but none in this window — its rows stay
+    // reachable via the global "Load more".
+    const sessions = [
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `d-${i}`, profile: 'default' })),
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `c-${i}`, profile: 'coder' }))
+    ]
+
+    hermesApi.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        throw new Error('404: {"detail":"No such API endpoint"}')
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({ ...emptySlice, total: 0 })
+      }
+
+      return Promise.resolve({
+        ...emptySlice,
+        sessions,
+        total: 90,
+        profile_totals: { default: 60, coder: 20, archive: 10 }
+      })
+    })
+
+    const result = await listSidebarSessions(legacyRequest)
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true, coder: false, archive: true })
+  })
+
+  it('does not claim truncation when the page holds every profile row', async () => {
+    const sessions = Array.from({ length: 20 }, (_, i) => ({ id: `c-${i}`, profile: 'coder' }))
+
+    hermesApi.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        throw new Error('404: {"detail":"No such API endpoint"}')
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({ ...emptySlice, total: 0 })
+      }
+
+      return Promise.resolve({
+        ...emptySlice,
+        sessions,
+        total: 20,
+        profile_totals: { coder: 20 }
+      })
+    })
+
+    const result = await listSidebarSessions(legacyRequest)
+
+    expect(result.recents.profiles_truncated).toEqual({ coder: false })
   })
 })
 

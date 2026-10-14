@@ -829,3 +829,89 @@ test('remoteProfileQueryScope resolves the wire scope for a profile override', (
   assert.equal(remoteProfileQueryScope('default', 'dixie'), 'dixie')
   assert.equal(remoteProfileQueryScope(''), '')
 })
+
+// Same derivation, different window shape: exact totals from the slice
+// response when present, else the window-full heuristic (the per-slice
+// backend merges all profiles then truncates globally, so a full window
+// means every profile in it may have more rows on disk — #72492).
+test('reassembled recents derive per-profile truncation from exact totals (#72492)', () => {
+  const rows = [
+    ...Array.from({ length: 30 }, (_, i) => ({ profile: 'default', id: `d-${i}` })),
+    ...Array.from({ length: 20 }, (_, i) => ({ profile: 'coder', id: `c-${i}` }))
+  ]
+
+  // default has 30 of 60 on disk → truncated; coder has all 20 → complete.
+  const result = assembleSidebarSessionSlices(
+    { sessions: rows, total: 80, profile_totals: { default: 60, coder: 20 } },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 },
+    new URLSearchParams({ limit: '50' })
+  )
+
+  assert.deepEqual(result.recents.profiles_truncated, { default: true, coder: false })
+})
+
+test('totals-only profiles stay truncated so the global Load more surfaces', () => {
+  const rows = [
+    ...Array.from({ length: 30 }, (_, i) => ({ profile: 'default', id: `d-${i}` })),
+    ...Array.from({ length: 20 }, (_, i) => ({ profile: 'coder', id: `c-${i}` }))
+  ]
+
+  // archive has 10 sessions on disk but none in this window.
+  const result = assembleSidebarSessionSlices(
+    { sessions: rows, total: 90, profile_totals: { default: 60, coder: 20, archive: 10 } },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 },
+    new URLSearchParams({ limit: '50' })
+  )
+
+  assert.deepEqual(result.recents.profiles_truncated, { default: true, coder: false, archive: true })
+})
+
+test('absent totals fall back to the global-full heuristic', () => {
+  const rows = Array.from({ length: 50 }, (_, i) => ({ profile: 'default', id: `s-${i}` }))
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: rows, total: 200 },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 },
+    new URLSearchParams({ limit: '50' })
+  )
+
+  assert.deepEqual(result.recents.profiles_truncated, { default: true })
+})
+
+test('a complete page is not truncated', () => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ profile: 'coder', id: `c-${i}` }))
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: rows, total: 20, profile_totals: { coder: 20 } },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 },
+    new URLSearchParams({ limit: '50' })
+  )
+
+  assert.deepEqual(result.recents.profiles_truncated, { coder: false })
+})
+
+// Without slice params the window defaults to the sidebar's stock recents
+// cap (20), matching the default `buildSidebarSessionSliceParams` limit.
+test('absent slice params default the heuristic window to 20', () => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ profile: 'default', id: `s-${i}` }))
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: rows, total: 200 },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 }
+  )
+
+  assert.deepEqual(result.recents.profiles_truncated, { default: true })
+
+  const short = assembleSidebarSessionSlices(
+    { sessions: rows.slice(0, 19), total: 199 },
+    { sessions: [], total: 0 },
+    { sessions: [], total: 0 }
+  )
+
+  assert.deepEqual(short.recents.profiles_truncated, { default: false })
+})

@@ -236,10 +236,56 @@ export async function fetchPrimaryProfileSessions(
   }
 }
 
+/** Which profiles still have rows on disk beyond the returned page. Mirrors
+ *  the renderer's derivation in src/api/sessions.ts — the Electron and
+ *  renderer sides of the seam must agree. Exact `profile_totals` when the
+ *  slice response carries them (pre-truncation per-profile counts, already
+ *  paid for by the request), the window-full heuristic otherwise: the
+ *  per-slice backend merges all profiles then truncates globally, so a full
+ *  window means every profile in it may have more rows on disk (#72492). */
+export function profilesTruncatedFrom(
+  sessions: ReadonlyArray<{ profile?: string }>,
+  recentsLimit: string | null,
+  profileTotals?: Record<string, number>
+): Record<string, boolean> {
+  const cap = Math.max(1, Number(recentsLimit) || 20)
+  const globalTruncated = sessions.length >= cap
+  const counts = new Map<string, number>()
+
+  for (const session of sessions) {
+    const key = session?.profile || 'default'
+
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  // Include totals-only profiles (rows on disk, none returned in this window).
+  const names = new Set([...counts.keys(), ...Object.keys(profileTotals ?? {})])
+
+  return Object.fromEntries(
+    [...names].map(name => {
+      const count = counts.get(name) ?? 0
+
+      if (profileTotals && typeof profileTotals[name] === 'number') {
+        return [name, count < profileTotals[name]]
+      }
+
+      return [name, globalTruncated || count >= cap]
+    })
+  )
+}
+
 /** Reassemble the batched sidebar response from its three per-slice reads,
  *  keeping each slice's `errors` so a failed scan is never read as an
- *  authoritative empty slice. */
-export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, messaging: unknown) {
+ *  authoritative empty slice. `recentsParams` is the recents slice request
+ *  (from `buildSidebarSessionSliceParams`); its `limit` is the recents
+ *  window the fallback truncation heuristic needs to tell a full page from
+ *  a short one. */
+export function assembleSidebarSessionSlices(
+  recents: unknown,
+  cron: unknown,
+  messaging: unknown,
+  recentsParams?: URLSearchParams
+) {
   const slice = (data: unknown) => {
     const errors = errorsOf(data)
 
@@ -252,7 +298,16 @@ export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, me
     recents: {
       ...slice(recents),
       total: Number(recentsSlice?.total) || 0,
-      profile_totals: recentsSlice?.profile_totals || {}
+      profile_totals: recentsSlice?.profile_totals || {},
+      // The per-slice responses carry exact per-profile totals but no
+      // truncation flags (the batched route computes those server-side);
+      // derive them here so remote-profile setups keep the per-profile
+      // "Load more" affordance the local fast path gets for free.
+      profiles_truncated: profilesTruncatedFrom(
+        rowsOf(recents) as Array<{ profile?: string }>,
+        recentsParams?.get('limit'),
+        (recentsSlice?.profile_totals || {}) as Record<string, number>
+      )
     },
     cron: slice(cron),
     messaging: {

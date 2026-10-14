@@ -111,7 +111,10 @@ def test_outbox_drain_reoffers_a_claimed_envelope_the_desktop_never_delivered(ho
     assert reply["reason"] == "delivery_timeout" and reply["error"]
 
 
-def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
+@pytest.mark.parametrize("launcher", ["hermes", "hermes.exe", "hermes.EXE"])
+def test_deliver_validates_profile_and_runs_transport(home, monkeypatch, tmp_path, launcher):
+    cli = str(tmp_path / "venv with spaces" / "bin" / launcher)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: cli)
     calls = {}
 
     class _Proc:
@@ -135,9 +138,9 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     assert calls["kwargs"]["exit_grace"] is None
     assert calls["kwargs"]["report_path"].endswith(".turn.json")
     argv = calls["argv"]
-    # argv[0] may be a resolved venv path (#93590) — match by basename.
+    # Preserve the resolver result, including spaces and platform-specific casing.
     assert argv[1:3] == ["-p", "ops"]
-    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
+    assert argv[0] == cli
     assert "Bot Chat" in argv and "--query-file" in argv
 
     # 'hermes' alias resolves to default

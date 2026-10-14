@@ -1031,6 +1031,7 @@ class OpenAICompatRoutesMixin:
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(st.agent_error)[:300])
         return response
 
+    # health: allow CC -- opt-in routing adds two decisions; generic writer and batch stay unchanged
     async def _handle_responses(self, request: web.Request) -> web.Response:
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
@@ -1054,6 +1055,8 @@ class OpenAICompatRoutesMixin:
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
+        if body.get("public_commentary") is True and not _coerce_request_bool(body.get("stream"), default=False):
+            return _error_response("'public_commentary' requires stream: true", 400)
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
@@ -1137,6 +1140,12 @@ class OpenAICompatRoutesMixin:
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route, relay_metadata=relay_metadata)
         if stream:
+            if body.get("public_commentary") is True:
+                return await self._start_public_responses_speech(
+                    request, body=body, run_kwargs=run_kwargs,
+                    conversation_history=conversation_history, user_message=user_message,
+                    instructions=instructions, conversation=conversation, store=store,
+                    session_id=session_id, gateway_session_key=gateway_session_key)
             _stream_q = ThreadSafeAsyncQueue()
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):

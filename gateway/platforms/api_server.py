@@ -70,7 +70,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "reasoning_streaming": True,
+    "reasoning_streaming": True, "responses_public_speech_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -136,8 +136,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
-from gateway.platforms import api_server_room_grants as _room_grants
-from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_room_grants as _room_grants, api_server_runs as _api_runs, api_server_public_speech as _public_speech
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
@@ -1188,6 +1187,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
     _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
+    _start_public_responses_speech = _public_speech.start_public_speech
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)

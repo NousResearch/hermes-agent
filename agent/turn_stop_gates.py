@@ -127,6 +127,22 @@ def apply_stop_gates(
             ),
         )
 
+    try:
+        from agent.outcome_ownership import outcome_followthrough_nudge
+
+        _outcome_nudge = outcome_followthrough_nudge(agent, final_response, messages)
+    except Exception as exc:
+        _outcome_nudge = None
+        agent._outcome_ownership_failure = f"outcome_followthrough_gate_error: {type(exc).__name__}"
+        logger.error("outcome follow-through gate failed closed", exc_info=True)
+    if _outcome_nudge:
+        final_msg["finish_reason"] = "outcome_followthrough_required"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history,
+            "outcome follow-through interim flush failed",
+        )
+        return _continue(_outcome_nudge, "_verification_stop_synthetic")
+
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1

@@ -21,6 +21,10 @@ logger = logging.getLogger("agent.conversation_loop")
 
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
+_RECOVERABLE_LOOP_GUARDRAILS = frozenset({
+    "repeated_exact_failure_block", "idempotent_no_progress_block", "same_tool_failure_halt",
+    "identical_call_streak_halt", "identical_cycle_halt",
+})
 
 
 @dataclass
@@ -159,10 +163,56 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
+    if agent._tool_guardrail_halt_decision is None and getattr(agent, "_outcome_followthrough_pending", False):
+        agent._outcome_followthrough_pending = False
+        agent._outcome_followthrough_start_index = None
+
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
+        if decision.code in _RECOVERABLE_LOOP_GUARDRAILS:
+            if getattr(agent, "_outcome_followthrough_pending", False):
+                _outcome_nudge = None
+                agent._outcome_ownership_failure = (
+                    f"followthrough_action_blocked: {decision.code}: {decision.message}"
+                )
+            else:
+                try:
+                    from agent.outcome_ownership import outcome_followthrough_nudge
+
+                    final_response = agent._toolguard_controlled_halt_response(decision)
+                    _outcome_nudge = outcome_followthrough_nudge(agent, final_response, messages)
+                except Exception as exc:
+                    _outcome_nudge = None
+                    agent._outcome_ownership_failure = f"outcome_followthrough_gate_error: {type(exc).__name__}"
+                    logger.error("guardrail recovery gate failed closed", exc_info=True)
+            if _outcome_nudge:
+                from agent.turn_stop_gates import _append_interim_answer
+
+                agent._tool_guardrail_halt_decision = None
+                clear_guardrail_halt = getattr(agent._tool_guardrails, "clear_halt_decision", None)
+                if callable(clear_guardrail_halt):
+                    clear_guardrail_halt()
+                _guardrail_message = {
+                    "role": "assistant", "content": final_response,
+                    "finish_reason": "outcome_followthrough_required",
+                }
+                _append_interim_answer(
+                    agent, _guardrail_message, messages, conversation_history,
+                    "guardrail recovery interim flush failed",
+                )
+                append_message(messages, {"role": "user", "content": _outcome_nudge, "_verification_stop_synthetic": True})
+                agent._session_messages = messages
+                agent._emit_status(
+                    f"↻ Tool loop stopped repeating {decision.tool_name}; requesting a different authorized recovery action."
+                )
+                return _verdict("continue")
+            if not getattr(agent, "_outcome_ownership_failure", None):
+                agent._outcome_ownership_failure = (
+                    f"tool_guardrail_unresolved: {decision.code}: {decision.message}"
+                )
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
+        failed = True
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still

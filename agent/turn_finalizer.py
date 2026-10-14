@@ -490,6 +490,13 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    _outcome_failure = getattr(agent, "_outcome_ownership_failure", None)
+    if _outcome_failure:
+        failed = True
+        _turn_exit_reason = "outcome_ownership_unresolved"
+    elif str(_turn_exit_reason) == "guardrail_halt":
+        failed = True
+
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
@@ -654,6 +661,14 @@ def finalize_turn(
         )
         _cause = getattr(agent, "_last_persistence_error_cause", None)
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
+    elif failed and str(_turn_exit_reason) == "outcome_ownership_unresolved":
+        result["error"] = str(_outcome_failure)
+        result["failure_reason"] = "outcome_ownership_unresolved"
+    elif failed and str(_turn_exit_reason) == "guardrail_halt":
+        _decision = getattr(agent, "_tool_guardrail_halt_decision", None)
+        _code = getattr(_decision, "code", "unknown")
+        result["error"] = final_response or "tool guardrail halted the turn"
+        result["failure_reason"] = f"tool_guardrail_halt:{_code}"
     elif _exit_failure is not None:
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)

@@ -340,6 +340,10 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def clear_halt_decision(self) -> None:
+        """Resume after injecting one bounded alternate-path nudge."""
+        self._halt_decision = None
+
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
         *, message: str | None = None, **fmt: Any,

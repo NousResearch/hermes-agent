@@ -379,14 +379,21 @@ EXECUTION_GUIDANCE_MODELS = (
 # fabricate output when the real path is blocked. Ships in every cached prompt — keep tight.
 TASK_COMPLETION_GUIDANCE = (
     "# Finishing the job\n"
-    "When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real "
-    "tool output — not a description of one. Do not stop after writing a stub, a plan, or a single command. Keep "
-    "working until you have actually exercised the code or produced the requested result, then report what real "
-    "execution returned.\n"
-    "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative "
-    "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
-    "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
-    "produce. Reporting a blocker honestly is always better than inventing a result."
+    "Own the user's requested outcome through the existing authorized path. When a tool reports a recoverable "
+    "blocker, inspect its exact evidence, diagnose the cause, take at least one bounded diagnostic or recovery "
+    "action, and resume at the smallest missing step before reporting. If you name an actionable next step that "
+    "is available and authorized, execute it in this run. A repeated blocker without a new action, evidence, or "
+    "state change is unsuccessful: choose a different authorized path, or report the precise unresolved boundary; "
+    "never send a success notification for it.\n"
+    "Keep pending/retryable status distinct from an unknown outcome and from an integrity or permission conflict. "
+    "Preserve the typed reason, evidence, and attempt history. Reconcile an uncertain external or paid effect "
+    "before retrying it. Do not bypass user-only approval, identity/provenance/CAS conflicts, or safety limits. "
+    "There is no fixed failed-mutation count that ends ordinary repair; use the existing time, iteration, and "
+    "operation budgets, and escalate only when no authorized safe path remains.\n"
+    "Completion requires evidence of the requested terminal outcome from the real owning path. A plan, PR, test, "
+    "status comment, scheduler result, or intended write alone is not that outcome. NEVER substitute plausible-"
+    "looking fabricated output (made-up data, invented file contents, synthesized API responses) for results you "
+    "couldn't actually produce."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls

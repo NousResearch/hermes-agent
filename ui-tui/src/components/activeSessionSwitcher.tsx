@@ -1,7 +1,23 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  ProjectsTreeResult,
+  ProjectTreeNode,
+  SessionListResult,
+  SessionListRow
+} from '@hermes/shared/gateway-events'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import {
+  DEFAULT_GROUP_VIEW,
+  deriveSwitcherRows,
+  groupKey,
+  groupSessionsByProject,
+  type GroupView,
+  nextGroupView,
+  type SessionGroup,
+  type SwitcherRow,
+  switcherRowKey
+} from '../domain/sessionGroups.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
@@ -17,6 +33,10 @@ import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
+
+type SwitcherListRow = SwitcherRow<SessionActiveItem, SessionListRow>
+// Enough to cover every row `session.list` can return (its own limit is 200).
+const PROJECT_TREE_SESSION_LIMIT = 500
 const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
@@ -93,7 +113,7 @@ export const resumableHistory = (history: readonly SessionListRow[], live: reado
 
 // Hint segment tables are functions (not module constants) so their text
 // fragments resolve against the active language at render time.
-export const resumeRowContextHintSegments = (): OrchestratorHintSegment[] => {
+export const resumeRowContextHintSegments = (toggle: 'group' | 'ungroup' | null = null): OrchestratorHintSegment[] => {
   const h = messages().pickers.session.hint
 
   return [
@@ -102,7 +122,28 @@ export const resumeRowContextHintSegments = (): OrchestratorHintSegment[] => {
     { role: 'hotkey', text: 'Enter' },
     { role: 'text', text: h.resume },
     { role: 'hotkey', text: 'd' },
-    { role: 'text', text: h.delete }
+    { role: 'text', text: h.delete },
+    ...(toggle
+      ? [
+          { role: 'text', text: ' · ' } as const,
+          { role: 'hotkey', text: 'g' } as const,
+          { role: 'text', text: toggle === 'group' ? h.group : h.ungroup } as const
+        ]
+      : [])
+  ]
+}
+
+/** Hint for a selected project header row. */
+export const groupRowContextHintSegments = (): OrchestratorHintSegment[] => {
+  const h = messages().pickers.session.hint
+
+  return [
+    { role: 'label', text: h.groupRowLabel },
+    { role: 'text', text: ' ' },
+    { role: 'hotkey', text: 'Enter' },
+    { role: 'text', text: h.cycleGroup },
+    { role: 'hotkey', text: 'g' },
+    { role: 'text', text: h.ungroup }
   ]
 }
 
@@ -312,6 +353,15 @@ export function ActiveSessionSwitcher({
 }: ActiveSessionSwitcherProps) {
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListRow[]>([])
+  // Project buckets over `history`; empty when `projects.tree` is unavailable (flat list).
+  const [historyGroups, setHistoryGroups] = useState<SessionGroup<SessionListRow>[]>([])
+  // `g` flips between project buckets and the flat most-recent-first list;
+  // `groupViews` is each bucket's collapsed / first-3 / all state (default first-3).
+  const [grouped, setGrouped] = useState(true)
+  const [groupViews, setGroupViews] = useState<Record<string, GroupView>>({})
+  // `/` opens the search box (`searching`: keys go to it); the `query` filter outlives it until Esc.
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
   const [err, setErr] = useState('')
   // A close/delete failure: kept apart from `err`, which every quiet poll rewrites.
   const [actionErr, setActionErr] = useState('')
@@ -335,25 +385,44 @@ export function ActiveSessionSwitcher({
   // session that was hidden while live reappears in history once it closes —
   // without re-querying the DB. Only refreshed on a full (includeHistory) load.
   const rawHistoryRef = useRef<SessionListRow[]>([])
-  // Mirror the displayed lists so the async poll can re-anchor the selection to
-  // the *same* row (by session id) after live sessions appear/disappear, rather
-  // than keeping a now-stale flat index.
-  const itemsRef = useRef<SessionActiveItem[]>([])
-  const historyDisplayRef = useRef<SessionListRow[]>([])
+  // Last good `projects.tree` nodes, kept across polls like the raw history.
+  const projectsRef = useRef<ProjectTreeNode[]>([])
+  // Mirror the displayed rows (and the view settings that shaped them) so the
+  // async poll can re-anchor the selection to the *same* row (by key) after
+  // rows appear/disappear, rather than keeping a now-stale flat index.
+  const rowsRef = useRef<SwitcherListRow[]>([])
+  const groupedRef = useRef(grouped)
+  const groupViewsRef = useRef(groupViews)
+  const queryRef = useRef(query)
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
 
-  // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
-  // always rendered) and the live+history list is windowed below it. `total`
-  // is the count of selectable rows (incl. the new row).
-  const liveCount = items.length
-  const histCount = history.length
-  const listLen = liveCount + histCount
+  // Rows are [new][live…][headers + history…]: the "+ new" row is pinned first
+  // (index 0, always rendered) and the rest is windowed below it. Project
+  // headers are selectable rows (Enter / click cycles their view). `total` is
+  // the count of selectable rows (incl. the new row).
+  const rows = useMemo(
+    () => deriveSwitcherRows(items, history, historyGroups, { grouped, query, views: groupViews }),
+    [grouped, groupViews, historyGroups, history, items, query]
+  )
+
+  const listLen = rows.length
   const total = listLen + 1
-  const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
+
+  // Resumable rows (raw most-recent-first, for the flat list) plus their project
+  // buckets; buckets stay empty when `projects.tree` is unavailable.
+  const deriveHistory = useCallback((live: readonly SessionActiveItem[]) => {
+    const hist = resumableHistory(rawHistoryRef.current, live)
+
+    const groups = projectsRef.current.length
+      ? groupSessionsByProject(hist, projectsRef.current, messages().pickers.session.otherProject)
+      : []
+
+    return { groups, hist }
+  }, [])
 
   const load = useCallback(
     // `quiet` skips the loading spinner (used by the live-status poll);
@@ -374,7 +443,7 @@ export function ActiveSessionSwitcher({
             })
           : null
 
-        const [liveRes, histRes] = await Promise.allSettled([
+        const [liveRes, histRes, treeRes] = await Promise.allSettled([
           canonicalList
             ? canonicalList.then(value => ({
                 sessions: value.sessions?.map(row => ({
@@ -388,6 +457,14 @@ export function ActiveSessionSwitcher({
             ? gw.request<SessionListResult>('session.list', {
                 limit: 200,
                 ...(canonicalList ? { scope: 'stored' } : {})
+              })
+            : Promise.resolve(null),
+          // Grouping is decoration: a failing tree degrades to the flat list. The shared
+          // (canonical) gateway has no `projects.tree`, so the picker stays flat there.
+          includeHistory && !gw.isCanonical
+            ? gw.request<ProjectsTreeResult>('projects.tree', {
+                preview_limit: 1,
+                session_limit: PROJECT_TREE_SESSION_LIMIT
               })
             : Promise.resolve(null)
         ])
@@ -422,13 +499,29 @@ export function ActiveSessionSwitcher({
           }
         }
 
-        const hist = resumableHistory(rawHistoryRef.current, next)
+        if (includeHistory && treeRes.status === 'fulfilled') {
+          const tree = asRpcResult<ProjectsTreeResult>(treeRes.value)
+
+          if (tree) {
+            projectsRef.current = tree.projects ?? []
+          }
+        }
+
+        const { groups, hist } = deriveHistory(next)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
-        const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
+
+        const nextRows = deriveSwitcherRows(next, hist, groups, {
+          grouped: groupedRef.current,
+          query: queryRef.current,
+          views: groupViewsRef.current
+        })
+
+        const maxSel = nextRows.length // == total - 1 (new row is index 0)
 
         setItems(next)
         setHistory(hist)
+        setHistoryGroups(groups)
         // Re-anchor selection to the same row by identity (the live list can
         // grow/shrink between polls, which would otherwise drift a flat index).
         setSel(s => {
@@ -442,21 +535,10 @@ export function ActiveSessionSwitcher({
             return 0 // "+ new" row
           }
 
-          const prevItems = itemsRef.current
-          const prevHist = historyDisplayRef.current
-          const clamp = () => Math.max(0, Math.min(s, maxSel))
+          const prev = rowsRef.current[s - 1]
+          const i = prev ? nextRows.findIndex(r => switcherRowKey(r) === switcherRowKey(prev)) : -1
 
-          if (s - 1 < prevItems.length) {
-            const id = prevItems[s - 1]?.id
-            const i = id ? next.findIndex(x => x.id === id) : -1
-
-            return i >= 0 ? i + 1 : clamp()
-          }
-
-          const id = prevHist[s - 1 - prevItems.length]?.id
-          const i = id ? hist.findIndex(x => x.id === id) : -1
-
-          return i >= 0 ? 1 + next.length + i : clamp()
+          return i >= 0 ? i + 1 : Math.max(0, Math.min(s, maxSel))
         })
         setErr(histError)
         setLoading(false)
@@ -469,13 +551,20 @@ export function ActiveSessionSwitcher({
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, deriveHistory, gw]
   )
 
   useEffect(() => {
-    itemsRef.current = items
-    historyDisplayRef.current = history
-  }, [items, history])
+    rowsRef.current = rows
+    groupedRef.current = grouped
+    groupViewsRef.current = groupViews
+    queryRef.current = query
+  }, [rows, grouped, groupViews, query])
+
+  // Matches shrink as the query grows: keep the cursor on a real row.
+  useEffect(() => {
+    setSel(s => Math.min(s, listLen))
+  }, [listLen])
 
   useEffect(() => {
     void load()
@@ -499,9 +588,10 @@ export function ActiveSessionSwitcher({
   )
 
   const closeSelected = useCallback(async () => {
-    const target = items[sel - 1]
+    const selectedRow = rows[sel - 1]
+    const target = selectedRow?.kind === 'live' ? selectedRow.item : null
 
-    if (!target || rowKind(sel) !== 'live' || closingId) {
+    if (!target || closingId) {
       return
     }
 
@@ -532,26 +622,60 @@ export function ActiveSessionSwitcher({
       } else if (fallback.action === 'new') {
         onNew()
       } else {
-        setSel(s => Math.max(0, Math.min(s, remaining.length + history.length)))
+        setSel(s => Math.max(0, Math.min(s, rows.length - 1)))
       }
     } catch (e: unknown) {
       setActionErr(rpcErrorMessage(e))
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, gw.isCanonical, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, gw.isCanonical, load, onClose, onNew, onSelect, rows, sel])
 
   const removeDeleted = useCallback(
     (id: string) => {
       rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== id)
-      setHistory(prev => prev.filter(h => h.id !== id))
-      setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
+
+      const derived = deriveHistory(items)
+      setHistory(derived.hist)
+      setHistoryGroups(derived.groups)
+      setSel(s => Math.max(0, Math.min(s, rows.length - 1)))
     },
-    [history.length, items.length]
+    [deriveHistory, items, rows.length]
   )
 
   const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
   const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
+
+  const cycleGroupView = useCallback((group: SessionGroup<SessionListRow>) => {
+    const key = groupKey(group)
+
+    setGroupViews(v => ({ ...v, [key]: nextGroupView(v[key] ?? DEFAULT_GROUP_VIEW, group.rows.length) }))
+  }, [])
+
+  // Re-anchor the selection by row key when the row set changes shape. A header
+  // that disappears (ungrouping) hands the cursor to its first session.
+  const toggleGrouped = useCallback(() => {
+    if (!historyGroups.length) {
+      return
+    }
+
+    const prev = rows[sel - 1]
+    const nextGrouped = !grouped
+
+    const nextRows = deriveSwitcherRows(items, history, historyGroups, {
+      grouped: nextGrouped,
+      query,
+      views: groupViews
+    })
+
+    const anchor =
+      prev?.kind === 'header' && !nextGrouped ? `hist:${prev.group.rows[0]?.id}` : prev && switcherRowKey(prev)
+
+    const i = anchor ? nextRows.findIndex(r => switcherRowKey(r) === anchor) : -1
+
+    setGrouped(nextGrouped)
+    setSel(i >= 0 ? i + 1 : Math.min(sel, nextRows.length))
+  }, [grouped, groupViews, history, historyGroups, items, query, rows, sel])
 
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
@@ -562,29 +686,37 @@ export function ActiveSessionSwitcher({
         return
       }
 
-      const kind = rowKind(index)
+      const row = rows[index - 1]
       const clamped = Math.max(0, Math.min(index, total - 1))
 
-      if (kind === 'live') {
+      if (row?.kind === 'live') {
         setSel(clamped)
-        onSelect(items[index - 1]!.id)
+        onSelect(row.item.id)
 
         return
       }
 
-      if (kind === 'history') {
+      if (row?.kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+        onResume(row.row.id)
+
+        return
+      }
+
+      if (row?.kind === 'header') {
+        setSel(clamped)
+        cycleGroupView(row.group)
 
         return
       }
 
       setSel(0)
     },
-    [deletePending, history, items, onResume, onSelect, rowKind, total]
+    [cycleGroupView, deletePending, onResume, onSelect, rows, total]
   )
 
-  const selectedKind = rowKind(sel)
+  const selectedRow = rows[sel - 1]
+  const selectedKind: 'header' | 'history' | 'live' | 'new' = sel === 0 || !selectedRow ? 'new' : selectedRow.kind
   const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
 
@@ -609,8 +741,23 @@ export function ActiveSessionSwitcher({
     const lower = ch?.toLowerCase() ?? ''
     const isCtrl = (letter: string) => key.ctrl && (lower === letter || ch === ctrlChar(letter))
 
+    // Search box: keys belong to it; arrows still move through the matches and
+    // Enter (its onSubmit) keeps the filter and returns to the list.
+    if (searching) {
+      if (key.escape) {
+        setSearching(false)
+        setQuery('')
+      } else if (key.upArrow) {
+        setSel(s => Math.max(rows.length ? 1 : 0, s - 1))
+      } else if (key.downArrow) {
+        setSel(s => Math.min(total - 1, s + 1))
+      }
+
+      return
+    }
+
     if (key.escape) {
-      return onCancel()
+      return query ? setQuery('') : onCancel()
     }
 
     if (isCtrl('n')) {
@@ -642,9 +789,20 @@ export function ActiveSessionSwitcher({
     // `d` arms deletion on a resumable history row. (On the New row `d` is
     // captured by the prompt's TextInput, so it never reaches here.)
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
+      setConfirmDelete(selectedRow?.kind === 'history' ? selectedRow.row.id : null)
 
       return
+    }
+
+    if (ch === '/' && !key.ctrl && !key.meta && !newSelected) {
+      setSearching(true)
+
+      return
+    }
+
+    // `g` ungroups / regroups by project (typed into the prompt on the New row).
+    if (lower === 'g' && !key.ctrl && !key.meta && !newSelected) {
+      return toggleGrouped()
     }
 
     if (newSelected && draftHasText) {
@@ -668,12 +826,16 @@ export function ActiveSessionSwitcher({
         return
       }
 
-      if (selectedKind === 'live' && items[sel - 1]) {
-        return onSelect(items[sel - 1]!.id)
+      if (selectedRow?.kind === 'live') {
+        return onSelect(selectedRow.item.id)
       }
 
-      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
-        return onResume(history[sel - 1 - items.length]!.id)
+      if (selectedRow?.kind === 'history') {
+        return onResume(selectedRow.row.id)
+      }
+
+      if (selectedRow?.kind === 'header') {
+        return cycleGroupView(selectedRow.group)
       }
     }
   })
@@ -720,6 +882,29 @@ export function ActiveSessionSwitcher({
 
       {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
 
+      {(searching || query) && (
+        <Box>
+          <Text color={t.color.label}>{S.searchPrompt}</Text>
+          {searching ? (
+            <TextInput
+              color={t.color.text}
+              columns={promptColumns}
+              onChange={value => {
+                setQuery(value)
+                setSel(1)
+              }}
+              onSubmit={() => setSearching(false)}
+              value={query}
+            />
+          ) : (
+            <Text color={t.color.text}>
+              {query}
+              <Text color={t.color.muted}>{S.searchClear}</Text>
+            </Text>
+          )}
+        </Box>
+      )}
+
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
           {newSelectedRow ? '▸ ' : '  '}
@@ -757,16 +942,39 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}>{C.moreAbove(offset)}</Text>}
-      {!listLen && <Text color={t.color.muted}>{S.noOtherSessions}</Text>}
+      {!listLen && <Text color={t.color.muted}>{query ? S.noMatches : S.noOtherSessions}</Text>}
 
       {visibleRows.map(i => {
         const selected = sel === i
         const selectedStyle = selected ? selectedSessionRowStyle(t) : null
         const rowTextColor = selectedStyle?.color
-        const kind = rowKind(i)
+        const row = rows[i - 1]!
 
-        if (kind === 'history') {
-          const h = history[i - 1 - items.length]!
+        if (row.kind === 'header') {
+          const { group, shown, view } = row
+          const marker = view === 'collapsed' ? '▸' : view === 'all' ? '▼' : '▾'
+          const count = shown === group.rows.length ? `${group.rows.length}` : `${shown}/${group.rows.length}`
+
+          return (
+            <Box
+              backgroundColor={selectedStyle?.backgroundColor}
+              flexDirection="row"
+              key={`group:${groupKey(group)}`}
+              onClick={handleRowClick(i)}
+              width="100%"
+            >
+              <Text bold={selected} color={rowTextColor ?? t.color.muted}>
+                {selected ? '▸ ' : '  '}
+              </Text>
+              <Text bold color={rowTextColor ?? t.color.accent} wrap="truncate-end">
+                {`${marker} ${group.label} (${count})`}
+              </Text>
+            </Box>
+          )
+        }
+
+        if (row.kind === 'history') {
+          const h = row.row
           const pendingDelete = confirmDelete === h.id
 
           const title = pendingDelete
@@ -824,7 +1032,7 @@ export function ActiveSessionSwitcher({
           )
         }
 
-        const s = items[i - 1]!
+        const s = row.item
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
         const title = closingId === s.id ? S.row.closing : s.title || s.preview || S.row.untitled
@@ -886,7 +1094,7 @@ export function ActiveSessionSwitcher({
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}>{C.moreBelow(listLen - offset - VISIBLE)}</Text>}
 
-      {newSelected ? (
+      {newSelected && !searching ? (
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>{S.promptLabel}</Text>
@@ -907,7 +1115,11 @@ export function ActiveSessionSwitcher({
         <Box flexDirection="column" marginTop={1}>
           <OrchestratorHintText
             segments={
-              selectedKind === 'history' ? resumeRowContextHintSegments() : orchestratorContextHintSegments(false)
+              selectedKind === 'header'
+                ? groupRowContextHintSegments()
+                : selectedKind === 'history'
+                  ? resumeRowContextHintSegments(historyGroups.length ? (grouped ? 'ungroup' : 'group') : null)
+                  : orchestratorContextHintSegments(false)
             }
             t={t}
           />
@@ -916,6 +1128,7 @@ export function ActiveSessionSwitcher({
             <Text color={newSessionMarkerColor(t, false)}>{S.newRowMarker}</Text>
             {S.selectNewSuffix}
           </Text>
+          {!searching && <Text color={t.color.muted}>{S.searchHint}</Text>}
         </Box>
       )}
 

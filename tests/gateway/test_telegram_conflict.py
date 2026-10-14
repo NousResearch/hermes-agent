@@ -120,7 +120,7 @@ async def test_conflict_retry_preserves_pending_updates(monkeypatch):
 
     The wait ladder (15–55s) expires the zombie getUpdates session. Using
     drop_pending_updates=True also discarded DMs queued while the previous
-    gateway was wedged (T2/Corey 2026-09-11).
+    gateway was down.
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.set_fatal_error_handler(AsyncMock())

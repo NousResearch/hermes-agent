@@ -279,3 +279,46 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# tps: this turn's output tokens over time spent in model API calls (opt-in)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "output_tokens,api_seconds,expected",
+    [
+        (1200, 10.0, "120 tok/s"),
+        (45, 10.0, "4.5 tok/s"),
+        (0, 10.0, ""),
+        (None, 10.0, ""),
+        (100, 0.0, ""),
+        (100, None, ""),
+    ],
+)
+def test_format_footer_tps(output_tokens, api_seconds, expected):
+    out = format_runtime_footer(
+        model=None, context_tokens=0, context_length=None,
+        output_tokens=output_tokens, api_seconds=api_seconds, fields=("tps",),
+    )
+    assert out == expected
+
+
+def test_build_footer_line_threads_tps_in_field_order(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["model", "latency", "tps"]}}},
+        platform_key="discord", model="gpt-5.4", context_tokens=0, context_length=None, cwd="",
+        turn_seconds=30.0, output_tokens=2000, api_seconds=20.0,
+    )
+    # Rate uses API time (20s), not the 30s wall clock that includes tool execution.
+    assert out == "gpt-5.4 · 30s · 100 tok/s"
+
+
+def test_default_footer_ignores_tps_inputs(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    common = dict(
+        user_config={"display": {"runtime_footer": {"enabled": True}}}, platform_key="discord",
+        model="openai/gpt-5.4", context_tokens=50_247, context_length=1_000_000, cwd="/var/data",
+    )
+    assert build_footer_line(**common, output_tokens=900, api_seconds=3.0) == build_footer_line(**common)

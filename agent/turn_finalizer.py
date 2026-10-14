@@ -713,6 +713,9 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
+        # This turn only (all API calls, tool rounds included): feeds the footer's ``tps`` field.
+        "turn_output_tokens": getattr(agent, "_turn_output_tokens", 0) or 0,
+        "turn_api_seconds": getattr(agent, "_turn_api_seconds", 0.0) or 0.0,
         # Requested service tier, for billing audits (`hermes -z --usage-file`).
         "service_tier": (
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}

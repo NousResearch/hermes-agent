@@ -770,6 +770,41 @@ def _format_failure_streams(result) -> str:
     return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
 
 
+def _bot_chat_child_argv() -> Optional[List[str]]:
+    """Hermes argv for a Bot Chat delivery child, or None when no launcher exists.
+
+    ``$HERMES_BIN`` first (a path-like value wins as given after ``~`` expansion,
+    a bare name resolves on PATH, batch shims are refused because cmd.exe
+    reinterprets otherwise literal argv), then the running interpreter's
+    ``sys.executable -m hermes_cli.main`` (exactly this install), then
+    ``which("hermes")`` only when this install's CLI is not importable — the
+    trust order of ``hermes_cli.kanban_db_dispatch._resolve_hermes_argv``, so
+    every gateway-spawned Hermes child follows one launcher (#133325, #111569)."""
+    import re
+
+    env_bin = os.environ.get("HERMES_BIN", "").strip()
+    if env_bin:
+        expanded = os.path.expanduser(env_bin)
+        if not expanded.lower().endswith((".cmd", ".bat")):
+            looks_like_path = (
+                expanded.startswith("~") or os.path.isabs(expanded)
+                or bool(os.path.dirname(expanded)) or "\\" in expanded
+                or bool(re.match(r"^[A-Za-z]:", expanded)))
+            if looks_like_path:
+                return [os.path.abspath(expanded)]
+            resolved = shutil.which(expanded)
+            if resolved:
+                return [resolved]
+    try:
+        import importlib.util as _ilu
+        if _ilu.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main"]
+    except Exception:
+        pass
+    hermes_bin = shutil.which("hermes")
+    return [hermes_bin] if hermes_bin else None
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
                          for_failure: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
@@ -873,22 +908,17 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # Discovery/admission uncertainty must never open a second-writer fallback.
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
-    # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
-    # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
-    # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
-    try:
-        import importlib.util as _ilu
-        found = _ilu.find_spec("hermes_cli") is not None
-    except Exception:
-        found = False
-    if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
-    else:
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
-                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
-        argv = [hermes_bin]
+    # $HERMES_BIN first, then the running install, then `hermes` on PATH (the trust order of
+    # hermes_cli.kanban_db_dispatch._resolve_hermes_argv): an operator-pinned launcher must be
+    # able to win, because the module form re-bootstraps a child of a package-manager-workspace
+    # gateway into a phantom install whose environment may lack extras (#133325). The running
+    # install still beats PATH: the scheduler lives in the long-running gateway, so a PATH-first
+    # lookup would hand delivery to whatever `hermes` PATH names — another install, or a
+    # planted one — instead of this one.
+    argv = _bot_chat_child_argv()
+    if argv is None:
+        return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
+                "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
 
     def _fail(msg: str, **log_kwargs) -> str:
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)

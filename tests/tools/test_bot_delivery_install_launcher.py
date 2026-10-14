@@ -56,6 +56,37 @@ def test_path_then_bare_fallback_remain_available(launchers, monkeypatch):
     assert bot_relay._hermes_cli() == "hermes"
 
 
+def test_hermes_bin_pins_the_launcher_over_layout_guesses(launchers, monkeypatch):
+    """$HERMES_BIN outranks the published launcher and every fallback: a relay
+    running in a package-manager workspace has none of those layouts, and a
+    wrong guess re-bootstraps the child into a phantom install (#133325)."""
+    published, sibling = launchers
+    published.touch()
+    pinned = sibling.with_name("pinned-hermes")
+    pinned.touch()
+    monkeypatch.setenv("HERMES_BIN", str(pinned))
+    assert bot_relay._hermes_cli() == str(pinned)
+
+
+def test_hermes_bin_bare_name_resolves_on_path(launchers, monkeypatch):
+    """A bare-name $HERMES_BIN keeps PATH semantics instead of a same-directory file."""
+    published, sibling = launchers
+    published.touch()
+    monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(bot_relay.shutil, "which", lambda name: "/opt/published/hermes")
+    assert bot_relay._hermes_cli() == "/opt/published/hermes"
+
+
+@pytest.mark.platforms("windows")
+def test_hermes_bin_batch_shim_refused(launchers, monkeypatch):
+    """A batch-shim $HERMES_BIN is skipped, not selected: cmd.exe reinterprets
+    otherwise literal argv (query-file paths) even with shell=False."""
+    published, sibling = launchers
+    published.touch()
+    monkeypatch.setenv("HERMES_BIN", str(published.with_suffix(".cmd")))
+    assert bot_relay._hermes_cli() == str(published)
+
+
 @pytest.mark.platforms("windows")
 def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     import json

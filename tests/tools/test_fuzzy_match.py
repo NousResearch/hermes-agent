@@ -594,18 +594,29 @@ class TestEscapeNormalizedNewString:
         assert "\tprint(\"after\")" in new
         assert "\\t" not in new
 
-    def test_carriage_return_in_new_string_unescaped(self):
-        """File has real CR, model sends literal \\r in new_string. Line breaks
-        stay real: a literal \\n alongside would be newline drift, which
-        TestNewlineLiteralDrift covers."""
+    def test_carriage_return_escapes_in_new_string_unescaped(self):
+        """CRLF file + model serializing endings as literal ``\r\n`` escapes
+        matches via the exact strategy and lands as real CRLF — exactly once
+        (no doubled carriage returns)."""
         content = "line1\r\nline2\r\n"
-        old_string = "line1\\r\nline2\\r\n"
-        new_string = "replaced\\r\n"
+        old_string = "line1\\r\\nline2\\r\\n"
+        new_string = "replaced\\r\\n"
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        assert strategy == "escape_normalized"
-        assert "replaced\r\n" in new
+        assert strategy == "exact"
+        assert new == "replaced\r\n"
+
+    def test_literal_cr_escapes_preserved_on_lf_file(self):
+        """LF-dominant file: ``\r`` escapes in old/new strings are genuine
+        source content and must survive verbatim."""
+        content = "x = \"a\\rb\"\n"
+        old_string = "x = \"a\\rb\""
+        new_string = "x = \"a\\rc\""
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None and count == 1
+        assert strategy == "exact"
+        assert new == "x = \"a\\rc\"\n"
 
     def test_newline_in_new_string_NOT_unescaped(self):
         """``\\n`` is intentionally left alone — newlines serialize correctly

@@ -78,13 +78,13 @@ def _cua_configured_permission_mode() -> str:
 
 # ``computer_use.ax_max_elements``: bound on the DRIVER's accessibility-tree walk per capture. The
 # visible-element cap in tool.py (_DEFAULT_MAX_ELEMENTS) trims the RESPONSE only, so without this an
-# unbounded walk pays for nodes the model never sees; 0 disables the bound (driver default: 2,000
-# elements / depth 25).
+# unbounded walk pays for nodes the model never sees; 0 omits Hermes's override and uses the driver
+# default (250 nodes on Cua >= 0.35, not an unlimited walk).
 _DEFAULT_AX_MAX_ELEMENTS = 200
 
 def _cua_configured_ax_max_elements() -> int:
-    """Bound on ``get_window_state``'s AX walk; 0 = no bound (driver default). Unreadable config fails to
-    the default, never to unbounded. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
+    """Bound on ``get_window_state``'s AX walk; 0 = driver default. Unreadable config fails to
+    the Hermes default, never to an omitted bound. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
     window 540 ms -> 83 ms and a 456-node Finder window 6.9 s -> 0.6 s at 200, on the CLI transport. The
     bounded result is a prefix of the unbounded walk, so the elements the model sees are unchanged. Raise
     it toward 400 to keep the full first 100 visible elements on a pathological tree (~1.4 s on Finder);

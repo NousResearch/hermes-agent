@@ -41,6 +41,9 @@ class _FakeSession:
         self._scope = capture_scope
         self.capabilities_discovered = True
 
+    def supports_input_value(self, tool: str, property_name: str, value: Any) -> bool:
+        return False
+
     def _has_tool(self, name: str) -> bool:
         return name in {"get_desktop_state", "screenshot", "list_windows"}
 

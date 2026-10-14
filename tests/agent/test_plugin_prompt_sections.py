@@ -7,9 +7,20 @@ import subprocess
 import sys
 import textwrap
 
-from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+from agent.system_prompt import (
+    _restore_plugin_prompt_sections,
+    build_system_prompt,
+    build_system_prompt_parts,
+    invalidate_system_prompt,
+    restore_plugin_prompt_sections,
+)
 from hermes_cli import plugins
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    PLUGIN_SECTIONS_END,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 from run_agent import AIAgent
 
 
@@ -209,3 +220,87 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     assert outputs[1]["rebuilt_equal"] is False
     assert outputs[1]["rebuilt_has_changed"] is True
     assert outputs[1]["calls_after_rebuild"] == 2
+
+
+def _prompt_with_section(monkeypatch, content: str) -> tuple[AIAgent, str]:
+    """A real agent and the full prompt it builds with one plugin section."""
+    monkeypatch.setattr(
+        "agent.coding_context.build_coding_workspace_block",
+        lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
+    )
+    manager = PluginManager()
+    _install_test_section(manager, content)
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    agent = _real_agent()
+    return agent, build_system_prompt(agent)
+
+
+def _resumed(agent: AIAgent, prompt: str) -> AIAgent:
+    """A fresh agent for the same session, seeded from the persisted prompt as
+    ``_restore_or_build_system_prompt`` does on resume."""
+    resumed = _real_agent(session_id=agent.session_id)
+    resumed._cached_system_prompt = prompt
+    restore_plugin_prompt_sections(resumed, prompt)
+    return resumed
+
+
+def test_sections_are_recovered_from_the_prompt_the_builder_emits(monkeypatch):
+    # The builder puts the active-profile paragraph between the sections and
+    # the timestamp; recovery has to read through it.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    assert f"{PLUGIN_SECTIONS_END}\n\nActive Hermes profile: " in prompt
+
+    restored = _restore_plugin_prompt_sections(prompt)
+
+    assert [(s.id, s.content) for s in restored] == [
+        ("example.rules", "persisted rules")
+    ]
+
+
+def test_sections_are_recovered_from_a_prompt_without_profile_paragraph(monkeypatch):
+    # Prompts persisted before the profile paragraph moved into the volatile
+    # tier have the timestamp right after the sections.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    end = prompt.index(PLUGIN_SECTIONS_END) + len(PLUGIN_SECTIONS_END)
+    timestamp = prompt.index("\n\nConversation started:", end)
+    older = prompt[:end] + prompt[timestamp:]
+
+    restored = _restore_plugin_prompt_sections(older)
+
+    assert [s.content for s in restored] == ["persisted rules"]
+
+
+def test_recovery_rejects_other_text_after_the_sections(monkeypatch):
+    # Only the builder's own profile paragraph is read through: a container
+    # followed by anything else is not the one core emitted.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    end = prompt.index(PLUGIN_SECTIONS_END) + len(PLUGIN_SECTIONS_END)
+    tampered = prompt[:end] + "\n\nSome other paragraph." + prompt[end:]
+
+    assert _restore_plugin_prompt_sections(tampered) == ()
+
+
+def test_resumed_agent_keeps_persisted_section_when_rerender_raises(monkeypatch):
+    # The persisted bytes are the fail-open fallback at the next rebuild
+    # boundary: a render that raises there must not drop the section.
+    agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    resumed = _resumed(agent, prompt)
+
+    def broken(_session_info):
+        raise RuntimeError("plugin discovery failed")
+
+    monkeypatch.setattr(plugins, "render_system_prompt_sections", broken)
+    invalidate_system_prompt(resumed)
+    rebuilt = build_system_prompt(resumed)
+
+    assert "## Plugin Context: example.rules" in rebuilt
+    assert "persisted rules" in rebuilt
+
+
+def test_resumed_agent_prompt_parts_carry_the_persisted_section(monkeypatch):
+    # Readers that rebuild the parts of a resumed agent's prompt without a
+    # rebuild boundary (e.g. the context breakdown) see the frozen section.
+    agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    resumed = _resumed(agent, prompt)
+
+    assert "persisted rules" in build_system_prompt_parts(resumed)["volatile"]

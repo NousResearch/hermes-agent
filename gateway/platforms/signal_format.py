@@ -3,6 +3,8 @@ adapter and the standalone send paths emit the same bodyRanges."""
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import re
 
 from agent.markdown_tables import is_table_divider, realign_markdown_tables
@@ -14,11 +16,11 @@ _TABLE_WIDTH = 40
 
 _CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_INLINE_CODE_RE = re.compile(r"`(.+?)`")
 _INLINE_PATTERNS = [
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
     (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
     (re.compile(r"~~(.+?)~~", re.DOTALL), "STRIKETHROUGH"),
-    (re.compile(r"`(.+?)`"), "MONOSPACE"),
     (re.compile(r"(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)"), "ITALIC"),
     (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC")]
 
@@ -73,58 +75,72 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
         inner = match.group(1).rstrip("\n")
         styles.append((match.start(), len(inner), "MONOSPACE"))
         text = text[: match.start()] + inner + text[match.end() :]
-    new_text, last_end = "", 0
+    # Headings and inline markers are resolved in this text's coordinates and every marker they strip
+    # is one (pos, len) removal, so a single _adjust maps each range (code blocks included) onto the
+    # final text. Code is verbatim: a '#' line or '*', '_', '`' inside it is code, not formatting.
+    code_spans = [(start, start + length) for start, length, _ in styles]
+    removals: list[tuple[int, int]] = []
     for match in _HEADING_RE.finditer(text):
-        new_text += text[last_end : match.start()]
+        if any(match.start() < ce and match.end() > cs for cs, ce in code_spans):
+            continue
         eol = text.find("\n", match.end())
         if eol == -1:
             eol = len(text)
-        heading_text = text[match.end() : eol]
-        styles.append((len(new_text), len(heading_text), "BOLD"))
-        new_text += heading_text
-        last_end = eol
-    text = new_text + text[last_end:]
-    # Inline markers: first pattern to claim a span wins; later overlapping matches are dropped.
-    all_matches: list[tuple[int, int, int, int, str]] = []
-    occupied: list[tuple[int, int]] = []
+        removals.append((match.start(), match.end() - match.start()))
+        styles.append((match.end(), eol - match.end(), "BOLD"))
+    masked = _mask(text, code_spans)
+    all_matches = [(m.start(), m.end(), m.start(1), m.end(1), "MONOSPACE") for m in _INLINE_CODE_RE.finditer(masked)]
+    masked = _mask(masked, [(ms, me) for ms, me, *_ in all_matches])
+    # Other inline markers: first pattern to claim a span wins; later overlapping matches are dropped.
+    # Claimed spans never overlap, so they stay sorted by start and by end: only the last one starting
+    # before a match can overlap it.
+    occupied_starts: list[int] = []
+    occupied_ends: list[int] = []
     for pattern, style in _INLINE_PATTERNS:
-        for match in pattern.finditer(text):
+        for match in pattern.finditer(masked):
             ms, me = match.start(), match.end()
-            if not any(ms < oe and me > os for os, oe in occupied):
+            i = bisect.bisect_left(occupied_starts, me)
+            if not (i and occupied_ends[i - 1] > ms):
                 all_matches.append((ms, me, match.start(1), match.end(1), style))
-                occupied.append((ms, me))
-    all_matches.sort()
-    # Strip the markers, recording (pos, len) removals so earlier block/heading ranges can be
-    # shifted, and capturing inline ranges in the stripped text.
-    result, last_end = "", 0
-    removals: list[tuple[int, int]] = []
-    inline_styles: list[tuple[int, int, str]] = []
+                occupied_starts.insert(i, ms)
+                occupied_ends.insert(i, me)
     for ms, me, g1s, g1e, style in all_matches:
-        if g1s > ms:
-            removals.append((ms, g1s - ms))
-        if me > g1e:
-            removals.append((g1e, me - g1e))
-        result += text[last_end:ms]
-        inner = text[g1s:g1e]
-        inline_styles.append((len(result), len(inner), style))
-        result += inner
-        last_end = me
+        removals += [(ms, g1s - ms), (g1e, me - g1e)]
+        styles.append((g1s, g1e - g1s, style))
     removals.sort()
+    # Every pass below is linear in the text (plus a log factor per range): a reply with thousands of
+    # spans must not block the gateway on per-span whole-string work.
+    removal_starts = [remove_pos for remove_pos, _ in removals]
+    removed_before = list(itertools.accumulate((remove_len for _, remove_len in removals), initial=0))
 
     def _adjust(pos: int) -> int:
-        shift = 0
-        for remove_pos, remove_len in removals:
-            if remove_pos >= pos:
-                break
-            shift += min(remove_len, pos - remove_pos)
-        return pos - shift
+        # Removals never overlap, so only the last one starting before pos can straddle it.
+        if not (i := bisect.bisect_left(removal_starts, pos)):
+            return pos
+        return pos - removed_before[i - 1] - min(removals[i - 1][1], pos - removal_starts[i - 1])
 
-    adjusted_prior = [(_adjust(start), _adjust(start + length) - _adjust(start), style)
-                      for start, length, style in styles if _adjust(start + length) > _adjust(start)]
-    text = result + text[last_end:]
+    kept, last_end = [], 0
+    for remove_pos, remove_len in removals:
+        kept.append(text[last_end:remove_pos])
+        last_end = remove_pos + remove_len
+    text = "".join(kept) + text[last_end:]
+    adjusted = [(_adjust(start), _adjust(start + length) - _adjust(start), style)
+                for start, length, style in styles if _adjust(start + length) > _adjust(start)]
     style_strings: list[str] = []
-    for cp_start, cp_len, style_type in sorted(adjusted_prior + inline_styles):
+    cp_done = u16_done = 0  # sorted starts: advance the UTF-16 offset instead of re-encoding each prefix
+    for cp_start, cp_len, style_type in sorted(adjusted):
         if 0 <= cp_start and cp_start + cp_len <= len(text):
-            u16_start, u16_len = _utf16_len(text[:cp_start]), _utf16_len(text[cp_start : cp_start + cp_len])
-            style_strings.append(f"{u16_start}:{u16_len}:{style_type}")
+            u16_done += _utf16_len(text[cp_done:cp_start])
+            cp_done = cp_start
+            style_strings.append(f"{u16_done}:{_utf16_len(text[cp_start : cp_start + cp_len])}:{style_type}")
     return text, style_strings
+
+
+def _mask(text: str, spans: list[tuple[int, int]]) -> str:
+    """Blank *spans* (keeping newlines, so line-bound patterns still see line breaks) so no marker
+    pattern can match inside them; positions are unchanged."""
+    parts, last_end = [], 0
+    for start, end in sorted(spans):  # spans never overlap
+        parts += [text[last_end:start], re.sub(r"[^\n]", "\x00", text[start:end])]
+        last_end = end
+    return "".join(parts) + text[last_end:]

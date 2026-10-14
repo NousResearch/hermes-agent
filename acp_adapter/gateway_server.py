@@ -859,6 +859,13 @@ class GatewayACPAgent(acp.Agent):
             return False
 
     async def aclose(self):
+        # Post-attach notices first: one paused mid-notice would otherwise resume after the
+        # teardown and open a fresh gateway connection through ``_client``.
+        background = list(self._background)
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
         for task in self._permissions.values():
             task.cancel()
         if self._permissions:

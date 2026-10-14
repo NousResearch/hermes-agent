@@ -10,6 +10,10 @@ resolver with the model id alone, so Codex sessions sized activation against
 generic direct-API metadata.
 """
 
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 
@@ -117,3 +121,107 @@ class TestResolveActiveContextLengthProviderAware:
 
         assert ctx == 150_000
         assert captured["config_ctx"] == 150_000
+
+
+class TestResolveActiveContextLengthKeyCmd:
+    """``key_cmd`` (and Entra ID) providers resolve to a callable token source, not a string.
+    The gate used to ``str()`` the runtime credential, which turned the source into
+    ``"<agent.command_token_source.CommandTokenSource object at 0x...>"``; the probe layer mints
+    callables itself, so it sent that text verbatim as the bearer and every metadata probe at
+    startup 401ed. The credential must reach the resolver in the shape the resolver understands."""
+
+    @staticmethod
+    def _key_cmd_source():
+        from agent.command_token_source import CommandTokenSource
+
+        return CommandTokenSource(f"{sys.executable} -c \"print('TOKEN-FROM-KEY-CMD')\"", "mingli")
+
+    def test_callable_credential_reaches_resolver_unchanged(self):
+        import model_tools
+
+        source = self._key_cmd_source()
+        captured = {}
+
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+            captured.update(api_key=api_key, base_url=base_url, provider=provider)
+            return 131_072
+
+        with patch("hermes_cli.config.load_config",
+                   return_value=_model_cfg(model="qwen-test", provider="mingli")), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"base_url": "http://127.0.0.1:8765/v1", "api_key": source}), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+            ctx = model_tools._resolve_active_context_length()
+
+        assert ctx == 131_072
+        assert captured["api_key"] is source
+        assert captured["base_url"] == "http://127.0.0.1:8765/v1"
+        assert captured["provider"] == "mingli"
+
+    def test_static_credential_is_still_a_stripped_string(self):
+        import model_tools
+
+        captured = {}
+
+        def fake_get_ctx(model_id, base_url="", api_key="", config_context_length=None, provider=""):
+            captured["api_key"] = api_key
+            return 131_072
+
+        with patch("hermes_cli.config.load_config",
+                   return_value=_model_cfg(model="qwen-test", provider="mingli")), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value={"base_url": "http://127.0.0.1:8765/v1", "api_key": "  static-key \n"}), \
+             patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
+            model_tools._resolve_active_context_length()
+
+        assert captured["api_key"] == "static-key"
+
+    def test_metadata_probes_carry_the_minted_token(self, tmp_path):
+        """End to end against a local endpoint, no resolver mocked: every probe the gate triggers
+        (LM Studio ``/api/v1/models``, ``/v1/models/<model>``, ``/v1/models``, Ollama ``/api/show``)
+        must carry the token the ``key_cmd`` printed, never the source's repr."""
+        import model_tools
+
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _reply(self):
+                seen.append((self.command, self.path, self.headers.get("Authorization")))
+                body = json.dumps({"object": "list", "data": [{"id": "qwen-test", "object": "model"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                self._reply()
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self._reply()
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+        try:
+            with patch("hermes_cli.config.load_config",
+                       return_value=_model_cfg(model="qwen-test", provider="mingli")), \
+                 patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                       return_value={"base_url": base_url, "api_key": self._key_cmd_source()}), \
+                 patch("agent.model_metadata.get_cached_context_length", return_value=None):
+                model_tools._resolve_active_context_length()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        authorized = [(method, path, auth) for method, path, auth in seen if auth is not None]
+        assert authorized, f"no authenticated probe reached the endpoint: {seen!r}"
+        offenders = [entry for entry in authorized if entry[2] != "Bearer TOKEN-FROM-KEY-CMD"]
+        assert not offenders, f"probes sent something other than the minted token: {offenders!r}"
+        assert not any("CommandTokenSource" in (auth or "") for _, _, auth in seen)

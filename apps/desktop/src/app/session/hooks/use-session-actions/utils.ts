@@ -1,7 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
+import { spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -68,6 +68,7 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { isAcknowledgedOptimisticUser } from './optimistic-user-dedup'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -220,8 +221,10 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 // IGNORED:  fields that are intentionally not compared — display-only metadata
 //           or reference identity the runtime already guarantees.
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
+//   submitText — the transport text prompt.submit carried; consumed by the
+//                optimistic-user dedup gate (#131848), never painted
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
-//                   accounting reads it, the transcript never paints it
+//                    accounting reads it, the transcript never paints it
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -256,7 +259,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'submitText', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -1019,21 +1022,7 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (
-      isOptimisticUser &&
-      acknowledgedUserCandidates.some(
-        candidate =>
-          // #122079: the tolerant arm widens the TEXT compare only — it stays
-          // inside the identity gate, so a rowId-bearing optimistic row is
-          // never swallowed by a committed row it provably is not (a genuine
-          // repeat of the same captioned paste). The rowId-less paste from
-          // #120978 carries no identity and keeps matching tolerantly.
-          !conflictingTranscriptIdentity(message, candidate) &&
-          (textWithoutReferenceLines(chatMessageText(candidate)) ===
-            textWithoutReferenceLines(chatMessageText(message)) ||
-            sameAttachmentTurn(candidate, message))
-      )
-    ) {
+    if (isOptimisticUser && isAcknowledgedOptimisticUser(message, acknowledgedUserCandidates)) {
       continue
     }
 

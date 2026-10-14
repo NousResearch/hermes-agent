@@ -63,6 +63,10 @@ export type ChatMessage = {
   durationS?: number
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** The EXACT text handed to prompt.submit — the optimistic bubble shows a
+   *  display projection (chip labels, resolved refs) that can differ from it,
+   *  so transcript dedup compares the submitted content, not the paint. */
+  submitText?: string
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
   /** Backend transcript rows this message represents — the hydration fold

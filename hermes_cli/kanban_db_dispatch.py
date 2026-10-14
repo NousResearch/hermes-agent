@@ -394,23 +394,49 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     return not _pid_recycled(pid, started_at)
 
 
+def _composed_fingerprints_match(recorded: str, current: str) -> bool:
+    """Same-worker check for the composed ``"<instantiation epoch>|<start time>"`` fingerprints written
+    by :func:`_process_fingerprint`. The epoch half is the reboot witness and compares exactly (both
+    sides read ``""`` on hosts without ``/proc``, which keeps that half disabled — never fail-closed).
+    The start half drifts by ~1 s between the spawn-time write and a later liveness read on the same
+    host (macOS ``kern.boottime`` adjustment, #117505), so it compares with the fleet-wide tolerance
+    (:func:`gateway.status.start_time_fingerprints_match`, ×100 on every platform): exact equality here
+    read a live worker as a recycled PID, released its still-valid claim and orphaned its run.
+    """
+    from gateway.status import start_time_fingerprints_match
+
+    recorded_epoch, _, recorded_start = recorded.partition("|")
+    current_epoch, _, current_start = current.partition("|")
+    if recorded_epoch != current_epoch:
+        return False
+    try:
+        return start_time_fingerprints_match(int(recorded_start), int(current_start))
+    except (TypeError, ValueError):
+        return False
+
+
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
     """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
     longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
     recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    boot witness was added) compares the start time only, with the same fleet-wide drift tolerance as
+    the composed form — a same-host reading drifts ~1 s between the spawn write and a later read
+    (#117505), so an exact comparison reconciled live workers to dead and orphaned their runs."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
-    from gateway.status import _start_times_agree, get_process_start_time
+        current = _process_fingerprint(int(pid))
+        if current is None:
+            return True
+        return not _composed_fingerprints_match(started_at, current)
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
     current = get_process_start_time(int(pid))
     if current is None:
         return True
     try:
-        return not _start_times_agree(current, started_at)
+        return not start_time_fingerprints_match(current, started_at)
     except (TypeError, ValueError):
         return True
 

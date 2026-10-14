@@ -136,6 +136,110 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+_MAX_STRINGIFIED_REPAIRS = 8
+
+
+def _repair_stringified_json(text: str) -> Any:
+    """Repair an under-closed JSON payload a model emitted as a string.
+
+    Some models stringify the batch envelope (or a nested ``arguments`` value)
+    and lose a structural delimiter at the tail — e.g.
+    ``[{"arguments": {…}, "name": "x"}]`` with the entry object's closing brace
+    missing before the final ``]``. The parser then reports
+    "Expecting ',' delimiter" at the *last character*, at any payload length, and
+    the model re-sends the same shape until the failure guardrail halts the turn.
+
+    Repair inserts ONLY delimiters the open containers already imply — never
+    content, never a guessed value — and only when every string in the payload is
+    terminated. An unterminated string means the model was cut off mid-value;
+    that case must not be guessed at, so it returns None. Callers treat None as
+    "not repairable" and surface the original decode error.
+    """
+    closers = {"[": "]", "{": "}"}
+    stack: List[str] = []
+    out: List[str] = []
+    insertions = 0
+    in_string = False
+    escaped = False
+
+    for ch in text:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if in_string:
+            out.append(ch)
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            continue
+        if ch in "[{":
+            stack.append(closers[ch])
+            out.append(ch)
+            continue
+        if ch in "]}":
+            # Close whatever the model left open so this closer applies to the
+            # container it was written for.
+            while stack and stack[-1] != ch:
+                out.append(stack.pop())
+                insertions += 1
+                if insertions > _MAX_STRINGIFIED_REPAIRS:
+                    return None
+            if not stack:
+                return None  # stray closer: not the under-close shape
+            stack.pop()
+            out.append(ch)
+            continue
+        out.append(ch)
+
+    if in_string:
+        return None  # truncated mid-value: never guess content
+    while stack:
+        out.append(stack.pop())
+        insertions += 1
+        if insertions > _MAX_STRINGIFIED_REPAIRS:
+            return None
+    if not insertions:
+        return None  # nothing missing: a genuine syntax error, not under-closing
+    try:
+        return json.loads("".join(out))
+    except json.JSONDecodeError:
+        return None
+
+
+def _is_known_tool_name(name: str) -> bool:
+    """True when *name* resolves to a real tool — directly listed, in the registry, or a
+    deferred catalog entry. Used to gate the nested-name hoist below: a string that
+    happens to sit under an ``arguments.name`` key must only be read as the invocation
+    target when it actually names something callable."""
+    if not name:
+        return False
+    try:
+        from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+        if name in _core_tool_names():
+            return True
+    except Exception:  # pragma: no cover — never block dispatch on a lookup bug
+        pass
+    return _registry_entry(name) is not None
+
+
+def _calls_string_error(exc: json.JSONDecodeError, text: str) -> str:
+    """Actionable rejection for a ``calls`` payload that arrived as a malformed JSON
+    string. The bare decode error read as opaque tail-truncation, so a small model
+    re-sent the same shape twelve times until the guardrail halted the turn; state the
+    required shape and echo the tail it actually produced."""
+    tail = text.strip()[-80:]
+    return (
+        f"tool_call 'calls' must be a JSON array of {{name, arguments}} objects, not a "
+        f"JSON string: {exc}. Payload tail: {tail!r}. Send 'calls' as an array."
+    )
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -157,7 +261,13 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            repaired = _repair_stringified_json(raw_calls)
+            if repaired is None:
+                return [], _calls_string_error(e, raw_calls)
+            logger.warning(
+                "tool_call 'calls' arrived as an under-closed JSON string; repaired "
+                "the missing delimiter(s) and continued: %s", e)
+            raw_calls = repaired
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -168,6 +278,19 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
+        if not name:
+            # Some models nest the tool name INSIDE `arguments` and under-close
+            # the entry object (observed when a parameter is itself a nested
+            # JSON value). Hoist it only when it names a real tool, so a legit
+            # "name" field in a tool's own arguments is never read as the
+            # invocation target.
+            nested_args = raw.get("arguments")
+            candidate = nested_args.get("name") if isinstance(nested_args, dict) else None
+            if isinstance(candidate, str) and _is_known_tool_name(candidate.strip()):
+                name = candidate.strip()
+                logger.warning(
+                    "tool_call calls[%d] nested the tool name inside 'arguments'; "
+                    "hoisted %r", position, name)
         if not name:
             return [], f"tool_call calls[{position}] requires a 'name'"
         if name in BRIDGE_TOOL_NAMES:
@@ -183,7 +306,16 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
             try:
                 raw_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+                # Same hazard as the envelope above: a stringified `arguments`
+                # value can lose a tail delimiter. Repair only delimiters.
+                repaired_args = _repair_stringified_json(raw_args)
+                if repaired_args is None:
+                    return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+                logger.warning(
+                    "tool_call calls[%d].arguments arrived as an under-closed JSON "
+                    "string; repaired the missing delimiter(s) and continued: %s",
+                    position, e)
+                raw_args = repaired_args
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})

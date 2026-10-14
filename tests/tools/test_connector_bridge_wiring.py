@@ -145,7 +145,7 @@ def test_normalize_parses_string_envelope_single_dict():
         ({"calls": [{"name": "tool_search"}]}, "itself a bridge tool"),
         ({"calls": [{"name": "x", "arguments": "not json {"}]}, "not valid JSON"),
         ({"calls": [{"name": "x", "arguments": 42}]}, "must be an object"),
-        ({"calls": "nope"}, "not valid JSON"),
+        ({"calls": "nope"}, "must be a JSON array"),
         ({"calls": json.dumps({"query": "x"})}, "requires a 'name'"),
     ],
 )
@@ -153,6 +153,38 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     entries, err = normalize_tool_call_entries(bad)
     assert entries == []
     assert expected_fragment in (err or "")
+
+
+def test_normalize_repairs_under_closed_string_envelope():
+    """2026-10-14: models stringify the envelope and can lose the entry object's
+    closing brace before the trailing ']'. The decode error then lands on the LAST
+    character at every payload length (so it reads like tail truncation), and the
+    model re-sends the same shape until the failure guardrail halts the turn. The
+    missing delimiter is implied by the open containers, so it is repaired."""
+    inner = '[{"arguments": {"query": "x", "name": "session_search"}]'
+    entries, err = normalize_tool_call_entries({"calls": inner})
+    assert err is None
+    assert [e["name"] for e in entries] == ["session_search"]
+    assert entries[0]["arguments"]["query"] == "x"
+
+
+def test_normalize_hoists_a_nested_name_only_for_a_real_tool():
+    """The same emission nests the tool name inside `arguments`. Hoisting is gated on
+    the string naming a real tool, so a legitimate `name` argument in a tool's own
+    payload is never read as the invocation target."""
+    inner = '[{"arguments": {"query": "x", "name": "definitely_not_a_tool"}}]'
+    entries, err = normalize_tool_call_entries({"calls": inner})
+    assert entries == []
+    assert "requires a 'name'" in (err or "")
+
+
+def test_normalize_never_repairs_a_truncated_value():
+    """An unterminated string means the model was cut off mid-value. Closing it would
+    silently shorten a real payload, so repair must decline and the error surface."""
+    truncated = '[{"name": "session_search", "arguments": {"query": "half a que'
+    entries, err = normalize_tool_call_entries({"calls": truncated})
+    assert entries == []
+    assert "must be a JSON array" in (err or "")
 
 
 # ---------------------------------------------------------------------------

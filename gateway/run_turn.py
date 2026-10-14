@@ -180,6 +180,9 @@ class GatewayTurnMixin:
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
+        from gateway.run_turn_oauth import (
+            _native_oauth_override_uses_owned_route, _resolve_session_override_runtime,
+        )
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -191,6 +194,7 @@ class GatewayTurnMixin:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
         override = _override_state.conversation.model_override if _override_state else None
+        refresh_native_oauth = bool(override) and _native_oauth_override_uses_owned_route(override)
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -200,7 +204,7 @@ class GatewayTurnMixin:
                 )
             }
             override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
-            if override_runtime.get("api_key"):
+            if override_runtime.get("api_key") and not refresh_native_oauth:
                 if override_runtime.get("credential_pool") is None:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
@@ -208,10 +212,10 @@ class GatewayTurnMixin:
                     skey or "", model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
-            # No api_key on the override (credentials failed to re-resolve at rehydrate): resolve them
-            # for the override's own provider below, never layer it over the default provider's runtime.
+            # Missing credentials and provider-owned native OAuth routes resolve through the override's
+            # own provider below, never layered over the default provider's runtime.
             logger.debug(
-                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+                "Session model override (live credential resolution): session=%s config_model=%s override_model=%s",
                 skey or "", model, override_model,
             )
         elif logger.isEnabledFor(logging.DEBUG):
@@ -225,17 +229,8 @@ class GatewayTurnMixin:
                 ][:5] or "[]",
             )
 
-        runtime_kwargs, unavailable_override = None, None
-        if override and override.get("provider"):
-            try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                    override["provider"], target_model=override.get("model") or None)
-            except Exception as exc:
-                # Layering the override on the default runtime sent its model to the default provider's
-                # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
-                # so; the persisted override is kept, so the next turn retries it.
-                logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc)
-                unavailable_override, override = override, None
+        runtime_kwargs, unavailable_override, override = _resolve_session_override_runtime(
+            override, refresh_native_oauth=refresh_native_oauth)
         if runtime_kwargs is None:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn

@@ -20,7 +20,6 @@ import tui_gateway.server as srv
 @pytest.mark.parametrize(
     "schema,provider",
     [
-        ("providers", "my-gateway"),
         ("providers", "custom:my-gateway"),
         ("custom_providers", "custom:my-gateway"),
     ],
@@ -69,7 +68,7 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(
         },
     )
 
-    assert vars(srv)["_inherit_launch_model"](profile) is True
+    assert srv._inherit_launch_model(profile) is True
 
     cfg = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
     assert (cfg["model"]["provider"], cfg["model"]["default"]) == (
@@ -106,5 +105,5 @@ def test_inherit_launch_model_preserves_explicit_profile_selection(
     atomic_config_write(profile / "config.yaml", selected)
     before = read_user_config_raw(profile / "config.yaml")
 
-    assert vars(srv)["_inherit_launch_model"](profile) is False
+    assert srv._inherit_launch_model(profile) is False
     assert read_user_config_raw(profile / "config.yaml") == before

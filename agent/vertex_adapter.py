@@ -197,9 +197,105 @@ def get_vertex_config(
     return token, build_vertex_base_url(project_id, _resolve_region(region))
 
 
+def _adc_well_known_path() -> str:
+    """Path gcloud writes for `auth application-default login`.
+
+    Mirrors ``google.auth._cloud_sdk.get_config_path()`` deliberately, branch
+    for branch, rather than approximating it. The whole purpose of this
+    function is to predict whether ``google.auth.default()`` will find a
+    credential, so any divergence in the path is a wrong answer:
+
+    * ``CLOUDSDK_CONFIG`` relocates gcloud's entire config directory and wins
+      over everything on every platform. CI images and managed devcontainers
+      set it routinely, so ignoring it means missing the file that is actually
+      there.
+    * POSIX: ``~/.config/gcloud``.
+    * Windows: ``%APPDATA%\\gcloud``, falling back to ``%SystemDrive%\\gcloud``
+      (default ``C:``) when APPDATA is unset — google-auth covers that case,
+      and building a bare relative ``gcloud\\…`` instead would silently probe
+      the wrong place.
+
+    Not imported from google-auth on purpose: this module's callers require no
+    google-auth import (see :func:`has_vertex_credentials`).
+    """
+    filename = "application_default_credentials.json"
+
+    explicit = os.environ.get("CLOUDSDK_CONFIG")
+    if explicit:
+        return os.path.join(explicit, filename)
+
+    if os.name != "nt":
+        return os.path.join(os.path.expanduser("~"), ".config", "gcloud", filename)
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "gcloud", filename)
+    drive = os.environ.get("SystemDrive", "C:")
+    return os.path.join(drive, "\\", "gcloud", filename)
+
+
+def _on_gce() -> bool:
+    """True when this host looks like GCE/GKE, without touching the network.
+
+    On GCE the DMI product name is "Google Compute Engine". Reading it is a
+    single small file read, so this keeps the no-network promise that
+    :func:`has_vertex_credentials` makes to startup paths — a metadata-server
+    ping would not.
+
+    Substring rather than exact match, deliberately. The two failure directions
+    are not symmetric: too strict silently restores the very bug this function
+    exists to fix (credentials reported absent on a host that has them), while
+    too loose merely lets `google.auth.default()` fail later with a clear
+    message. Given that asymmetry, tolerating an unexpected suffix is the safer
+    default.
+    """
+    try:
+        with open("/sys/class/dmi/id/product_name", "r", encoding="utf-8") as fh:
+            return "Google Compute Engine" in fh.read()
+    except Exception:
+        return False
+
+
+def has_adc_available() -> bool:
+    """True when Application Default Credentials are plausibly resolvable.
+
+    Deliberately a cheap heuristic rather than a real ADC resolution: the
+    caller is a startup/display path, and `google.auth.default()` both imports
+    google-auth and can hit the metadata server.
+
+    Two signals, either sufficient:
+
+    * the well-known ADC file that `gcloud auth application-default login`
+      writes, and
+    * running on GCE/GKE, where the metadata server *is* the credential and no
+      file exists at all.
+
+    Known and intended behaviour change: a workstation carrying a leftover
+    `gcloud auth application-default login` file now reports Vertex credentials
+    as present even with no project configured, so provider auto-detection can
+    surface Vertex where it previously stayed hidden. That is accepted rather
+    than special-cased. Bare ADC on a workstation is a supported google-auth
+    setup, and the consequence is bounded: this gate makes Vertex *offerable*,
+    it does not select it or spend anything, and a stale ADC file surfaces as a
+    normal auth error on first use rather than as silent misbehaviour. The
+    reverse bias — accepting ADC only on GCE — would keep the picker tidy at
+    the cost of ignoring a real credential, which is the class of bug this
+    function is being fixed for.
+    """
+    if os.path.exists(_adc_well_known_path()):
+        return True
+    return _on_gce()
+
+
 def has_vertex_credentials() -> bool:
-    """Fast check (no network): a resolvable SA JSON path, or an explicit project ID (implies ADC)."""
-    return bool(_resolve_credentials_path(None) or _resolve_project_override())
+    """Fast check (no network): a resolvable SA JSON path, an explicit project ID (implies ADC), or
+    plausibly-available ADC itself.
+
+    The ADC branch is what makes GCE/GKE work: there the credential is the metadata server, so there is
+    no JSON file to find and no reason to restate a project ID. Without it ``resolve_provider_client(
+    "vertex")`` returns ``(None, None)`` and every auxiliary task is silently disabled while the main
+    conversation path, which resolves credentials properly, keeps working."""
+    return bool(_resolve_credentials_path(None) or _resolve_project_override() or has_adc_available())
 
 
 def has_explicit_vertex_config() -> bool:

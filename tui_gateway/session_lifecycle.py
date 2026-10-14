@@ -464,7 +464,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
 # End reasons where the BACKEND reclaimed a session the client never asked to close (else its next prompt fails
 # against a forgotten id). Client-initiated reasons (``tui_close`` etc.) are deliberately absent.
-_RECLAIM_END_REASONS = frozenset({"idle_timeout", "lru_evict", "ws_orphan_reap"})
+_RECLAIM_END_REASONS = frozenset({"idle_timeout", "lru_evict", "ws_orphan_reap", "profile_delete"})
 
 
 def _announce_session_reclaimed(session: dict, end_reason: str) -> None:

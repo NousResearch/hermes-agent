@@ -7,6 +7,28 @@ past that); see the **routing table** at the end and read the area file before e
 
 **Never give up on the right solution.**
 
+## Hermes Source Control & Production Deployment
+
+This policy is mandatory for Codex, Work, and local agents changing this repository or David's Hermes runtime. For code intended for David's production runtime, the approved source is `davetwchiu/hermes-agent` on GitHub `main`, unless David explicitly names another canonical repository for that release.
+
+### Source control and release
+
+- Never edit the live Hermes checkout or activate code from a dirty editable tree. Production must load a staged immutable release, never an editable local working-tree path. Untracked, unstaged, uncommitted, or otherwise dirty source and dependencies are not a release.
+- Make every code or configuration change, including hotfixes, in a fresh isolated branch or worktree from current canonical `main`; never develop in or branch from the live checkout. Track the complete runtime source, build inputs, and reproducible, pinned dependency set in the approved repository. Keep secret values in the approved secret store.
+- Run the relevant existing tests and release checks, commit every required file, and open a PR for review and merge into the approved canonical repository. Record the full immutable commit SHA and release artifact before activation. A PR merge, mutable branch, editable install, or copied local file alone is not a release.
+
+### Deployment stop gate
+
+- Before activation, read the actual running service's source checkout and interpreter paths, loaded module/import paths, full commit SHA, dirty and untracked status, and resolved runtime dependencies. Compare them with the approved release. If any path, SHA, dependency, or status is missing, dirty, or mismatched, stop; do not update production directly.
+- Never reset, clean, stash, overwrite, or switch an active checkout to make it pass the gate. Preserve dirty runtime state for owner-led reconciliation. Stage the complete release from its approved immutable commit in an isolated clean location and validate its dependencies before activation; never copy selected local files into production.
+- Use the existing deployment owner and a careful atomic cutover, retaining the previous verified release for rollback. Preserve the current six-gateway topology (five named profiles plus `default`), their configurations, jobs, schedules, and transports. A code release does not authorize topology or scheduler changes, and must not start duplicate gateways or pollers.
+- After cutover, verify the effective code SHA and loaded import paths in the live processes, dependency identity, service count, and preserved configuration and job state. Roll back and verify the prior release on any mismatch. Claim `deployed` only after this live read-back; a GitHub merge is not deployment.
+
+### Blockers and emergency changes
+
+- If implementation, testing, commit, review, merge, activation, or read-back fails, report `not complete` and the exact blocker. Do not carry local patches forward silently or imply deployment from repository state.
+- An emergency deviation requires David's explicit written authorization naming the exact change, source, risk, and rollback. Preserve an attributable, reversible snapshot and dependency state; do not include unrelated dirty files or unknown bytes. Normalize the change immediately in a clean branch or worktree, test it, obtain PR review and merge, then verify production against the merged SHA and import paths. Do not call the work complete before normalization and read-back succeed.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a messaging

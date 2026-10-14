@@ -532,7 +532,9 @@ def _plugin_provenance_rows(plugins_dir) -> list:
     for provenance in provenances:
         result = check_local_provenance(provenance)
         detail = result.needs_fixing or result.reason
-        if result.needs_fixing or provenance.klass is ProvenanceClass.DRIFT:
+        # A DRIFT row that check_local_provenance let through (subdirectory install: its tree
+        # never carries the .git, #126910) is in good standing; real drift still carries a reason.
+        if result.needs_fixing or (provenance.klass is ProvenanceClass.DRIFT and result.reason):
             rows.append(("warn", f"Plugin '{provenance.name}': {detail}", ""))
         elif provenance.klass is ProvenanceClass.MANUAL:
             rows.append(("info", f"Plugin '{provenance.name}' installed manually", detail))

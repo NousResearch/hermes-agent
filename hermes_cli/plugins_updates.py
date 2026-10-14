@@ -85,6 +85,25 @@ def _read_manifest_field(plugin_dir: Path, key: str) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _recorded_source_parts(source: object) -> tuple[Optional[str], Optional[str]]:
+    """``(git_url, subdir)`` of a recorded install source — the inverse of the sidecar's
+    ``_canonical_source`` spelling: ``url#subdir`` (#65314), or the ``.git/subdir`` form older
+    rows may carry. ``(None, None)`` when absent; anything else (a bare URL, a local path used as
+    the clone source) maps to itself with no subdir — never rewritten, a recorded source is
+    already canonical. A subdir is what makes a row-only install the steady state of a
+    subdirectory install rather than drift: its tree ships without the ``.git`` (that stays in
+    the temp clone), and the update path re-clones from this very source."""
+    if not isinstance(source, str) or not source:
+        return (None, None)
+    if "#" in source:
+        git_url, _, frag = source.partition("#")
+        return (git_url, frag.strip("/") or None)
+    git_url, marker, subdir = source.partition(".git/")
+    if marker and subdir.strip("/"):
+        return (git_url + ".git", subdir.strip("/"))
+    return (source, None)
+
+
 def check_local_provenance(prov: Provenance) -> CheckResult:
     """Check installed provenance without fetching remote metadata."""
     result = CheckResult(name=prov.name, klass=prov.klass.value)
@@ -93,11 +112,18 @@ def check_local_provenance(prov: Provenance) -> CheckResult:
         result.reason = "no provenance; not auto-updatable"
         return result
     if prov.klass is ProvenanceClass.DRIFT:
-        result.reason = (
-            f"provenance drift — sidecar records {prov.row.get('source')!r} "
-            "but the dir has no .git; reinstall from the recorded source"
-        )
-        return result
+        if _recorded_source_parts((prov.row or {}).get("source"))[1]:
+            # A subdirectory install's tree never carries the ``.git`` — it stays in the temp
+            # clone (#65314) — so row-only is its steady state, not drift. Keep it under the
+            # recorded-source checks below, exactly what `hermes plugins update` re-clones from
+            # (#126910); only a subdir-less row that lost its ``.git`` is real drift.
+            result.klass = ProvenanceClass.GIT.value
+        else:
+            result.reason = (
+                f"provenance drift — sidecar records {prov.row.get('source')!r} "
+                "but the dir has no .git; reinstall from the recorded source"
+            )
+            return result
     if prov.klass is ProvenanceClass.SELF_CLONED:
         result.reason = "self-cloned; run `hermes plugins adopt` first"
         return result
@@ -225,7 +251,8 @@ def check_provenanced(
         result.reason = "no recorded source"
         return result
     try:
-        head = ls_remote(source)
+        # git has no ``#subdir`` fragment: probe the bare URL of the recorded source.
+        head = ls_remote(_recorded_source_parts(source)[0] or source)
     except Exception as exc:
         result.reason = f"ls-remote failed: {exc}"
         return result

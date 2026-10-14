@@ -1,0 +1,26 @@
+name: blackbox
+repo: https://github.com/umanitek/agent-blackbox
+sha: fe56ecf4f5af3a2dbbe85d3915b61fe38779114e
+subdir: plugins/blackbox
+title: Agent Blackbox
+description: 'Security for agents: checks every tool call and model request before it runs against a
+  curated, verifiable threat graph (prompt injection, dangerous commands, malicious packages, unsafe
+  skills, phishing and drainer indicators) and local rules that keep an agent away from wallet stores,
+  seed phrases, private keys and exchange API keys. Audit mode records; block mode refuses. Shares
+  privacy-safe threat reports with an open community graph by default (one command turns it off);
+  community findings only ever flag. Hooks only: no tools, no middleware.'
+maintainer: Umanitek
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/umanitek/agent-blackbox/tree/fe56ecf4f5af3a2dbbe85d3915b61fe38779114e/plugins/blackbox
+readme: true
+platforms: []
+known_issues:
+  - "The threat-graph sync needs Blackbox's local DKG node, which the full installer sets up (see the README). A catalog-only install protects with the built-in rules until the node is installed."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, pre_api_request, on_session_start, on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -39,7 +39,7 @@ agentmail agent verify --otp-code 123456
 
 ```bash
 agentmail inboxes list --format json
-agentmail inboxes:messages send \
+agentmail inboxes messages send \
   --inbox-id my-agent@agentmail.to \
   --to you@example.com \
   --subject "AgentMail verified" \

@@ -87,3 +87,56 @@ describe('Settings remembers its last tab', () => {
     expect(screen.queryByTestId('view-notifications')).toBeNull()
   })
 })
+
+describe('Settings remembers the sub-pane it was left on', () => {
+  const current = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[aria-current="page"]')?.getAttribute('data-tour')
+
+  const subRow = (container: HTMLElement, id: string) => container.querySelector<HTMLElement>(`[data-tour="nav-${id}"]`)
+
+  it('reopens on the sub-pane last used inside a section', async () => {
+    const first = renderAt('/settings?tab=notifications')
+
+    await act(async () => {
+      fireEvent.click(subRow(first.container, 'notifications:sounds')!)
+    })
+
+    expect(current(first.container)).toBe('nav-notifications:sounds')
+
+    cleanup()
+
+    // No `?tab=` and no `?page=`: memory decides both.
+    const reopened = renderAt('/settings')
+
+    expect(screen.getByTestId('view-notifications')).toBeTruthy()
+    expect(current(reopened.container)).toBe('nav-notifications:sounds')
+  })
+
+  it('lets the route name a sub-pane and remembers that one instead', async () => {
+    renderAt('/settings?tab=notifications&page=alerts')
+
+    cleanup()
+
+    const reopened = renderAt('/settings')
+
+    expect(current(reopened.container)).toBe('nav-notifications:alerts')
+    // ...and having named it, that is what the next bare open lands on.
+    expect(current(reopened.container)).not.toBe('nav-notifications:sounds')
+  })
+
+  it('remembers a section whose sub-nav lives in its own param', async () => {
+    const first = renderAt('/settings?tab=providers')
+
+    await act(async () => {
+      fireEvent.click(subRow(first.container, 'pview:keys')!)
+    })
+
+    cleanup()
+
+    const reopened = renderAt('/settings')
+
+    await act(async () => {})
+
+    expect(current(reopened.container)).toBe('nav-pview:keys')
+  })
+})

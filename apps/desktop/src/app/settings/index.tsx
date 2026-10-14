@@ -93,6 +93,27 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 /** Key into the per-view sub-state memory (see `store/view-memory`). */
 const SETTINGS_MEMORY_KEY = 'settings'
 
+/**
+ * The sub-pane a section was left on, keyed per view AND per axis: the `?page=`
+ * a section's own sub-nav uses, and the `?pview=` / `?kview=` / `?bview=` the
+ * three sections whose sub-nav is a second param. Stored by the same store as
+ * the tab, and validated against the live choices so a sub-pane that no longer
+ * exists can never be restored.
+ */
+function rememberedPane(axis: string, values?: readonly string[]): string | null {
+  const remembered = rememberedViewSubState(`${SETTINGS_MEMORY_KEY}:${axis}`)
+
+  return remembered && (!values || values.includes(remembered)) ? remembered : null
+}
+
+/** Remember a sub-pane. An undefined one (a section with no sub-nav) is
+ *  ignored rather than stored as a hole. */
+function rememberPane(axis: string, value: string | undefined): void {
+  if (value) {
+    rememberViewSubState(`${SETTINGS_MEMORY_KEY}:${axis}`, value)
+  }
+}
+
 // Pages that take nothing but the resolved sub-page.
 const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: string }>>> = {
   'config:appearance': AppearanceSettings,
@@ -141,13 +162,19 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   useEffect(() => recordFeatureUse(settingsArea(activeView)), [activeView])
   const params = new URLSearchParams(search)
   const requestedSubpage = params.get('page')
-  const subpage = resolveSettingsSubpage(activeView, params)
+  const subpage = resolveSettingsSubpage(activeView, params, rememberedPane(`page:${activeView}`))
   const needsSubpageRedirect = Boolean(subpage && subpage !== requestedSubpage)
   const subpageSearch = new URLSearchParams(search)
 
   if (subpage) {
     subpageSearch.set('page', subpage)
   }
+
+  // The sub-pane is remembered too, so reopening a section lands on the pane it
+  // was left on rather than on the section's first one. A route that names one
+  // (a deep link, a search hit) always wins — `resolveSettingsSubpage` reads it
+  // first and only falls back to this.
+  useEffect(() => rememberPane(`page:${activeView}`, subpage), [activeView, subpage])
 
   const openSettingsPage = useCallback(
     (view: SettingsViewId, page?: string) => {
@@ -183,6 +210,44 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
   const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
   const [billingView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+
+  // Those three sections reopen where they were left, the same way a section's
+  // `page` does: the route's own value is recorded, and a route that names none
+  // is sent to the remembered one. The restore WRITES the param (rather than
+  // serving it as a fallback), so every reader of that param — the section
+  // itself included — agrees on which sub-view is open. Only a non-default
+  // memory is restored, so clicking a sub-view's own default (which drops the
+  // param) is not read back as "no choice yet" and bounced right back.
+  useEffect(() => {
+    const axes: Array<[string, readonly string[], string]> = [
+      ['pview', PROVIDER_VIEWS, 'accounts'],
+      ['kview', KEYS_VIEWS, 'tools'],
+      ['bview', BILLING_VIEWS, 'overview']
+    ]
+
+    const current = new URLSearchParams(search)
+
+    for (const [param, values, fallback] of axes) {
+      const named = current.get(param)
+
+      if (named && values.includes(named)) {
+        rememberPane(param, named)
+
+        continue
+      }
+
+      const remembered = rememberedPane(param, values)
+
+      if (remembered && remembered !== fallback) {
+        const next = new URLSearchParams(search)
+
+        next.set(param, remembered)
+        navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+
+        return
+      }
+    }
+  }, [hash, navigate, pathname, search])
   const billingState = useBillingState()
   const subscriptionState = useSubscriptionState()
   const billingPresentation = deriveBillingView(billingState.data, subscriptionState.data)
@@ -206,6 +271,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       } else {
         params.set(param, value)
       }
+
+      // Recorded from the CLICK, not from the route: choosing the sub-view's own
+      // default drops the param, and memory has to tell that apart from never
+      // having chosen (see the restore effect above).
+      rememberPane(param, value)
 
       const qs = params.toString()
       navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })

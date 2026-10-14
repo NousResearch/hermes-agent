@@ -134,9 +134,16 @@ export function settingsSubpageForLegacyLink(view: SettingsView, params: URLSear
     : settingsSubpageForTarget(view, params.get('field') ?? undefined, params.get('setting') ?? undefined)
 }
 
-export function resolveSettingsSubpage(view: SettingsView, params: URLSearchParams): string | undefined {
+export function resolveSettingsSubpage(
+  view: SettingsView,
+  params: URLSearchParams,
+  /** Where to land when the route names no sub-page of its own — the view's
+   *  remembered one. Validated like any other request, so a sub-page that no
+   *  longer exists can never be restored. */
+  preferred?: string | null
+): string | undefined {
   const pages = settingsSubpages(view)
-  const requested = settingsSubpageForLegacyLink(view, params) ?? params.get('page')
+  const requested = settingsSubpageForLegacyLink(view, params) ?? params.get('page') ?? preferred
 
   return pages.find(page => page.id === requested)?.id ?? pages[0]?.id
 }

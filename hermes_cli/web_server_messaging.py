@@ -327,6 +327,26 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
     write_platform_config_field(platform_id, "enabled", enabled)
 
 
+def _cron_required_platform_reason(platform_id: str) -> Optional[str]:
+    """Why ``platform_id`` cannot be disabled for the CURRENT profile scope, or ``None``.
+
+    A cron provider that fires over loopback (Chronos) reaches the gateway through its
+    api_server, so the gateway starts that listener regardless of the toggle
+    (``gateway/cron_loopback_listener.py``). Call inside the target profile's scope.
+    """
+    if platform_id != "api_server":
+        return None
+    from cron.loopback_fire import loopback_api_server_required
+
+    if not loopback_api_server_required():
+        return None
+    return (
+        "The API server can't be disabled while this profile's cron provider is active: scheduled "
+        "cron jobs are delivered to the gateway through it on 127.0.0.1, and turning it off would "
+        "stop every scheduled job from running."
+    )
+
+
 @dataclass
 class _WhatsAppOnboardingSession:
     proc: subprocess.Popen | None

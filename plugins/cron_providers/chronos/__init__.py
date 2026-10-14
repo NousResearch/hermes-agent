@@ -32,6 +32,9 @@ def _cfg(*keys: str, default: Any = "") -> Any:
 class ChronosCronScheduler(CronScheduler):
     """NAS-mediated external cron provider."""
 
+    # NAS calls the dashboard, which forwards to the gateway api_server on loopback.
+    fires_over_loopback = True
+
     def __init__(self) -> None:
         # Best-effort job_id -> fire_at cache; a cold process simply re-arms (idempotent).
         self._armed: dict[str, str] = {}

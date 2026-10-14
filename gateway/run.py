@@ -1848,6 +1848,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     cfg = load_gateway_config()
     log_multiplex_decision(resolve_multiplex_mode(cfg))
     if not cfg.multiplex_profiles:
+        _ensure_cron_loopback_listener(cfg, get_hermes_home(), len(_cron_tick_profile_homes(cfg)))
         return cfg
     try:
         from agent.secret_scope import set_multiplex_active
@@ -1862,10 +1863,12 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     try:
         with _profile_runtime_scope(Path(home)):
             scoped = load_gateway_config()
+            scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
+            # The default profile owns the one listener every profile's /p/<name>/ mirror rides on.
+            _ensure_cron_loopback_listener(scoped, Path(home), len(_cron_tick_profile_homes(scoped)))
     except Exception:
         logger.debug("multiplex default-scope config reload failed; using unscoped load", exc_info=True)
         return cfg
-    scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
     return scoped
 
 
@@ -2154,6 +2157,8 @@ from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_termin
 
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
+from gateway.cron_loopback_listener import (
+    ensure_cron_loopback_listener_safely as _ensure_cron_loopback_listener, warn_if_cron_loopback_listener_missing)
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
     profile_from_session_key_namespace)
@@ -5669,23 +5674,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     cron_thread.start()
 
-    # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
-    # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
-    if not isinstance(cron_provider, InProcessCronScheduler):
-        try:
-            _has_api_server = Platform.API_SERVER in (runner.adapters or {})
-        except Exception:
-            _has_api_server = True  # never let the tell break startup
-        if not _has_api_server:
-            logger.warning(
-                "Cron provider '%s' is active but the api_server adapter is "
-                "NOT running in this gateway — scheduled fires arrive over "
-                "loopback HTTP and will all fail (jobs only run when "
-                "triggered manually). Most common cause: API_SERVER_KEY is "
-                "missing from this gateway process's environment. Restart "
-                "the gateway through its supervisor (`hermes gateway "
-                "restart`) so the profile env loads.",
-                getattr(cron_provider, "name", "external"))
+    warn_if_cron_loopback_listener_missing(cron_provider, runner)
 
     # Gateway-only housekeeping runs independently of the cron provider; shares cron_stop for shutdown.
     housekeeping_thread = threading.Thread(

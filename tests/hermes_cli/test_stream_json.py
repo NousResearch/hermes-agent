@@ -88,7 +88,7 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=
     monkeypatch.setattr(signal, "signal", lambda *_a, **_k: None)
     monkeypatch.setattr(cli_entry, "_resolve_use_tui", lambda _args: pytest.fail("TUI resolution consulted"))
     monkeypatch.setattr(cli_entry, "_has_any_provider_configured", lambda: True)
-    monkeypatch.setattr(cli_entry, "_start_chat_background_prefetch", lambda: None)
+    monkeypatch.setattr("hermes_cli.main_startup._start_chat_background_prefetch", lambda: None)
     monkeypatch.setattr(cli_entry, "_pin_kanban_board_env", lambda: None)
     monkeypatch.setattr(cli_entry, "_confirm_startup_expensive_model_override", lambda _a: None)
     monkeypatch.setattr(cli_entry, "_warn_retired_xai_models", lambda: None)

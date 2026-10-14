@@ -638,7 +638,8 @@ class GatewayTurnPrepareMixin:
         """Everything between session resolution and the agent run: session open, task-local env,
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
-        running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
+        running (history unreadable, a local turn's refused ``@`` references); ``None`` drops the turn
+        (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
@@ -711,7 +712,8 @@ class GatewayTurnPrepareMixin:
             event=event, source=source, history=history, session_key=session_key,
         )
         if message_text is None:
-            return None, _session_env_tokens
+            # A refused local turn answers with its refusal (session_context_refs.turn_references).
+            return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
 
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)

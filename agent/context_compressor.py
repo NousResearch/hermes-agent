@@ -42,6 +42,7 @@ from agent.model_metadata import (
     strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
+from agent.model_switch_notes import strip_model_switch_note, without_model_switch_notes
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -1379,14 +1380,13 @@ _GATEWAY_REPLY_POINTER_RE = re.compile(
 def _restated_request_text(content: Any) -> str:
     """A user turn's text, stripped, after the last in-flight replay header if present.
 
-    A request restated by an earlier compaction carries the replay header (and possibly the
-    old summary) before it; the text after the last header is the request itself, so a task
-    that survives several cycles never stacks headers or drags an old summary along.
+    Earlier compactions prepend a replay header and possibly a summary. Only the text
+    after the last header is the request; never stack headers or carry old summaries.
     """
     text = _content_text_for_contains(content).strip()
     if _INFLIGHT_TASK_REPLAY_HEADER in text:
         text = text.rsplit(_INFLIGHT_TASK_REPLAY_HEADER, 1)[1].strip()
-    return text
+    return strip_model_switch_note(text)
 
 
 def _authored_request_text(content: Any) -> str:
@@ -3503,11 +3503,11 @@ class ContextCompressor(
             content = msg.get("content")
             if isinstance(content, list):
                 content = "\n".join(_summary_part_text(part) for part in content if isinstance(part, (dict, str)))
-            content = _redact_compaction_text(content or "")
+            content = _redact_compaction_text(strip_model_switch_note(content or "", role=role))
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
             if role == "assistant" and content:
-                content = strip_think_blocks(None, content)
+                content = strip_model_switch_note(strip_think_blocks(None, content))
             if len(content) > self._CONTENT_MAX:
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
@@ -4432,7 +4432,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # display_kind notices are operational traffic, not user intent.
             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(strip_model_switch_note(_content_text_for_contains(msg.get("content")).strip()))
             if not text:
                 continue
             text = " ".join(text.split())
@@ -4459,7 +4459,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(strip_model_switch_note(_content_text_for_contains(msg.get("content")).strip()))
             if not text:
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
@@ -5484,7 +5484,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
         spared = _pending_tool_round(compressed) if spare_pending_images else range(0)
-        compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
+        compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(without_model_switch_notes(messages)))
         self.compression_count += 1
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
         # exceed body limits.
@@ -5547,8 +5547,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         exercises the full summary path. Auto-compress callers pass False. memory_context: Optional
         provider-supplied context to preserve in the summary prompt. Whitespace-only values are ignored.
         bypass_cooldown: If True, run the summary LLM even while the summary-failure cooldown is armed,
-        WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by
-        the caller's attempt budget.
+        WITHOUT clearing it (#100661). Provider-proven overflow recovery bounds this by its attempt budget.
         """
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
@@ -5567,8 +5566,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
-        # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
-        # assembled and measured from the pruned copy (#61932).
+        # Keep lossless no-op/abort returns; assemble and measure head/tail from the pruned copy (#61932).
         canonical_messages = self._drop_blank_echoes(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
@@ -5589,6 +5587,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
             return canonical_messages
+        messages = without_model_switch_notes(messages)
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":

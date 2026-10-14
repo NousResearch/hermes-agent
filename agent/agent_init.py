@@ -36,6 +36,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
+from agent.model_switch_notes import StreamingModelSwitchNoteFilter
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
@@ -640,15 +641,14 @@ _SESSION_STATE: dict[str, Any] = {
 _STREAM_STATE: dict[str, Any] = {
     "_stream_callback": None,  # streaming TTS; set early so _vprint can reference it
     "_stream_needs_break": False,  # one "\n\n" before the next real text delta after tools
-    # Stateful scrubbers: <memory-context> / thinking spans split across deltas defeat
-    # per-delta regexes (both tags must be in one string).
+    # Stateful scrubbers catch memory/thinking spans and routing notices split across deltas.
     "_stream_context_scrubber": StreamingContextScrubber,
     "_stream_think_scrubber": StreamingThinkScrubber,
+    "_stream_model_note_filter": StreamingModelSwitchNoteFilter,
     "_current_streamed_assistant_text": "",  # so a later completed interim isn't re-sent
     "_delivered_interim_texts": set,  # interims this user turn (spans Codex continuations)
-    # Single-writer guard for the delta sink: each attempt claims a monotonic writer token and
-    # the sink drops chunks from threads holding a stale one, so a superseded stream can't
-    # interleave with the retry's. Threads that never claimed are never fenced.
+    # Monotonic writer tokens fence stale streams so their chunks cannot interleave with a retry.
+    # Threads that never claimed are never fenced.
     "_stream_writer_lock": threading.Lock,
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,

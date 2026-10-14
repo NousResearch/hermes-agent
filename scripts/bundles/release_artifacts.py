@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-from scripts.releases import optional_platforms
+from scripts.releases import lanes as lane_set
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
 
@@ -161,7 +161,7 @@ def validate_windows_bundle(bundle: Path, windows: list[dict]) -> None:
 
 
 ALL_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
-OPTIONAL_HANDOFFS = optional_platforms.HANDOFFS  # opt-in handoff -> manifest target
+WINDOWS_HANDOFFS = frozenset({"win32-x64", "win32-arm64", "windows-universal"})
 
 
 def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
@@ -171,16 +171,19 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
 
     `tag` stays the plain payload identity; `archive` is the attempt ref the
     manifest and every artifact URL are keyed under. `handoffs` names the
-    groups this release built: the opt-in darwin-x64 and termux groups may be
-    left out, and then their targets must be absent from the manifest."""
+    groups this release built; a group left out must have no target in the
+    manifest. The three Windows groups build together or not at all: the
+    universal and Store bundles are assembled from both architectures."""
     from scripts.releases.handoff import receipt_name, validate_receipt
     from scripts.releases.r2 import put, staging_key_for
 
     expected = tuple(handoffs)
-    if (len(set(expected)) != len(expected) or not set(expected) <= set(ALL_HANDOFFS)
-            or not set(ALL_HANDOFFS) - set(OPTIONAL_HANDOFFS) <= set(expected)):
+    windows = WINDOWS_HANDOFFS & set(expected)
+    if (not expected or len(set(expected)) != len(expected) or not set(expected) <= set(ALL_HANDOFFS)
+            or windows not in (set(), WINDOWS_HANDOFFS)):
         raise ValueError(f"Invalid candidate handoff set: {', '.join(expected)}")
-    absent = frozenset(target for name, target in OPTIONAL_HANDOFFS.items() if name not in expected)
+    absent = frozenset(t for t in lane_set.TARGET_LANE if lane_set.TARGET_LANE[t] not in
+                       {lane_set.HANDOFF_LANE[name] for name in expected})
     smoke_results = accepted_smoke_results(smoke_results, absent=absent)
     by_name = {}
     for name in expected:
@@ -203,10 +206,11 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
                 raise ValueError(f"Candidate local digest mismatch: {name}")
             if name.startswith("metadata-"):
                 rows.append(json.loads(file.read_text(encoding="utf-8-sig")))
-    universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
-    single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
-    windows = [r for r in rows if r["platform"] == "windows"]
-    validate_windows_bundle(root / universal_name, windows)
+    universal_name = None
+    if windows:
+        universal_name = single(name for name in by_name if name.endswith(".msixbundle") and not name.startswith("Store-"))
+        single(name for name in by_name if name.endswith(".msixbundle") and name.startswith("Store-"))
+        validate_windows_bundle(root / universal_name, [r for r in rows if r["platform"] == "windows"])
     files = [{**row, "url": f"{public_base.rstrip('/')}/{staging_key_for(archive, name)}"}
              for name, row in sorted(by_name.items()) if not name.startswith("metadata-")]
     by_name = {item["path"]: item for item in files}
@@ -223,9 +227,8 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
               "packages": packages, "files": files, "smoke_results": smoke_results}
     validate_candidates(result, tag, commit, public_base, release_epoch, archive=archive)
     present = {f"{row['platform']}/{row['arch']}" for row in packages}
-    for name, target in OPTIONAL_HANDOFFS.items():
-        if (target in present) != (name in expected):
-            raise ValueError(f"Candidate {target} row differs from the built handoffs")
+    if present != set(lane_set.TARGET_LANE) - absent:
+        raise ValueError("Candidate package rows differ from the built handoffs")
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     put(tag=archive, key="release-candidates.json", file=out, immutable=True)
     return result

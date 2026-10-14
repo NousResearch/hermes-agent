@@ -286,11 +286,12 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Keep free-text working status on the legacy API compatibility bridge.
+
+    agents.sessions.setStatus accepts lifecycle enums, not tool phrases or
+    the empty string used by stop_typing. SDK availability is not enough to
+    switch these callers to the sessions API.
+    """
     return client.assistant_threads_setStatus
 
 
@@ -2755,6 +2756,8 @@ class SlackAdapter(BasePlatformAdapter):
         _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)
+        logger.info("live-status render diagnostic: channel=%s thread=%s dynamic=%s status=%s",
+                    chat_id, thread_ts, bool(getattr(self, "_status_text", {}).get(str(chat_id))), _status)
         await self._set_thread_status(chat_id, team_id, thread_ts, _status, "failed")
 
     async def _set_thread_status(

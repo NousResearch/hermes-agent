@@ -202,17 +202,25 @@ class TurnRunner:
         _keep_typing refresh renders it. Plain dict write, safe from the sync worker thread."""
         ctx = self._ctx
         adapter = ctx._live_status_adapter
+        if event_type == "tool.started" and tool_name != "_thinking":
+            logger.info(
+                "live-status diagnostic: tool=%s adapter=%s mode=%s current=%s",
+                tool_name, type(adapter).__name__ if adapter is not None else "none",
+                ctx._live_status_mode, getattr(ctx, "_run_still_current", lambda: False)(),
+            )
         if adapter is None or ctx._live_status_mode == "off" or tool_name == "_thinking":
             return
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                phrase = build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None)
+                # Keep the actual tool identity visible, not just its friendly verb.
+                adapter.set_status_text(ctx.source.chat_id, f"{phrase} [{tool_name}]")
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
         except Exception as err:
-            logger.debug("live status update failed: %s", err)
+            logger.warning("live status update failed: %s", err)
 
     def _progress_onboarding_hint(self, kwargs: dict) -> None:
         """First-touch onboarding: the first time a tool exceeds _LONG_TOOL_THRESHOLD_S while

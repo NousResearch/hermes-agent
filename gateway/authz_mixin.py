@@ -251,6 +251,14 @@ class GatewayAuthorizationMixin:
         except Exception:
             return False
 
+    def _cron_delivery_adapters(self, profile: Optional[str]):
+        """Select cron adapters inside the owning profile's runtime scope."""
+        from cron.scheduler_preflight import cron_delivery_adapters
+        return cron_delivery_adapters(
+            profile, self._primary_adapters(), profile_adapters=self._profile_adapters_map(),
+            primary_profile=getattr(self, "_primary_profile_name", None) or "default",
+            profile_failed_platforms=getattr(self, "_profile_failed_platforms", None))
+
     def _intake_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that RECEIVED *source*'s event — the only one whose intake policy (ignored
         channels, relay fronting, re-dispatch of a still-live event) may act on it.

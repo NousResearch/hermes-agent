@@ -8,6 +8,8 @@ the flag was on and every non-launch profile's cron silently never fired.
 
 from __future__ import annotations
 
+from gateway.run_startup import _start_gateway_start_cron_and_housekeeping
+
 import asyncio
 import threading
 import types
@@ -71,7 +73,7 @@ def test_secondary_profile_is_ticked_with_multiplex_profiles_off(
     )
 
     async def _start():
-        return gateway_run._start_gateway_start_cron_and_housekeeping(runner)
+        return _start_gateway_start_cron_and_housekeeping(runner)
 
     cron_stop, _provider, _thread, housekeeping = asyncio.run(_start())
     cron_stop.set()

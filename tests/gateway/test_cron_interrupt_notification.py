@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.config import Platform
-from tests.gateway.restart_test_helpers import make_restart_runner
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from tests.gateway.restart_test_helpers import RestartTestAdapter, make_restart_runner
 from tools import browser_tool_lifecycle as bt_lifecycle
 
 @pytest.fixture(autouse=True)
@@ -41,6 +41,12 @@ def _telegram_job(job_id="be62d36a9914", name="daily-digest", chat_id="123456"):
 def _telegram_target(chat_id="123456"):
     return {"platform": "telegram", "chat_id": chat_id, "thread_id": None}
 
+def _run(job_id):
+    from cron.scheduler import InterruptedCronRun
+    from hermes_constants import get_hermes_home
+
+    return InterruptedCronRun(job_id, get_hermes_home())
+
 def _bind_notifier(runner):
     from gateway.run import GatewayRunner
 
@@ -62,7 +68,7 @@ class TestNotifyInterruptedCronJobs:
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 1
         assert len(adapter.sent) == 1
@@ -84,7 +90,7 @@ class TestNotifyInterruptedCronJobs:
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
         expected = 0 if setting is True else 1
         assert sent == expected
         assert len(adapter.sent) == expected
@@ -100,7 +106,7 @@ class TestNotifyInterruptedCronJobs:
 
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets", return_value=[]):
-            sent = await runner._notify_interrupted_cron_jobs(["j1"])
+            sent = await runner._notify_interrupted_cron_jobs([_run("j1")])
 
         assert sent == 0
         assert adapter.sent == []
@@ -115,7 +121,7 @@ class TestNotifyInterruptedCronJobs:
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 0
         assert adapter.sent == []
@@ -132,7 +138,7 @@ class TestNotifyInterruptedCronJobs:
         job = dict(_telegram_job(), failure_deliver="local")
 
         with patch("cron.jobs.get_job", return_value=job):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 0
         assert adapter.sent == []
@@ -146,7 +152,7 @@ class TestNotifyInterruptedCronJobs:
         job = _telegram_job()
 
         with patch("cron.jobs.get_job", return_value=job):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 1
         assert adapter.sent_calls[0][0] == "123456"
@@ -174,7 +180,7 @@ class TestNotifyInterruptedCronJobs:
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target()]):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 0
 
@@ -187,10 +193,117 @@ class TestNotifyInterruptedCronJobs:
         with patch("cron.jobs.get_job", return_value=job), \
              patch("cron.scheduler._resolve_delivery_targets",
                    return_value=[_telegram_target(), _telegram_target()]):
-            sent = await runner._notify_interrupted_cron_jobs([job["id"]])
+            sent = await runner._notify_interrupted_cron_jobs([_run(job["id"])])
 
         assert sent == 1
         assert len(adapter.sent) == 1
+
+def _notice(lang, job):
+    from agent.i18n import t
+
+    action = t("gateway.shutdown.action_shutting_down", lang=lang)
+    return t("gateway.shutdown.cron_interrupted", lang=lang, job=job, action=action)
+
+def _profile_home(root, name, config):
+    home = root / "profiles" / name
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(config)
+    return home
+
+def _sent(adapter):
+    return [(chat, text) for chat, text, _ in adapter.sent_calls]
+
+class TestInterruptNoticeUnderMultiplex:
+    @pytest.mark.asyncio
+    async def test_each_notice_is_read_worded_decided_and_sent_as_its_own_profile(self, tmp_path, monkeypatch):
+        """An interrupted job's notice belongs to the profile that owns the job.
+
+        The notifier reads the job from that profile's store, words the notice in that profile's
+        language, applies that profile's ``gateway_restart_notification`` setting and sends through
+        that profile's bot. A satellite with no bot of its own reaches the primary bot only for the
+        chat that a profile route maps to it. The runs of the two secondaries are ``a``, ``b``, ``a``,
+        so a scope leaking from one run into the next would also fail the test.
+        """
+        import cron.scheduler as sched
+        from agent import secret_scope
+        from cron.jobs import create_job, use_cron_store
+        from gateway.profile_routing import ProfileRoute
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        (root / "config.yaml").write_text(
+            "display:\n  language: en\n"
+            "profile_routes:\n  - {name: ops, platform: telegram, profile: s, chat_id: '500'}\n")
+        homes = {
+            "a": _profile_home(root, "a", "display:\n  language: fr\n"),
+            "b": _profile_home(root, "b", "display:\n  language: de\n"),
+            "s": _profile_home(root, "s", "display:\n  language: ja\n"),
+            "q": _profile_home(root, "q", "display:\n  language: es\n"),
+        }
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        fires = {}
+        for profile, name, deliver in (
+            ("a", "brief-a", "telegram:100"), ("b", "brief-b", "telegram:200"), ("a", "digest-a", "telegram:300"),
+            ("s", "brief-s", "telegram:500,telegram:600"), ("q", "brief-q", "telegram:700"),
+        ):
+            with use_cron_store(homes[profile]):
+                job = create_job("report", "every 1h", name=name, deliver=deliver)
+            fires[sched._inflight_key(job["id"], homes[profile])] = {object(): ("owner", homes[profile])}
+        monkeypatch.setattr(sched, "_running_fire_owners", fires)
+        runner, primary = make_restart_runner()
+        _bind_notifier(runner)
+        runner.config.multiplex_profiles = True
+        runner.config.profile_routes = [ProfileRoute(name="ops", platform="telegram", profile="s", chat_id="500")]
+        runner._primary_profile_name = "default"
+        own = {name: RestartTestAdapter() for name in ("a", "b", "q")}
+        runner._profile_adapters = {**{name: {Platform.TELEGRAM: adapter} for name, adapter in own.items()}, "s": {}}
+        runner._profile_configs = {"q": GatewayConfig(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***", gateway_restart_notification=False)})}
+
+        secret_scope.set_multiplex_active(True)
+        try:
+            with patch("cron.scheduler.mark_job_run", return_value=True):
+                interrupted = sched.mark_running_jobs_interrupted("shutdown")
+                sent = await runner._notify_interrupted_cron_jobs(interrupted)
+        finally:
+            secret_scope.set_multiplex_active(False)
+
+        assert (sent, {"primary": _sent(primary), **{name: _sent(adapter) for name, adapter in own.items()}}) == (4, {
+            "primary": [("500", _notice("ja", "brief-s"))],
+            "a": [("100", _notice("fr", "brief-a")), ("300", _notice("fr", "digest-a"))],
+            "b": [("200", _notice("de", "brief-b"))],
+            "q": [],
+        })
+
+    @pytest.mark.asyncio
+    async def test_a_profile_whose_scope_fails_does_not_silence_later_runs(self, tmp_path, monkeypatch):
+        """A run whose profile scope cannot be entered loses its own notice, not the later runs' notices."""
+        import gateway.run as gateway_run
+        from cron.jobs import create_job, use_cron_store
+        from cron.scheduler import InterruptedCronRun
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        broken = _profile_home(root, "broken", "")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with use_cron_store(root):
+            job = create_job("report", "every 1h", name="brief", deliver="telegram:100")
+        load_secrets = gateway_run._load_profile_secret_scope
+
+        def load_or_fail(home):
+            if home == broken:
+                raise OSError("secret source unavailable")
+            return load_secrets(home)
+
+        monkeypatch.setattr(gateway_run, "_load_profile_secret_scope", load_or_fail)
+        runner, primary = make_restart_runner()
+        _bind_notifier(runner)
+
+        sent = await runner._notify_interrupted_cron_jobs(
+            [InterruptedCronRun("lost", broken), InterruptedCronRun(job["id"], root)])
+
+        assert (sent, _sent(primary)) == (1, [("100", _notice("en", "brief"))])
+
 
 class TestShutdownDeliversNoticeBeforeDisconnect:
     @pytest.mark.asyncio
@@ -200,11 +313,12 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         import cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
+        from hermes_constants import get_hermes_home
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the interrupt path
         runner._cron_drain_timeout = 0.01  # don't wait out the 30s cron drain budget
-        sched._running_job_ids.add("be62d36a9914")
+        sched._running_job_ids.add(sched._inflight_key("be62d36a9914", get_hermes_home()))
 
         monkeypatch.setattr(_pr.process_registry, "kill_all", lambda task_id=None: 1)
         monkeypatch.setattr(_tt, "cleanup_all_environments", lambda: None)

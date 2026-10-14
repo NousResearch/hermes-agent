@@ -1,3 +1,5 @@
+from gateway.run_startup import _start_gateway_start_cron_and_housekeeping
+
 """Phase 0 foundations for multi-profile gateway multiplexing.
 
 Covers the three Phase 0 deliverables:
@@ -89,7 +91,7 @@ class TestMultiplexConfigFlag:
             _primary_profile_name="rex", _draining=False, _external_drain_active=False)
 
         async def _go():
-            return run_mod._start_gateway_start_cron_and_housekeeping(runner)
+            return _start_gateway_start_cron_and_housekeeping(runner)
 
         cron_stop, _provider, cron_thread, hk = asyncio.run(_go())
         cron_stop.set()
@@ -118,6 +120,7 @@ class TestSessionStoreProfileResolution:
         config = GatewayConfig(**cfg_kw)
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
+        s.close_all_db_handles()
         s._db = None
         s._loaded = True
         return s
@@ -148,6 +151,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         config = GatewayConfig(**cfg_kw)
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
+        store.close_all_db_handles()
         store._db = _RecoveringDB(row)
         store._loaded = True
         return store

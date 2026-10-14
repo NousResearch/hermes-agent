@@ -17,11 +17,16 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from gateway.authz_mixin import GatewayAuthorizationMixin
 from tools.cronjob_tools import cronjob, _execute_job_now
 from tools.environments.base import set_activity_callback
 
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
+
+class _CronRunner(GatewayAuthorizationMixin, SimpleNamespace):
+    pass
+
 
 class TestCronjobRunExecutesImmediately:
     def test_run_action_claims_and_fires_via_run_one_job(self):
@@ -141,10 +146,10 @@ class TestCronjobRunExecutesImmediately:
         default_adapters = {"telegram": object()}
         work_adapters = {"telegram": object()}
         gateway_loop = object()
-        runner = SimpleNamespace(
+        runner = _CronRunner(
             adapters=default_adapters,
             _gateway_loop=gateway_loop,
-            _adapters_for_profile=lambda profile: work_adapters if profile == "work" else default_adapters,
+            _profile_adapters={"work": work_adapters},
         )
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
@@ -169,10 +174,8 @@ class TestCronjobRunExecutesImmediately:
 
         primary_bot = object()
         default_adapters = {"telegram": primary_bot}
-        runner = SimpleNamespace(
-            adapters=default_adapters, _gateway_loop=object(),
-            _adapters_for_profile=lambda profile: default_adapters,  # what authz hands a shared-bot satellite
-            _is_shared_bot_satellite=lambda profile: profile == "keeper",
+        runner = _CronRunner(
+            adapters=default_adapters, _gateway_loop=object(), _profile_adapters={"keeper": {}},
         )
         route = ProfileRoute(name="ops", platform="telegram", profile="keeper", chat_id="-100")
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
@@ -197,11 +200,11 @@ class TestCronjobRunExecutesImmediately:
         error surfaced — it must NOT silently fall back to ``runner.adapters`` (the default bot)."""
         default_adapters = {"telegram": object()}
 
-        def boom(profile):
+        def boom():
             raise RuntimeError("profile adapters unavailable")
 
-        runner = SimpleNamespace(adapters=default_adapters, _gateway_loop=object(),
-                                 _adapters_for_profile=boom)
+        runner = _CronRunner(adapters=default_adapters, _gateway_loop=object(),
+                             _profile_adapters_map=boom)
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \

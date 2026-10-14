@@ -148,7 +148,11 @@ def tolerate_closed_stdout(entry):
     @functools.wraps(entry)
     def wrapper(*args, **kwargs):
         try:
-            result = entry(*args, **kwargs)
+            try:
+                result = entry(*args, **kwargs)
+            except SystemExit:  # sys.exit(rc) / argparse --help: their output needs the flush too
+                sys.stdout.flush()
+                raise
             sys.stdout.flush()
             return result
         except BrokenPipeError:

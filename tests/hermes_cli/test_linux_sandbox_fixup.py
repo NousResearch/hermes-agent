@@ -57,6 +57,29 @@ class TestDesktopLinuxUsernsSandboxAvailable:
              ):
             assert main_desktop._desktop_linux_userns_sandbox_available() is False
 
+    def test_opt_in_declares_userns_available(self, monkeypatch):
+        """HERMES_DESKTOP_USERNS_SANDBOX=1 speaks for a host the probe cannot see (#129234).
+
+        The probe runs from the unconfined CLI process, so a per-executable
+        AppArmor ``userns`` profile (Ubuntu's rootless route) never shows up in
+        it — the user who installed the profile declares it instead, and no
+        probe runs to second-guess the declaration.
+        """
+        monkeypatch.setenv("HERMES_DESKTOP_USERNS_SANDBOX", "1")
+        with patch.object(main_desktop.shutil, "which", return_value=None), \
+             patch.object(main_desktop.subprocess, "run") as run:
+            assert main_desktop._desktop_linux_userns_sandbox_available() is True
+        run.assert_not_called()
+
+    def test_opt_in_absent_falls_through_to_the_probe(self, monkeypatch):
+        """Fail-closed default: without the declaration the probe still decides."""
+        monkeypatch.delenv("HERMES_DESKTOP_USERNS_SANDBOX", raising=False)
+        with patch.object(main_desktop.shutil, "which", return_value="/usr/bin/unshare"), \
+             patch.object(main_desktop.subprocess, "run") as run:
+            run.return_value.returncode = 1
+            assert main_desktop._desktop_linux_userns_sandbox_available() is False
+        run.assert_called_once()
+
 
 class TestDesktopLinuxSandboxFixup:
     def _fake_packaged_app(self, tmp_path):
@@ -111,6 +134,42 @@ class TestDesktopLinuxSandboxFixup:
              ) as probe:
             assert main_desktop._desktop_linux_sandbox_fixup(exe) is True
         probe.assert_not_called()
+
+    def test_opt_in_launches_without_no_sandbox_flag(self, monkeypatch, tmp_path, capsys):
+        """An AppArmor-profile host launches sandboxed: no --no-sandbox, no sudo (#129234).
+
+        End-to-end through the launch-command builder: the declaration flips the
+        userns probe, the fixup succeeds without touching sudo, and the user-owned
+        helper only earns --disable-setuid-sandbox (Chromium's namespace-sandbox
+        combination), never --no-sandbox.
+        """
+        exe = self._fake_packaged_app(tmp_path)
+        monkeypatch.setenv("HERMES_DESKTOP_USERNS_SANDBOX", "1")
+        with patch.object(main_desktop.shutil, "which", return_value=None), \
+             patch.object(main_desktop.subprocess, "run") as run:
+            launch_command = main_desktop._packaged_desktop_launch_command(exe)
+        assert launch_command == [str(exe), "--disable-setuid-sandbox"]
+        run.assert_not_called()
+        assert "--no-sandbox" not in launch_command
+        out = capsys.readouterr().out
+        assert "user-namespace sandbox" in out
+
+    def test_no_sandbox_fallback_names_the_rootless_alternatives(self, monkeypatch, tmp_path, capsys):
+        """The fallback notice must not imply sudo is the only way out (#129234).
+
+        A host without passwordless sudo cannot take the 4755-helper route the
+        failed fixup implies; the notice names the AppArmor profile route and
+        the declaration variable that re-enables the namespace sandbox.
+        """
+        exe = self._fake_packaged_app(tmp_path)
+        monkeypatch.delenv("HERMES_DESKTOP_USERNS_SANDBOX", raising=False)
+        with patch.object(main_desktop, "_desktop_linux_sandbox_fixup", return_value=False), \
+             patch.object(main_desktop, "_desktop_linux_needs_no_sandbox", return_value=True):
+            launch_command = main_desktop._packaged_desktop_launch_command(exe)
+        assert launch_command == [str(exe), "--no-sandbox"]
+        out = capsys.readouterr().out
+        assert "AppArmor" in out
+        assert "HERMES_DESKTOP_USERNS_SANDBOX=1" in out
 
 
 class TestDesktopLinuxNeedsDisableSetuidSandbox:

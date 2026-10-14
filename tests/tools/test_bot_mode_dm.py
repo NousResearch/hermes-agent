@@ -913,6 +913,48 @@ def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, cap
     assert capsys.readouterr().out.strip() == prose
 
 
+def test_local_turn_kills_a_turn_that_never_ends(tmp_path, monkeypatch, capsys):
+    """#137851: the runner's wait on the CLI turn was the only unbounded one on the
+    delivery path — a turn wedged on an unresponsive MCP peer kept its runner alive for
+    days while holding the profile's turn lock, so every later delivery failed
+    'target_busy'. The run budget kills the turn and reports 'delivery_timeout'."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    child = tmp_path / "hang.py"
+    child.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(bot_relay, "turn_max_seconds", lambda: 0.5)
+
+    started = time.monotonic()
+    returncode = bot_mode_dm._run_local_turn([sys.executable, str(child)], str(dm_file))
+
+    assert returncode == 1
+    assert time.monotonic() - started < 20
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "delivery_timeout"
+    assert "turn_max_seconds" in payload["error"]
+
+
+def test_local_turn_run_budget_reaches_every_attempt(monkeypatch):
+    """Both the first attempt and the policy-gated re-run carry the configured run
+    budget — a re-run must not get a second unbounded window."""
+    dm_file = "message.txt"
+    timeouts = []
+    responses = [
+        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
+        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+    ]
+
+    def fake_run(argv, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bot_relay, "turn_max_seconds", lambda: 12.0)
+
+    assert bot_mode_dm._run_local_turn(["hermes", "-p", "researcher"], dm_file) == 0
+    assert timeouts == [12.0, 12.0]
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):

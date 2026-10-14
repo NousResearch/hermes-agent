@@ -1248,7 +1248,9 @@ class TestSendDocument:
         test_file = tmp_path / "report.pdf"
         test_file.write_bytes(b"%PDF-1.4 fake content")
 
-        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True, "ts": "10.20"})
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "ok": True, "messages": [{"ts": "10.20", "files": [{"id": "F123"}]}]})
 
         result = await adapter.send_document(
             chat_id="C123",
@@ -1270,7 +1272,9 @@ class TestSendDocument:
         test_file = tmp_path / "report.pdf"
         test_file.write_bytes(b"%PDF-1.4 fake content")
         secondary_client = AsyncMock()
-        secondary_client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        secondary_client.files_upload_v2 = AsyncMock(return_value={"ok": True, "ts": "10.20"})
+        secondary_client.conversations_replies = AsyncMock(return_value={
+            "ok": True, "messages": [{"ts": "10.20", "files": [{"id": "F123"}]}]})
         adapter._team_clients["T_SECONDARY"] = secondary_client
 
         result = await adapter.send_document(
@@ -1292,8 +1296,10 @@ class TestSendDocument:
         test_file.write_bytes(b"some notes")
 
         adapter._app.client.files_upload_v2 = AsyncMock(
-            side_effect=[RuntimeError("Connection reset by peer"), {"ok": True}]
+            side_effect=[RuntimeError("Connection reset by peer"), {"ok": True, "ts": "10.20"}]
         )
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "ok": True, "messages": [{"ts": "10.20", "files": [{"id": "F123"}]}]})
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
             result = await adapter.send_document(
@@ -1341,7 +1347,9 @@ class TestSendVideo:
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"fake video data")
 
-        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True, "ts": "10.20"})
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "ok": True, "messages": [{"ts": "10.20", "files": [{"id": "F123"}]}]})
 
         result = await adapter.send_video(
             chat_id="C123",

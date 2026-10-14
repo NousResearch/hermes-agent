@@ -57,6 +57,10 @@ def _mock_client(*, post_ok=True, upload_ok=True):
         client.files_upload_v2 = AsyncMock(
             return_value={"ok": False, "error": "not_in_channel"}
         )
+    client.conversations_replies = AsyncMock(return_value={
+        "ok": True,
+        "messages": [{"ts": "333.444", "files": [{"id": "F123"}]}],
+    })
     return client
 
 

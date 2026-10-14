@@ -58,7 +58,7 @@ export function HelpHint({
           <HotkeyRow
             combos={[...row.combos]}
             description={hotkeyDescriptions[row.id] ?? actionLabels[row.id] ?? ''}
-            key={row.id}
+            key={`${row.id}:${row.combos.join('+')}`}
           />
         ))}
       </Section>

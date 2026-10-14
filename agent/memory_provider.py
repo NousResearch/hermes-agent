@@ -133,7 +133,7 @@ class _FreezeBudget(list):
         self.encoded_bytes = 0
 
 
-def _account_encoded_bytes(budget: List[int], size: int) -> None:
+def _account_encoded_bytes(budget: list[int], size: int) -> None:
     """Charge compact UTF-8 JSON bytes without materializing the payload."""
     if not isinstance(budget, _FreezeBudget):
         return
@@ -254,7 +254,7 @@ def _thaw_json_value(value: Any) -> Any:
 def _freeze_memory_observation_payload(
     payload: Any,
     *,
-    operation_budget: Optional[List[int]] = None,
+    operation_budget: Optional[list[int]] = None,
 ) -> tuple[Any, int]:
     """Validate, freeze, and size a provider observation payload.
 

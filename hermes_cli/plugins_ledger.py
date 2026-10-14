@@ -222,7 +222,7 @@ class PluginLedgerMixin:
         return manifest_key(plugin) if isinstance(plugin, PluginManifest) else str(plugin)
 
     def _observer_callbacks_removed_by_unload(
-        self, plugin: Union[str, PluginManifest, LoadedPlugin]
+        self, plugin: str | PluginManifest | LoadedPlugin
     ) -> set[tuple[str, int]]:
         """Find callback dispatchers affected by any registration removed for this plugin."""
         ownership_ledger = self._ownership_ledger

@@ -156,7 +156,16 @@ _CLEANUP_STEPS = (
 )
 
 
+def _gateway_owns_session_end(agent) -> bool:
+    """A gateway-backed session ends in the gateway: the viewer's ``end_session`` (``session.detach
+    {end_reason}``) makes the owner run finalize and the memory commit (gateway/session_viewer_close)."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    return isinstance(agent, GatewayAgent)
+
+
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
+    if _gateway_owns_session_end(_cli()._active_agent_ref):
+        return False
     # A handed-off session is owned by the gateway process — never finalize it here.
     # The CLI must not finalize it on exit — that sets end_reason on a row the gateway reopened and is
     # actively writing to, causing the handoff leg to vanish from session history (#88234).

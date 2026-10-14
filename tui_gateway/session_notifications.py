@@ -143,9 +143,13 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
 
-# Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
-# past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+# Mirror gateway/kanban_watchers_notifier.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the
+# cursor advances past them and they can't wedge a later completed/blocked event behind an unclaimed row.
+# The review-handoff kinds MUST stay in sync with that gateway list: a TUI/desktop session that dispatched a
+# worker only ever hears back through this poller, so dropping e.g. `review_requested` leaves the origin session
+# with no receipt at all — the subscription's cursor simply stops advancing and nothing is ever delivered.
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
+                        "block_loop_detected", "review_requested", "changes_requested")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
@@ -404,6 +408,14 @@ _KANBAN_EVENT_FORMATTERS = {
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
     "timed_out": ("⏱", _kb_timed_out),
     "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
+    # Review-flow handoffs: a worker finished and parked the card for a human. Same behaviour as the gateway
+    # notifier (gateway/kanban_watchers_notifier.py) so a TUI session is told exactly what a Telegram one is.
+    "review_requested": ("🔎", lambda t, p, title: " → review"
+                         + (f"\n{str(p.get('summary'))[:200]}" if p.get("summary") else "")),
+    "changes_requested": ("↩", lambda t, p, title: " changes requested"
+                          + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
+    "block_loop_detected": ("⛔", lambda t, p, title: " re-blocked past the limit; routed to triage"
+                            + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
 }
 
 

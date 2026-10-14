@@ -20,6 +20,7 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
+  anchorsFirst,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -44,6 +45,7 @@ import {
   type SplitNode,
   type TabStripMode
 } from './model'
+import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
 
@@ -1541,7 +1543,6 @@ export function adoptContributedPanes(): void {
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
-
   const dismissed = $dismissedPanes.get()
 
   // Enforced dock invariants run FIRST: they re-home panes that are ALREADY
@@ -1553,7 +1554,8 @@ export function adoptContributedPanes(): void {
   // turn it into a track that steals width from a zone, which is the whole
   // thing floating exists to avoid.
   const missing = panes.filter(
-    c => !inTree.has(c.id) && !dismissed.has(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
+    c =>
+      !inTree.has(c.id) && !dismissed.has(c.id) && !isTreePaneParked(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
   )
 
   if (missing.length === 0) {
@@ -1566,7 +1568,7 @@ export function adoptContributedPanes(): void {
 
   let next = healed
 
-  for (const pane of missing) {
+  for (const pane of anchorsFirst(missing, id => dataOf(id)?.dock?.pane)) {
     const dock = dataOf(pane.id)?.dock
     const placement = placementOf(pane.id) ?? 'right'
 

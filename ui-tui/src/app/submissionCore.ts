@@ -38,6 +38,22 @@ export function markSubmitting(): void {
   patchUiState({ busy: true, status: 'running…' })
 }
 
+// A voice-mode transcript about to be submitted: the matching prompt.submit carries
+// `voice_turn` so the gateway runs it on `auxiliary.voice_chat`. Matched by text, so a
+// transcript the user edited or that went to the queue still lands as typed text.
+let pendingVoiceTranscript: null | string = null
+
+export function markNextSubmitVoice(text: string): void {
+  pendingVoiceTranscript = text
+}
+
+function takeVoiceTurn(submitText: string): boolean {
+  const voice = pendingVoiceTranscript !== null && pendingVoiceTranscript === submitText.trim()
+  pendingVoiceTranscript = null
+
+  return voice
+}
+
 // Submit a ready prompt (already resolved to be neither a slash command nor a
 // shell escape, with a live session). Pulled out of useSubmission so the
 // synchronous-busy invariant above is unit-testable without React test infra.
@@ -80,7 +96,11 @@ export function submitPrompt(
     turnController.interrupted = false
 
     deps.gw
-      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .request<PromptSubmitResponse>('prompt.submit', {
+        session_id: liveSid,
+        text: submitText,
+        ...(takeVoiceTurn(submitText) && { voice_turn: true })
+      })
       .then(r => {
         // The gateway consumed a typed voice stop phrase server-side (voice
         // chat ended, no turn started) — release the busy latch; the

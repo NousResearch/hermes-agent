@@ -7,7 +7,7 @@ Covers:
 
 from __future__ import annotations
 
-from tests.agent.metadata_transport import metadata_transport  # noqa: F401
+from tests.agent.metadata_transport import metadata_transport
 from unittest.mock import MagicMock, patch
 
 import pytest

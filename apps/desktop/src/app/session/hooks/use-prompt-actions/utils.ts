@@ -279,6 +279,18 @@ export function isGatewayTimeoutError(error: unknown): boolean {
 export const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
+/**
+ * prompt.submit refused an unconfirmed truncation that would archive later user turns (#133716).
+ * The server counts turns with its own predicate, so it can refuse a cut the client judged shallow:
+ * callers roll back at once (the submit wrote nothing), ask, and re-run the action with the deep cut
+ * forced, so the retry re-reads and re-validates the session like any first attempt.
+ */
+export const GATEWAY_DEEP_TRUNCATE_REFUSED_CODE = 4033
+
+export function isDeepTruncateRefusal(error: unknown): boolean {
+  return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
+}
+
 export function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
 }
@@ -731,6 +743,9 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** A spoken turn from the chained voice conversation: the gateway runs it on
+   *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
+  voiceTurn?: boolean
   fromQueue?: boolean
   /** Called once with the EXACT session identity the backend accepted the
    *  prompt into — the live runtime id after any stale-runtime recovery, plus

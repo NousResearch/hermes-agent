@@ -249,7 +249,7 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
 
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
-    monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
+    monkeypatch.setattr(mcp_serve, "_load_channel_directory", dict)
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
     monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
 
@@ -480,7 +480,7 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch, require
     import mcp_serve
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
-    monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
+    monkeypatch.setattr(mcp_serve, "_load_channel_directory", dict)
 
     bridge = mcp_serve.EventBridge()
     server = mcp_serve.create_mcp_server(event_bridge=bridge)
@@ -655,7 +655,7 @@ class TestE2EAttachmentsFetch:
 
 class TestE2EEventsPoll:
     def test_poll_empty(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
+        server, _bridge = mcp_server_e2e
         result = _run_tool(server, "events_poll")
         assert result["events"] == []
         assert result["next_cursor"] == 0

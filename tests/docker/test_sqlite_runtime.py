@@ -49,6 +49,7 @@ def test_image_links_fixed_sqlite_with_fts5_trigram(built_image: str) -> None:
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert result.returncode == 0, (

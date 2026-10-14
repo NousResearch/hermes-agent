@@ -29,7 +29,10 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
+  // session-focus.ts (reached via the preview store) and the layout store
+  // read these at import time; a mock without them crashes before any test.
   return {
+    $activeTreeGroup: atom(null),
     $collapsedTreeSides: atom(new Set()),
     $hiddenTreePanes: atom(new Set()),
     $layoutTree: atom(null),
@@ -76,7 +79,6 @@ vi.mock('@/store/session-states', async () => {
     $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
-    $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),

@@ -120,8 +120,7 @@ def max_recovery_attempts() -> int:
 
 def recovery_delay_seconds(attempt: int) -> float:
     """Backoff before recovery attempt ``attempt`` (1-based); last entry repeats."""
-    if attempt < 1:
-        attempt = 1
+    attempt = max(attempt, 1)
     index = min(attempt - 1, len(RECOVERY_DELAYS_SECONDS) - 1)
     return RECOVERY_DELAYS_SECONDS[index]
 

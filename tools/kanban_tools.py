@@ -63,11 +63,18 @@ def _profile_has_kanban_toolset() -> bool:
 
 def _delegation_ctx_or_none(predicate: str) -> Optional[bool]:
     """``agent.delegation_context.<predicate>()``; ``None`` when it cannot be
-    evaluated (module missing, version-skewed, or shadowed on ``sys.path``)."""
+    evaluated (module missing, version-skewed, or shadowed on ``sys.path``).
+
+    Deliberate catch-all boundary: what a broken ``agent`` install raises is not ours
+    to enumerate, and the verdict is the same for all of it. The traceback is logged
+    so "cannot tell" stays auditable rather than silent.
+    """
     try:
         from agent import delegation_context
         return bool(getattr(delegation_context, predicate)())
     except Exception:
+        logger.debug(
+            "delegation context predicate %s is un-evaluable", predicate, exc_info=True)
         return None
 
 

@@ -478,13 +478,18 @@ export function useComposerSubmit({
       }
     }
 
-    void Promise.resolve(onSteer(frozen.transportText))
-      .then(accepted => {
-        if (!accepted) {
-          keep()
-        }
-      })
-      .catch(keep)
+    // Also recover callbacks that throw synchronously before returning a promise.
+    try {
+      void Promise.resolve(onSteer(frozen.transportText))
+        .then(accepted => {
+          if (!accepted) {
+            keep()
+          }
+        })
+        .catch(keep)
+    } catch {
+      keep()
+    }
   }
 
   const steerAtToolBoundary = (text: string) => {
@@ -516,16 +521,19 @@ export function useComposerSubmit({
 
     const rejected = () => queueRejectedCorrection(frozen, rejectedScope)
 
-    // A transport callback may throw synchronously as well as reject.
-    // Turning it into a promise keeps either failure on the same recovery path.
-    void Promise.resolve()
-      .then(() => onSteerHidden(frozen.transportText))
-      .then(accepted => {
-        if (!accepted) {
-          rejected()
-        }
-      })
-      .catch(rejected)
+    // Preserve synchronous dispatch while recovering from both sync throws
+    // and async refusals without losing the draft.
+    try {
+      void Promise.resolve(onSteerHidden(frozen.transportText))
+        .then(accepted => {
+          if (!accepted) {
+            rejected()
+          }
+        })
+        .catch(rejected)
+    } catch {
+      rejected()
+    }
   }
 
   const queueDraft = () => {

@@ -442,6 +442,66 @@ class TestStartRun:
             assert events[-1]["output"] == "Done."
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("worker_fails", [False, True], ids=["completed", "failed"])
+    async def test_events_stream_forwards_reasoning_deltas_in_order(self, adapter, worker_fails):
+        """The agent's structured ``reasoning_callback`` reaches /v1/runs clients as
+        ``reasoning.delta`` (``text``, the TUI gateway's field), interleaved with answer
+        deltas in emission order and ahead of the terminal event even when the worker
+        finishes before asyncio wraps its Future. The ``reasoning.available`` preview
+        still arrives unchanged for existing clients; empty chunks are dropped."""
+        import json
+        from concurrent.futures import ThreadPoolExecutor
+
+        class CompletedWorkerExecutor(ThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                future.exception(timeout=10)
+                return future
+
+        asyncio.get_running_loop().set_default_executor(CompletedWorkerExecutor(max_workers=1))
+        app = _create_runs_app(adapter)
+
+        def create_agent(**kwargs):
+            # Tolerate a missing callback so a regression shows up as a missing event.
+            reasoning = kwargs.get("reasoning_callback") or (lambda _text: None)
+            delta = kwargs["stream_delta_callback"]
+            progress = kwargs["tool_progress_callback"]
+            agent = MagicMock()
+
+            def run_conversation(**_kw):
+                reasoning("Weighing ")
+                reasoning("")
+                reasoning("the options.")
+                delta("Answer")
+                reasoning("Second thought.")
+                progress("reasoning.available", "_thinking", "Answer preview", None)
+                if worker_fails:
+                    raise RuntimeError("worker failed")
+                return {"final_response": "Answer"}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        assert [e["event"] for e in events] == [
+            "reasoning.delta", "reasoning.delta", "message.delta", "reasoning.delta",
+            "reasoning.available", "run.failed" if worker_fails else "run.completed",
+        ]
+        reasoning_events = [e for e in events if e["event"] == "reasoning.delta"]
+        assert [e["text"] for e in reasoning_events] == ["Weighing ", "the options.", "Second thought."]
+        assert all(e["run_id"] == run_id and isinstance(e["timestamp"], float) for e in reasoning_events)
+        assert events[4]["text"] == "Answer preview"  # reasoning.available is unchanged
+        if not worker_fails:
+            assert events[-1]["output"] == "Answer"  # reasoning never leaks into the answer
+
+    @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
         app = _create_runs_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}

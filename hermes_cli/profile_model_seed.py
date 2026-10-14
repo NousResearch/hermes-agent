@@ -17,9 +17,34 @@ def _requested_provider(model_cfg) -> str | None:
     return str(_expand_env_vars(provider)) if isinstance(provider, str) else None
 
 
+# Fields name lookups match on. Runtime sees them ``${VAR}``-expanded (load_config expands the
+# whole file), so matching expands only these; copied entries stay raw and secrets stay refs.
+_ROUTING_FIELDS = ("name", "provider_key", "base_url", "baseUrl", "url", "api")
+
+
+def _routed(entry):
+    if not isinstance(entry, dict):
+        return entry
+    return {k: _expand_env_vars(v) if k in _ROUTING_FIELDS else v for k, v in entry.items()}
+
+
+def _routing_view(cfg: dict) -> dict:
+    """*cfg* with endpoint routing fields expanded; same keys and list order, so a key or index
+    found here addresses the raw entry in *cfg*."""
+    view = dict(cfg)
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        view["providers"] = {k: _routed(v) for k, v in providers.items()}
+    custom = cfg.get("custom_providers")
+    if isinstance(custom, list):
+        view["custom_providers"] = [_routed(e) for e in custom]
+    return view
+
+
 def _resolve(provider: str, cfg: dict):
-    """Runtime named-endpoint lookup on *cfg* without reading any credential."""
-    return _get_named_custom_provider(provider, config=cfg, resolve_credentials=False)
+    """Runtime named-endpoint lookup on *cfg* (routing fields expanded) without reading any
+    credential."""
+    return _get_named_custom_provider(provider, config=_routing_view(cfg), resolve_credentials=False)
 
 
 def _source_of(cfg: dict, resolved: dict):
@@ -67,7 +92,7 @@ def launch_model_seed(source_cfg: dict) -> dict:
         ):
             seed["providers"] = {provider: exact}
         return seed
-    found = _source_of(source_cfg, selected)
+    found = _source_of(_routing_view(source_cfg), selected)
     if found is not None:
         section, where = found
         seed[section] = (
@@ -82,6 +107,7 @@ def _aliases(entry, key: str = "") -> frozenset[str]:
     """Every identity name-based lookups (runtime, ``/model`` pinning, pickers) accept for *entry*."""
     if not isinstance(entry, dict):
         return frozenset()
+    entry = _routed(entry)
     key = key or str(entry.get("provider_key") or "")
     return custom_provider_aliases(str(entry.get("name") or key), key)
 

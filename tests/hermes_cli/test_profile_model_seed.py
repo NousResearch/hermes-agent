@@ -158,6 +158,20 @@ def test_model_seed_selects_env_referenced_provider(monkeypatch):
     assert seed == {"model": source["model"], "providers": {"lab": endpoint}}
 
 
+@pytest.mark.parametrize("schema", ["providers", "custom_providers"])
+def test_model_seed_matches_env_referenced_endpoint_names(monkeypatch, schema):
+    monkeypatch.setenv("LAB_NAME", "Lab")
+    endpoint = {"name": "${LAB_NAME}", "base_url": "http://127.0.0.1:11434/v1"}
+    catalog = {"gateway": endpoint} if schema == "providers" else [endpoint]
+    source = {"model": {"provider": "custom:lab", "default": "synthetic-model"}, schema: catalog}
+
+    seed = launch_model_seed(source)
+
+    assert seed == source
+    dst = {"providers": {"stale": {"name": "lab", "base_url": "http://127.0.0.1:1/v1"}}}
+    assert "stale" not in merge_endpoint_seed(dst, seed).get("providers", {})
+
+
 def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch):
     import hermes_cli.runtime_provider_custom as custom_runtime
 

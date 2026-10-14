@@ -563,6 +563,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             _nonquiet_recover_turn,
             lambda: getattr(cli, "_last_turn_result", None),
             emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+            terminal_tools=getattr(getattr(cli, "agent", None), "kanban_terminal_tool_names", None),
         )
         # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn
         # runs through cli.chat so the worker log keeps its live tool feed (the dispatcher

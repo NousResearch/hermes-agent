@@ -193,6 +193,11 @@ class GatewayTurnMixin:
         override = _override_state.conversation.model_override if _override_state else None
         if override:
             override_model = override.get("model", model)
+            if override.get("provider") == "openai-codex":
+                # /model pins the route, not its rotating access token. Drop the cached runtime
+                # before resolving so even a failed fallback cannot retain stale credentials.
+                override = {k: override.get(k) for k in ("model", "provider", "base_url")}
+                _override_state.conversation.model_override = override
             override_runtime = {
                 k: override.get(k) for k in (
                     "provider", "requested_provider", "api_key", "base_url", "api_mode",
@@ -230,6 +235,14 @@ class GatewayTurnMixin:
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
                     override["provider"], target_model=override.get("model") or None)
+                if override["provider"] == "openai-codex":
+                    # Credential, endpoint and pool must come from the same live resolution.
+                    # Returning here also prevents channel overrides or old runtime fields from
+                    # replacing this session's higher-priority /model route.
+                    self._session_state(skey).conversation.model_override = {
+                        **runtime_kwargs, "model": override_model,
+                    }
+                    return override_model, runtime_kwargs
             except Exception as exc:
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say

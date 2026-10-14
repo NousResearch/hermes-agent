@@ -37,7 +37,9 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.delegation_notices import (
     claim_completions,
     completion_update,
+    live_progress_rows,
     mark_delivered,
+    progress_update,
     release,
 )
 from acp_adapter.provenance import session_provenance_meta
@@ -318,6 +320,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 continue
             for session_id, event, claim_id in claimed:
                 await self._emit_delegation_completion(session_id, event, claim_id)
+            # Same cadence as the drain: a running batch reports itself every tick, so the rows a
+            # client drew say what each child is doing instead of sitting silent until it settles.
+            await self._emit_live_delegation_progress()
+
+    async def _emit_live_delegation_progress(self) -> None:
+        """Send each session the live detail of the children it is still waiting on."""
+        for session_id in self.session_manager.session_ids():
+            try:
+                rows = await asyncio.to_thread(live_progress_rows, session_id)
+            except Exception:
+                logger.debug("Live delegation progress failed for %s", session_id, exc_info=True)
+                continue
+            if not rows:
+                continue
+            await self._send(
+                session_id,
+                progress_update(rows),
+                fail_msg="Could not report live delegation progress to %s",
+                level=logging.DEBUG,
+            )
 
     async def _emit_delegation_completion(
         self, session_id: str, event: dict, claim_id: Optional[str]

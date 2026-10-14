@@ -120,3 +120,104 @@ class TestClaim:
 
         assert notices.claim_completions(["8e440013-bd85-4c93-ace0-070a12b1d2fe"]) == []
         assert registry.qsize() == 1
+
+
+def live_record(**overrides):
+    record = {
+        "delegation_id": "deleg_abc123",
+        "session_key": "8e440013-bd85-4c93-ace0-070a12b1d2fe",
+        "status": "running",
+        "goals": ["say one", "say two"],
+        "dispatched_at": 1000.0,
+        "children_activity": [
+            {"api_calls": 4, "current_tool": "search_files", "seconds_since_activity": 1.2},
+            {"api_calls": 2, "current_tool": "read_file", "seconds_since_activity": 0.4},
+        ],
+    }
+    record.update(overrides)
+    return record
+
+
+class TestLiveProgress:
+    def test_only_the_callers_running_delegations_are_reported(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.async_delegation.list_async_delegations",
+            lambda: [
+                live_record(),
+                live_record(delegation_id="deleg_other", session_key="someone-else"),
+                live_record(delegation_id="deleg_done", status="completed"),
+            ],
+        )
+
+        live = notices.live_delegations("8e440013-bd85-4c93-ace0-070a12b1d2fe")
+
+        assert [record["delegation_id"] for record in live] == ["deleg_abc123"]
+
+    def test_a_batch_reports_the_rows_the_dispatch_drew(self):
+        rows = notices.progress_rows(live_record())
+
+        assert [row["id"] for row in rows] == ["deleg_abc123:0", "deleg_abc123:1"]
+        assert [row["state"] for row in rows] == ["working", "working"]
+        assert [row["label"] for row in rows] == ["say one", "say two"]
+
+    def test_each_row_names_the_tool_that_child_is_in(self):
+        rows = notices.progress_rows(live_record())
+
+        assert [row["activity"] for row in rows] == ["search_files", "read_file"]
+        assert [row["api_calls"] for row in rows] == [4, 2]
+        assert [row["seconds_since_activity"] for row in rows] == [1.2, 0.4]
+
+    def test_elapsed_counts_from_the_dispatch_not_the_tick(self):
+        rows = notices.progress_rows(live_record(dispatched_at=1_000_000.0))
+
+        assert all(row["elapsed_seconds"] > 1_000_000 for row in rows)
+
+    def test_a_single_delegation_keeps_the_bare_id(self):
+        rows = notices.progress_rows(live_record(goals=None, goal="say one"))
+
+        assert [row["id"] for row in rows] == ["deleg_abc123"]
+        assert "label" not in rows[0]
+
+    def test_a_split_unit_reports_the_calls_own_indexes(self):
+        rows = notices.progress_rows(
+            live_record(
+                goals=["say one", "say two", "say three"],
+                task_indexes=[2],
+                children_activity=[{"api_calls": 1, "current_tool": "patch"}],
+            )
+        )
+
+        assert [row["id"] for row in rows] == ["deleg_abc123:2"]
+        assert rows[0]["label"] == "say three"
+        assert rows[0]["activity"] == "patch"
+
+    def test_a_child_with_no_sampled_activity_still_gets_a_row(self):
+        rows = notices.progress_rows(live_record(children_activity=None))
+
+        assert [row["id"] for row in rows] == ["deleg_abc123:0", "deleg_abc123:1"]
+        assert all("activity" not in row for row in rows)
+
+    def test_the_update_carries_the_roster_without_a_transcript_line(self):
+        update = notices.progress_update(notices.progress_rows(live_record()))
+
+        assert update["sessionUpdate"] == "session_info_update"
+        assert "content" not in update
+        assert update["_meta"]["hermes"]["progress"] is True
+        assert len(update["_meta"]["hermes"]["subagents"]) == 2
+
+    def test_rows_of_every_live_delegation_are_merged(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.async_delegation.list_async_delegations",
+            lambda: [live_record(), live_record(delegation_id="deleg_second")],
+        )
+
+        rows = notices.live_progress_rows("8e440013-bd85-4c93-ace0-070a12b1d2fe")
+
+        assert [row["id"] for row in rows] == [
+            "deleg_abc123:0", "deleg_abc123:1", "deleg_second:0", "deleg_second:1"
+        ]
+
+    def test_nothing_running_means_nothing_is_sent(self, monkeypatch):
+        monkeypatch.setattr("tools.async_delegation.list_async_delegations", list)
+
+        assert notices.live_progress_rows("8e440013-bd85-4c93-ace0-070a12b1d2fe") == []

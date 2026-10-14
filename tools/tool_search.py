@@ -447,10 +447,18 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
             queries, connector_search=connector_search, call=call)
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
-    available_sources = _available_source_summary(catalog)
+    remote_pool = [entry for group in remote_entries for entry in group]
+    available_sources = _available_source_summary(catalog + remote_pool)
     for position, query in enumerate(queries):
-        corpus = catalog + remote_entries[position]
-        hits = search_catalog(corpus, query, limit=limit)
+        local_hits = search_catalog(catalog, query, limit=limit)
+        # The gateway leg already ranked relevance for the whole use_case; re-running
+        # the local rarest-token gate over those entries lets one catalog-absent
+        # domain word ("zones", "dns") zero the merge (#138601). When the lexical
+        # pass over the gateway's own shortlist is empty, keep gateway order.
+        remote_hits = (search_catalog(remote_entries[position], query, limit=limit)
+                       or remote_entries[position][:limit])
+        seen = {h.name for h in local_hits}
+        hits = (local_hits + [e for e in remote_hits if e.name not in seen])[:limit]
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]

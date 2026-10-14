@@ -131,6 +131,7 @@ Each `hermes auth add openai-codex` login becomes its own pool entry, but only *
 | `hermes auth add openai-codex --browser` | Codex only: sign in with the browser authorization-code + PKCE flow on `localhost:1455` instead of the default device code (for orgs that disable device-code grants); falls back to device code when the port is busy. Default for every Codex login via `auth.codex_login_flow: browser` |
 | `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |
 | `hermes auth priority <provider> <target> <n>` | Move a credential to priority `n` (0 = tried first); the rest are renumbered |
+| `hermes auth rename <provider> <target> <new_label>` | Change a credential's label (see [Renaming a credential](#renaming-a-credential)) |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
@@ -196,6 +197,21 @@ exhausted, so it is never touched by the Codex quota-reset probe and there is no
 credential ahead of it is benched.
 Sessions that already hold a credential keep it until they rotate; new sessions (and the next
 gateway start) follow the new order.
+
+### Renaming a credential {#renaming-a-credential}
+
+```bash
+hermes auth rename openai-codex 2 work-seat        # 1-based index, entry id, or exact label
+hermes auth rename openai-codex work-seat personal
+```
+
+Only the label changes; tokens, priority and cooldown state are untouched. The new label must
+still work as a target for the other `hermes auth` commands, so it is rejected when it is empty,
+contains control, format or line-break characters, is all digits (it would shadow that index), or
+matches another credential's label (case-insensitive) or id. For `nous` and `openai-codex` logins
+(the `device_code` entry), the label stored with the login is renamed too, so the entry keeps
+the new name if Hermes re-creates it from that login. A gateway or chat that is already running keeps the old label in memory and
+can write it back the next time it saves its pool; restart it after renaming.
 
 ## Error Recovery
 

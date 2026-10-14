@@ -12,7 +12,8 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 
 | File | Purpose |
 |------|---------|
-| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json`, definition/runtime split |
+| `cron/runtime_state.py` | Per-profile `runtime.db`: scheduler state and the interrupted-save journal |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
@@ -33,7 +34,52 @@ The model-facing surface is a single `cronjob_manage` tool with action-style ope
 
 ## Job Storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write to temp file, then rename). Each job record contains:
+A job lives in two per-profile files under `<HERMES_HOME>/cron/`:
+
+- `jobs.json` — the **definition**: what the operator declared (prompt, schedule, delivery, skills,
+  model pins, `enabled`, `repeat.times`, ...). Written atomically (temp file, then rename), and only
+  when a definition actually changes — creating, editing, pausing/resuming or retiring a job.
+- `runtime.db` — **scheduler state**: `next_run_at`, `last_*`, `state`, pause markers, fire/run
+  claims, `pending_slot`, `failure_streak`, quota holds, `repeat.completed` and the other per-fire
+  bookkeeping. An ordinary fire writes only here, so `jobs.json` stays a stable artifact to back
+  up, review or keep in source control.
+
+`load_jobs()` merges the two into one record per job and `save_jobs()` splits it again, so callers
+see a single dict. The contracts:
+
+- **Runtime is the complement of the definition schema.** `jobs.json` keeps exactly the authored
+  fields (`cron.constants.JOB_DEFINITION_FIELDS`, the list profile distributions refresh) plus `id`,
+  `enabled`, `created_at` and `repeat.times` (`DECLARATIVE_JOB_EXTRAS`); every other key is
+  scheduler state. A scheduler field added later therefore never churns `jobs.json`. An authored
+  field missing from the list, or a key added to `jobs.json` by hand, moves to `runtime.db` on the
+  next save — still stored and merged back, never lost. `enabled` is operator intent: only
+  pause/resume/run-now and a terminal completion change it, never an ordinary fire.
+- **Migration is lossless.** A scheduler field found in a `jobs.json` record (a pre-split store, an
+  older Hermes after a downgrade, or a hand edit) wins for that field; `runtime.db` supplies every
+  field the record does not carry. The next load moves the carried fields into `runtime.db` and
+  strips them from `jobs.json` in one save.
+- **A save that changes both files is crash-recoverable.** Runtime rows and the new definitions
+  commit together in `runtime.db` (a one-row journal) before `jobs.json` is replaced; the journal is
+  acknowledged afterwards. Rows of jobs the save removes are deleted only by that acknowledgement.
+  The next load finishes an interrupted save — unless `jobs.json` changed after that save began, in
+  which case the newer file wins, the journal is dropped, and the jobs it still declares keep their
+  rows.
+- **Hand-editing a schedule is safe.** Each runtime row records a digest of the schedule it was
+  computed for; if `jobs.json`'s schedule no longer matches, `next_run_at` and `pending_slot` are
+  dropped and the due scan recomputes them.
+- **Degraded-lock writers stay narrow.** Within one `_jobs_lock()` section a save rewrites only the
+  runtime rows it changed and deletes only `removed_ids`, mirroring the `jobs.json` shrink-merge.
+
+Quick snapshots (`hermes backup --quick`, the pre-update snapshot) and full backups (`hermes
+backup`, the automatic pre-update/pre-migration zips) copy each store's `jobs.json` and `runtime.db`
+back to back under that store's `_jobs_lock()`, deciding the pair from disk at copy time (a store
+migrated after the file scan still gets its new `runtime.db`); every other file (`executions.db`,
+`output/`, `state.db`) is copied outside the lock, so it is held only for those two small files.
+When the post-update safety net restores lost jobs from the pre-update snapshot, it writes
+`jobs.json` under the same lock and also brings back the snapshot's runtime state for every
+restored job with no live `runtime.db` row (a job that still has one keeps its newer live state).
+`runtime.db` keeps its owner when a root CLI command writes it, as `jobs.json` does. The merged
+record looks like this:
 
 ```json
 {
@@ -99,7 +145,7 @@ The scheduler runs on a periodic tick (default: every 60 seconds):
 ```text
 tick()
   1. Acquire scheduler lock (prevents overlapping ticks)
-  2. Load all jobs from jobs.json
+  2. Load all jobs (jobs.json definitions merged with runtime.db state)
   3. Filter to due jobs (next_run <= now AND state == "scheduled")
   4. For each due job:
      a. Set state to "running"
@@ -110,7 +156,7 @@ tick()
      f. Update run_count, compute next_run
      g. If repeat count exhausted → state = "completed"
      h. Otherwise → state = "scheduled"
-  5. Write updated jobs back to jobs.json
+  5. Save: scheduler state to runtime.db (jobs.json only if a definition changed)
   6. Release scheduler lock
 ```
 

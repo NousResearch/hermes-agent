@@ -3806,7 +3806,7 @@ tips:
   t310: "A provider_routing.require_parameters: true csak olyan szolgáltatókhoz irányít, amelyek a kérésed minden paraméterét támogatják."
   t311: "A HERMES_TUI_RESUME=1 indításkor automatikusan visszacsatlakozik a legutóbbi TUI-munkamenethez — jól jön, ha megszakad az SSH."
   t312: "A HERMES_TUI_THEME=light|dark|<hex> kikényszeríti a TUI-témát olyan terminálokon, amelyek nem állítják be a COLORFGBG-t."
-  t313: "A Ctrl+G vagy a Ctrl+X Ctrl+E a TUI-ban megnyitja a beviteli puffert az $EDITOR-ban hosszú, többsoros promptokhoz."
+  t313: "A Ctrl+G a TUI-ban megnyitja a beviteli puffert az $EDITOR-ban hosszú, többsoros promptokhoz."
   t314: "A TUI a LaTeX-et soron belül rendereli — az $E=mc^2$ Unicode-matekként jelenik meg nyers TeX helyett."
   t315: "A hermes dashboard helyi webes felületet indít a 127.0.0.1:9119 címen — egyetlen bájt sem hagyja el a localhostot."
   t316: "A hermes dashboard a teljes Hermes TUI-t beágyazza a böngésződbe xterm.js és WebSocket PTY segítségével."

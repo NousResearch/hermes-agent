@@ -3789,7 +3789,7 @@ tips:
   t310: "Ní sheolann provider_routing.require_parameters: true ach chuig soláthraithe a thacaíonn le gach paraiméadar i d'iarratas."
   t311: "Athcheanglaíonn HERMES_TUI_RESUME=1 leis an seisiún TUI is déanaí go huathoibríoch ag am tosaithe — áisiúil tar éis titim SSH."
   t312: "Forchuireann HERMES_TUI_THEME=light|dark|<hex> téama an TUI ar theirminéil nach socraíonn COLORFGBG."
-  t313: "Osclaíonn Ctrl+G nó Ctrl+X Ctrl+E sa TUI an maolán ionchuir in $EDITOR le haghaidh leideanna fada illíne."
+  t313: "Osclaíonn Ctrl+G sa TUI an maolán ionchuir in $EDITOR le haghaidh leideanna fada illíne."
   t314: "Rindreálann an TUI LaTeX inlíne — éiríonn $E=mc^2$ ina mhatamaitic Unicode in ionad TeX amh."
   t315: "Seolann hermes dashboard UI gréasáin áitiúil ag 127.0.0.1:9119 — ní fhágann aon sonraí localhost."
   t316: "Leabaíonn hermes dashboard TUI iomlán Hermes i do bhrabhsálaí trí xterm.js agus PTY WebSocket."

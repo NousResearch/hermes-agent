@@ -3789,7 +3789,7 @@ tips:
   t310: "provider_routing.require_parameters: true stuur net na verskaffers wat elke parameter in jou versoek ondersteun."
   t311: "HERMES_TUI_RESUME=1 herkoppel by die begin outomaties aan die mees onlangse TUI-sessie — handig nadat SSH afgebreek het."
   t312: "HERMES_TUI_THEME=light|dark|<hex> forseer die TUI-tema op terminale wat nie COLORFGBG stel nie."
-  t313: "Ctrl+G of Ctrl+X Ctrl+E in die TUI maak die invoerbuffer in $EDITOR oop vir lang meerreël-prompte."
+  t313: "Ctrl+G in die TUI maak die invoerbuffer in $EDITOR oop vir lang meerreël-prompte."
   t314: "Die TUI teken LaTeX inlyn — $E=mc^2$ word Unicode-wiskunde in plaas van rou TeX."
   t315: "hermes dashboard begin 'n plaaslike web-UI by 127.0.0.1:9119 — nul data verlaat localhost."
   t316: "hermes dashboard bed die volle Hermes TUI in jou blaaier in via xterm.js en 'n WebSocket-PTY."

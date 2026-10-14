@@ -3789,7 +3789,7 @@ tips:
   t310: "provider_routing.require_parameters: true 只會路由到支援你請求中每個參數的提供方。"
   t311: "HERMES_TUI_RESUME=1 會在啟動時自動重新連接最近的 TUI 工作階段 — SSH 斷線後特別好用。"
   t312: "HERMES_TUI_THEME=light|dark|<hex> 可在未設定 COLORFGBG 的終端機上強制指定 TUI 主題。"
-  t313: "在 TUI 中按 Ctrl+G 或 Ctrl+X Ctrl+E，可用 $EDITOR 開啟輸入緩衝區，方便撰寫多行長提示。"
+  t313: "在 TUI 中按 Ctrl+G 可用 $EDITOR 開啟輸入緩衝區，方便撰寫多行長提示。"
   t314: "TUI 會即時渲染 LaTeX — $E=mc^2$ 會顯示為 Unicode 數學符號，而非原始 TeX。"
   t315: "hermes dashboard 會在 127.0.0.1:9119 啟動本機網頁 UI — 資料完全不離開 localhost。"
   t316: "hermes dashboard 透過 xterm.js 與 WebSocket PTY，在瀏覽器中內嵌完整的 Hermes TUI。"

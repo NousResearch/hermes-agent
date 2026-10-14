@@ -173,3 +173,10 @@ def read_running_hermes_version() -> str:
     from hermes_cli.version_info import get_version_info
 
     return str(get_version_info().base_version)
+
+
+def legacy_plugin_keys(key: str) -> set[str]:
+    """Return left-core compatibility aliases through the CLI boundary bridge."""
+    from hermes_cli.left_core_migration import legacy_plugin_keys as _legacy_plugin_keys
+
+    return set(_legacy_plugin_keys(key))

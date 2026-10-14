@@ -33,7 +33,7 @@ class _InjectSlot:
 
 @contextmanager
 def plugin_inject_slot(view):
-    from hermes_cli.plugins import get_plugin_manager
+    from plugin_runtime.api import get_plugin_manager
     manager = get_plugin_manager()
     slot = manager._cli_ref = _InjectSlot(view, asyncio.get_running_loop())
     try:

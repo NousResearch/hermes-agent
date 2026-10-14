@@ -70,11 +70,20 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
         from tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
+    from tools.interrupt import is_interrupted
     deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
         remaining = 1.0 if deadline is None else deadline - time.monotonic()
         if remaining <= 0 or entry.event.wait(timeout=min(1.0, remaining)):
+            break
+        if is_interrupted():
+            # /stop or gateway shutdown on this turn's thread: withdraw the prompt the way the
+            # approval wait does, or a planned stop sits out the whole clarify timeout and the
+            # turn is left started (unknown after restart). A real answer that won the race stays.
+            with _lock:
+                if not entry.event.is_set():
+                    entry.response = CANCELLED
             break
         # Periodic activity touch so the gateway's inactivity timeout doesn't kill the agent during long
         # code execution (#10807).
@@ -82,6 +91,7 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
         _entries.pop(clarify_id, None)  # regardless of outcome
+        entry.event.set()  # Timeout also retires shared projections of this waiter.
         ids = _session_index.get(entry.session_key) or []
         if clarify_id in ids:
             ids.remove(clarify_id)

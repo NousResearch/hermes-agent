@@ -472,7 +472,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
 
 @pytest.mark.platforms("posix")
 def test_reexec_activates_generation_before_the_callers_own_imports(
-    source_launch, tmp_path, isolated_python,
+    source_launch, tmp_path,
 ):
     """A handed-off caller must find the dependency it declares.
 
@@ -525,6 +525,7 @@ def test_reexec_activates_generation_before_the_callers_own_imports(
     control = subprocess.run(
         [str(caller_python), str(entry)], cwd=root,
         env=dict(os.environ), capture_output=True, text=True, timeout=60,
+        check=False,
     )
     # The control re-enters too (that is the handoff); it must succeed under the
     # store interpreter, and the dependency must survive the re-entry.

@@ -613,7 +613,8 @@ def relaunch_command(
     to that interpreter, and do not depend on its obsolete editable finder.
 
     The re-entry activates the committed generation BEFORE the caller's own
-    code, so a handed-off caller keeps the dependencies it declares.
+    code — where the root it re-enters carries that activation — so a handed-off
+    caller keeps the dependencies it declares.
     """
     # Preserve interpreter options, not application flags with the same names.
     options: list[str] = []
@@ -628,9 +629,14 @@ def relaunch_command(
             options.append(original[index])
             index += 1
     prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); "
-              f"sys.argv = {argv!r}; "
-              "from hermes_cli.venv_sync import activate_relaunch_environment as _activate; "
-              f"_activate({str(root)!r}); ")
+              f"sys.argv = {argv!r}; ")
+    # The handoff also re-enters roots that carry no hermes_cli (a bare launcher
+    # root, a disposable fixture tree). Those have no committed generation to
+    # select, and importing the module anyway would kill the re-entry with
+    # ModuleNotFoundError before the caller's own code runs.
+    if (root / "hermes_cli" / "venv_sync.py").is_file():
+        prefix += ("from hermes_cli.venv_sync import activate_relaunch_environment as _activate; "
+                   f"_activate({str(root)!r}); ")
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

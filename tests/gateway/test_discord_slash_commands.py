@@ -185,7 +185,11 @@ async def test_native_clear_slash_registered_and_dispatches_reset(adapter):
     interaction = SimpleNamespace()
     await clear_cmd(interaction)
 
-    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/reset", "Session reset~")
+    clear_call = adapter._run_simple_slash.await_args
+    assert clear_call.args[:2] == (interaction, "/reset")
+    adapter._run_simple_slash.reset_mock()
+    await adapter._client.tree.commands["reset"](interaction)
+    assert adapter._run_simple_slash.await_args == clear_call
 
 
 @pytest.mark.asyncio

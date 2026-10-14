@@ -268,9 +268,36 @@ class TestSlackNativeSlashes:
         # (Slack's 50-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
+        # /clear deliberately takes /usage's slot only while the native cap is full.
+        from hermes_cli.commands_platforms import _SLACK_MAX_SLASH_COMMANDS
+        if len(slack_names) == _SLACK_MAX_SLASH_COMMANDS:
+            missing.discard("usage")
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
+
+    def test_usage_returns_when_native_capacity_is_freed(self, monkeypatch):
+        import hermes_cli.commands_platforms as platforms
+
+        native = {n for n, _, _ in slack_native_slashes()}
+        assert len(native) == platforms._SLACK_MAX_SLASH_COMMANDS
+        assert "clear" in native and "usage" not in native
+        assert slack_subcommand_map()["usage"] == "/usage"
+        available = platforms._gateway_available_commands()
+        # Remove an earlier native command, without changing the production cap.
+        monkeypatch.setattr(platforms, "_gateway_available_commands",
+                            lambda: [cmd for cmd in available if cmd.name != "help"])
+        freed = {n for n, _, _ in slack_native_slashes()}
+        assert "usage" in freed and "clear" in freed
+        assert len(freed) <= platforms._SLACK_MAX_SLASH_COMMANDS
+
+    def test_clear_has_no_slack_name_hint(self):
+        hints = {n: hint for n, _, hint in slack_native_slashes()}
+        assert hints["new"] == "[name]"
+        assert hints["clear"] == ""
+        entry = next(e for e in slack_app_manifest()["features"]["slash_commands"]
+                     if e["command"] == "/clear")
+        assert "usage_hint" not in entry
 
 
 class TestSlackAppManifest:

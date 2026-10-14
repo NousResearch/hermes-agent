@@ -390,7 +390,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login", "usage"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -409,7 +409,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entry for cmd in available
         for entry in ((cmd.name, cmd.describe(), cmd.args_hint or ""),
                       *((a, t("slash.shared.slack_alias_for", name=cmd.name,
-                              description=cmd.describe()), cmd.args_hint or "")
+                              description=cmd.describe()), "")
                         for a in cmd.gateway_aliases))
     ]
     wanted += [(alias, t("slash.shared.slack_alias_for", name=cmd.name, description=cmd.describe()),

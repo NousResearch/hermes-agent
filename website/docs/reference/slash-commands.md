@@ -235,6 +235,12 @@ Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolv
 
 ## Messaging slash commands
 
+Slack's native slash list is capped at 50 commands. `/clear` deliberately takes the
+slot otherwise occupied by `/usage` in the current registry; use `/hermes usage`
+instead. This is capacity-based, not a permanent exclusion: `/usage` returns to
+the native list when an earlier slot is freed. `/clear` has no name hint; use
+`/new [name]` to name a new session.
+
 > **Slack thread commands (`!` prefix):**
 > Slack itself blocks native slash commands inside message threads ("/queue is not supported in threads. Sorry!") and never delivers them to Hermes. Inside a Slack thread, use the `!` prefix instead — `!stop`, `!new`, `!status` — and the gateway dispatches it exactly like the slash form. `@Hermes !stop` and `@Hermes /stop` work in threads too. Only the first token is checked against the known command list, so messages like `!nice work` pass through to the agent unchanged. See [Using commands inside threads](../user-guide/messaging/slack.md#using-commands-inside-threads-the-cmd-prefix) for details.
 

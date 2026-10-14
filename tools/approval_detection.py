@@ -695,11 +695,17 @@ def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
 # working directory while ``build/../../dev/sda`` pops it and then climbs, which is the device
 # (review F5 on #122771). A tilde or a variable is an unknown directory, so the first ``..`` past
 # it climbs: ``~root/../../dev/sda`` is ``/dev/sda``, ``~root/dev/sda`` is a file under /root.
+# A plain segment is at most NAME_MAX (255) long, as the kernel requires of any path component. The
+# bound is what keeps the scan linear: unbounded, a long line with no ``/`` after a start (prose with
+# commas, a URL's ``:``) was rescanned to its end from every start, 84 s for an 80 KB heredoc line.
 _DEVICE_PATH_TOKEN_RE = re.compile(
     r'(?<![\w.~$/:-])'
-    r'(\$\{?\w+\}?|~(?:[+-]|[\w.-]*)|\.\.?(?=/)|\.?[^\s;&|<>()"\'`=:/$~.][^\s;&|<>()"\'`=:/]*|)'
+    r'(\$\{?\w+\}?|~(?:[+-]|[\w.-]*)|\.\.?(?=/)|\.?[^\s;&|<>()"\'`=:/$~.][^\s;&|<>()"\'`=:/]{0,255}|)'
     r'(/[^\s;&|<>()"\'`]*)'
 )
+# A token never crosses one of these, so the scan runs per word run and skips a run that cannot
+# hold a device path at all.
+_PATH_RUN_RE = re.compile(r'[^\s;&|<>()"\'`]+')
 
 
 def _collapse_device_paths(command: str) -> str:
@@ -725,7 +731,13 @@ def _collapse_device_paths(command: str) -> str:
         collapsed = "/" + "/".join(stack)
         return collapsed if collapsed != token else token
 
-    return _DEVICE_PATH_TOKEN_RE.sub(collapse, command)
+    def collapse_run(run: re.Match) -> str:
+        text = run.group(0)
+        if "/" not in text or "dev" not in text.lower():
+            return text
+        return _DEVICE_PATH_TOKEN_RE.sub(collapse, text)
+
+    return _PATH_RUN_RE.sub(collapse_run, command)
 
 
 def _normalize_command_for_detection(command: str) -> str:
@@ -744,8 +756,12 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm). An escaped
-    # operator stays live unless the line is a lone builtin printer that nothing parses again.
-    command = _strip_shell_escapes(command, live_operators=not _single_parse_only(command))
+    # operator stays live unless the line is a lone builtin printer that nothing parses again;
+    # without one the answer cannot change the result, so the word walk is skipped.
+    escaped_operator = "\\<" in command or "\\>" in command
+    command = _strip_shell_escapes(
+        command, live_operators=escaped_operator and not _single_parse_only(command),
+    )
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.

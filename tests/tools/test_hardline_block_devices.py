@@ -13,6 +13,7 @@ only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
 import subprocess
+import time
 
 import pytest
 
@@ -602,9 +603,30 @@ def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     ("$D/sda", "$D/sda"),
     ("https://host/../dev/sda", "https://host/../dev/sda"),
     ("/tmp/../etc/passwd", "/tmp/../etc/passwd"),
+    # a component may be NAME_MAX long and is still one segment
+    ("n" * 255 + "/../../dev/sda", "/dev/sda"),
 ])
 def test_device_path_spellings_collapse_to_the_node(spelling, resolved):
     assert _collapse_device_paths(spelling) == resolved
+
+
+# Every start in a long word run used to rescan it to the end: quadratic in the line, so one heredoc line
+# of comma-separated prose took minutes. A trailing URL keeps `/` and `dev` in the run, so the per-run
+# skip alone does not save it; the NAME_MAX bound on a segment does.
+@pytest.mark.parametrize("unit,repeat,tail", [
+    ("中文内容，", 20_000, ""),
+    ("中文内容，", 20_000, "见https://example.com/dev/guide"),
+    ("a,", 50_000, "x:/dev/sda"),
+], ids=["prose", "prose-then-dev-url", "list-then-colon"])
+def test_collapse_is_linear_in_a_long_line(unit, repeat, tail):
+    command = "cat > notes.md <<'EOF'\n" + unit * repeat + tail + "\nEOF"
+    started = time.perf_counter()
+    collapsed = _collapse_device_paths(command)
+    elapsed = time.perf_counter() - started
+    assert collapsed == command
+    # Loose bound, like test_max_accepted_separator_free_input_is_fast: the quadratic scan took
+    # tens of seconds here, the linear one takes milliseconds.
+    assert elapsed < 1.0, f"collapse took {elapsed:.3f}s on a {len(command)}-char line"
 
 
 # A word names a shell by its basename, or by being a variable whose value IS the shell.

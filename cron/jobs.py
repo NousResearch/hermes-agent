@@ -1741,6 +1741,62 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_api_max_retries(value: Any) -> Optional[int]:
+    """Validate a per-job API retry budget at the storage choke point.
+
+    Semantics deliberately match the ``agent.api_max_retries`` config sibling
+    (``agent/agent_init.py``): an integer count of attempts per model API call,
+    clamped to ``>= 1`` (1 = a single attempt, no retry). The clamp is applied
+    here rather than at fire time so the stored record reads exactly as it
+    behaves.
+
+    Where this is STRICTER than config is the failure mode, and for the same
+    reason the reasoning-effort pin is: config falls back to the default 3 on
+    a garbage value because a human is watching the session start, while a
+    cron job is fire-and-forget — a typo that silently degraded to the default
+    at 3am would look like the pin never worked. So a non-integer raises here
+    and nothing invalid ever persists. Booleans are rejected rather than
+    coerced (``int(True) == 1``) so a YAML ``true`` cannot become a retry
+    budget, and floats likewise (``int(3.5) == 3``) so a pin can never persist
+    a quietly different budget than the caller asked for.
+
+    Returns None for unset (None / empty string), which clears the pin and
+    keeps the job following ``agent.api_max_retries``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Invalid api_max_retries {value!r}. Expected an integer >= 1 "
+            "(empty string clears the override)."
+        )
+    # Floats are rejected rather than truncated (``int(3.5) == 3``): a pin
+    # that silently persists a DIFFERENT budget than the caller asked for is
+    # the same silent degradation this normalizer exists to prevent, and the
+    # string form ("3.5") already raises. Rejecting the whole type — not just
+    # non-integral values — keeps 1.0 from passing and leaving the contract
+    # half-enforced. Only reachable via direct Python calls; the CLI hands
+    # over strings.
+    if isinstance(value, float):
+        raise ValueError(
+            f"Invalid api_max_retries {value!r}. Expected an integer >= 1 "
+            "(empty string clears the override)."
+        )
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        value = text
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid api_max_retries {value!r}. Expected an integer >= 1 "
+            "(empty string clears the override)."
+        ) from None
+    return max(parsed, 1)
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
@@ -1765,6 +1821,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "api_max_retries": _normalize_api_max_retries,
 }
 
 
@@ -1831,6 +1888,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    api_max_retries: Optional[Union[int, str]] = None,
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1845,6 +1903,8 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    api_max_retries: per-job API retry budget overriding ``agent.api_max_retries`` (attempts per
+    model API call before the fallback chain engages), clamped to ``>= 1``; inert with ``no_agent``.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
@@ -1870,6 +1930,7 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_api_max_retries = _normalize_api_max_retries(api_max_retries)
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
@@ -1933,6 +1994,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
+        ("api_max_retries", normalized_api_max_retries),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:

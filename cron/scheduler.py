@@ -510,6 +510,51 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
     return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
 
 
+def _apply_job_api_max_retries(agent: Any, job: dict) -> None:
+    """Apply the per-job API retry budget to an already-constructed agent.
+
+    Precedence mirrors the reasoning pin above: a per-job ``api_max_retries``
+    (validated at the store choke point,
+    ``cron/jobs.py::_normalize_api_max_retries``) wins over the global
+    ``agent.api_max_retries`` that ``agent/agent_init.py`` resolved from
+    config. It is applied here, after construction, because the budget is read
+    per API call (``agent/conversation_loop.py`` reads ``_api_max_retries``),
+    so a plain attribute set is the whole wiring.
+
+    A value that no longer parses (hand-edited jobs.json) logs a warning and
+    leaves the agent default in place — a bad pin must degrade the run's retry
+    budget, never kill the tick. Floats are rejected here as well as at the
+    store: JSON draws no int/float distinction, so a hand-edited ``3.5`` would
+    otherwise truncate to a budget the operator never wrote. Absent pin is a
+    no-op, so an unpinned job is byte-identical to pre-feature behavior.
+    """
+    pinned = job.get("api_max_retries")
+    if pinned is None:
+        return
+    try:
+        if isinstance(pinned, (bool, float)):
+            raise ValueError(pinned)
+        retries = max(int(pinned), 1)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Job '%s': invalid stored api_max_retries %r — ignoring the pin "
+            "and keeping the agent default. Fix with `hermes cron edit %s "
+            "--api-max-retries <n>` (integer >= 1).",
+            job.get("id", "?"),
+            pinned,
+            job.get("id", "?"),
+        )
+        return
+    previous = getattr(agent, "_api_max_retries", None)
+    agent._api_max_retries = retries
+    logger.info(
+        "Job '%s': using per-job api_max_retries %d (agent default was %s)",
+        job.get("id", "?"),
+        retries,
+        previous,
+    )
+
+
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
@@ -2579,6 +2624,9 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        # Per-job API retry budget: overrides agent.api_max_retries for this
+        # job's runs only. No-op when the job carries no pin.
+        _apply_job_api_max_retries(agent, job)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(

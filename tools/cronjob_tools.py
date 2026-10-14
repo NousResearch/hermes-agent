@@ -694,8 +694,10 @@ def _action_create(a: dict[str, Any]) -> str:
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
-            # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
-            reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
+            # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models,
+            # nor make unattended-spend decisions: api_max_retries).
+            reasoning_effort=a["reasoning_effort"], api_max_retries=a["api_max_retries"],
+            interpreter=a["interpreter"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
@@ -855,6 +857,9 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
     if a["reasoning_effort"] is not None:
         # CLI-only lane; update_job validates, empty string clears the pin.
         updates["reasoning_effort"] = a["reasoning_effort"]
+    if a["api_max_retries"] is not None:
+        # CLI-only lane like reasoning_effort; update_job validates + clamps >= 1, empty string clears.
+        updates["api_max_retries"] = a["api_max_retries"]
     if a["interpreter"] is not None:
         # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
         updates["interpreter"] = a["interpreter"]
@@ -1008,6 +1013,7 @@ def cronjob(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    api_max_retries: Optional[Union[int, str]] = None,
     failure_deliver: Optional[str | list[str]] = None,
     task_id: str | None = None,
     session_id: Optional[str] = None,

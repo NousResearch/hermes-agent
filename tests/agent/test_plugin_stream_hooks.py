@@ -878,6 +878,33 @@ def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, t
         psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
 
 
+def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "undiscovered-stream-observer"
+    manager = plugins.PluginManager(scope_key=str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    discovery_calls = []
+
+    def discover_and_load():
+        discovery_calls.append(True)
+        manager._discovered = True
+
+    monkeypatch.setattr(manager, "discover_and_load", discover_and_load)
+    monkeypatch.setattr(psh, "stream_reasoning_deltas_enabled", lambda: True)
+    token = set_hermes_home_override(home)
+    try:
+        assert psh.has_stream_observer_hooks() is False
+        assert psh.has_reasoning_stream_observer_hooks() is False
+        assert discovery_calls == []
+        assert manager._discovered is False
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_targeted_unload_retires_observer_before_plugin_teardown(monkeypatch, tmp_path):
     from agent import plugin_stream_hooks as psh
     from hermes_cli import plugins

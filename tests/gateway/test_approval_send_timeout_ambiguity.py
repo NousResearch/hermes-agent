@@ -40,6 +40,17 @@ def test_timeout_is_ambiguous_not_failure():
     )
 
 
+def test_pending_future_timeout_is_ambiguous():
+    fut = concurrent.futures.Future()
+    assert _approval_send_outcome(fut, timeout=0) == "ambiguous"
+
+
+def test_completed_future_timeout_exception_is_a_definitive_failure():
+    fut = concurrent.futures.Future()
+    fut.set_exception(TimeoutError("Telegram request timed out"))
+    assert _approval_send_outcome(fut, timeout=1) == "failed"
+
+
 def test_success_is_sent():
     fut = MagicMock()
     fut.result.return_value = _Result(True)

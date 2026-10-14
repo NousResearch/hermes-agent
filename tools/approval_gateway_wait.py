@@ -86,6 +86,19 @@ def _cancel_cause(state: str, entry) -> str | None:
     return None
 
 
+def _approval_request_id_for_log(entry) -> str:
+    """Return a bounded, single-line request id for approval lifecycle logs."""
+    request_id = entry.data.get("request_id")
+    if request_id is None or request_id == "":
+        return "missing"
+    value = str(request_id)
+    safe = "".join(
+        char if char.isascii() and (char.isalnum() or char in "._:-") else "_"
+        for char in value
+    )
+    return safe[:256] or "missing"
+
+
 def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) -> dict:
     """Fire the post hook and build the decision dict. Unresolved (timeout) and
     a None choice both mean the user never answered; ``cancelled`` carries the
@@ -206,7 +219,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             notify_cb(dict(entry.data))
             approval_published()
         except Exception as exc:
-            logger.warning("Gateway approval notify failed: %s", exc)
+            request_id = _approval_request_id_for_log(entry)
+            logger.warning(
+                "Gateway approval notify outcome: request_id=%s lane=callback "
+                "outcome=notify_failed: %s",
+                request_id,
+                exc,
+                extra={
+                    "approval_request_id": request_id,
+                    "delivery_lane": "callback",
+                    "delivery_outcome": "notify_failed",
+                },
+            )
             _drop_entry("notify_failed")
             _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
             human.outcome = "notify_failed"

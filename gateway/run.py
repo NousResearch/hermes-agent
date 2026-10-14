@@ -763,14 +763,29 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
-    ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
-    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here."""
+    ``ambiguous`` means the acknowledgement wait expired while the future was
+    still pending; the prompt may have posted, so keep the registration and do
+    NOT re-send. A completed future exception, including TimeoutError, is a
+    definitive failure. Only a definitive button failure re-asks; logged here."""
     if future is None:
         logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
         return "failed"
     try:
         result = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
+        # ``Future.result(timeout=...)`` uses the same exception type both when its wait
+        # expires and when the completed send coroutine itself raises TimeoutError. Only the
+        # former is ambiguous: the send may still finish after our acknowledgement window.
+        # A completed future carrying a timeout exception is a definitive send failure, just
+        # like any other completed exception; callers can then fail closed without waiting out
+        # the user's full approval window.
+        done = getattr(future, "done", None)
+        try:
+            if callable(done) and done() is True:
+                logger.warning("Prompt send failed: completed send raised a timeout")
+                return "failed"
+        except Exception:
+            pass
         return "ambiguous"
     except Exception as exc:
         logger.warning("Prompt send failed: %s", exc)

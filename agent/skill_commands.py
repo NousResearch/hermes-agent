@@ -138,7 +138,10 @@ def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
     footer_end = content.rfind(_SKILL_DIR_NOTE_END)
     if footer_end == -1:
         return f"/{name}" if name else None
-    tail = content[footer_end + len(_SKILL_DIR_NOTE_END):]
+    tail = content[footer_end + len(_SKILL_DIR_NOTE_END):].lstrip()
+    while block_end := next((end for start, end in _TRAILING_BLOCK_ENDS if tail.startswith(start)), None):
+        cut = tail.find(block_end)
+        tail = tail[cut + len(block_end):].lstrip() if cut >= 0 else ""
     if not tail.strip():
         return f"/{name}" if name else None
     return " ".join(tail.split()) or None
@@ -172,6 +175,28 @@ def describe_skill_invocation(content: Any, separator: str = " — ") -> Optiona
         if instruction:
             return f"{label}{separator}{instruction}" if name else instruction
     return label if name else None
+
+
+_AUTO_LOAD_HEADER_RE = re.compile(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)' + _AUTO_LOAD_SUFFIX_RE.pattern)
+_BUNDLE_LOADED_RE = re.compile(r"^Skills loaded: (.+)$", re.MULTILINE)
+
+
+def skills_loaded_by_scaffold(content: Any) -> list[str]:
+    """Skill names a slash-skill, bundle/stacked or gateway auto-load turn carries inline; ``[]`` for any
+    other text. Only a complete activation header counts, so typed text that merely starts like one
+    (``[IMPORTANT: The "config" file is broken]``) is not mistaken for a skill load."""
+    if not isinstance(content, str):
+        return []
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        return [m.group(1) for m in _AUTO_LOAD_HEADER_RE.finditer(content)] if _AUTO_LOAD_HEADER_RE.match(content) else []
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return []
+    header = content.split("\n", 1)[0]
+    if _BUNDLE_MARKER in header:
+        loaded = _BUNDLE_LOADED_RE.search(content)
+        return [n.strip() for n in loaded.group(1).split(",") if n.strip()] if loaded else []
+    match = _SKILL_NAME_RE.match(content)
+    return [match.group(1)] if header.endswith(_SINGLE_SKILL_MARKER) and match and match.group(1) else []
 
 
 def _cut_after(message: str, marker: str, stop_marker: str, find) -> Optional[str]:
@@ -302,6 +327,11 @@ _SKILL_DIR_NOTE = (
     "`templates/config.yaml`) against that directory, then run them "
     "with the terminal tool using the absolute path."
 )
+# Closing text of the optional blocks _build_skill_message appends after the directory note; the
+# auto-load describer skips them so they are never read as the user's typed request.
+_SUPPORTING_FILES_END = "/scripts/foo.js`)."
+_TRAILING_BLOCK_ENDS = (("[Skill config (", "\n]"), ("[Skill setup note: ", "]\n\n"),
+                        ("[This skill has supporting files", _SUPPORTING_FILES_END))
 _SETUP_SKIPPED_NOTE = (
     "Required environment setup was skipped. Continue loading the skill "
     "and explain any reduced functionality if it matters."
@@ -362,7 +392,7 @@ def _build_skill_message(
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {skill_dir}{_SUPPORTING_FILES_END}"
         )
     stable_prefix = None
     if user_instruction:

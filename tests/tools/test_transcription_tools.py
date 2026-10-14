@@ -1761,3 +1761,17 @@ class TestTranscribeOpenaiFiveXxRetry:
         assert result["success"] is False
         assert "503" in result["error"] and "ffmpeg" not in result["error"]
         assert mock_client.audio.transcriptions.create.call_count == 1
+
+
+@pytest.mark.platforms("macos", arch="arm64")
+@pytest.mark.parametrize("device, compute_type, expected_device, expected_compute", [
+    ("auto", "auto", "cpu", "int8"),
+    ("auto", "float32", "cpu", "float32"),
+    ("cpu", "auto", "cpu", "int8"),
+    ("cpu", "float32", "cpu", "float32"),
+])
+def test_apple_silicon_preserves_explicit_whisper_choices(device, compute_type, expected_device, expected_compute):
+    from tools import transcription_local
+    with patch.object(transcription_local, "_create_whisper_model") as create:
+        assert transcription_local._load_local_whisper_model("base", device, compute_type) is create.return_value
+    create.assert_called_once_with("base", device=expected_device, compute_type=expected_compute)

@@ -1599,7 +1599,7 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     # stream (structured deltas or <think> tag extraction); fire only for
     # non-streaming modes (gateway, batch, quiet). Anything not shown during
     # streaming is caught by the CLI post-response fallback.
-    if reasoning_text and agent.reasoning_callback and not agent.stream_delta_callback and not agent._stream_callback:
+    if (reasoning_text and agent.reasoning_callback and not agent.stream_delta_callback and not agent._stream_callback and not getattr(agent, "_pre_delivery_gate_active", False)):
         with contextlib.suppress(Exception):
             agent.reasoning_callback(reasoning_text)
     return _sanitize_surrogates(reasoning_text) if reasoning_text else reasoning_text
@@ -2877,7 +2877,7 @@ class _StreamingCall(StreamingWaitMonitor):
         reasoning tags inside it must still reach the display: route through
         the delta callback for tag extraction (the CLI drops non-reasoning text
         once the stream box is closed)."""
-        if self.agent.stream_delta_callback:
+        if self.agent.stream_delta_callback and not getattr(self.agent, "_pre_delivery_gate_active", False):
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 
     def _new_diag(self) -> dict:

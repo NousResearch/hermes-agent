@@ -3,6 +3,7 @@
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
 docs of config.yaml.
 """
+from hermes_cli.config_defaults_auxiliary import _aux
 
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
@@ -17,20 +18,14 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
-
-
 DEFAULT_CONFIG = {
+    # Optional external jev judgments are disabled until explicitly enabled per task.
+    "jev": {
+        "title_generation": {"enabled": False},
+        "classify_items": {"enabled": False},
+        "threat_screen": {"enabled": False},
+        "clinical_classify": {"enabled": False},
+    },
     "model": "",
     "providers": {},
     "fallback_providers": [],
@@ -1357,8 +1352,8 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
-        # Per-subagent iteration cap (own budget, independent of the parent's).
-        "max_iterations": 250,
+        # Per-subagent iteration cap; null/0/negative or "unlimited" removes this local ceiling.
+        "max_iterations": None,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
         # summary is sized to the parent's remaining context headroom; trimmed text spills to
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
@@ -1972,6 +1967,8 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
+        # null/0/negative or "unlimited" removes only this local tool-call ceiling.
+        "max_tool_calls": None,
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state

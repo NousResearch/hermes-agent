@@ -600,3 +600,12 @@ def _resolve_child_runtime(
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs
+
+
+def _resolve_max_iterations(cfg: dict[str, Any]) -> int:
+    """Explicit null disables the local ceiling; absent keys retain the legacy default."""
+    from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+    from hermes_cli.config import resolve_local_limit
+    if "max_iterations" not in cfg:
+        return DEFAULT_MAX_ITERATIONS
+    return resolve_local_limit(cfg["max_iterations"], default=DEFAULT_MAX_ITERATIONS)

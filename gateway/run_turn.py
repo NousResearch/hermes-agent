@@ -1917,8 +1917,8 @@ class GatewayTurnMixin:
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,
     ):
-        """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
-        Returns the text for the adapter to send, or ``None`` when already delivered."""
+        """Final delivery decisions: silence, voice reply, media/footer; text to send or ``None``."""
+        event._clinical_delivery_trace = agent_result.get("clinical_delivery_trace")
         if diagnostic_wake_muted(event):
             return None
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).

@@ -38,6 +38,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.config_lookup import cfg_get
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
 # re-exported here so existing callers/patch targets keep working.
 from hermes_constants import (
@@ -1832,13 +1833,18 @@ _UNLIMITED_SPELLINGS = frozenset({
     "none", "null", "unlimited", "infinite", "infinity", "inf", "∞", "-1", "0"})
 
 
-def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
-    """Normalize a raw ``agent.max_turns`` value into an int iteration cap (always >= 1)."""
+def resolve_local_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Normalize explicit local ceilings; null and non-positive values mean unlimited."""
     # bool is a subclass of int; reject explicitly so True/False don't become 1/0.
-    if raw is None or isinstance(raw, bool):
+    if isinstance(raw, bool):
         return default
+    if raw is None:
+        return TURN_LIMIT_UNLIMITED
     if isinstance(raw, (int, float)):
-        n = int(raw)
+        try:
+            n = int(raw)
+        except (ValueError, OverflowError):
+            return default
     elif isinstance(raw, str):
         s = raw.strip().lower()
         if not s:
@@ -1850,28 +1856,19 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         except ValueError:
             try:
                 n = int(float(s))
-            except ValueError:
-                logger.debug("resolve_turn_limit: unparseable value %r → default %d", raw, default)
+            except (ValueError, OverflowError):
+                logger.debug("resolve_local_limit: unparseable value %r → default %d", raw, default)
                 return default
     else:
         # Unknown type (list, dict, …) — don't crash the agent over a bad config.
-        logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
+        logger.debug("resolve_local_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
         return default
     return TURN_LIMIT_UNLIMITED if n <= 0 else n
 
 
-def cfg_get(cfg: Optional[dict[str, Any]], *keys: str, default: Any = None) -> Any:
-    """Traverse nested dict keys safely, returning ``default`` on any miss.
-    Explicit ``None`` values are returned as-is (``dict.get`` semantics: ``default`` only when the
-    key is absent). Named ``cfg_get`` to avoid shadowing the ubiquitous ``cfg_path`` local."""
-    if not isinstance(cfg, dict):
-        return default
-    node: Any = cfg
-    for key in keys:
-        if not isinstance(node, dict) or key not in node:
-            return default
-        node = node[key]
-    return node
+def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
+    """Preserve callers' finite fallback for an absent agent.max_turns value."""
+    return default if raw is None else resolve_local_limit(raw, default=default)
 
 
 def _raw_config_cache_hit(path_key: str, cache_key: tuple[Any, ...]) -> Optional[dict[str, Any]]:

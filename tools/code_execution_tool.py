@@ -28,7 +28,7 @@ from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
 
 from hermes_time import get_timezone_name
-from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
+from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python, _resolve_max_tool_calls
 from tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
@@ -663,7 +663,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
-    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _resolve_max_tool_calls(_cfg)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
@@ -794,7 +794,7 @@ def execute_code(
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_tool_calls=_resolve_max_tool_calls(_cfg),
         reset=bool(reset), is_interrupted=_is_interrupted,
     ))
 

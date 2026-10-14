@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.platforms.base_voice import transcode_to_ogg_opus
 from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -52,40 +53,6 @@ _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 
 
-def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k", timeout: int = 60,
-                          output_path: str | None = None) -> str | None:
-    """Best-effort ffmpeg transcode to Ogg/Opus (voip-tuned) for native voice bubbles: the written
-    ``.ogg`` path (a NEW temp file unless ``output_path`` is given; caller cleans up), or None when
-    ffmpeg is missing/fails. ``output_path`` may equal ``path`` (in-place container repair) — the
-    encode goes through a sidecar so a failed run never truncates the source. Blocking (to_thread)."""
-    import shutil as _shutil
-    ffmpeg = _shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None
-    if output_path is None:
-        fd, ogg_path = tempfile.mkstemp(prefix="voice_transcode_", suffix=".ogg")
-        os.close(fd)
-    else:
-        ogg_path = output_path
-    in_place = os.path.abspath(str(path)) == os.path.abspath(ogg_path)
-    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
-    try:
-        result = subprocess.run(
-            [ffmpeg, "-v", "error", "-y", "-i", str(path),
-             "-acodec", "libopus", "-ac", "1", "-b:a", bitrate, "-vbr", "on",
-             "-application", "voip", "-compression_level", "10", "-f", "ogg", work_path],
-            capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
-        if result.returncode == 0 and os.path.getsize(work_path) > 0:
-            if in_place:
-                os.replace(work_path, ogg_path)
-            return ogg_path
-        logger.warning("ffmpeg Ogg/Opus transcode of %s failed (returncode=%s): %s", path, result.returncode,
-                       (result.stderr or b"").decode("utf-8", errors="replace")[:500])
-    except Exception:
-        logger.warning("voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with contextlib.suppress(OSError):
-        os.unlink(work_path)
-    return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 # History dedup is best-effort: stay well below the Discord heartbeat watchdog and fail open.
 _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
@@ -4421,7 +4388,10 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
+            protected = isinstance(getattr(event, "_clinical_delivery_trace", None), dict)
+            error_detail = type(e).__name__ if protected else (
+                str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
+            )
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
@@ -4634,6 +4604,12 @@ class BasePlatformAdapter(ABC):
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            outcome = ("delivered" if delivery_succeeded else "failed") if delivery_attempted else (
+                "suppressed" if not response else "failed"
+            )
+            with self._media_delivery_scope(event.source):
+                record_clinical_delivery(getattr(event, "_clinical_delivery_trace", None), outcome=outcome)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
@@ -4655,6 +4631,9 @@ class BasePlatformAdapter(ABC):
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            with self._media_delivery_scope(event.source):
+                record_clinical_delivery(getattr(event, "_clinical_delivery_trace", None), outcome="interrupted")
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
                 "on_processing_complete", event,
@@ -4662,7 +4641,14 @@ class BasePlatformAdapter(ABC):
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            clinical_trace = getattr(event, "_clinical_delivery_trace", None)
+            with self._media_delivery_scope(event.source):
+                record_clinical_delivery(clinical_trace, outcome="failed")
+            if isinstance(clinical_trace, dict):
+                logger.error("[%s] Error handling protected message (%s)", self.name, type(e).__name__)
+            else:
+                logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
             if isinstance(e, (SystemExit, KeyboardInterrupt)):

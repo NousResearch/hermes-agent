@@ -1020,14 +1020,16 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     agent._touch_activity(f"executing tool: {function_name}")
     _set_worker_activity_callback(agent)
 
-    if agent.tool_progress_callback:
+    callbacks_enabled = not getattr(agent, "_pre_delivery_gate_active", False)
+    if callbacks_enabled and agent.tool_progress_callback:
         try:
             preview = _build_tool_preview(function_name, display_args)
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
             _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
-    _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
+    if callbacks_enabled:
+        _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
     if not agent._checkpoint_mgr.enabled:
         return
@@ -1046,6 +1048,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
     """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
+    if getattr(agent, "_pre_delivery_gate_active", False):
+        return
     if not blocked and agent.tool_complete_callback:
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
@@ -1148,7 +1152,7 @@ def _commit_tool_result(
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
-    if not blocked and prepare_metadata:
+    if not blocked and prepare_metadata and not getattr(agent, "_pre_delivery_gate_active", False):
         try:
             display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
             metadata = prepare_metadata(tool_call_id, function_name, display_args, function_result)
@@ -1160,7 +1164,7 @@ def _commit_tool_result(
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
 
-    if not blocked:
+    if not blocked and not getattr(agent, "_pre_delivery_gate_active", False):
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
         # reconstruct the result even if the UI bridge dies mid-projection.
         _safe_callback(
@@ -1217,7 +1221,11 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
 
 
 def _tool_progress_enabled(agent) -> bool:
-    return not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off"
+    return (
+        not agent.quiet_mode
+        and getattr(agent, "tool_progress_mode", "all") != "off"
+        and not getattr(agent, "_pre_delivery_gate_active", False)
+    )
 
 
 def _preview(text: str, limit: int) -> str:
@@ -1618,6 +1626,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 def _start_quiet_tool_spinner(agent, function_name: str, function_args: dict, *, gate: bool = True, label: Optional[str] = None):
     """Start the quiet-mode kawaii spinner for one tool call, or return None; ``gate=False``
     skips ``_should_start_quiet_spinner`` (context-engine tools always spin)."""
+    if getattr(agent, "_pre_delivery_gate_active", False):
+        return None
     if not agent._should_emit_quiet_tool_messages() or (gate and not agent._should_start_quiet_spinner()):
         return None
     face = random.choice(KawaiiSpinner.get_waiting_faces())
@@ -1631,6 +1641,8 @@ def _start_quiet_tool_spinner(agent, function_name: str, function_args: dict, *,
 
 def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args: dict, tool_duration: float, result) -> None:
     """Stop the spinner with the cute completion line, or print it when no spinner ran."""
+    if getattr(agent, "_pre_delivery_gate_active", False):
+        return
     if spinner or agent._should_emit_quiet_tool_messages():
         cute = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=result)
         spinner.stop(cute) if spinner else agent._vprint(f"  {cute}")

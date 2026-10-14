@@ -674,8 +674,9 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_beep_calls_sounddevice_play(self, monkeypatch, mock_sd):
         np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode._sounddevice_output_allowed", lambda: True)
 
         from tools.voice_mode import play_beep
 

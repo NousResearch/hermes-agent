@@ -31,7 +31,7 @@ from tools.delegate_tool_child_run import (
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
+    _inherit_parent_capabilities, _load_config, _resolve_max_iterations, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
@@ -140,7 +140,9 @@ def _open_child_session_db(parent_agent) -> Any:
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
         from hermes_state_registry import acquire
         _parent_db_path = getattr(parent_session_db, "db_path", None)
-        return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
+        if not isinstance(_parent_db_path, (str, Path)) or not _parent_db_path:
+            return None
+        return acquire(Path(_parent_db_path))
     return None
 
 def _apply_child_cache_ttl(child) -> None:
@@ -522,7 +524,7 @@ def delegate_task(
         )
 
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = _resolve_max_iterations(cfg)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
     if max_iterations is not None and max_iterations != default_max_iter:

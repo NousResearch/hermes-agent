@@ -1,0 +1,14 @@
+name: clinical-evidence-guard
+version: "0.6.0"
+description: "Certifica respuestas clínicas y solicita reparación automática antes de entregarlas."
+author: "Alfred"
+provides_hooks:
+  - pre_llm_call
+  - post_tool_call
+  - pre_delivery_scope
+  - pre_delivery
+hooks:
+  - pre_llm_call
+  - post_tool_call
+  - pre_delivery_scope
+  - pre_delivery

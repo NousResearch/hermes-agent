@@ -103,6 +103,23 @@ log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }
 log_error() { printf '%s✗%s %s\n' "$C_RED" "$C_NC" "$1" >&2; }
 # $2: closed failure class for the local install receipt (write_install_receipt).
 fail() { STAGE_REASON="$1"; FAILURE_CLASS="${2:-other}"; log_error "$1"; exit 1; }
+# The last failed run_logged command's own error line (git's "fatal: ..."), so a
+# failure reason -- which Hermes-Setup shows as-is -- names the cause, not just the step.
+RUN_LOGGED_ERROR=""
+native_detail() { [ -z "$RUN_LOGGED_ERROR" ] || printf ': %s' "$RUN_LOGGED_ERROR"; }
+# Pick the error line from a command's output on stdin: the first fatal:/error:
+# line (git's cause; later ones are generic), else the last non-empty one.
+error_line() {
+    local line pick="" last=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"; line="${line##*$'\r'}"
+        [ -n "${line//[[:space:]]/}" ] || continue
+        last="$line"
+        [ -n "$pick" ] || case "$line" in fatal:*|error:*|*" fatal: "*|*" error: "*) pick="$line" ;; esac
+    done
+    pick="${pick:-$last}"
+    printf '%s' "${pick:0:240}"
+}
 
 # One local receipt per full-ladder run, under the profile's shared-metrics dir.
 # Only closed tokens and two timestamps (never STAGE_REASON, paths or URLs); the
@@ -196,10 +213,17 @@ run_logged() {
     local may_fail=false
     if [ "$1" = --may-fail ]; then may_fail=true; shift; fi
     local label="$1"; shift
+    RUN_LOGGED_ERROR=""
     if ! quiet_output || ! { mkdir -p "${INSTALL_LOG%/*}" && : >> "$INSTALL_LOG"; } 2>/dev/null; then
         log "$label"
-        "$@"
-        return
+        local err rc
+        err="$(mktemp 2>/dev/null)" || { "$@"; return; }
+        # stderr still streams (Hermes-Setup logs it); a copy names the failure.
+        { "$@" 2>&1 1>&3 | tee "$err" >&2; } 3>&1
+        rc=${PIPESTATUS[0]}
+        [ "$rc" -eq 0 ] || RUN_LOGGED_ERROR="$(error_line < "$err")"
+        rm -f "$err"
+        return "$rc"
     fi
     local start cols rc line shown
     start=$(( $(wc -l < "$INSTALL_LOG") + 1 ))
@@ -220,6 +244,7 @@ run_logged() {
     } 3>>"$INSTALL_LOG"
     rc=${PIPESTATUS[0]}
     printf '\r\033[K'
+    [ "$rc" -eq 0 ] || RUN_LOGGED_ERROR="$(tail -n +"$(( start + 1 ))" "$INSTALL_LOG" | error_line)"
     if [ "$rc" -ne 0 ] && [ "$may_fail" = false ]; then
         log_error "$label failed (exit $rc). Last output:"
         tail -n +"$(( start + 1 ))" "$INSTALL_LOG" | tail -n 20 | sed 's/^/    /' >&2
@@ -523,7 +548,37 @@ stage_prerequisites() {
     log_success "prerequisites ok (git, curl)"
 }
 
+# The update channel this install chose (config.yaml update.installs.<id>.channel,
+# id = sha16 of the canonical install path, as hermes_cli.update_channel keys it).
+# Pre-Python reader of the block YAML Hermes writes; anything it cannot read prints
+# nothing, which keeps the plain branch behaviour.
+chosen_channel() {
+    local config="$HERMES_HOME/config.yaml" root id
+    [ -f "$config" ] || return 0
+    root="$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" || return 0
+    if command -v sha256sum >/dev/null 2>&1; then id="$(printf '%s' "$root" | sha256sum)"
+    elif command -v shasum >/dev/null 2>&1; then id="$(printf '%s' "$root" | shasum -a 256)"
+    else return 0; fi
+    awk -v id="${id:0:16}" -v q="'" '
+        function bare(s,  f) {
+            sub(/^[ \t]+/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t\r]+$/, "", s)
+            f = substr(s, 1, 1)
+            if (length(s) > 1 && (f == "\"" || f == q) && substr(s, length(s), 1) == f) s = substr(s, 2, length(s) - 2)
+            return s
+        }
+        /^[ \t]*(#|\r?$)/ { next }
+        {
+            match($0, /^ */); indent = RLENGTH; line = substr($0, indent + 1)
+            colon = index(line, ":"); if (!colon) next
+            while (depth && at[depth] >= indent) depth--
+            at[++depth] = indent; key[depth] = bare(substr(line, 1, colon - 1))
+            if (depth == 4 && key[1] == "update" && key[2] == "installs" && key[3] == id \
+                && key[4] == "channel") { print bare(substr(line, colon + 1)); exit }
+        }' "$config" | grep -E '^[a-z0-9]+(-[a-z0-9]+)*$' || :
+}
+
 stage_repository() {
+    local pinned=false channel=""
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the
     # initial commit yet", #40998). Move it aside -- never delete it, it may
@@ -535,7 +590,17 @@ stage_repository() {
         mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside" filesystem_error
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
-        log "Updating $INSTALL_DIR ($BRANCH)"
+        # A chosen channel (stable, a preview) owns where this checkout sits: `hermes update`
+        # moves it. Switching it to the installer's branch would leave it on main while its
+        # channel still says otherwise, and the next check would offer the release as an update.
+        # Only an explicit --commit pin outranks the choice.
+        [ -n "$INSTALL_COMMIT" ] || channel="$(chosen_channel)"
+        [ "$channel" != main ] || channel=""
+        if [ -n "$channel" ]; then
+            log "Repairing $INSTALL_DIR on the $channel update channel it chose"
+        else
+            log "Updating $INSTALL_DIR ($BRANCH)"
+        fi
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
@@ -575,8 +640,12 @@ stage_repository() {
                 fi
             fi
         fi
+        if [ -n "$channel" ]; then
+            log "Keeping its checkout: \`hermes update\` moves it (\`hermes update --set-channel main\` follows main)"
+            return 0
+        fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
-            || fail "git fetch failed" git_fetch_failed
+            || fail "git fetch failed$(native_detail)" git_fetch_failed
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -600,10 +669,10 @@ stage_repository() {
         # narrow checkout (detached at its tag, no local branch) gets the branch
         # created at the fetched tip.
         if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed" git_checkout_failed
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed$(native_detail)" git_checkout_failed
         else
             run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
-                || fail "git checkout failed" git_checkout_failed
+                || fail "git checkout failed$(native_detail)" git_checkout_failed
         fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
@@ -630,7 +699,7 @@ stage_repository() {
                 log "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
             fi
             run_logged "Resetting to origin/$BRANCH" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" \
-                || fail "git reset failed" git_reset_failed
+                || fail "git reset failed$(native_detail)" git_reset_failed
             log_warn "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
@@ -645,7 +714,7 @@ stage_repository() {
             fi
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        local staged attempt label cloned=false progress=()
+        local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD)
         # Phase lines ("Receiving objects: 42%") feed the status line; git
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
@@ -658,8 +727,10 @@ stage_repository() {
             # checkout and history walk (#129712).
             label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
             [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
+            # A pinned install materializes only the pin (below): checking out the
+            # branch tip first fetches and rewrites every file the two differ in.
             if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
-                --filter=blob:none --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+                --filter=blob:none ${INSTALL_COMMIT:+--no-checkout} --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -672,19 +743,37 @@ stage_repository() {
             log_warn "direct clone failed; trying deferred checkout"
             if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
                 --filter=blob:none --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
-                for attempt in 1 2; do
-                    if run_logged "Checking out files (attempt $attempt of 2)" \
-                        git -C "$staged/tree" reset --hard HEAD; then
-                        cloned=true
-                        break
-                    fi
-                    [ "$attempt" = 2 ] || sleep 5
-                done
+                cloned=deferred
             fi
         fi
         if [ "$cloned" = false ]; then
             rm -rf "$staged"
-            fail "git clone failed; no checkout published" git_clone_failed
+            fail "git clone failed; no checkout published$(native_detail)" git_clone_failed
+        fi
+        if [ -n "$INSTALL_COMMIT" ]; then
+            # Pin before publishing: a pinned or deferred clone has no files yet,
+            # and an unpublished tree never leaves an empty checkout behind.
+            git -C "$staged/tree" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
+                || { rm -rf "$staged"; fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch; }
+        fi
+        if [ -n "$INSTALL_COMMIT" ] || [ "$cloned" = deferred ]; then
+            # The checkout step is where throttled downloads die: retry it alone.
+            # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
+            [ -z "$INSTALL_COMMIT" ] || materialize=(checkout --force --detach "$INSTALL_COMMIT")
+            cloned=false
+            for attempt in 1 2; do
+                if run_logged "Checking out ${INSTALL_COMMIT:-files} (attempt $attempt of 2)" \
+                    git -C "$staged/tree" "${materialize[@]}"; then
+                    cloned=true
+                    [ -z "$INSTALL_COMMIT" ] || pinned=true
+                    break
+                fi
+                [ "$attempt" = 2 ] || sleep 5
+            done
+            if [ "$cloned" = false ]; then
+                rm -rf "$staged"
+                fail "could not check out ${INSTALL_COMMIT:-the cloned tree}; no checkout published$(native_detail)" git_checkout_failed
+            fi
         fi
         if ! mv "$staged/tree" "$INSTALL_DIR"; then
             rm -rf "$staged"
@@ -703,14 +792,15 @@ stage_repository() {
             || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"
     fi
-    if [ -n "$INSTALL_COMMIT" ]; then
-        # A pin must come from the branch being installed: the complete
-        # marker records both, and a commit off that branch would make the
-        # next plain rerun "update" onto a different line.
+    if [ -n "$INSTALL_COMMIT" ] && [ "$pinned" = false ]; then
+        # A rerun over an existing checkout pins here (a fresh clone pinned
+        # before publishing). A pin must come from the branch being installed:
+        # the complete marker records both, and a commit off that branch would
+        # make the next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
             || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
-            || fail "could not pin commit $INSTALL_COMMIT" git_checkout_failed
+            || fail "could not pin commit $INSTALL_COMMIT$(native_detail)" git_checkout_failed
     fi
 }
 

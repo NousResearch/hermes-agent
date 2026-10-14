@@ -292,7 +292,7 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: int | float | None = None) -> str:
+                              threshold: float | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""

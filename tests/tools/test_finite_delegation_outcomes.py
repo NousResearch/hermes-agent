@@ -96,7 +96,7 @@ def harness(monkeypatch, tmp_path):
         return child
 
     monkeypatch.setattr(dt, "_build_child_agent", build_child)
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr(dt, "_load_config", dict)
     monkeypatch.setattr(dt, "_get_max_concurrent_children", lambda: 2)
     monkeypatch.setattr(dt, "_get_worktree_isolation", lambda: False)
     monkeypatch.setattr(dt, "_get_child_timeout", lambda: 4)

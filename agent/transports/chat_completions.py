@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
-    KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
+    GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import MESSAGE_UID
@@ -163,6 +163,8 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
+    from agent.gemini_native_adapter import gemini_uses_thinking_level
+
     if not isinstance(reasoning_config, dict):
         return None
     normalized_model = (model or "").strip().lower().removeprefix("google/")
@@ -174,17 +176,27 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if not normalized_model.startswith("gemini"):
         return None
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
+    if normalized_model.startswith("gemini-4"):
+        # Gemini 4 always thinks: a disable request gets the floor level with thoughts hidden.
+        disabled = reasoning_config.get("enabled") is False or effort == "none"
+        level = "low" if disabled else clamp_effort(effort, GEMINI4_THINKING_LEVELS)
+        return {"includeThoughts": not disabled, "thinkingLevel": level if level in GEMINI4_THINKING_LEVELS else "medium"}
     if reasoning_config.get("enabled") is False or effort == "none":
         # ``includeThoughts: False`` only omits thought parts from the returned
         # response; the model may still reason internally and bill thought
         # tokens against maxOutputTokens, starving small budgets (title
-        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
-        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
-        # ``gemini-flash-latest`` alias); future majors are added only when the
-        # API documents thinkingBudget for them. (#91927)
+        # generation's 64 tokens). Bound thinking as low as each family allows:
+        # Gemini 2.5 documents ``thinkingBudget: 0`` as the off switch, while
+        # Gemini 3+ deprecated that field in favour of the ``thinkingLevel``
+        # string enum (which has no "none"), so use its lowest universally
+        # supported level — "low" (3.6's "minimal" is not accepted by 3.7+ /
+        # 3.1 Pro). ``_thinking_requests_output_headroom`` keeps the small
+        # budget intact for this hidden-thoughts path. (#91927)
         config: dict[str, Any] = {"includeThoughts": False}
-        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+        if normalized_model.startswith("gemini-2.5-"):
             config["thinkingBudget"] = 0
+        elif gemini_uses_thinking_level(normalized_model):
+            config["thinkingLevel"] = "low"
         return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
@@ -192,16 +204,16 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return thinking_config
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
-    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
-    # family accepts so we never forward an undocumented level verbatim.
-    if normalized_model.startswith("gemini-3"):
-        if "flash" in normalized_model:
+    # Gemini 3 Pro is strict (low/high); every other thinking-level model (3.x Flash, Gemini 4 Argon)
+    # documents low/medium/high, and "minimal" is not universal (Argon 400s on it). Clamp Hermes' wider
+    # effort set to what each family accepts so we never forward an undocumented level verbatim.
+    if gemini_uses_thinking_level(normalized_model):
+        if "pro" in normalized_model:
+            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
+        else:
             thinking_config["thinkingLevel"] = (
                 "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
             )
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
     return thinking_config
 
 
@@ -246,35 +258,44 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
         return False
 
 
-def _model_consumes_thought_signature(model: Any) -> bool:
-    """True for Gemini-family targets, which require tool-call ``extra_content`` (thought_signature) replay.
-
-    Every other strict provider rejects it, so it is stripped for non-Gemini targets.
-    """
-    m = str(model or "").lower()
-    return "gemini" in m or "gemma" in m
+_GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
+_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex", "copilot"})
 
 
-def _route_replays_reasoning_details(base_url: Any) -> bool:
-    """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array).
+def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider: Any = None) -> bool:
+    """True for Gemini routes, which require tool-call ``extra_content`` (thought_signature) replay.
 
-    Every other chat-completions endpoint either ignores the field or, when its schema is
-    strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
-    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``), rejects the whole
-    request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
-    later turn once the model is switched (#70233). The stored history keeps the field; only the
-    wire copy drops it.
-
-    The Nous Portal read the field too (multi-turn reasoning continuity), but it enforces a
-    cumulative replayed-reasoning budget: replaying stored reasoning_details wedges long
-    sessions with a non-retryable 400 (#118182), so the Portal now strips like every other
-    route. Stored history keeps the field, so a route that genuinely replays it (OpenRouter,
-    #129037) still receives it.
+    A Gemini host or provider counts even when the model id is an alias without "gemini" in it;
+    every other strict provider (Fireworks, Cerebras) rejects the key, so it is stripped there.
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai")
+    m = str(model or "").lower()
+    return (
+        "gemini" in m or "gemma" in m
+        or (provider or "").strip().lower() in _GEMINI_SIGNATURE_PROVIDERS
+        or any(base_url_host_matches(base_url, host) for host in _GEMINI_SIGNATURE_HOSTS)
+    )
+
+
+def _wire_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
+    """Reasoning keys an assistant message may carry on this route; the rest are stripped.
+
+    ``message_sanitization.route_reasoning_carriers`` owns the table; keys the route rejected
+    this session were already removed upstream by ``reapply_reasoning_echo``. The table replays
+    ``reasoning_details`` to OpenRouter-format gateways (OpenRouter, Kilo, Vercel AI Gateway,
+    Nous Portal) and to vendors documenting it (Novita, MiniMax /v1, TokenHub), never to strict
+    schemas (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
+    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``, #70233).
+    The Portal is back on the list: the "cumulative replayed-reasoning budget" blamed for #118182
+    does not exist in the Portal code and ~440 live replay requests (up to 32 KB of reasoning)
+    returned no 400; the observed failures were an upstream content filter surfaced as
+    "Provider returned error". Portal lanes that reject a carrier are handled by the
+    per-(provider, host, model) reactive strip. Stored history always keeps every carrier.
+    """
+    from agent.message_sanitization import route_reasoning_carriers
+
+    return route_reasoning_carriers(provider, base_url)
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -379,7 +400,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
 
 
 def _sanitize_message(
-    msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False,
+    msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None,
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
@@ -388,19 +409,19 @@ def _sanitize_message(
     ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
     ``tool_calls: []`` / ``null`` (strict providers reject both), ``name``
     on tool results (schema-valid only on user/assistant messages; strict
-    providers reject it with ``contains item with unknown key name``), and
-    ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
-    On a replaying route, private ``<provider>.native_assistant`` carriers still go only to the
+    providers reject it with ``contains item with unknown key name``), and the reasoning
+    keys in ``strip_reasoning`` (carriers the route does not read, ``_wire_reasoning_carriers``).
+    On a route that reads ``reasoning_details``, private ``<provider>.native_assistant`` carriers still go only to the
     profile that declared that exact type: another provider's signed replay is meaningless (or
     rejected) elsewhere, and stored history keeps it for a return to the original provider.
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    if msg.get("role") == "assistant":
+        strip_keys += [k for k in strip_reasoning if k in msg]
     kept_details = None
-    if strip_reasoning_details and "reasoning_details" in msg:
-        strip_keys.append("reasoning_details")
-    elif isinstance(msg.get("reasoning_details"), list):
+    if "reasoning_details" not in strip_keys and isinstance(msg.get("reasoning_details"), list):
         details = msg["reasoning_details"]
         kept = [d for d in details if not (
             isinstance(d, dict) and isinstance(d.get("type"), str)
@@ -455,11 +476,16 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
-        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        # A profile declaring a native carrier type consumes replayed details by contract.
-        native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
-        strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
+        profile = kwargs.get("provider_profile")
+        provider = getattr(profile, "name", None) or kwargs.get("provider")
+        strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)
+        native_type = getattr(profile, "native_reasoning_details_type", None) or None
+        carriers = _wire_reasoning_carriers(provider, kwargs.get("base_url"))
+        if native_type and carriers:
+            # A profile declaring a native carrier type consumes replayed details by contract.
+            carriers = carriers | {"reasoning_details"}
+        strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
@@ -478,7 +504,10 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        sanitized = self.convert_messages(
+            messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
+            provider=params.get("provider_name"),
+        )
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 
@@ -588,14 +617,14 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             # Native Gemini speaks Google's REST schema: OpenAI-style extra_body
             # keys (tags, reasoning, provider, ...) are unknown fields -> HTTP 400.
-            # The native client only reads thinking_config, so drop everything else.
+            # The native client reads only thinking_config and the long-decode budget.
             try:
                 from agent.gemini_native_adapter import is_native_gemini_base_url
                 _native_gemini = is_native_gemini_base_url(params.get("base_url"))
             except Exception:
                 _native_gemini = False
             if _native_gemini:
-                extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
+                extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig", "max_output_tokens")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
         return _finish_kwargs(
@@ -628,6 +657,10 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_content"] = reasoning_content
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
+        # Message-level carriers (Gemini text-turn signature, Copilot reasoning): agent/reasoning_carriers.py.
+        for key in ("extra_content", "reasoning_opaque", "reasoning_text"):
+            if (value := _attr_or_model_extra(msg, key)) is not None:
+                provider_data[key] = _dump_extra_content(value)
 
         # OpenAI structured refusal (``message.refusal`` set, ``content`` empty); without
         # promotion the loop retries a deterministic refusal as an empty response.
@@ -643,7 +676,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            reasoning=getattr(msg, "reasoning", None), usage=usage, provider_data=provider_data or None,
+            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
+            reasoning=getattr(msg, "reasoning", None) or provider_data.get("reasoning_text"), usage=usage,
+            provider_data=provider_data or None,
         )
 
     def _normalize_tool_call(self, tc: Any) -> ToolCall | None:
@@ -660,9 +695,12 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
+        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # Copilot's Gemini 3 variant
+        provider_data = {k: v for k, v in (("extra_content", None if extra is None else _dump_extra_content(extra)),
+                                            ("thought_signature", fn_sig)) if v is not None}
         call = ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
-            provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
+            provider_data=provider_data or None,
         )
         if getattr(tc_function, "args_repaired", False) is True:
             call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics
@@ -686,6 +724,6 @@ class ChatCompletionsTransport(ProviderTransport):
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
 
-from agent.transports import register_transport  # noqa: E402
+from agent.transports import register_transport
 
 register_transport("chat_completions", ChatCompletionsTransport)

@@ -122,7 +122,7 @@ class ActiveSessionRefusal(str):
 
     reason: str
 
-    def __new__(cls, message: str, reason: str) -> "ActiveSessionRefusal":
+    def __new__(cls, message: str, reason: str) -> ActiveSessionRefusal:
         obj = super().__new__(cls, message)
         obj.reason = reason
         return obj
@@ -181,7 +181,7 @@ def _lock_path(registry_home: str | Path | None = None) -> Path:
 
 
 def _lease_paths(
-    lease: Optional["ActiveSessionLease"] = None, registry_home: str | Path | None = None
+    lease: Optional[ActiveSessionLease] = None, registry_home: str | Path | None = None
 ) -> tuple[Path, Path]:
     if lease is not None and lease.state_path is not None and lease.lock_path is not None:
         return lease.state_path, lease.lock_path

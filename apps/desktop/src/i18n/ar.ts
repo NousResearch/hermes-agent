@@ -8,11 +8,24 @@ import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
+import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
-export const ar = defineLocale({
+export const arOverrides = {
+  connectors: {
+    directory: {
+      suggested: 'مقترحة',
+      allApps: 'كل التطبيقات',
+      receiptConnected: apps => `متصلة: ${apps}`,
+      receiptNone: 'لم يتم ربط تطبيقات جديدة',
+      receiptTimedOut: 'أُغلقت بعد 5 دقائق',
+      finishInBrowser: 'أكمل في المتصفح',
+      signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'
+    }
+  },
   sharedMetrics: arCommon.sharedMetrics,
+  firstRun: arFirstRun,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,
   sendDiagnostics: arDiagnostics.sendDiagnostics,
@@ -40,7 +53,6 @@ export const ar = defineLocale({
   composer: arChat.composer,
   statusStack: arChat.statusStack,
   updates: arBoot.updates,
-  guidedGreeting: arBoot.guidedGreeting,
   install: arBoot.install,
   onboarding: arBoot.onboarding,
   modelPicker: arSettings.modelPicker,
@@ -56,5 +68,15 @@ export const ar = defineLocale({
   desktop: arChat.desktop,
   errors: arDiagnostics.errors,
   tips: arChat.tips,
-  ui: arCommon.ui
-})
+  ui: arCommon.ui,
+  freeTier: {
+    offer: {
+      heading: 'واصل مع Hermes',
+      body: 'أنت تستخدم الحصة المجانية. إذا واصلت استخدام Hermes فستبدأ بمواجهة حدود الاستخدام. سجّل الدخول بحساب Nous مجاني للحصول على حصة أكبر.',
+      signIn: 'تسجيل الدخول',
+      notNow: 'ليس الآن'
+    }
+  }
+} satisfies TranslationOverrides
+
+export const ar = defineLocale(arOverrides)

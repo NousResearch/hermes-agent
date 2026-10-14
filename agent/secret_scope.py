@@ -307,7 +307,7 @@ def _parse_env_value(raw_value: str) -> str:
 # symlink repointed mid-read can't file one file's contents under another's identity.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
@@ -324,17 +324,16 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
 def _decode_env_bytes(raw: bytes) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
     ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
-    if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+    raw = raw.removeprefix(codecs.BOM_UTF8)
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("latin-1")
 
 
-def _parse_env_text(text: str) -> Dict[str, str]:
+def _parse_env_text(text: str) -> dict[str, str]:
     """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
-    secrets: Dict[str, str] = {}
+    secrets: dict[str, str] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -348,7 +347,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path) -> dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -388,7 +387,7 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     return secrets
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
+def build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""

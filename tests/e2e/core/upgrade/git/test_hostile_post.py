@@ -256,7 +256,7 @@ def _publish_gateway_fault_release(w: G.World, tag: str) -> str:
     """A release whose ``hermes gateway run`` refuses to boot while the toggle exists."""
     text = _head_file(w, "hermes_cli/gateway.py")
     if _GATEWAY_MARK not in text:
-        m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def run_gateway\(.*?\):\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: hermes_cli/gateway.py has no run_gateway() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_GATEWAY + text[m.end():]
     return w.publish(f"release: e2e hostile post gateway {tag}", {
@@ -269,7 +269,7 @@ def _publish_deps_fault_release(w: G.World, tag: str) -> str:
     """A release whose dependency preparation (``ensure_tools_for_sync``) fails while the toggle exists."""
     text = _head_file(w, "pm/client.py")
     if _DEPS_MARK not in text:
-        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.DOTALL | re.MULTILINE)
         assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
         text = text[:m.end()] + _HOSTILE_DEPS + text[m.end():]
     return w.publish(f"release: e2e hostile post deps {tag}", {

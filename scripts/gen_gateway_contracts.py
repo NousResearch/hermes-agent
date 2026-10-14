@@ -26,19 +26,19 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tui_gateway import contracts  # noqa: E402,F401  (imports every topic module → fills the tables)
-from tui_gateway.contracts.connectors import (  # noqa: E402
+from tui_gateway import contracts
+from tui_gateway.contracts.connectors import (
     ConnectorAccountStatus,
     ConnectorErrorReason,
     ConnectorToolFacet,
     ConnectorToolsSource,
 )
-from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState  # noqa: E402
-from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS  # noqa: E402
-from tools.connectors.contract import SettleReason, TargetState  # noqa: E402
-from tools.connectors.gateway.wire import ConnectionStatus  # noqa: E402
-from tools.connectors.portal.tools_cache import ToolsRead  # noqa: E402
-from tools.connectors.portal.wire import ConnectorTool  # noqa: E402
+from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState
+from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS
+from tools.connectors.contract import SettleReason, TargetState
+from tools.connectors.gateway.wire import ConnectionStatus
+from tools.connectors.portal.tools_cache import ToolsRead
+from tools.connectors.portal.wire import ConnectorTool
 
 TS_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.generated.ts"
 OPENRPC_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"

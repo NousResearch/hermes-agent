@@ -180,8 +180,12 @@ def _run_admission(clone: Path, tag: str, claim_tag: str) -> subprocess.Complete
         RELEASE_CLAIM_OBJECT=_git("rev-parse", f"refs/tags/{claim_tag}", cwd=clone),
         GITHUB_OUTPUT=str(gh_output),
         RELEASE_PHASE="candidate",
-        GITHUB_REF=f"refs/tags/{claim_tag}",
-        GITHUB_SHA=_git("rev-parse", "HEAD", cwd=clone),
+        # Stable runs from the default branch; GITHUB_SHA is not the claim commit.
+        GITHUB_REPOSITORY="example/hermes-agent",
+        GITHUB_EVENT_NAME="workflow_dispatch",
+        GITHUB_REF="refs/heads/main",
+        GITHUB_WORKFLOW_REF="example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main",
+        GITHUB_SHA="e" * 40,
         PYTHONPATH=str(_REPO),
     )
     return subprocess.run(
@@ -191,6 +195,7 @@ def _run_admission(clone: Path, tag: str, claim_tag: str) -> subprocess.Complete
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
 
 
@@ -280,7 +285,7 @@ def test_downloadable_native_builds_refuse_to_ship_unsigned(tmp_path: Path):
             env.update({name: "" for name in names})
             env.update(values)
             return subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]], env=env,
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=60, check=False)
 
         proc = run()
         assert proc.returncode != 0 and "::error::" in proc.stdout and "AZURE_SIGN_ENDPOINT" in proc.stdout

@@ -17,6 +17,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
+import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -221,6 +222,118 @@ export function useComposerSubmit({
     [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
+  // Returns false when the submit was refused and must not refocus the input.
+  const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
+    // Slash commands should execute immediately even while the agent is
+    // busy — they're client-side operations (/yolo, /skin, /new, /help,
+    // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
+    // routes them to executeSlashCommand, which has its own per-command
+    // busy guard for commands that genuinely need an idle session (skill
+    // /send directives).  Queuing them would make every slash command wait
+    // for the current turn to finish, which is how the TUI never behaves.
+    if (isSlashCommandText(text)) {
+      if (attachments.length) {
+        // Slash commands cannot ride alongside attachments — warn the user
+        // instead of silently queuing the payload (which would then reach the
+        // idle path and be submitted as plain text with no command execution).
+        notify({
+          kind: 'warning',
+          title: copy.slashCommandIgnoredTitle,
+          message: copy.slashCommandIgnoredBody
+        })
+
+        return false
+      }
+
+      triggerHaptic('submit')
+      clearDraft()
+      dispatchSubmit(text)
+    } else if (!blockingPrompt && !attachments.length && text.trim()) {
+      // Cursor-style stop-and-correct: interrupt the live turn and redirect
+      // it with this text. redirect() preserves the shown reasoning/work; if
+      // the turn already ended, steerDraft re-queues so nothing is lost.
+      // Compaction is the gateway's call: it answers `queued` under the
+      // compression lock. The client flag can outlive an aborted compaction.
+      steerDraft()
+    } else if (payloadPresent) {
+      // Attachments can't ride a redirect (no tool-result image carriage) —
+      // queue the whole payload for the next turn. Same for a turn parked on
+      // an approval/sudo/secret prompt: a steer can't reach the model while
+      // the tool batch is blocked, so the message runs as the next turn.
+      queueCurrentDraft()
+    } else {
+      // Stop button (the only way to reach here while busy with an empty
+      // composer — empty Enter is short-circuited in the keydown handler).
+      triggerHaptic('cancel')
+      void Promise.resolve(onCancel())
+    }
+
+    return true
+  }
+
+  // 'answered': the draft was a parked card's answer. 'yielded': a card closed for it, so it runs as
+  // the next turn.
+  const answerParkedCardWithDraft = (text: string, payloadPresent: boolean): 'answered' | 'yielded' | null => {
+    // A card parked on this session owns the turn: the agent is blocked inside
+    // its tool batch, so a steer or queued follow-up would sit undelivered until
+    // the card's own timeout. Plain text answers the card instead (a clarify
+    // takes it as its next question's answer) and is not sent again.
+    //
+    // A slash command or attachments cannot be an answer: the card is skipped
+    // and the draft routes normally. An onboarding setup card the message
+    // moves past instead closes as unanswered and its turn ends there, so the
+    // message runs as the next turn. The skip is fire-and-forget, not awaited:
+    // it clears the card synchronously and both RPCs ride the same socket in
+    // call order, so the gateway resolves the clarify before it sees the
+    // follow-up. Awaiting first would leave the draft live for a tick, long
+    // enough for a second Enter to send it twice.
+    //
+    // /btw and /bg run beside the turn (snapshot / separate session) and touch
+    // no parked card. With attachments the draft isn't routed as a slash
+    // command, so it falls back to the ordinary-message behavior.
+    const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+    const routable = payloadPresent && !queueEdit && !isSideQuestion
+    const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
+
+    // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
+    const answeredScope = draftScopeRef.current
+
+    const restore = () => {
+      stashAt(answeredScope, text, [])
+
+      if (draftScopeRef.current === answeredScope) {
+        loadIntoComposer(text, [])
+      }
+    }
+
+    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
+      triggerHaptic('submit')
+      resetBrowseState(sessionId)
+      clearDraft()
+      focusInput()
+
+      return 'answered'
+    }
+
+    const yielded = routable && !slashCommand && yieldParkedCardsToMessage(sessionId ?? '')
+
+    if (routable && hasClarifyRequest(sessionId)) {
+      void skipClarifyRequest(sessionId)
+    }
+
+    // Same for a pending connection card: ordinary typing continues the operation.
+    if (routable && hasConnectionRequest(sessionId)) {
+      void skipConnectionRequest(sessionId)
+    }
+
+    // And for the onboarding chat's setup and theme cards.
+    if (routable) {
+      skipParkedCards(sessionId ?? '')
+    }
+
+    return yielded ? 'yielded' : null
+  }
+
   const submitDraft = () => {
     if (disabled) {
       return
@@ -251,30 +364,10 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    // A clarify card parked on this session owns the turn: the agent is blocked
-    // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
-    // through steer/queue sits undelivered until the clarify's own timeout
-    // (default 5 min) — the message looks sent and nothing happens. Typing a
-    // real message instead of picking an option IS the answer "none of these":
-    // skip the question so the tool returns, then route the words normally.
-    //
-    // Fire-and-forget, not awaited: the skip clears the card synchronously and
-    // both RPCs ride the same socket in call order, so the gateway resolves the
-    // clarify before it sees the follow-up. Awaiting first would leave the draft
-    // live for a tick — long enough for a second Enter to send it twice.
-    //
-    // /btw and /bg run beside the turn (snapshot / separate session) and answer
-    // neither parked card. With attachments the draft isn't routed as a slash
-    // command, so it falls back to the ordinary-message behavior.
-    const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+    const parked = answerParkedCardWithDraft(text, payloadPresent)
 
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
-      void skipClarifyRequest(sessionId)
-    }
-
-    // Same for a pending connection card: ordinary typing continues the operation.
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
-      void skipConnectionRequest(sessionId)
+    if (parked === 'answered') {
+      return
     }
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,
@@ -283,54 +376,15 @@ export function useComposerSubmit({
     // sit undelivered behind the blocked prompt, and stopping the turn to force
     // it through resolves the prompt to empty and ends the turn as "Operation
     // interrupted." — the message looks eaten. Queue the words as the next turn
-    // instead; the prompt stays answerable and the queue drains on settle.
-    const blockingPrompt = !queueEdit && hasBlockingPromptRequest(sessionId)
+    // instead; the prompt stays answerable and the queue drains on settle. A
+    // setup card that just closed for this message ends its turn the same way.
+    const blockingPrompt = !queueEdit && (parked === 'yielded' || hasBlockingPromptRequest(sessionId))
 
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      // Slash commands should execute immediately even while the agent is
-      // busy — they're client-side operations (/yolo, /skin, /new, /help,
-      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
-      // routes them to executeSlashCommand, which has its own per-command
-      // busy guard for commands that genuinely need an idle session (skill
-      // /send directives).  Queuing them would make every slash command wait
-      // for the current turn to finish, which is how the TUI never behaves.
-      if (isSlashCommandText(text)) {
-        if (attachments.length) {
-          // Slash commands cannot ride alongside attachments — warn the user
-          // instead of silently queuing the payload (which would then reach the
-          // idle path and be submitted as plain text with no command execution).
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return
-        }
-
-        triggerHaptic('submit')
-        clearDraft()
-        dispatchSubmit(text)
-      } else if (!blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        // Compaction is the gateway's call: it answers `queued` under the
-        // compression lock. The client flag can outlive an aborted compaction.
-        steerDraft()
-      } else if (payloadPresent) {
-        // Attachments can't ride a redirect (no tool-result image carriage) —
-        // queue the whole payload for the next turn. Same for a turn parked on
-        // an approval/sudo/secret prompt: a steer can't reach the model while
-        // the tool batch is blocked, so the message runs as the next turn.
-        queueCurrentDraft()
-      } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
+      if (!submitWhileBusy(text, payloadPresent, blockingPrompt)) {
+        return
       }
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()

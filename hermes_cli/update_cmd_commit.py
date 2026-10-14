@@ -425,7 +425,7 @@ def _run_python(argv: list[str], *, stdin: str = "", timeout: float = 60) -> str
 
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout, creationflags=windows_hide_flags())
+                              errors="replace", timeout=timeout, creationflags=windows_hide_flags(), check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
@@ -520,7 +520,13 @@ def target_syntax_error(git_cmd, root: Path, target_ref: str, relpaths) -> tuple
     ``startup_syntax_error`` judges it under the interpreter the target admits. A file absent at the
     target (or unreadable) is skipped: the post-pull guard has the last word.
     """
-    files = read_target_files(git_cmd, root, target_ref, ["pyproject.toml", *relpaths])
+    try:
+        files = read_target_files(git_cmd, root, target_ref, ["pyproject.toml", *relpaths])
+    except subprocess.TimeoutExpired:
+        # A blobless install (install.sh clones --filter=blob:none) lazily fetches each changed blob
+        # in its own round trip; on a slow link that outlasts the limit. Unread, like an absent file.
+        print("  ⚠ Syntax preflight skipped (slow object fetch); the post-update check still runs.")
+        return None
     pyproject = files.pop("pyproject.toml", None)
     return startup_syntax_error(files, pyproject)
 

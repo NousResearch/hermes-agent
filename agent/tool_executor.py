@@ -33,6 +33,8 @@ from agent.display import (
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.onboarding import observe_tool_result as observe_onboarding_result
+from agent import plugin_live_notes
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -709,7 +711,7 @@ def _dispatch_authorized_once(
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+        resolve = lambda: _pre_tool_block(agent, ref)
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
     block_body = None if block_message is None else {"error": block_message}
@@ -1086,6 +1088,8 @@ def _commit_tool_result(
     from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
     observe_tool_outcome(agent, function_name, is_error)
+    if not (blocked or is_error):
+        function_result = observe_onboarding_result(agent, function_name, function_args, function_result)
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(
@@ -1139,6 +1143,8 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    # A plugin that went live during this turn is told on this new row (outside any untrusted-data wrapper).
+    plugin_live_notes.attach_to_tool_message(agent, tool_message)
     # Prepare presentation data before the append. The emitting completion callback
     # stays below the durability fence; raw tool/model content remains unchanged.
     prepare_metadata = getattr(agent, "tool_result_metadata_callback", None)
@@ -1205,6 +1211,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     batch = messages[-num_tools:]
     contents_before = [message.get("content") for message in batch]
     enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
+    plugin_live_notes.keep_after_turn_budget(agent, batch)
     record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
@@ -1936,6 +1943,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
 
 __all__ = [
     "execute_tool_calls_concurrent",
-    "execute_tool_calls_sequential",
     "execute_tool_calls_segmented",
+    "execute_tool_calls_sequential",
 ]

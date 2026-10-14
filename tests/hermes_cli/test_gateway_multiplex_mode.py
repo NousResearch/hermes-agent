@@ -20,6 +20,7 @@ import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
+from datetime import UTC
 
 
 @pytest.fixture
@@ -152,7 +153,7 @@ def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fle
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):
     """The fleet the boot guard refuses is exactly the one ``hermes gateway migrate --multiplex`` folds:
     an unset flag must not read as "already multiplexed" or the migration would short-circuit."""
-    root, services, pids = fleet
+    _root, services, pids = fleet
     pids.update({"coder": 4101, "ops": 4102})
     services.update({"coder": [("systemd", False)], "ops": [("systemd", False)]})
     plan = gm.build_migration_plan()
@@ -164,7 +165,7 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     """A CLI process asks the LIVE default gateway (which settled the unset default itself) before
     reading config; a gateway that stayed standalone recorded an empty served set."""
     root, _services, _pids = fleet
-    import gateway.status as status
+    from gateway import status
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
     record = {"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running", "served_profiles": []}
@@ -202,7 +203,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "stopped",
         "pid": os.getpid(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "orphan reason",
     }), encoding="utf-8")
     assert mode.recorded_standalone_warning_lines() == []
@@ -211,7 +212,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "running",
         "pid": 999999999,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "orphan reason",
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
@@ -232,7 +233,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "running",
         "pid": os.getpid(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "real standalone reason",
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)

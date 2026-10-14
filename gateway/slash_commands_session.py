@@ -129,7 +129,7 @@ class GatewaySessionCommandsMixin:
             await asyncio.wait_for(
                 self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Agent resource cleanup for session %s exceeded %ss during /new reset; proceeding with "
                 "reset (the worker thread is left to finish on its own). (#35994)",
@@ -145,14 +145,15 @@ class GatewaySessionCommandsMixin:
         arbitrarily), then session:end and session:reset."""
         platform_value = source.platform.value if source.platform else ""
         with contextlib.suppress(Exception):
-            await self._finalize_session_off_loop(
+            messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
                 old_session_id=old_sid, new_session_id=new_sid)
+            await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)

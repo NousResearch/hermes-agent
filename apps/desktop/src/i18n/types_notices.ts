@@ -7,5 +7,6 @@ export interface NoticeTranslations {
 
   butterbar: {
     goTo: (index: number, total: number) => string
+    legal: { before: string; terms: string; between: string; privacy: string; after: string }
   }
 }

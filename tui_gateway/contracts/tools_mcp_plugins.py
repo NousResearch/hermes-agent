@@ -267,7 +267,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
+    fullLabel: str
     meta: str
     body: str
     style: str
@@ -589,13 +589,15 @@ class PluginsAction(WireEnum):
     remove = "remove"
     settings = "settings"
     onboarding = "onboarding"
+    presence = "presence"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
-    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
+    ``presence``: ``names`` (catalog names, answered in that order)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -608,6 +610,7 @@ class PluginsManageParams(ProfileParams):
     ref: str | None = None
     accept_capabilities: bool | None = None
     values: dict[str, JsonValue] | None = None
+    names: list[str] | None = None
 
 
 class PluginSettingFieldType(WireEnum):
@@ -729,6 +732,18 @@ class OnboardingCatalogPlugin(Result):
     sentence: str
 
 
+class CatalogPluginPresence(Result):
+    """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
+    on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
+    catalog description's ``Disclosure:`` sentence (empty when it has none)."""
+
+    name: str
+    title: str
+    state: CatalogAppState
+    sentence: str
+    disclosure: str
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
@@ -767,8 +782,43 @@ class PluginsManageResult(Result):
     written: list[str] | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.
     onboarding: list[OnboardingCatalogPlugin] | None = None
+    # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
+    presence: list[CatalogPluginPresence] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
        doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
            "or remove a user install.")
+
+
+class PluginCatalogLookupStatus(WireEnum):
+    found = "found"
+    invalid_name = "invalid_name"
+    unknown = "unknown"
+    unavailable = "unavailable"
+
+
+class PluginCatalogLookupParams(ProfileParams):
+    name: str
+
+
+class PluginCatalogLookupEntry(Result):
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+
+    name: str
+    repo: str
+    sha: str
+    subdir: str
+
+
+class PluginCatalogLookupResult(Result):
+    """``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;
+    ``unavailable`` means neither the live catalog nor the in-tree fallback could be read."""
+
+    status: PluginCatalogLookupStatus
+    entry: PluginCatalogLookupEntry | None = None
+
+
+method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
+       doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
+           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")

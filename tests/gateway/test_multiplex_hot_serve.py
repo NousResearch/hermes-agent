@@ -130,7 +130,6 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
 
         def _stalling_probe(profile_home):
             released.wait(timeout=10)  # the control pipe that never answers
-            return None
 
         monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _stalling_probe)
         monkeypatch.setattr(reconcile_mod, "_OWN_GATEWAY_PROBE_TIMEOUT_SECS", 0.2)
@@ -473,7 +472,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     runner._connect_initial_adapter_with_timeout = _connect
     runner._after_profiles_added = _noop_added
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     hydrate_calls = []
     real_hydrate = env_loader.hydrate_profile_secret_sources
 

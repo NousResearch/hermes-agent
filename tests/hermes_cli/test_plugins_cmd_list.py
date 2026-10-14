@@ -171,7 +171,7 @@ def test_unreadable_plugin_dir_is_skipped_by_every_manifest_scan(monkeypatch, tm
     (user_dir / "denied").chmod(0)
     monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
     monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: bundled_dir)
-    monkeypatch.setattr(importlib.metadata, "entry_points", lambda: [])
+    monkeypatch.setattr(importlib.metadata, "entry_points", list)
 
     try:
         with caplog.at_level(logging.WARNING):

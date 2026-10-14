@@ -150,11 +150,11 @@ class SubdirectoryHintTracker:
         # session adopts a real project (see ``rebind_working_dir``).
         self._home_is_working_dir = _is_home_like_working_dir(self.working_dir)
         # The working dir is pre-marked loaded (startup context handles it).
-        self._loaded_dirs: Set[Path] = {self.working_dir}
+        self._loaded_dirs: set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
         # symlinks/hardlinks/copies is never re-sent. Seeded with the CWD hint
         # file prompt_builder already loaded.
-        self._loaded_digests: Set[str] = set()
+        self._loaded_digests: set[str] = set()
         found = _first_hint_file(self.working_dir)
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
@@ -180,7 +180,7 @@ class SubdirectoryHintTracker:
         if found and found[1]:
             self._loaded_digests.add(_digest(found[1]))
 
-    def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
         if not self.enabled:
             return None
@@ -189,9 +189,9 @@ class SubdirectoryHintTracker:
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
-    def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
+    def _extract_directories(self, tool_name: str, args: dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
-        candidates: Set[Path] = set()
+        candidates: set[Path] = set()
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
@@ -201,7 +201,7 @@ class SubdirectoryHintTracker:
             self._extract_paths_from_command(cmd, candidates)
         return list(candidates)
 
-    def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
+    def _add_path_candidate(self, raw_path: str, candidates: set[Path]):
         """Add a raw path's directory and its ancestors (up to ``_MAX_ANCESTOR_WALK``
         levels, stopping at the first already-loaded dir) so reading
         ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
@@ -223,7 +223,7 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError, RuntimeError):
             pass
 
-    def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
+    def _extract_paths_from_command(self, cmd: str, candidates: set[Path]):
         """Extract path-like tokens (contain / or .; not flags or URLs) from a shell command."""
         try:
             tokens = shlex.split(cmd)

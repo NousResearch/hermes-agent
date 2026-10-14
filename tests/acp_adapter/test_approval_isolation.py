@@ -54,8 +54,8 @@ class TestThreadLocalApprovalCallback:
             _get_approval_callback,
         )
 
-        cb_a = lambda cmd, desc: "thread_a"  # noqa: E731
-        cb_b = lambda cmd, desc: "thread_b"  # noqa: E731
+        cb_a = lambda cmd, desc: "thread_a"
+        cb_b = lambda cmd, desc: "thread_b"
 
         seen_in_a = []
         seen_in_b = []
@@ -92,7 +92,7 @@ class TestThreadLocalApprovalCallback:
             _get_approval_callback,
         )
 
-        cb_main = lambda cmd, desc: "main"  # noqa: E731
+        cb_main = lambda cmd, desc: "main"
         set_approval_callback(cb_main)
 
         worker_saw = []

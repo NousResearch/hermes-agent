@@ -52,7 +52,7 @@ def install_truststore() -> bool:
         truststore.inject_into_ssl()
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
-    except Exception as exc:  # noqa: BLE001 — never break startup over TLS setup
+    except Exception as exc:
         _installed = False
         logger.warning(
             "truststore unavailable (%s); falling back to OpenSSL's default "

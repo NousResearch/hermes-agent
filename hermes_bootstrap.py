@@ -99,7 +99,7 @@ def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: float |
         while pending or active:
             now = time.monotonic()
             if deadline is not None and now >= deadline:
-                raise socket.timeout("timed out")
+                raise TimeoutError("timed out")
             if pending and now >= next_launch:
                 try:
                     winner = start_attempt(pending.pop(0))

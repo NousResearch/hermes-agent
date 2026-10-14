@@ -16,7 +16,7 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store, resolve_provider
-from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal, make_jwt as _jwt  # noqa: F401
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, claimed_trial, install_portal, make_jwt as _jwt
 
 
 @pytest.fixture
@@ -39,13 +39,17 @@ def _shared_store(tmp_path) -> dict:
 
 
 class TestIdentityLifecycle:
-    def test_fresh_install_mints_once_and_resolves_without_claiming_active_provider(self, portal, tmp_path):
+    def test_connector_guest_mints_once_and_never_carries_inference(self, portal, tmp_path):
+        """``ensure_portal_identity(explicit=True)`` (the connector creator) mints one guest, shared
+        through the store, but without the welcome-trial claim it never answers the resolver."""
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(state)
         assert "refresh_token" not in state
+        assert not state.get(anon_auth.WELCOME_CLAIM_FLAG)
         store = _load_auth_store()
         assert "active_provider" not in store
-        assert resolve_provider("auto") == "nous"
+        with pytest.raises(anon_auth.AuthError):
+            resolve_provider("auto")
         assert anon_auth.is_guest_state(store["providers"]["nous"])
         assert _shared_store(tmp_path).get("anon_token") == state["anon_token"]
         assert portal.minted == 1
@@ -78,35 +82,28 @@ class TestIdentityLifecycle:
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
         # A developer machine's ~/.aws would answer the Bedrock rung and hide the AuthError.
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert portal.calls == []
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_launch_gate_off_means_no_free_tier_at_all(self, portal, monkeypatch):
-        """Without ``HERMES_GUEST_ONBOARDING=1`` the free tier does not exist: no mint, no portal
-        traffic, ``nous.guest``'s default is never consulted, and an identity already on disk is
-        not treated as enabled. The env var is the only lever; ``0``/``true``/anything but ``1`` is off."""
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-        for raw in ("", "0", "true", "yes", "new"):
-            monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
-            assert anon_auth.guest_enabled() is False
-            assert anon_auth.ensure_portal_identity(explicit=True) is None
-        assert portal.calls == []
+    def test_a_claimed_trial_carries_inference_only_on_the_local_desktop_backend(self, portal, monkeypatch):
+        claimed_trial(monkeypatch)
+        assert resolve_provider("auto") == "nous"
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN")     # a CLI shell beside the desktop
+        assert anon_auth.free_inference_active() is False
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
-        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-        assert anon_auth.guest_enabled() is True
 
 
 class TestExplicitProvision:
-    """``ensure_portal_identity(explicit=True)`` is the one creator (the boot bootstrap and the desktop
-    retry call it). It mints once; every later caller adopts that identity through the shared store,
-    so two boots never create two identities. ``nous.guest: false`` still wins."""
+    """``ensure_portal_identity(explicit=True)`` is the creator under both the welcome-trial claim and
+    the connectors path. It mints once; every later caller adopts that identity through the shared
+    store, so two callers never create two identities. ``nous.guest: false`` still wins."""
 
     def test_provision_mints_once_then_everything_adopts(self, portal, monkeypatch, tmp_path):
-        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        assert anon_auth.is_guest_state(claimed_trial(monkeypatch))
         assert portal.minted == 1
         token = _load_auth_store()["providers"]["nous"]["anon_token"]
         # A second provision is idempotent, and the runtime now serves nous/welcome on the welcome host.
@@ -123,15 +120,6 @@ class TestExplicitProvision:
         assert adopted and adopted["anon_token"] == token
         assert portal.minted == 1
 
-    def test_retired_identity_is_replaced(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
-        first = _load_auth_store()["providers"]["nous"]["anon_token"]
-        portal.dead_tokens.add(first)
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        assert resolve_nous_runtime_credentials(force_refresh=True)["api_key"]   # replaced, not refused
-        assert _load_auth_store()["providers"]["nous"]["anon_token"] != first
-        assert portal.minted == 2
-
     def test_guest_off_beats_an_explicit_provision(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)
         assert anon_auth.ensure_portal_identity(explicit=True) is None
@@ -139,13 +127,16 @@ class TestExplicitProvision:
 
     @pytest.mark.parametrize("raw, body", [
         ("true", {"preview_full_connectors": True}),
+        ("1", {"preview_full_connectors": True}),
         ("false", {"preview_full_connectors": False}),
+        ("0", {"preview_full_connectors": False}),
         (None, {}),
-        ("1", {}),
+        ("yes", {}),
     ])
     def test_preview_full_connectors_rides_the_create_call(self, portal, monkeypatch, raw, body):
         """The cohort reaches the account service on the one call that creates the account, as a
-        real boolean; anything but exactly true/false leaves the body empty (the service default)."""
+        real boolean. "1" and "true" turn it on, "0" and "false" off; an unrecognised value leaves the
+        body empty (the service default)."""
         if raw is None:
             monkeypatch.delenv(anon_auth.PREVIEW_FULL_CONNECTORS_ENV, raising=False)
         else:
@@ -156,13 +147,13 @@ class TestExplicitProvision:
 
 class TestResolverIsUnchanged:
     def test_guest_is_last_resort_and_explicit_key_wins(self, portal, monkeypatch):
-        anon_auth.ensure_portal_identity(explicit=True)
+        claimed_trial(monkeypatch)
         assert resolve_provider("auto") == "nous"
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         assert resolve_provider("auto") == "openrouter"
 
-    def test_runtime_routes_to_welcome_host(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
+    def test_runtime_routes_to_welcome_host(self, portal, monkeypatch):
+        claimed_trial(monkeypatch)
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["provider"] == "nous"
@@ -173,18 +164,18 @@ class TestResolverIsUnchanged:
 class TestRouteFallback:
     """A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there."""
 
-    def test_exchange_without_inference_url_routes_to_welcome_literal(self, portal):
+    def test_exchange_without_inference_url_routes_to_welcome_literal(self, portal, monkeypatch):
         portal.inference_base_url = None
-        anon_auth.ensure_portal_identity(explicit=True)
+        claimed_trial(monkeypatch)
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["base_url"].rstrip("/") == WELCOME
         state = _load_auth_store()["providers"]["nous"]
         assert state["inference_base_url"].rstrip("/") == WELCOME
 
-    def test_disallowed_inference_host_heals_to_welcome_literal(self, portal):
+    def test_disallowed_inference_host_heals_to_welcome_literal(self, portal, monkeypatch):
         portal.inference_base_url = "https://welcome-api.staging-nousresearch.com/v1"
-        anon_auth.ensure_portal_identity(explicit=True)
+        claimed_trial(monkeypatch)
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider()
         assert runtime["base_url"].rstrip("/") == WELCOME
@@ -204,8 +195,8 @@ class TestRouteFallback:
 
 
 class TestTokenAcquisitionSeam:
-    def test_expired_guest_jwt_reexchanges_and_never_hits_oauth_token(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
+    def test_expired_guest_jwt_reexchanges_and_never_hits_oauth_token(self, portal, monkeypatch):
+        claimed_trial(monkeypatch)
         from hermes_cli.auth import _auth_store_lock, _save_auth_store
         with _auth_store_lock():
             store = _load_auth_store()
@@ -221,15 +212,16 @@ class TestTokenAcquisitionSeam:
         assert creds["base_url"].rstrip("/") == WELCOME
         assert "quarantine" not in json.dumps(_load_auth_store())
 
-    def test_dead_credential_is_replaced_by_a_fresh_identity(self, portal):
-        first = anon_auth.ensure_portal_identity(explicit=True)
+    def test_dead_credential_is_retired_and_never_replaced(self, portal, monkeypatch):
+        """The trial is claimed once per OS user: a guest NAS no longer knows is cleared and the
+        error surfaces; inference never mints a replacement."""
+        first = claimed_trial(monkeypatch)
         portal.dead_tokens.add(first["anon_token"])
         from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        creds = resolve_nous_runtime_credentials(force_refresh=True)
-        assert creds["api_key"]
-        state = _load_auth_store()["providers"]["nous"]
-        assert state["anon_token"] != first["anon_token"]
-        assert portal.minted == 2
+        with pytest.raises(anon_auth.AnonCredentialDead):
+            resolve_nous_runtime_credentials(force_refresh=True)
+        assert "nous" not in _load_auth_store().get("providers", {})
+        assert portal.minted == 1
 
     def test_tool_gateway_token_path_reexchanges(self, portal):
         anon_auth.ensure_portal_identity(explicit=True)
@@ -325,39 +317,47 @@ class TestRotationNeverRewritesTheConversationModel:
         assert ok is True and agent.model == anon_auth.GUEST_MODEL
 
 
-class TestBootstrapIsTheOneCreator:
-    """``free_tier_bootstrap.run_bootstrap`` is the only place an identity is created. Every other
-    site is a read. One mint per process; the record says who carries inference."""
+class TestBootstrapNeverCreates:
+    """``free_tier_bootstrap.run_bootstrap`` only records who carries inference: it never mints.
+    The welcome-trial claim and the connectors path are the creators; every other site is a read."""
 
     def _fresh(self):
         from hermes_cli import free_tier_bootstrap as fb
         fb.reset_for_tests()
         return fb
 
-    def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal):
+    def test_bootstrap_on_a_fresh_machine_mints_nothing(self, portal, monkeypatch):
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        from tests.hermes_cli.anon_portal import as_local_desktop_backend
+        as_local_desktop_backend(monkeypatch)              # the trial is claimable here; boot still never claims it
+        record = self._fresh().run_bootstrap(announce=False)
+        assert record.has_identity is False and record.free_tier_account is False
+        assert portal.calls == [], "boot never reaches the portal"
+
+    def test_bootstrap_records_a_claimed_trial_and_a_second_run_is_free(self, portal, monkeypatch):
+        claimed_trial(monkeypatch)
         fb = self._fresh()
-        record = fb.run_bootstrap()
+        record = fb.run_bootstrap(announce=False)
         assert record.free_tier_account and record.has_identity and record.provider_configured
         assert record.inference_provider == "nous" and record.other_providers is False
-        assert portal.minted == 1
-        again = fb.run_bootstrap()
-        assert again is record and portal.minted == 1, "a second boot in the same process adopts, never mints"
+        again = fb.run_bootstrap(announce=False)
+        assert again is record and portal.minted == 1
         assert fb.wait_for_record(timeout=0) is record
 
-    def test_own_key_keeps_inference_and_the_identity_stays_off_active_provider(self, portal, monkeypatch):
+    def test_own_key_keeps_inference_and_a_connector_guest_stays_off_active_provider(self, portal, monkeypatch):
+        anon_auth.ensure_portal_identity(explicit=True)
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-own-key")
-        fb = self._fresh()
-        record = fb.run_bootstrap()
+        record = self._fresh().run_bootstrap(announce=False)
         assert record.other_providers is True and record.has_identity is True
-        assert record.free_tier_account is True, "the identity exists for connectors"
-        assert record.inference_provider != "nous"
-        assert _load_auth_store().get("active_provider") != "nous", "a mint beside an own key must not hijack inference"
+        assert record.free_tier_account is False, "a connector guest does not carry inference"
+        assert record.inference_provider == "openrouter"
+        assert _load_auth_store().get("active_provider") != "nous"
         assert portal.minted == 1
 
     def test_reads_never_mint(self, portal, monkeypatch):
         """status, provider resolution and the connector bearer are reads: with no identity they
         answer 'nothing' and touch no network."""
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         from tools.managed_tool_gateway import read_nous_access_token
         assert read_nous_access_token() is None
         with pytest.raises(anon_auth.AuthError):
@@ -368,18 +368,6 @@ class TestBootstrapIsTheOneCreator:
         assert portal.calls == [], "no read path may reach the portal"
         with pytest.raises(ValueError):
             anon_auth.ensure_portal_identity(explicit=False)
-
-    def test_bootstrap_with_the_gate_closed_records_the_refusal_and_stops(self, portal, monkeypatch):
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-        portal.gate_closed = True
-        fb = self._fresh()
-        record = fb.run_bootstrap()
-        assert record.has_identity is False and record.free_tier_account is False and record.error
-        assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
-        # The explicit retry (desktop free_tier.provision) is also memoised for the process.
-        assert anon_auth.ensure_portal_identity(explicit=True) is None
-        assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
-
 
 class TestIdentityOfRecordIsTheSharedStore:
     def test_stale_profile_guest_adopts_a_newer_shared_account(self, portal, tmp_path):
@@ -395,8 +383,8 @@ class TestIdentityOfRecordIsTheSharedStore:
         assert _load_auth_store()["providers"]["nous"]["refresh_token"] == "rt-sibling"
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling", "the profile must never overwrite the shared account"
 
-    def test_mint_persists_before_any_exchange_and_first_use_exchanges_once(self, portal):
-        first = anon_auth.ensure_portal_identity(explicit=True)
+    def test_mint_persists_before_any_exchange_and_first_use_exchanges_once(self, portal, monkeypatch):
+        first = claimed_trial(monkeypatch)
         assert anon_auth.is_guest_state(first) and "access_token" not in first
         assert [p for _, p in portal.calls] == ["/api/anonymous/create"], "mint alone; exchange is lazy"
         from hermes_cli.auth_nous import resolve_nous_runtime_credentials
@@ -440,10 +428,8 @@ class TestIdentityOfRecordIsTheSharedStore:
 class TestConnectorTokenPath:
     def test_opt_out_hides_the_free_tier_from_connectors_including_cached_tokens(self, portal, monkeypatch):
         anon_auth.ensure_portal_identity(explicit=True)
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        resolve_nous_runtime_credentials()  # now a cached, valid JWT exists
         from tools import managed_tool_gateway as mtg
-        assert mtg.read_nous_access_token()
+        assert mtg.read_nous_access_token()  # now a cached, valid JWT exists
         _write_config(monkeypatch, guest=False)
         assert mtg.peek_nous_access_token() is None
         assert mtg.read_nous_access_token() is None

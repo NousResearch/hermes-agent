@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import hashlib
 import json
 import re
@@ -150,7 +150,7 @@ class BuildRequest:
             canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
             if canary:
                 release_epoch = int(datetime.strptime(canary.group(1), "%Y%m%dT%H%M%SZ")
-                                    .replace(tzinfo=timezone.utc).timestamp())
+                                    .replace(tzinfo=UTC).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")
                 # The payload version stays plain; the claim must name the same
@@ -266,7 +266,26 @@ class PreparedDesktop:
                 raise ValueError(f"preparation input changed or is missing: {path}; prepare again")
 
 
-def prepare(request: BuildRequest) -> Path:
+def clean_outputs(request: BuildRequest) -> None:
+    """Remove the previous build's outputs. The caller must hold the checkout lock.
+
+    Do not call this before taking the lock: a second invocation would delete the
+    files of a build that is still running. A work directory this checkout does not
+    own stays in place, so ``_prepare`` can refuse it instead of losing user files.
+    """
+    from pm.filesystem import remove_tree
+
+    stale = [request.source / "apps/desktop" / name for name in ("build", "dist", "release")]
+    owner = request.work / ".desktop-preparation"
+    if owner.is_file() and owner.read_text(encoding="utf-8-sig") == str(request.source):
+        stale.append(request.work)
+    for path in stale:
+        if path.exists():
+            print(f"desktop build: removing previous output {path}", flush=True)
+            remove_tree(path)
+
+
+def prepare(request: BuildRequest, *, clean: bool = False) -> Path:
     from scripts.bundles.desktop_inputs import build_lock
 
     request.validate_channel()
@@ -274,6 +293,8 @@ def prepare(request: BuildRequest) -> Path:
         raise ValueError("channel builds require a supported native macOS or Windows target")
     require_source(request.source, request.commit)
     with build_lock(request.source):
+        if clean:
+            clean_outputs(request)
         return _prepare(request)
 
 

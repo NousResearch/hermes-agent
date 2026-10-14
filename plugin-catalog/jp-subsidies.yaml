@@ -1,0 +1,19 @@
+name: jp-subsidies
+repo: https://github.com/TakeshiTGAL/hermes-plugin-subsidies
+sha: 8412900250980d673a82364c5c1c151eb45ccba0
+description: "Japanese subsidy search and weekly watch, built on the jGrants public API. Disclosure — Searches api.jgrants-portal.go.jp with no API key and no daily request cap; each call waits at most 60 seconds and retries at most twice, and a result is a search match, not proof that every subsidy came back. The plugin has no user list of its own: anyone you allow on your Hermes gateway can call these tools and change this profile's watch, and the agent can set up a watch by itself. In a Chatwork room listed in CHATWORK_ROOMS, everyone can call them while CHATWORK_ALLOWED_USERS is unset. The tools are on for every platform, including gateways; turn them off per platform with hermes tools. The /subsidies command is outside hermes tools; limit it with allow_admin_from or user_allowed_commands, or disable the plugin. The optional weekly watch is an unattended cron job that runs a script with no model call and is not a sandbox; delivering it to bot-chat instead runs one model turn on the fetched text. If delivery fails after the script runs, those subsidies are already marked seen and the text stays under cron/output/. Uninstall leaves the cron job, scripts/jp-subsidies-weekly-*.py and plugin-data/jp-subsidies/ until you run hermes cron remove and delete the files. The plugin does not store the name or ID of who asked. Not tested against a live gateway, with the Chatwork plugin loaded, or for result sets of several hundred rows."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-subsidies#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - subsidies_search
+  - subsidies_detail
+  - subsidies_watch_setup
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -39,8 +39,24 @@ function stripPowerShellNoise(stdout) {
 // Keep long probes out of the remote command line. Windows' default OpenSSH
 // command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
 // SshConnection.exec already supports streaming stdin to the remote command.
-function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+//
+// The bootstrap itself rides -EncodedCommand (~0.9 KB) so a PowerShell
+// DefaultShell cannot re-parse it, and it reads stdin under a deadline: Windows
+// OpenSSH does not kill a session's children, and a child whose stdin EOF never
+// arrived (local ssh timed out or was killed first) stays blocked in the read
+// even after its sshd session exits, piling up one orphan per failed probe.
+const STDIN_READ_TIMEOUT_MS = 30_000
+
+function powerShellStdinCommand(readTimeoutMs = STDIN_READ_TIMEOUT_MS) {
+  return powerShellCommand(
+    [
+      '$ProgressPreference="SilentlyContinue"',
+      '$stdin=[IO.StreamReader]::new([Console]::OpenStandardInput())',
+      '$read=$stdin.ReadToEndAsync()',
+      `if(-not $read.Wait(${Math.floor(readTimeoutMs)})){[Environment]::Exit(124)}`,
+      '[ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($read.Result))).Invoke()'
+    ].join(';')
+  )
 }
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
@@ -844,6 +860,7 @@ export {
   helper,
   helperCommand,
   powerShellCommand,
+  powerShellStdinCommand,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,

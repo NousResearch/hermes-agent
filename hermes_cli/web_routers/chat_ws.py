@@ -92,11 +92,18 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     event_channels, event_lock = _get_event_state(app)
     async with event_lock:
         subs = list(event_channels.get(channel, ()))
+    from tui_gateway.ws import ws_peer_gone
     for sub in subs:
+        if ws_peer_gone(sub):
+            # Starlette already latched this socket closed; /api/events' finally removes it.
+            _log.debug("broadcast skipped departed subscriber on %s", channel)
+            continue
         try:
             await sub.send_text(payload)
+        except WebSocketDisconnect:
+            # Subscriber went away mid-send (Starlette's 1006 on a dropped leg): a departure, not a fault.
+            _log.debug("broadcast skipped departed subscriber on %s", channel)
         except Exception:
-            # Subscriber went away mid-send; /api/events' finally removes it.
             _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 

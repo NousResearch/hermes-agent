@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from gateway.run_turn import GatewayTurnMixin
-from gateway.session import Platform, SessionSource
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 from hermes_cli.auth import AuthError
 
@@ -93,6 +94,96 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
     assert "_fallback_notice" not in _RecordingAgent.built_kwargs
     # Consumed by the turn: a later resolution without fallback must not re-attach a stale notice.
     assert runner._pre_agent_fallback_notice is None
+
+
+def test_explicit_channel_empty_chain_blocks_global_pre_agent_fallback():
+    """A private channel's empty chain also applies before an AIAgent can be constructed."""
+    from gateway.run_turn_runner import TurnRunner
+
+    _RecordingAgent.built_kwargs = {}
+    runner = _runner_with_real_runtime_resolution()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                channel_overrides={"private": ChannelOverride(fallback_providers=[])},
+            ),
+        },
+    )
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="private", user_id="u"),
+        message="private message", history=[], session_id="sid", session_key="test-session-key", user_config={},
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+    calls = []
+
+    def primary_auth_fails(**kwargs):
+        calls.append(kwargs)
+        raise AuthError("expired")
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=primary_auth_fails), \
+         patch("hermes_cli.runtime_provider._get_model_config",
+               return_value={"provider": "openai-codex", "default": "gpt-5.6-sol"}), \
+         patch("gateway.run._load_gateway_config", return_value={
+             "fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}],
+             "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+         }), \
+         patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"):
+        result = TurnRunner(runner, ctx).run_sync()
+
+    assert result["final_response"]
+    assert _RecordingAgent.built_kwargs == {}
+    assert calls == [{"requested": None, "target_model": None, "explicit_base_url": None, "explicit_api_key": None}]
+
+
+def test_channel_provider_uses_its_own_pre_agent_fallback_chain():
+    """A channel provider with an explicit chain must not fail before trying that chain."""
+    from gateway.run_turn_runner import TurnRunner
+
+    _RecordingAgent.built_kwargs = {}
+    runner = _runner_with_real_runtime_resolution()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                channel_overrides={"private": ChannelOverride(
+                    provider="private-primary", model="private/model",
+                    fallback_providers=[{"provider": "private-backup", "model": "backup/model"}],
+                )},
+            ),
+        },
+    )
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.DISCORD, chat_id="private", user_id="u"),
+        message="private message", history=[], session_id="sid", session_key="test-session-key", user_config={},
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+    calls = []
+
+    def resolve_channel_route(**kwargs):
+        calls.append(kwargs)
+        if kwargs["requested"] == "private-primary":
+            raise AuthError("expired")
+        if kwargs["requested"] == "private-backup":
+            return {"provider": "private-backup", "api_key": "key", "base_url": "url"}
+        raise AssertionError(f"unexpected provider resolution: {kwargs}")
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve_channel_route), \
+         patch("hermes_cli.runtime_provider._get_model_config",
+               return_value={"provider": "global-primary", "default": "global/model"}), \
+         patch("gateway.run._load_gateway_config", return_value={
+             "fallback_providers": [{"provider": "global-backup", "model": "global/backup"}],
+             "fallback_model": {"provider": "legacy-backup", "model": "legacy/model"},
+         }), \
+         patch("gateway.run._resolve_gateway_model", return_value="global/model"):
+        result = TurnRunner(runner, ctx).run_sync()
+
+    assert result["final_response"] == "ok"
+    assert _RecordingAgent.built_kwargs["provider"] == "private-backup"
+    assert _RecordingAgent.built_kwargs["model"] == "backup/model"
+    assert [call["requested"] for call in calls] == ["private-primary", "private-backup"]
 
 
 def test_model_override_fast_path_clears_stale_notice():

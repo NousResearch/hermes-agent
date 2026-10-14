@@ -70,8 +70,6 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
     assert agent._fallback_activated is True
 
 
-
-
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
     """_load_fallback_model remains a pure static reader used by refresh."""
     from gateway.run import GatewayRunner

@@ -145,6 +145,23 @@ class GatewayConfigLoadersMixin:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()
 
+    def _resolve_fallback_model_for_source(self, source) -> list | None:
+        """Return the source channel's fallback chain, or the global gateway chain.
+
+        ``None`` means the override leaves the global chain intact; an explicit empty list is
+        intentional and prevents a local/private channel from failing over to that global chain.
+        """
+        if source is not None:
+            override = self._channel_override(
+                source.platform,
+                str(source.chat_id) if source.chat_id else "",
+                str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            if override is not None and override.fallback_providers is not None:
+                return get_fallback_chain({"fallback_providers": override.fallback_providers})
+        return self._refresh_fallback_model()
+
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:
         """Reasoning effort from config.yaml via :func:`hermes_constants.resolve_reasoning_config`.

@@ -41,7 +41,12 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
+import {
+  $sessionStates,
+  isLiveTurnAwaitingEvents,
+  isSessionRemote,
+  probeLiveTurn
+} from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -97,6 +102,10 @@ import {
   type SubmitTextOptions,
   withSessionNotFoundResume
 } from './utils'
+
+// Steering is an interactive action: a stale cache must not hold the composer
+// for the full watchdog timeout before it falls back to queueing.
+const LIVE_TURN_STEER_PROBE_TIMEOUT_MS = 3_000
 
 interface HandoffResult {
   ok: boolean
@@ -874,16 +883,16 @@ export function usePromptActions({
       // settle. When it lags, the turn has already ended: redirecting would
       // echo the bubble into a chat the user never typed in and RPC an idle
       // session whose text the backend can cross-deliver into another
-      // session's live run. The slice is authoritative, so refuse before the
-      // optimistic insert and the caller queues the text for the conversation
-      // whose run is actually live. Without a stale belief there is nothing
-      // stale to catch: the caller deliberately asked for a correction (a
-      // rotation gap, a recovery retry) and the gateway authoritatively
-      // rejects an idle redirect.
+      // session's live run. A contradictory slice may itself be stale on a
+      // long-lived or reattached session, so ask the owning backend before
+      // deciding to queue. Only a confirmed running turn overrides local state;
+      // ended or unknown keeps the conservative refusal.
       const liveTurn = $sessionStates.get()[target.sessionId]
 
       if (busyRef.current && liveTurn && !isLiveTurnAwaitingEvents(liveTurn)) {
-        return false
+        if ((await probeLiveTurn(target.sessionId, LIVE_TURN_STEER_PROBE_TIMEOUT_MS)) !== 'running') {
+          return false
+        }
       }
 
       // Accepted whether the live turn was redirected in place or queued for

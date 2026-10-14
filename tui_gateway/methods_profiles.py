@@ -38,8 +38,9 @@ def _lazy(module, name):
     return getattr(__import__(module, fromlist=[name]), name)
 
 
-def _pin_profile_model(profile_dir, provider, model) -> None:
-    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(profile_dir, provider, model)
+def _pin_profile_model(profile_dir, provider, model, base_url="") -> None:
+    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(
+        profile_dir, provider, model, base_url=base_url)
 
 
 def _model_provider_params(params) -> tuple:
@@ -528,7 +529,10 @@ def _inherit_launch_model(path) -> bool:
         merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
             save_config(merge(read_user_config_raw(), seed))
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+    # A bare ``custom`` model is its endpoint: the pin validates it in the empty new profile, where
+    # nothing else names that base_url.
+    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
+                       str(model_cfg.get("base_url") or ""))
     return True
 
 

@@ -96,6 +96,35 @@ def test_inherit_launch_model_carries_a_custom_provider_gateway(
     assert copied["api_key"] == "${FAKE_GW_TOKEN}"
 
 
+def test_inherit_launch_model_pins_a_bare_custom_endpoint(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for var in ("CUSTOM_BASE_URL", "OPENAI_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    url = "http://127.0.0.1:11434/v1"
+    atomic_config_write(
+        home / "config.yaml",
+        {
+            "model": {"provider": "custom", "default": "llama3", "base_url": url},
+            "_config_version": DEFAULT_CONFIG["_config_version"],
+        },
+    )
+    profile = home / "profiles" / "scout"
+    profile.mkdir(parents=True)
+    # Voice mirroring writes config.yaml before inheritance runs (#85755).
+    atomic_config_write(
+        profile / "config.yaml",
+        {"tts": {"provider": "edge"}, "_config_version": DEFAULT_CONFIG["_config_version"]},
+    )
+
+    assert srv._inherit_launch_model(profile) is True
+
+    model = read_user_config_raw(profile / "config.yaml")["model"]
+    assert (model["provider"], model["default"], model["base_url"]) == ("custom", "llama3", url)
+
+
 def test_inherit_launch_model_preserves_explicit_profile_selection(
     monkeypatch, tmp_path
 ):

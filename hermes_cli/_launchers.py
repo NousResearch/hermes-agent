@@ -765,13 +765,12 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         cli_cfg = (load_config() or {}).get("cli", {})
         if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
             return {"ok": True, "skipped": "config-disabled"}
-    from hermes_cli.steward import read_install_stamp
-
-    if _is_bundled_payload(root):
+    owner = launcher_owner(root)
+    if owner == "bundle":
         if create and sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
         return {"ok": True, "skipped": "bundle-owns-launchers"}
-    if read_install_stamp(root).get("updateMechanism") == "external":
+    if owner == "external":
         return {"ok": True, "skipped": "externally-owned"}
     if resolve_store_python(root, publication=True) is None:
         return {"ok": True, "skipped": "no-store-python"}
@@ -793,6 +792,22 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         return {"ok": True, "written": written}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def launcher_owner(root: Path) -> str | None:
+    """Who publishes ``hermes`` for the tree at ``root`` instead of :func:`expose_cli`.
+
+    ``"bundle"``: a sealed tree with a payload stamp (desktop apps link their shims).
+    ``"external"``: a stamp whose update mechanism is external, e.g. a distro package.
+    ``None``: source-install publication owns it.
+    """
+    if _is_bundled_payload(root):
+        return "bundle"
+    from hermes_cli.steward import read_install_stamp
+
+    if read_install_stamp(root).get("updateMechanism") == "external":
+        return "external"
+    return None
 
 
 def _merge_user_path(existing: str, entry: str) -> str | None:

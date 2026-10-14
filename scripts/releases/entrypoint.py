@@ -292,6 +292,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "commit": commit,
         "autopublish": autopublish,
         "lanes": sorted(lanes),
+        "lanesRevision": lane_set.LANES_REVISION,
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(

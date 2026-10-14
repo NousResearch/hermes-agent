@@ -59,6 +59,15 @@ def test_manifest_matches_what_the_prompt_actually_loads(project, tmp_path_facto
     assert statuses["CLAUDE.md"] == "shadowed" and "claude rules" not in prompt
 
 
+@pytest.mark.platforms("not windows")  # a process cwd cannot be removed on Windows
+def test_manifest_with_deleted_launch_dir_lists_no_project_files(monkeypatch, tmp_path):
+    gone = tmp_path / "workspace"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    assert list_context_file_sources(cwd=None, skip_soul=True) == []
+
+
 def test_truncated_and_suppressed_statuses_follow_the_builder(project, monkeypatch, tmp_path_factory):
     import agent.prompt_builder as pb
 

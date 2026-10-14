@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import sys
+from typing import Optional
 
 from hermes_cli import projects_db as pdb
 
@@ -47,6 +48,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     project_sub("remove-folder", "Remove a folder from a project").add_argument("path", help="Folder path")
     project_sub("rename", "Rename a project").add_argument("name", help="New name")
     project_sub("set-primary", "Set the primary folder").add_argument("path", help="Folder path (must already be in project)")
+    p_set_model = project_sub("set-model", "Pin the default model for a project's sessions")
+    p_set_model.add_argument(
+        "model", nargs="?", default="",
+        help="Model id (e.g. deepseek-v4-flash). Omit with --clear to unpin.",
+    )
+    p_set_model.add_argument("--provider", default=None, help="Provider the model belongs to (e.g. opencode-go)")
+    p_set_model.add_argument(
+        "--clear", action="store_true",
+        help="Remove the pinned model so this project follows the profile default again",
+    )
     p_use = sub.add_parser("use", help="Set the active project")
     p_use.add_argument("project", nargs="?", default=None, help="Project id or slug (omit to clear)")
     project_sub("archive", "Archive a project")
@@ -118,10 +129,22 @@ def _with_project(fn):
     return _db_command(wrapper)
 
 
+def _model_display(proj) -> Optional[str]:
+    """``model (provider foo)`` for a project with a pinned route, else None."""
+    model = str(getattr(proj, "model", "") or "").strip()
+    if not model:
+        return None
+    provider = str(getattr(proj, "provider", "") or "").strip()
+    return f"{model} (provider {provider})" if provider else model
+
+
 def _print_project(proj) -> None:
     print(f"{proj.slug}  [{proj.id}]{' (archived)' if proj.archived else ''}")
     print(f"  name:    {proj.name}")
-    for label, value in (("about", proj.description), ("board", proj.board_slug), ("primary", proj.primary_path)):
+    for label, value in (
+        ("about", proj.description), ("board", proj.board_slug), ("primary", proj.primary_path),
+        ("model", _model_display(proj)),
+    ):
         if value:
             print(f"  {label}:{' ' * (8 - len(label))}{value}")
     if proj.folders:
@@ -155,7 +178,8 @@ def _cmd_list(args, conn):
         return "No projects yet. Create one with `hermes project create <name>`."
     for p in projs:
         flags = " (archived)" if p.archived else ""
-        print(f"{'*' if p.id == active else ' '} {p.slug:<24} {p.name}{flags}  [{len(p.folders)} folder(s)]")
+        model = f"  [{_model_display(p)}]" if _model_display(p) else ""
+        print(f"{'*' if p.id == active else ' '} {p.slug:<24} {p.name}{flags}  [{len(p.folders)} folder(s)]{model}")
     return 0
 
 
@@ -189,6 +213,22 @@ def _cmd_set_primary(args, conn, proj):
     if not pdb.set_primary(conn, proj.id, args.path):
         return _err(f"'{args.path}' is not a folder of {proj.slug}; add it first with `hermes project add-folder`.")
     return f"Set primary of {proj.slug} -> {args.path}"
+
+
+@_with_project
+def _cmd_set_model(args, conn, proj) -> str:
+    """Pin/clear the project's default model route."""
+    model = str(args.model or "").strip()
+    if args.clear:
+        pdb.set_project_model(conn, proj.id, "", "")
+        return f"Cleared model for {proj.slug} (follows the profile default again)"
+    if not model:
+        if args.provider:  # --provider alone is a mistake, not a request to show state
+            raise ValueError("a project provider needs a model to apply to (`--model`)")
+        current = _model_display(proj)  # bare `set-model <slug>`: show, don't wipe
+        return f"{proj.slug}: {current}" if current else f"{proj.slug}: no pinned model"
+    model, provider = pdb.set_project_model(conn, proj.id, model, args.provider)
+    return f"{proj.slug} model -> {model}" + (f" (provider {provider})" if provider else "")
 
 
 @_db_command
@@ -234,6 +274,7 @@ _HANDLERS = {
     "remove-folder": _cmd_remove_folder,
     "rename": _cmd_rename,
     "set-primary": _cmd_set_primary,
+    "set-model": _cmd_set_model,
     "use": _cmd_use,
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),

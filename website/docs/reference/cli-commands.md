@@ -70,7 +70,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
-| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping, can pin a default model per project, and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -916,7 +916,7 @@ Common failure modes + recovery are covered in [Egress proxy → Troubleshooting
 ## `hermes project`
 
 ```bash
-hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore|bind-board>
+hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|set-model|use|archive|restore|bind-board>
 ```
 
 Projects are human-named workspaces that can span multiple folders / repos. They anchor desktop session grouping and, when bound to a kanban board, give tasks a deterministic worktree + branch convention. State is per-profile.
@@ -930,10 +930,26 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 | `remove-folder` | Remove a folder from a project. |
 | `rename` | Rename a project. |
 | `set-primary` | Set the primary folder. |
+| `set-model` | Pin the project's default model / provider (see below). |
 | `use` | Set the active project. |
 | `archive` | Archive a project (recoverable). |
 | `restore` | Restore an archived project. |
 | `bind-board` | Bind a kanban board to this project. |
+
+### Default model per project
+
+A project can pin a default model route. Sessions whose working directory falls inside one of the project's folders start on that route instead of your profile default — so one coding project can run a cheap fast model while another stays on a flagship.
+
+```bash
+hermes project set-model mesa-alta claude-opus-4-8 --provider anthropic
+hermes project set-model awaken-aliven deepseek-v4-flash --provider opencode-go
+hermes project set-model mesa-alta            # show the current pin
+hermes project set-model mesa-alta --clear    # back to the profile default
+```
+
+The provider is optional, but a provider without a model is refused. Precedence, highest first: an explicit `-m` / `--provider` on the command line, then the project pin, then your profile default. A deliberate per-session choice — a `/model` switch or a resumed session's stored route — always outranks the pin, because the pin only supplies a *default*.
+
+Resolution is fail-open: a missing or unreadable `projects.db` means "no pin", never a failed startup. In the desktop app the same route is set from the project's kebab (or right-click) menu under **Default model**.
 
 ## `hermes webhook`
 

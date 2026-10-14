@@ -1173,6 +1173,9 @@ export interface ProjectInfo {
   color: null | string
   board_slug: null | string
   primary_path: null | string
+  /** Default model route for sessions whose cwd is inside this project; null = profile default. */
+  model: null | string
+  provider: null | string
   archived: boolean
   created_at: number
   folders: ProjectFolder[]

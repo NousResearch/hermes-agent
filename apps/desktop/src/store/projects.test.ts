@@ -31,6 +31,7 @@ import {
   refreshProjectTree,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  setProjectModelRoute,
   startWorkInRepo,
   updateProject
 } from './projects'
@@ -449,6 +450,8 @@ describe('pickProjectFolder', () => {
 describe('pickProjectFolders / addProjectFolders (#68741)', () => {
   const project: ProjectInfo = {
     archived: false,
+    model: null,
+    provider: null,
     board_slug: null,
     color: null,
     created_at: 0,
@@ -656,6 +659,8 @@ describe('createProject', () => {
 describe('project writes while viewing all profiles', () => {
   const project: ProjectInfo = {
     archived: false,
+    model: null,
+    provider: null,
     board_slug: null,
     color: null,
     created_at: 0,
@@ -711,6 +716,37 @@ describe('project writes while viewing all profiles', () => {
       expect($projects.get()).toEqual([expect.objectContaining({ id: project.id, color: '#ff0000' })])
     }
   )
+
+  it('pins a project default model route through projects.update', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await expect(
+      setProjectModelRoute(project.id, { model: 'deepseek-v4-flash', provider: 'opencode-go' })
+    ).resolves.toBeUndefined()
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.update',
+      expect.objectContaining({ id: project.id, model: 'deepseek-v4-flash', provider: 'opencode-go' })
+    )
+    expect($projects.get()).toEqual([
+      expect.objectContaining({ id: project.id, model: 'deepseek-v4-flash', provider: 'opencode-go' })
+    ])
+  })
+
+  it('clears a default model route (and its provider) back to the profile default', async () => {
+    const request = vi.fn().mockResolvedValue({})
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await setProjectModelRoute(project.id, null)
+
+    // A lone provider is refused server-side, so clearing sends both fields as "".
+    expect(request).toHaveBeenCalledWith(
+      'projects.update',
+      expect.objectContaining({ id: project.id, model: '', provider: '' })
+    )
+    expect($projects.get()).toEqual([expect.objectContaining({ id: project.id, model: null })])
+  })
 
   it.each(['default', 'coder'])(
     'adds a folder in the active %s profile without leaving All profiles',

@@ -24,6 +24,12 @@ export interface SidebarProjectsTranslations {
   menu: string
   menuRename: string
   menuAppearance: string
+  menuDefaultModel: string
+  modelProfileDefault: string
+  modelHint: string
+  modelSearchPlaceholder: string
+  modelLoadFailed: string
+  modelClear: string
   noColor: string
   menuAddFolder: string
   menuSetActive: string

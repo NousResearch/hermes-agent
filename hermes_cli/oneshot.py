@@ -376,8 +376,23 @@ def _configured_model(model_cfg: object) -> str:
     return str(raw or "")
 
 
+def _project_model_pin(cwd: str = "") -> Optional[tuple[str, str]]:
+    """The default model route a project has pinned for ``cwd``, else None.
+
+    Fail-open: oneshot startup must never fail because the projects DB is missing or unreadable.
+    """
+    try:
+        from hermes_cli import projects_db as _pdb
+
+        pin = _pdb.resolve_default_model_for_path(cwd or os.getcwd())
+    except Exception:
+        logging.getLogger(__name__).debug("project model pin lookup failed", exc_info=True)
+        return None
+    return None if pin is None else (pin[0], pin[1])
+
+
 def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optional[str]) -> _ModelChoice:
-    """Effective model = arg → env → config; provider = arg → auto-detect → config/env.
+    """Effective model = arg → env → project pin → config; provider = arg → auto-detect → config/env.
 
     Auto-detection only runs when the model was explicitly requested (arg or env var) — same
     semantic as ``/model <name>`` — because the configured default provider may not host it.
@@ -388,7 +403,13 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     model_cfg = cfg.get("model") or {}
     env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     explicit_model = (model or "").strip() or env_model
-    choice = _ModelChoice(explicit_model or _configured_model(model_cfg), (provider or "").strip() or None)
+    # A project's pinned route (``hermes project set-model``) stands in for the configured default
+    # when the working directory sits inside that project; an explicit model or --provider wins.
+    pin = _project_model_pin() if not explicit_model and not (provider or "").strip() else None
+    choice = _ModelChoice(
+        explicit_model or (pin[0] if pin else "") or _configured_model(model_cfg),
+        (provider or "").strip() or (pin[1] if pin and pin[1] else None),
+    )
     if choice.provider is not None or not explicit_model:
         return choice
 

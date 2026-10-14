@@ -1,29 +1,71 @@
 """A server-owned deadline must survive the outer executor without widening a sibling batch."""
 import json
+import threading
 from types import SimpleNamespace
+
+from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageToolCall
 
 from tools.registry import registry
 
 
-def test_registered_deadline_extends_only_its_own_call():
-    name = "mcp__deadline_probe__slow"
-    from tools.mcp_tool_registration import _register_candidates, _tool_candidates
+def test_registered_deadline_survives_sequential_execution_and_bridge(tmp_path):
+    from agent.tool_executor import execute_tool_calls_sequential
+    from hermes_cli.config import atomic_config_write, get_config_path
+    from run_agent import AIAgent
 
-    tool = SimpleNamespace(name="slow", description="analysis", inputSchema={"type": "object"})
-    candidates = _tool_candidates("deadline_probe", [tool], lambda name: True, 1000)
-    _register_candidates("deadline_probe", candidates, check_fn=lambda: True, scope=lambda: None, lazy=True,
-                         execution_timeout=1000)
+    atomic_config_write(get_config_path(), {"timeouts": {"tools": {"sequential_call": 2}}})
+    release = threading.Event()
+    finished = threading.Event()
+    timers = []
+
+    def blocked_tool(args, **kwargs):
+        timer = threading.Timer(4, release.set)
+        timers.append(timer)
+        timer.start()
+        release.wait(15)
+        finished.set()
+        return "released"
+
+    names = ("deadline_probe_slow", "deadline_probe_ordinary")
+    for name, budget in zip(names, (20, None)):
+        registry.register(name=name, toolset="deadline-probe", schema={
+            "name": name, "description": "Wait for the test-owned event.",
+            "parameters": {"type": "object", "properties": {}}},
+            handler=blocked_tool, execution_timeout=budget)
+    agent = AIAgent(model="test-model", provider="openai", api_key="unused-test-key",
+                    base_url="http://127.0.0.1:9/v1", enabled_toolsets=["deadline-probe"],
+                    quiet_mode=True, skip_context_files=True, skip_memory=True,
+                    save_trajectories=False)
     try:
-        from agent.tool_dispatch_helpers import _extend_tool_timeout
-
-        assert _extend_tool_timeout(name, 420) == 1000
-        assert _extend_tool_timeout("read_file", 420) == 420
-        assert _extend_tool_timeout(name, 1200) == 1200
-        assert _extend_tool_timeout(name, None) is None
-        _register_candidates("deadline_probe", candidates, check_fn=lambda: True, scope=lambda: None, lazy=True)
-        assert _extend_tool_timeout(name, 100) == 100
+        cases = [(names[0], {}, True),
+                 ("tool_call", {"calls": [{"name": names[0], "arguments": {}}]}, True),
+                 (names[1], {}, False)]
+        for index, (name, args, succeeds) in enumerate(cases):
+            release.clear()
+            finished.clear()
+            try:
+                call = ChatCompletionMessageToolCall.model_validate({
+                    "id": f"deadline-{index}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}})
+                message = ChatCompletionMessage(role="assistant", content=None, tool_calls=[call])
+                messages = []
+                execute_tool_calls_sequential(agent, message, messages, "deadline-probe", finalize=False)
+                result = messages[-1]["content"]
+                if succeeds:
+                    assert "released" in result, result
+                    assert "timed out" not in result
+                else:
+                    assert "timed out after 2.0s" in result, result
+            finally:
+                release.set()
+                assert finished.wait(5)
+                for timer in timers:
+                    timer.cancel()
+                    timer.join()
+                timers.clear()
     finally:
-        registry.deregister(name)
+        for name in names:
+            registry.deregister(name)
 
 
 def test_extended_deadline_is_a_barrier_for_direct_and_bridged_batches():

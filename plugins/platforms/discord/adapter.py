@@ -95,6 +95,7 @@ _DISCORD_MAX_APP_COMMANDS = 100
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
 _REQUIRED = object()
+from plugins.platforms.discord.adapter_slash_forms import LOOP_SLASH_ARGS, render_loop_command  # noqa: E402
 # Text slots hold ``platform.discord.command.*`` / ``slash.*`` catalog keys; ``_native_slash_commands()``
 # resolves them for the active language (a language change re-syncs: the fingerprint carries it).
 _NATIVE_SLASH_COMMAND_SPECS: tuple = (
@@ -167,6 +168,8 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("btw", "platform.discord.command.btw.description",
      (("question", str, _REQUIRED, "platform.discord.command.btw.arg_question", None),),
      "/btw {question}", "platform.discord.command.btw.followup"),
+    # /loop: one field per part of its grammar; the callable template renders the CLI text.
+    ("loop", "slash.loop.description", LOOP_SLASH_ARGS, render_loop_command, None),
 )
 # Discord rejects the whole bulk sync (error 50035) when ONE description / parameter description /
 # Choice name exceeds 100 UTF-16 units, so every localized slot is cut at the cap.
@@ -1259,12 +1262,13 @@ def _read_discord_prompt_timeout() -> int:
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
+from plugins.platforms.discord.adapter_slash_forms import DiscordSlashFormsMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
 class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+                     DiscordSlashFormsMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -4580,12 +4584,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
-    def _slash_proxy(self, name: str, args: tuple, template: str, followup: Optional[str], *,
+    def _slash_proxy(self, name: str, args: tuple, template: "str | Callable[..., str]", followup: Optional[str], *,
                      strip: bool = True, prefix: str = "slash_"):
         """Build a slash callback rendering ``template`` from its args via ``_run_simple_slash``;
         the introspected signature is synthesised from ``args`` (see ``_NATIVE_SLASH_COMMAND_SPECS``)."""
         async def _handler(interaction: discord.Interaction, **kwargs):
-            text = template.format(**kwargs)
+            if (text := await self._render_slash_text(interaction, name, template, kwargs)) is None:
+                return
             call_args = (text.strip() if strip else text,) + (() if followup is None else (followup,))
             await self._run_simple_slash(interaction, *call_args)
         _handler.__name__ = prefix + {"bg": "background"}.get(name, name).replace("-", "_")
@@ -4602,20 +4607,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             if choices:
                 _handler = discord.app_commands.choices(**choices)(_handler)
         return _handler
-
-    def _register_thread_slash(self, tree, name: str, description: str) -> None:
-        @tree.command(name=name, description=description)
-        @discord.app_commands.describe(
-            name=_t_discord("platform.discord.command.thread.arg_name", _DISCORD_APP_COMMAND_TEXT_LIMIT),
-            message=_t_discord("platform.discord.command.thread.arg_message", _DISCORD_APP_COMMAND_TEXT_LIMIT),
-            auto_archive_duration=_t_discord("platform.discord.command.thread.arg_auto_archive", _DISCORD_APP_COMMAND_TEXT_LIMIT),
-        )
-        async def slash_thread(
-            interaction: discord.Interaction, name: str, message: str = "",
-            auto_archive_duration: int = 1440,
-        ):
-            # defer() happens inside the handler *after* the auth gate.
-            await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""

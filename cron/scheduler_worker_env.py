@@ -78,6 +78,9 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     root = str(repo_root)
     if _installed_purelib() == Path(root).resolve():
         return worker_env
+    # The child's cwd (task workspace) is first on sys.path for ``-m``; a checkout there
+    # would shadow the pinned tree with its own dependency-less copy.
+    worker_env["PYTHONSAFEPATH"] = "1"
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
     dependency = _committed_dependency_site_packages(Path(root))
     pinned = [root, *([str(dependency)] if dependency is not None else [])]

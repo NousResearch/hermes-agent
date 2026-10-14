@@ -739,8 +739,28 @@ def test_pin_restores_the_committed_generation_site_packages(tmp_path):
     # A runner that owns its dependencies has no committed generation: tree only.
     pm.environments.runtime_facts_path(repo_root).unlink()
     assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
-        "PYTHONPATH": str(repo_root)
+        "PYTHONPATH": str(repo_root), "PYTHONSAFEPATH": "1",
     }
+
+
+def test_pinned_worker_ignores_decoy_hermes_cli_in_cwd(tmp_path):
+    """cwd holding its own ``hermes_cli`` must not shadow the pinned install."""
+    import subprocess
+
+    import hermes_cli
+    from hermes_cli.kanban_db_dispatch import _module_hermes_argv, _propagate_module_import_root
+
+    decoy = tmp_path / "hermes_cli"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text("raise SystemExit('DECOY IMPORTED')")
+    env = dict(os.environ)
+    _propagate_module_import_root(_module_hermes_argv(), env)  # kanban dispatcher path
+    out = subprocess.run(
+        [sys.executable, "-c", "import hermes_cli;print(hermes_cli.__file__)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
+    assert out.returncode == 0, out.stderr
+    assert Path(out.stdout.strip()).resolve() == Path(hermes_cli.__file__).resolve()
 
 
 _BOOT_ORDER_PROBE = """

@@ -170,13 +170,17 @@ def reset_session_vars() -> None:
     _runtime_cwd("clear_session_cwd")
 
 
-def get_session_env(name: str, default: str = "") -> str:
+def get_session_env(name: str, default: str = "", *, allow_env_fallback: bool = True) -> str:
     """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
-    ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
+    ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*.
+    Set ``allow_env_fallback=False`` when the caller requires a task-bound value;
+    unbound or unknown names then return *default*, never process environment.
+    This reports context, not sender authorization or recipient membership.
+    """
     var = _VAR_MAP.get(name)
     if var is not None and (value := var.get()) is not _UNSET:
         return value
-    return os.getenv(name, default)
+    return os.getenv(name, default) if allow_env_fallback else default
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

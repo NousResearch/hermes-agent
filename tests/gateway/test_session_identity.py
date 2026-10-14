@@ -145,3 +145,145 @@ def test_replace_source_keeps_identity_and_transport_where_dataclasses_replace_d
     assert isinstance(copied._transport_adapter_ref, weakref.ref)
     assert Path(copied._authorization_profile_home) == mux.home
     assert mux.primary._source_session_key(copied) == "agent:ops:telegram:dm:72719239:7"
+
+
+@pytest.mark.parametrize(
+    ("scope_id", "guild_id", "expected_scope"),
+    [(None, "guild", "guild"), ("scope", "guild", "scope"), ("", "", None)],
+)
+def test_build_source_preserves_complete_fields_and_transport_across_profiles(
+    tmp_path,
+    monkeypatch,
+    scope_id,
+    guild_id,
+    expected_scope,
+):
+    home = tmp_path / ".hermes"
+    for name in ("ops", "team_b"):
+        profile_home = home / "profiles" / name
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    rig = _runner(
+        home,
+        multiplex=True,
+        routes=[
+            {
+                "name": "shared-bot",
+                "platform": "telegram",
+                "profile": "ops",
+                "chat_id": "72719239",
+                "bot_profile": "default",
+            },
+        ],
+    )
+    observed = []
+    expected = []
+    for adapter, profile, owner in (
+        (rig.primary, "ops", None),
+        (rig.team_b, "team_b", "team_b"),
+        (rig.primary, "ops", None),
+    ):
+        source = adapter.build_source(
+            chat_id="72719239",
+            chat_name="Chat",
+            chat_type="group",
+            user_id="0",
+            user_name="User",
+            thread_id="7",
+            chat_topic=" topic ",
+            user_id_alt="alternate-user",
+            chat_id_alt="alternate-chat",
+            is_bot=True,
+            scope_id=scope_id,
+            guild_id=guild_id,
+            parent_chat_id="parent",
+            message_id="message",
+            role_authorized=True,
+            auto_thread_created=True,
+            auto_thread_initial_name="Thread",
+        )
+        identity = resolve_identity(source, runner=rig.runner)
+        observed.append((
+            dataclasses.asdict(source),
+            source._transport_adapter_ref(),
+            rig.runner._transport_owner(source),
+            identity.authorization_home,
+            identity.runtime_home,
+        ))
+        expected_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="72719239",
+            chat_name="Chat",
+            chat_type="group",
+            user_id="0",
+            user_name="User",
+            thread_id="7",
+            chat_topic="topic",
+            user_id_alt="alternate-user",
+            chat_id_alt="alternate-chat",
+            is_bot=True,
+            scope_id=expected_scope,
+            guild_id=expected_scope,
+            parent_chat_id="parent",
+            message_id="message",
+            role_authorized=True,
+            profile=profile,
+            auto_thread_created=True,
+            auto_thread_initial_name="Thread",
+        )
+        expected.append((
+            dataclasses.asdict(expected_source),
+            adapter,
+            (adapter, owner),
+            home if owner is None else home / "profiles" / owner,
+            home / "profiles" / profile,
+        ))
+    assert observed == expected
+
+
+@pytest.mark.parametrize("resolver_failure", [False, True])
+def test_build_source_preserves_owner_and_transport_when_resolution_fails(
+    tmp_path,
+    monkeypatch,
+    resolver_failure,
+):
+    home = tmp_path / ".hermes"
+    team_home = home / "profiles" / "team_b"
+    team_home.mkdir(parents=True)
+    (team_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    rig = _runner(
+        home,
+        multiplex=True,
+        routes=[
+            {
+                "name": "unserved",
+                "platform": "telegram",
+                "profile": "ghost",
+                "chat_id": "4040",
+                "bot_profile": "team_b",
+            },
+        ],
+    )
+    if resolver_failure:
+
+        def fail_resolution(source, adapter_profile=None):
+            raise RuntimeError("resolver unavailable")
+
+        monkeypatch.setattr(rig.runner, "_profile_name_for_source", fail_resolution)
+    source = rig.team_b.build_source(chat_id="4040", role_authorized=True)
+    expected = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="4040",
+        profile="team_b",
+        role_authorized=True,
+        profile_route_rejected=not resolver_failure,
+    )
+    assert (
+        dataclasses.asdict(source),
+        source._transport_adapter_ref(),
+        rig.runner._transport_owner(source),
+    ) == (dataclasses.asdict(expected), rig.team_b, (rig.team_b, "team_b"))

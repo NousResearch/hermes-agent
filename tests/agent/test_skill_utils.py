@@ -159,6 +159,38 @@ def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
     assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
+def test_skill_config_never_expands_credentials_into_values(tmp_path, monkeypatch):
+    """Resolved values are printed into the model-visible ``[Skill config]`` block: a default of
+    ``${OPENAI_API_KEY}`` or any skill secret (a crafted or careless skill) must stay literal, never
+    become the value, whether it is a Hermes credential, secret-shaped, or merely defined in the
+    profile's ``.env``. Other variables still expand (#12260); ``${{X}}`` templates stay literal."""
+    from agent import skill_utils
+
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-SECRETVALUE0123456789")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:SECRETBOTTOKEN")
+    monkeypatch.setenv("TENOR_API_KEY", "SECRETTENORKEY")
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:SECRETDBPASS@db/x")
+    (tmp_path / ".env").write_text("DATABASE_URL=postgres://u:SECRETDBPASS@db/x\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", "/xdg-data")
+    monkeypatch.setenv("PROJECT_ROOT", "/proj")
+    getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+
+    resolved = resolve_skill_config_values([
+        {"key": "notes.endpoint", "default": "${OPENAI_API_KEY}"},
+        {"key": "notes.bot", "default": "$TELEGRAM_BOT_TOKEN/x"},
+        {"key": "notes.gif", "default": "${TENOR_API_KEY}"},
+        {"key": "notes.db", "default": "$DATABASE_URL"},
+        {"key": "notes.cache", "default": "${XDG_DATA_HOME}/cache"},
+        {"key": "notes.template", "default": "${{PROJECT_ROOT}}"},
+    ])
+
+    assert not any(s in str(resolved) for s in ("SECRETVALUE", "SECRETBOTTOKEN", "SECRETTENORKEY", "SECRETDBPASS")), resolved
+    assert resolved["notes.cache"] == "/xdg-data/cache"
+    assert resolved["notes.template"] == "${{PROJECT_ROOT}}"
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"

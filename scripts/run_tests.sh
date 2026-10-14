@@ -36,6 +36,11 @@ set -euo pipefail
 # ── Locate repo root ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BYTECODE_FLAGS=()
+if [ -n "${PYTHONDONTWRITEBYTECODE:-}" ]; then
+  # CPython treats the literal string "0" as false; the wrapper opt-in is nonempty.
+  PYTHON_BYTECODE_FLAGS=(-B)
+fi
 
 # ── Locate python ───────────────────────────────────────────────────────────
 # The suite runs under the checkout's isolated test environment (pm.testenv),
@@ -50,7 +55,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # the Nix devShell's editable venv and CI's minimal installer lanes provide
 # one on purpose. The import check matters: a wrapped `hermes` binary exports
 # HERMES_PYTHON pointing at a release venv without pytest.
-_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/null; }
+_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" "${PYTHON_BYTECODE_FLAGS[@]}" -c 'import pytest' 2>/dev/null; }
 # shellcheck source=scripts/_activation.sh
 . "$SCRIPT_DIR/_activation.sh"
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
@@ -94,7 +99,8 @@ fi
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
 WIN_ENV=()
-for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP \
+for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP TMPDIR \
+    PYTHONPYCACHEPREFIX PYTHONDONTWRITEBYTECODE \
     ComSpec PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
   if [ -n "${!_win_var:-}" ]; then
     WIN_ENV+=("$_win_var=${!_win_var}")
@@ -183,8 +189,12 @@ cd "$REPO_ROOT"
 # Pre-building the bytecode cache once here (instead of each subprocess
 # compiling on first import) avoids redundant work across ~2000 processes.
 # Uses git to list tracked .py files (skips venv, node_modules, etc).
-echo "▶ pre-compiling bytecode cache"
-"$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+if [ -z "${PYTHONDONTWRITEBYTECODE:-}" ]; then
+  echo "▶ pre-compiling bytecode cache"
+  "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+else
+  echo "▶ bytecode warmup disabled by PYTHONDONTWRITEBYTECODE"
+fi
 
 echo "▶ launching test runner"
 exec env -i \
@@ -202,4 +212,4 @@ exec env -i \
   ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
-  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+  "$PYTHON" "${PYTHON_BYTECODE_FLAGS[@]}" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

@@ -81,6 +81,8 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
+  language?: string
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
@@ -296,6 +298,8 @@ export interface SessionBranchResponse {
 
 export interface SessionCloseResponse {
   closed?: boolean
+  /** Plugin `on_session_finalize` text for the user (shown as system lines, never a model turn). */
+  messages?: string[]
   ok?: boolean
 }
 
@@ -449,6 +453,7 @@ export interface ProcessStopResponse {
 }
 
 export interface BrowserManageResponse {
+  browser_use?: boolean
   connected?: boolean
   messages?: string[]
   url?: string

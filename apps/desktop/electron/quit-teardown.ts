@@ -25,6 +25,30 @@ export function backendQuitNeedsWait(activity: BackendQuitActivity): boolean {
   return activity.shutdownPending || activity.processAttached || activity.connectionPending || activity.poolPending
 }
 
+/**
+ * What a deliberate primary-backend teardown intends to happen next.
+ *
+ * `'reconnect'`: a backend comes back (update hand-off, bundle swap, re-home).
+ * `'quit'`: nothing comes back — the app is exiting, or being uninstalled.
+ */
+export type BackendTeardownIntent = 'quit' | 'reconnect'
+
+/**
+ * The `soft` option a deliberate teardown must pass to
+ * `teardownPrimaryBackendAndWait()`.
+ *
+ * `soft: true` is what stops `resetHermesConnectionState()` from rewriting the
+ * boot-progress overlay — the step that writes `[boot] Restarting desktop
+ * connection` into desktop.log and pushes `hermes:boot-progress` to the
+ * renderer. A reconnect may announce that; a quit must not, because the
+ * announcement is false, it can overwrite the renderer's own "Update in
+ * progress…" copy, and a reader of desktop.log then attributes a shutdown to a
+ * re-home.
+ */
+export function backendTeardownOptions(intent: BackendTeardownIntent): { soft: boolean } {
+  return { soft: intent === 'quit' }
+}
+
 function runTask(task: QuitTeardownTask): Promise<unknown> {
   try {
     return Promise.resolve(task.run())

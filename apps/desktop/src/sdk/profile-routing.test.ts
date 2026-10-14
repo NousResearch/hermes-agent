@@ -11,7 +11,15 @@ vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 vi.mock('@/components/pane-shell/tree/store', async () => {
   const { atom } = await import('nanostores')
 
-  return { $narrowViewport: atom(false) }
+  // session-focus.ts (reached via the preview store) and the layout store
+  // read these at import time; a mock without them crashes before any test.
+  return {
+    $activeTreeGroup: atom(null),
+    $collapsedTreeSides: atom(new Set()),
+    $hiddenTreePanes: atom(new Set()),
+    $layoutTree: atom(null),
+    $narrowViewport: atom(false)
+  }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
 vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
@@ -45,6 +53,13 @@ vi.mock('@/store/session', async () => {
     setResumeExhaustedSessionId: vi.fn()
   }
 })
+// The focused session is driven directly; everything else in session-focus
+// stays real.
+vi.mock('@/store/session-focus', async importOriginal => {
+  const { atom } = await import('nanostores')
+
+  return { ...(await importOriginal<Record<string, unknown>>()), $focusedStoredSessionId: atom(null) }
+})
 vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
@@ -53,7 +68,6 @@ vi.mock('@/store/session-states', async () => {
     $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
-    $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
@@ -147,14 +161,10 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const {
-  $focusedRuntimeId,
-  $focusedSessionState,
-  $focusedStoredSessionId,
-  $sessionStates,
-  $sessionTiles,
-  sessionTileDelegate
-} = await import('@/store/session-states')
+const { $focusedRuntimeId, $focusedSessionState, $sessionStates, $sessionTiles, sessionTileDelegate } =
+  await import('@/store/session-states')
+
+const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 
@@ -162,6 +172,7 @@ const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-sc
 
 const {
   $activeSessionId,
+  $connection,
   $messages,
   $selectedStoredSessionId,
   requestSessionResume,
@@ -185,6 +196,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.mocked(sessionTileDelegate).mockReturnValue(null)
   vi.mocked(activeGatewayConnectionId).mockReturnValue('local')
+  $connection.set(null)
   $activeGatewayProfile.set('remote-worker')
   $gatewaySwapTarget.set(null)
   setMockAtom($hydrationSyncProfile, null)
@@ -547,6 +559,51 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('does not stamp mode local when a profile open has no owner route and the live connection is remote', async () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:9',
+      connectionId: 'ssh-vps',
+      isFullscreen: false,
+      logs: [],
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 'token',
+      windowButtonPosition: null,
+      wsUrl: 'ws://127.0.0.1:9'
+    })
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-vps')
+
+    await host.openSession('remote-session', { profile: 'publisher' })
+
+    expect(setSessionOwnerHint).toHaveBeenCalledWith(
+      'remote-session',
+      expect.objectContaining({ connectionId: 'ssh-vps', mode: 'remote', profile: 'publisher' })
+    )
+    expect(vi.mocked(setSessionOwnerHint).mock.calls.some(call => call[1]?.mode === 'local')).toBe(false)
+  })
+
+  it('still stamps mode local when a profile open has no owner route and the live connection is local', async () => {
+    $connection.set({
+      baseUrl: 'http://127.0.0.1:9',
+      connectionId: 'local',
+      isFullscreen: false,
+      logs: [],
+      mode: 'local',
+      nativeOverlayWidth: 0,
+      token: 'token',
+      windowButtonPosition: null,
+      wsUrl: 'ws://127.0.0.1:9'
+    })
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('local')
+
+    await host.openSession('local-session', { profile: 'worker' })
+
+    expect(setSessionOwnerHint).toHaveBeenCalledWith(
+      'local-session',
+      expect.objectContaining({ connectionId: 'local', mode: 'local', profile: 'worker' })
+    )
+  })
+
   it('captures the full owner route before opening a remote session', async () => {
     const route = {
       connectionId: 'source-a',

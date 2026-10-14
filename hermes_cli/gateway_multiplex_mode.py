@@ -326,8 +326,15 @@ def recorded_standalone_warning_lines() -> list[str]:
     """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
     make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
     try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        record = read_runtime_status() or {}
+        if record.get("gateway_state") in (None, "stopped", "startup_failed"):
+            return []
+        # Liveness is the state + a live PID, never the heartbeat: a paused or wedged gateway is
+        # still the standalone process the box warns about (#120991).
+        if not runtime_status_pid_is_live(record):
+            return []
+        reason = record.get("multiplex_standalone_reason")
     except Exception:
         return []
     if not reason:

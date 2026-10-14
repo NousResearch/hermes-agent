@@ -204,16 +204,30 @@ class MigrationPlan:
 def _home_env(home: Path) -> Iterator[None]:
     """Run service-manager helpers as if ``home`` were the active HERMES_HOME. Both the contextvar
     override (``get_hermes_home``) and ``os.environ`` (``gateway.status`` identity files, unit
-    generation) are switched, then restored."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    generation) are switched, then restored.
+
+    The process keeps its LAUNCH identity while swapped (``pin_process_hermes_home``): ``os.environ``
+    still holds the launch profile's ``.env``, so a child spawned in here for ``home`` must see it as
+    a routed home and take only ``home``'s own secrets — with the env var swapped, the routed-home
+    checks read ``home`` as the launch profile and handed the launch profile's credentials to the
+    default gateway."""
+    from hermes_constants import (
+        get_routing_process_hermes_home, pin_process_hermes_home, process_hermes_home_is_pinned,
+        reset_hermes_home_override, set_hermes_home_override,
+    )
     import hermes_constants
     previous = os.environ.get("HERMES_HOME")
+    pinned_here = not process_hermes_home_is_pinned()
+    if pinned_here:
+        pin_process_hermes_home(get_routing_process_hermes_home())
     token = set_hermes_home_override(str(home))
     os.environ["HERMES_HOME"] = str(home)
     hermes_constants._default_hermes_root_memo = None
     try:
         yield
     finally:
+        if pinned_here:
+            pin_process_hermes_home(None)
         reset_hermes_home_override(token)
         if previous is None:
             os.environ.pop("HERMES_HOME", None)
@@ -330,7 +344,7 @@ def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optio
 
 
 def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
-    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
+    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` / ``enable`` on ``home``'s service."""
     if kind == "s6":
         return _s6_slot_op(verb, home)
     from hermes_cli import gateway as gw
@@ -345,6 +359,20 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
                 gww.install(start_now=True, start_on_login=True)
             else:
                 gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
+            return
+        if verb == "enable":
+            # Boot enablement only: the migration's uninstall of every secondary destroys their
+            # boot enablement (systemd: disable + default.target.wants unlink), so the survivor's is
+            # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
+            # reboot came up with no gateway while the migration reported success (#124922).
+            # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
+            # migration never removes the survivor's.
+            if kind != "systemd":
+                return
+            enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
+            if getattr(enabled, "returncode", 0) != 0:
+                raise RuntimeError(f"could not enable {gw.get_service_name()} at boot (systemctl enable "
+                                   f"exited {enabled.returncode}); a reboot would come up with no gateway")
             return
         gw._service_call(kind, verb, system)
 
@@ -401,10 +429,20 @@ def _write_multiplex_flag(default_home: Path, value: bool) -> None:
 def _profile_gateway_config(home: Path):
     """This profile's ``GatewayConfig`` read exactly the way the multiplexer reads it: under the
     profile's own secret scope with multiplexing active, so a missing token stays missing instead of
-    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``)."""
+    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``).
+
+    A PARKED profile stays in the inventory and the duplicate-credential guard (parking must not hide
+    a conflict), but it is inert for the host: its config is read without discovering its plugins,
+    whose ``register()`` would otherwise run in the live gateway on every boot (#123386). Only its
+    plugin-defined platforms fall out of the guard — their credentials cannot be evaluated without
+    importing the plugin; builtin bot tokens still collide.
+    """
     from gateway.config import load_gateway_config
     from gateway.run import _profile_runtime_scope
-    with _profile_runtime_scope(home):
+    from hermes_cli.plugins_discovery import suppress_plugin_discovery
+    from hermes_cli.profiles import profile_is_parked
+    scope = suppress_plugin_discovery() if profile_is_parked(home) else contextlib.nullcontext()
+    with _profile_runtime_scope(home), scope:
         return load_gateway_config()
 
 
@@ -538,7 +576,9 @@ def _listener_url(default_cfg, platform_value: str, profile: str) -> str:
     host = extra.get("host") or host
     port = extra.get("port") or port
     tail = {"api_server": "/v1/...", "webhook": "/webhooks/<route>"}.get(platform_value, "/...")
-    return f"http://{host}:{port}/p/{profile}{tail}"
+    from hermes_cli.url_utils import format_url_host
+
+    return f"http://{format_url_host(host)}:{port}/p/{profile}{tail}"
 
 
 def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object]) -> None:
@@ -660,7 +700,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     head = "Migration plan (dry run — nothing changed)" if dry_run else "Migration plan"
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
     for p in plan.profiles:
-        lines.append(f"  {p.name:<12} {str(p.pid or '-'):<13} {p.service_label()}")
+        lines.append(f"  {p.name:<12} {p.pid or '-'!s:<13} {p.service_label()}")
     if plan.standalone_by_config:
         lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
                      f"{', '.join(plan.standalone_by_config)}")
@@ -790,7 +830,7 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -858,7 +898,12 @@ def _restart_default(
     *,
     run_as_user: Optional[str] = None,
 ) -> str:
-    """Bring the default gateway up on the new flag value; returns a one-line description."""
+    """Bring the default gateway up on the new flag value; returns a one-line description.
+
+    Boot enablement is NOT this function's job: an existing survivor unit is enabled by
+    :func:`_enable_default_at_boot` before the first removal, and the install branch enables
+    through ``systemd_install``'s own enable-on-startup.
+    """
     if plan_default.service is not None:
         kind, system = plan_default.service
         _service_op(kind, system, "restart", default_home)
@@ -874,6 +919,26 @@ def _restart_default(
     if not _spawn_detached_gateway(default_home):
         raise RuntimeError("could not spawn the default gateway (detached)")
     return f"{verb} the default gateway (detached; no service manager was in use)"
+
+
+def _enable_default_at_boot(plan: MigrationPlan) -> Optional[str]:
+    """Make the survivor boot-startable BEFORE anything is removed. Every secondary unit the fold
+    uninstalls takes its boot enablement with it, and the pre-existing default unit may have been
+    disabled all along; ``restart`` on a disabled unit succeeds, so the old order (remove, then
+    restart) turned N boot-startable gateways into 0 and reported success (#124922). ``enable``
+    never starts the unit, so doing it first cannot double-bind a platform while secondaries run,
+    and an apply interrupted anywhere after it still leaves a host that comes back after a reboot.
+    Returns the failure line, or None: a fresh apply refuses on it (nothing has been removed yet),
+    a resume reports it and converges anyway (rollback could do no better).
+    """
+    if plan.default.service is None:
+        return None
+    kind, system = plan.default.service
+    try:
+        _service_op(kind, system, "enable", plan.default_home)
+    except RuntimeError as exc:
+        return f"default: {exc}"
+    return None
 
 
 def _remove_secondary_gateways(plan: MigrationPlan) -> None:
@@ -980,11 +1045,14 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         # Re-running this command IS the recovery.
         print(f"  ↻ resuming the migration recorded in {_manifest_path(plan.default_home)}")
         _print(_resume_findings(plan, target, run_as_user))
+        enable_failure = _enable_default_at_boot(plan)
+        if enable_failure is not None:
+            print(f"  ⚠ {enable_failure} — resuming anyway")
     else:
         if plan.blocked:
             _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
             return False
-        blocker = _preflight_apply(plan, target, run_as_user)
+        blocker = _preflight_apply(plan, target, run_as_user) or _enable_default_at_boot(plan)
         if blocker is not None:
             _print(["✗ Migration refused before changing anything:", f"  • {blocker}"])
             return False

@@ -5,12 +5,18 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import {
+  adoptSpokenReplySession,
+  assistantTurnKey,
+  markAssistantIdSpoken,
+  resolveSpokenReply
+} from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
@@ -89,6 +95,11 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  // Barge-in can retain a submit callback from a render where the interrupted
+  // turn was still busy. Read the current gate when its transcript arrives so
+  // that stale closure does not silently drop the next voice turn.
+  const busyRef = useRef(busy)
+  busyRef.current = busy
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
@@ -134,7 +145,8 @@ export function useComposerVoice({
     return {
       id: last.id,
       pending: Boolean(last.pending),
-      text
+      text,
+      turnKey: assistantTurnKey(sessionId, messages, last.id)
     }
   }
 
@@ -159,14 +171,14 @@ export function useComposerVoice({
   }
 
   const submitVoiceTurn = async (text: string) => {
-    if (busy) {
+    if (busyRef.current) {
       return
     }
 
     triggerHaptic('submit')
     resetBrowseState(sessionId)
     clearDraft()
-    await onSubmit(text)
+    await onSubmit(text, { voiceTurn: true })
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
@@ -263,6 +275,7 @@ export function useComposerVoice({
 
     setLiveEngineActive(live)
     setVoiceConversationActive(true)
+    recordFeatureUse('voice_conversation')
   }, [t])
 
   useEffect(() => {
@@ -292,7 +305,7 @@ export function useComposerVoice({
     []
   )
 
-  // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
+  // The `composer.voice` hotkey toggles the conversation. Starting
   // with STT unconfigured lets the conversation surface its own "configure
   // speech-to-text" notice rather than silently no-opping.
   const toggleVoiceConversation = useCallback(() => {

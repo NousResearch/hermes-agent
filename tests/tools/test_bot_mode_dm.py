@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -375,6 +376,36 @@ def test_friendly_names_and_desktop_slugs_resolve_to_folder_ids(tmp_path, monkey
     assert argv[1:3] == ["-p", expected]
 
 
+@pytest.mark.parametrize(("target", "local_name", "relayed"), [
+    ("hermes@mini", "Hermes Mini", True),
+    ("@hermes@mini", "HermesMini", True),
+    ("Ops@Home", "Ops@Home", False),  # an '@' friendly name no connection answers to stays local (#100671)
+])
+def test_connection_qualified_target_reaches_the_relay_not_a_look_alike_local_bot(
+        tmp_path, monkeypatch, target, local_name, relayed):
+    """'hermes@mini' is the form the relay hands out, and stamps on replies, for a remote row whose bare forms
+    collide. Resolved locally first, a local bot whose friendly name slugs to 'hermes-mini' captured it: the DM
+    and its reply thread landed in the wrong bot's transcript and memory."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    home = _managed_home(tmp_path, teammates=("ops",))
+    _rename(home, "ops", display_name=local_name)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "mini", "connection_label": "Mini"},
+    ])
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="status?", agent=_FakeAgent(home)))
+
+    local = [_runner_parts(c["command"])[2][1:3] for c in calls if "--run-delivery" in c["command"]]
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    if relayed:
+        assert [e["target_connection"] for e in envelopes] == ["mini"], result
+        assert local == []
+    else:
+        assert envelopes == [] and result["to"] == "@ops"
+        assert local == [["-p", "ops"]]
+
+
 def test_ambiguous_friendly_name_fails_closed(tmp_path, monkeypatch):
     """Two bots titled the same must not let a DM land on whichever sorts first; the
     reserved @hermes alias can never be hijacked by a rename."""
@@ -455,12 +486,16 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     """A background delivery must not rely on PATH: the runner's service context
     lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
     install whose shebang picks the wrong interpreter and dies on import (#108628).
-    Both transports must invoke the entrypoint beside this interpreter instead."""
+    With no published install launcher, both transports invoke the entrypoint beside
+    this interpreter instead; a published launcher outranks that sibling (#124868)."""
     venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
     venv_bin.mkdir(parents=True)
     hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
     hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
+    # An install without a published launcher keeps the sibling fallback; keep this
+    # checkout's own published launcher out of the resolution (#124868).
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
 
     calls = _capture_spawn(monkeypatch)
     home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
@@ -581,29 +616,242 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     target = home / "profiles" / "researcher"
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    live_owner = {"owner": owner}
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: live_owner["owner"])
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
-    queued = json.loads(capsys.readouterr().out)
-    assert queued["status"] == "queued"
-    claimed = live.claim_pending_delivery(target, owner)
-    assert claimed is not None
-    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+    claims = []
+
+    def fail_later():
+        # Claim only once _run_delivery has queued the DM: a fixed sleep claimed too early on a
+        # loaded runner, got None, and the runner then waited forever on the still-live owner.
+        deadline = time.monotonic() + 10
+        while not claims and time.monotonic() < deadline:
+            claimed = live.claim_pending_delivery(target, owner)
+            if claimed is None:
+                time.sleep(0.01)
+            else:
+                claims.append(claimed)
+        if not claims:
+            live_owner["owner"] = None  # release the runner so the test fails instead of hanging
+            return
+        live.complete_delivery(target, claims[0]["delivery_id"], status="failed", error="HTTP 429 rate limit")
+
+    failing = threading.Thread(target=fail_later)
+    failing.start()
+    try:
+        assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
+    finally:
+        failing.join(timeout=12)
+    assert claims, "the queued DM was never claimable"
+    first = json.loads(capsys.readouterr().out)
+    assert first["status"] == "failed"
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
     assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["status"] == "failed"
-    assert failed["delivery_id"] == queued["delivery_id"]
+    assert failed["delivery_id"] == first["delivery_id"]
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
+    """A retained live receipt must still deliver its reply after the old 300 s boundary."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="a" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+
+    def settle_later():
+        time.sleep(0.05)
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        assert claimed is not None
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
+
+    settling = threading.Thread(target=settle_later)
+    settling.start()
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+
+    notice = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_releases_queued_runner_when_pinned_owner_is_gone(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="c" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 1
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "cancelled"
+    final = live.read_delivery_result(tmp_path, record["delivery_id"])
+    assert final is not None and final["status"] == "cancelled"
+
+
+def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="f" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+
+    def settle_during_owner_check(_home):
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        assert claimed is not None
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="PONG")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", settle_during_owner_check)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch, capsys):
+    """An owner gone after its claim still gets one more window to settle the in-flight turn."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="d" * 32)
+    assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    settling = threading.Timer(0.02, lambda: live.complete_delivery(
+        tmp_path, record["delivery_id"], status="settled", reply="PONG"))
+
+    def owner_gone_then_settle(_home):
+        settling.start()
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone_then_settle)
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+
+    assert exit_code == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "settled"
+    assert notice["reply"] == "PONG"
+
+
+def test_live_dm_wait_releases_claimed_runner_after_owner_is_gone(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="1" * 32)
+    assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), record["delivery_id"])), daemon=True)
+    waiting.start()
+    waiting.join(timeout=1)
+    stopped_with_unknown_outcome = not waiting.is_alive()
+    if not stopped_with_unknown_outcome:
+        live.complete_delivery(tmp_path, record["delivery_id"], status="failed", error="test cleanup")
+        waiting.join(timeout=2)
+
+    assert stopped_with_unknown_outcome, "a vanished owner must not retain the runner indefinitely"
+    assert outcomes == [0]
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "claimed"
+    final = live.read_delivery_result(tmp_path, record["delivery_id"])
+    assert final is not None and final["status"] == "claimed"
+
+
+@pytest.mark.parametrize("status", ["queued", "claimed"])
+def test_live_dm_wait_releases_runner_when_owner_lookup_keeps_failing(tmp_path, monkeypatch, capsys, status):
+    """A lookup that always raises is an owner that cannot be confirmed: bounded, never cancelled."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="2" * 32)
+    if status == "claimed":
+        assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+
+    def lookup_fails(_home):
+        raise OSError("registry locked")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == status
+    assert "Do not resend" in notice["detail"]
+    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == status
+
+
+def test_live_dm_wait_stops_at_its_deadline_while_the_owner_holds_the_receipt(tmp_path, monkeypatch, capsys):
+    """A live owner that never claims (stalled consumer) or never settles still releases the runner."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="3" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.1)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "queued"
+    assert "Do not resend" in notice["detail"]
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("stdin_file", [False, True])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file, encoding):
+    dm_file = tmp_path / "message with spaces.txt"
+    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        textwrap.dedent(
+            """\
+            import pathlib
+            import sys
+
+            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
+            with source:
+                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    source_arg = "-" if stdin_file else str(dm_file)
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), source_arg, str(observed)],
+        str(dm_file),
+        stdin_file=stdin_file,
+    )
+
+    assert returncode == 0
+    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
+    assert not dm_file.exists()
 
 
 
@@ -771,6 +1019,21 @@ def test_delivery_main_maps_launch_exception_to_one_and_unlinks(tmp_path, monkey
     assert not dm_file.exists()
 
 
+def test_local_turn_decodes_utf8_reply_without_locale_default(tmp_path, monkeypatch, capsys):
+    child = tmp_path / "reply.py"
+    child.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('réponse 世界'.encode('utf-8'))\n"
+        "sys.stderr.buffer.write('diagnostic café'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child)], str(tmp_path / "unused")) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "réponse 世界"
+    assert captured.err == "diagnostic café"
+
+
 @pytest.mark.parametrize("stdin_file", [False, True])
 def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     dm_file = tmp_path / "message with spaces.txt"
@@ -798,7 +1061,7 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
     assert not dm_file.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     """Native runner paths must survive the Git Bash process boundary."""
     from tools.environments.local import _find_shell
@@ -912,6 +1175,7 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -924,6 +1188,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.platforms("linux")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
@@ -972,15 +1237,26 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="b" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
-    assert intent.exists(), "a pending delivery may still be retried from the same intent"
-    assert dm_file.exists()
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), record["delivery_id"], dm_file=dm_file)), daemon=True)
+    waiting.start()
+    time.sleep(0.05)
+    pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
+    claimed = live.claim_pending_delivery(tmp_path, owner)
+    assert claimed is not None
+    live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
+    waiting.join(timeout=2)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert pending_kept, "a pending delivery keeps its intent while the runner waits"
+    assert not waiting.is_alive()
+    assert outcomes == [0]
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
 

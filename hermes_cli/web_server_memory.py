@@ -4,23 +4,14 @@
 import logging
 import json
 import os
-import re
 import shlex
 import subprocess
-import yaml
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
-
-_MEMORY_PROVIDER_IMPORT_NAMES = {
-    "honcho-ai": "honcho",
-    "mem0ai": "mem0",
-    "hindsight-client": "hindsight_client",
-}
-
 
 def _normalize_memory_provider_name(name: Any) -> str:
     from agent.memory_provider import is_core_memory_provider
@@ -38,33 +29,31 @@ def _load_memory_provider(name: str):
         return None
 
 
-def _memory_provider_manifest(name: str) -> Dict[str, Any]:
+def _memory_provider_manifest(name: str) -> dict[str, Any]:
     try:
-        from plugins.memory import find_provider_dir
+        from hermes_cli.memory_setup import memory_provider_dependency_inputs
 
-        provider_dir = find_provider_dir(name)
-        if provider_dir is None:
-            return {}
-        manifest_path = provider_dir / "plugin.yaml"
-        if not manifest_path.exists():
-            return {}
-        with manifest_path.open(encoding="utf-8-sig") as handle:
-            manifest = yaml.safe_load(handle) or {}
-        return manifest if isinstance(manifest, dict) else {}
+        manifest, _inputs = memory_provider_dependency_inputs(name)
+        return manifest
     except Exception:
         _log.debug("Failed to read memory provider manifest for %s", name, exc_info=True)
         return {}
 
 
-def _string_list(value: Any) -> List[str]:
+def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
-    manifest = _memory_provider_manifest(name)
-    external_dependencies: List[Dict[str, str]] = []
+def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
+    from hermes_cli.memory_setup import memory_provider_dependency_inputs
+    from plugins.memory import find_provider_dir
+    from pm.plugin_declarations import read_python_declaration
+
+    manifest, inputs = memory_provider_dependency_inputs(name)
+    plugin_dir = find_provider_dir(name)
+    external_dependencies: list[dict[str, str]] = []
     for raw in manifest.get("external_dependencies") or []:
         if not isinstance(raw, dict):
             continue
@@ -72,36 +61,34 @@ def _memory_provider_setup_manifest(name: str) -> Dict[str, Any]:
         if any(dep.values()):
             external_dependencies.append(dep)
     return {
-        "pip_dependencies": _string_list(manifest.get("pip_dependencies")),
+        # Display only; neither import names nor these labels determine readiness. Shown from the
+        # same declaration PM installs (an authored pyproject.toml wins over the manifest lists).
+        "pip_dependencies": list(read_python_declaration(plugin_dir).install_requirements) if plugin_dir else [],
+        "python_dependencies_declared": bool(inputs),
         "external_dependencies": external_dependencies,
         "required_env": _string_list(manifest.get("requires_env")),
-    }
+    }, inputs
 
 
-def _memory_provider_setup_info(name: str) -> Dict[str, Any]:
-    setup = _memory_provider_setup_manifest(name)
-    setup["dependencies_installed"] = _memory_provider_dependencies_installed(setup)
+def _memory_provider_setup_info(name: str) -> dict[str, Any]:
+    import pm
+
+    try:
+        setup, inputs = _memory_provider_setup_manifest(name)
+    except Exception:
+        _log.debug("Invalid dependency declaration for %s", name, exc_info=True)
+        return {"pip_dependencies": [], "python_dependencies_declared": True,
+                "external_dependencies": [], "required_env": [], "dependencies_installed": False}
+    try:
+        python_ready = not inputs or pm.venv_is_current(**inputs)
+    except Exception:
+        _log.debug("Could not read dependency state for %s", name, exc_info=True)
+        python_ready = False
+    setup["dependencies_installed"] = python_ready and _memory_provider_external_dependencies_installed(setup)
     return setup
 
 
-def _memory_provider_dependency_package(dep: str) -> str:
-    return re.split(r"[\[<>=!~;]", dep, maxsplit=1)[0].strip()
-
-
-def _memory_provider_import_name(dep: str) -> str:
-    package = _memory_provider_dependency_package(dep)
-    return _MEMORY_PROVIDER_IMPORT_NAMES.get(package, package.replace("-", "_"))
-
-
-def _dependency_importable(dep: str) -> bool:
-    import_name = _memory_provider_import_name(dep)
-    try:
-        return bool(import_name) and __import__(import_name) is not None
-    except ImportError:
-        return False
-
-
-def _memory_provider_setup_env() -> Dict[str, str]:
+def _memory_provider_setup_env() -> dict[str, str]:
     # External package-manager child (npm/uv/pip): exact env preservation —
     # scrubbing or HOME rewriting could break user tool auth/config.
     from tools.environments.local import build_subprocess_env
@@ -135,8 +122,7 @@ def _run_setup_command(
     )
 
 
-def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
-    pip_ok = all(_dependency_importable(dep) for dep in _string_list(setup.get("pip_dependencies")))
+def _memory_provider_external_dependencies_installed(setup: dict[str, Any]) -> bool:
     external_ok = True
     for dep in setup.get("external_dependencies") or []:
         if not isinstance(dep, dict):
@@ -153,10 +139,10 @@ def _memory_provider_dependencies_installed(setup: Dict[str, Any]) -> bool:
             continue
         if completed.returncode != 0:
             external_ok = False
-    return pip_ok and external_ok
+    return external_ok
 
 
-def _schema_field_kind(raw: Dict[str, Any], choices: list) -> str:
+def _schema_field_kind(raw: dict[str, Any], choices: list) -> str:
     """Field kind from explicit ``kind``/``type`` hints, else inferred from ``default``."""
     explicit_kind = str(raw.get("kind") or raw.get("type") or "").strip().lower()
     default = raw.get("default")
@@ -173,8 +159,8 @@ def _schema_field_kind(raw: Dict[str, Any], choices: list) -> str:
     return "text"
 
 
-def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str, Any]]:
-    raw_schema: List[Dict[str, Any]] = []
+def _normalize_memory_provider_schema(name: str, provider: Any) -> list[dict[str, Any]]:
+    raw_schema: list[dict[str, Any]] = []
     if provider is not None and hasattr(provider, "get_config_schema"):
         try:
             raw = provider.get_config_schema()
@@ -183,7 +169,7 @@ def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str
         except Exception:
             _log.warning("Failed to read memory provider schema for %s", name, exc_info=True)
 
-    fields: List[Dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
     for raw in raw_schema:
         key = str(raw.get("key") or "").strip()
         if not key:
@@ -210,21 +196,21 @@ def _normalize_memory_provider_schema(name: str, provider: Any) -> List[Dict[str
     return fields
 
 
-def _read_json_file(path: Path) -> Dict[str, Any]:
+def _read_json_file(path: Path) -> dict[str, Any]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except Exception:
         _log.debug("Failed to read JSON config from %s", path, exc_info=True)
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _read_memory_provider_existing_values(name: str) -> Dict[str, Any]:
+def _read_memory_provider_existing_values(name: str) -> dict[str, Any]:
     """Best-effort read of existing provider config across legacy/native stores."""
     from hermes_cli.config import get_hermes_home, load_config
 
     hermes_home = get_hermes_home()
-    values: Dict[str, Any] = {}
+    values: dict[str, Any] = {}
     for path in (hermes_home / f"{name}.json", hermes_home / name / "config.json"):
         values.update(_read_json_file(path))
 
@@ -275,14 +261,14 @@ def _coerce_bool(value: Any, *, default: bool = False) -> bool:
     raise ValueError(f"Invalid boolean value: {value}")
 
 
-def _field_default(field: Dict[str, Any]) -> Any:
+def _field_default(field: dict[str, Any]) -> Any:
     default = field.get("default", "")
     if field["kind"] == "boolean":
         return _coerce_bool(default, default=False)
     return default
 
 
-def _field_value(field: Dict[str, Any], data: Dict[str, Any]) -> Any:
+def _field_value(field: dict[str, Any], data: dict[str, Any]) -> Any:
     if field["kind"] == "secret":
         return ""
     value = data.get(field["key"])
@@ -300,14 +286,14 @@ def _field_value(field: Dict[str, Any], data: Dict[str, Any]) -> Any:
     return str(value)
 
 
-def _field_is_set(field: Dict[str, Any], data: Dict[str, Any]) -> bool:
+def _field_is_set(field: dict[str, Any], data: dict[str, Any]) -> bool:
     if field["kind"] == "secret":
         return bool(_env_lookup(field.get("_env_key")) or data.get(field["key"]))
     return _field_value(field, data) not in (None, "")
 
 
 def _field_visible(
-    field: Dict[str, Any], data: Dict[str, Any], fields_by_key: Optional[Dict[str, Dict[str, Any]]] = None
+    field: dict[str, Any], data: dict[str, Any], fields_by_key: Optional[dict[str, dict[str, Any]]] = None
 ) -> bool:
     when = field.get("when")
     if not isinstance(when, dict) or not when:
@@ -332,19 +318,19 @@ def _memory_provider_is_configured(name: str, provider: Any) -> bool:
     )
 
 
-def _memory_provider_status(row: Dict[str, Any], setup: Dict[str, Any], configured: bool, schema_fields: list) -> str:
+def _memory_provider_status(row: dict[str, Any], setup: dict[str, Any], configured: bool, schema_fields: list) -> str:
     if row["missing"]:
         return "missing"
-    if not row["available"] and not setup.get("dependencies_installed", True):
+    if not setup.get("dependencies_installed", True):
         return "unavailable"
     if not configured or (not row["available"] and schema_fields):
         return "needs_config"
     return "ready" if row["available"] else "unavailable"
 
 
-def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
+def _discover_memory_provider_statuses() -> list[dict[str, Any]]:
     from hermes_cli.config import load_config
-    discovered: Dict[str, Dict[str, Any]] = {}
+    discovered: dict[str, dict[str, Any]] = {}
     try:
         from plugins.memory import discover_memory_providers
 
@@ -368,7 +354,7 @@ def _discover_memory_provider_statuses() -> List[Dict[str, Any]]:
             "missing": True,
         }
 
-    providers: List[Dict[str, Any]] = []
+    providers: list[dict[str, Any]] = []
     for name in sorted(discovered):
         row = discovered[name]
         missing = row["missing"]

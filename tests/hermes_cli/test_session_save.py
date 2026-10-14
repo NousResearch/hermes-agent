@@ -11,7 +11,6 @@ from hermes_cli.session_export import (
     render_session_for_save,
 )
 
-
 SESSION = {
     "id": "20260814_abc123",
     "title": "Test Session",
@@ -23,7 +22,6 @@ SESSION = {
         {"role": "tool", "content": "tool output"},
     ],
 }
-
 
 class TestNormalizeSaveFormat:
 
@@ -40,7 +38,6 @@ class TestNormalizeSaveFormat:
     def test_all_declared_formats_normalize_to_themselves(self):
         for fmt in SAVE_FORMATS:
             assert normalize_save_format(fmt) == fmt
-
 
 class TestRenderSessionForSave:
     def test_json_round_trips(self):
@@ -59,11 +56,9 @@ class TestRenderSessionForSave:
         assert out.lstrip().lower().startswith("<!doctype html")
         assert "Hello" in out
 
-
     def test_unknown_format_raises(self):
         with pytest.raises(ValueError):
             render_session_for_save(SESSION, "pdf")
-
 
 class TestDefaultSaveFilename:
 
@@ -71,4 +66,3 @@ class TestDefaultSaveFilename:
         name = default_save_filename("../../etc/passwd", "json")
         assert "/" not in name
         assert ".." not in name.replace("etcpasswd", "")
-

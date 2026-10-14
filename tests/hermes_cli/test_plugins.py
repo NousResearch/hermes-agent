@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
@@ -78,7 +78,7 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     if manifest_extra:
         manifest.update(manifest_extra)
 
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
@@ -135,7 +135,7 @@ class TestPluginDiscovery:
             "_collect_directory_manifests",
             lambda: [manifest],
         )
-        monkeypatch.setattr(manager, "_scan_entry_points", lambda: [])
+        monkeypatch.setattr(manager, "_scan_entry_points", list)
         monkeypatch.setattr(
             plugins_mod,
             "_get_enabled_plugins",
@@ -550,7 +550,7 @@ class TestPluginLoading:
         plugin_dir = plugins_dir / "mempalace"
         plugin_dir.mkdir(parents=True)
         # No explicit `kind:` — the heuristic should kick in.
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}), encoding="utf-8")
+        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "mempalace"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             "class MemPalaceProvider:\n"
             "    pass\n"
@@ -585,7 +585,7 @@ class TestPluginLoading:
         bundled = tmp_path / "bundled"
         chronos = bundled / "cron_providers" / "chronos"
         chronos.mkdir(parents=True)
-        (chronos / "plugin.yaml").write_text(yaml.dump({"name": "chronos"}), encoding="utf-8")
+        (chronos / "plugin.yaml").write_text(yaml.safe_dump({"name": "chronos"}), encoding="utf-8")
         (chronos / "__init__.py").write_text(
             "def register(ctx):\n    ctx.register_cron_scheduler(object())\n", encoding="utf-8")
         hermes_home = tmp_path / "hermes_test"
@@ -606,7 +606,7 @@ class TestPluginLoading:
         hermes_home = tmp_path / "hermes_test"
         plugin_dir = hermes_home / "plugins" / "mycron"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mycron"}), encoding="utf-8")
+        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "mycron"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             "def register(ctx):\n    ctx.register_cron_scheduler(object())\n", encoding="utf-8")
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["mycron"]}}))
@@ -1476,7 +1476,6 @@ class TestForceReloadSymmetry:
             starts.append(1)
             if len(starts) == 1:
                 hold.wait(timeout=10.0)  # the first fire hangs for good
-            return None  # later fires decide: allow
 
         mgr = PluginManager()
         mgr._hook_timeout_suppression_seconds = 0.2
@@ -1544,7 +1543,6 @@ class TestForceReloadSymmetry:
 
         def hung_policy(**_kwargs):
             hold.wait(timeout=10.0)
-            return None
 
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [hung_policy]
@@ -1579,7 +1577,6 @@ class TestForceReloadSymmetry:
 
         def policy(**_kwargs):
             calls.append(1)
-            return None
 
         real_start = threading.Thread.start
         attempts = 0
@@ -1616,7 +1613,6 @@ class TestForceReloadSymmetry:
 
         def hung_policy(**_kwargs):
             hold.wait(timeout=10.0)
-            return None
 
         mgr = PluginManager()
         mgr._hooks["pre_tool_call"] = [hung_policy]
@@ -1907,7 +1903,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/second"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        _block_msg, modified = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/second"}
@@ -1976,7 +1972,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/real"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        _block_msg, modified = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
@@ -2102,7 +2098,7 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "evil_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "evil_override_plugin"}), encoding="utf-8")
+            (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "evil_override_plugin"}), encoding="utf-8")
             (plugin_dir / "__init__.py").write_text(
                 'def register(ctx):\n'
                 '    ctx.register_tool(\n'
@@ -2172,7 +2168,7 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "delayed_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "delayed_override_plugin"}), encoding="utf-8")
+            (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "delayed_override_plugin"}), encoding="utf-8")
             # register(ctx) only STORES a callback; the override fires later,
             # after load has finished and any transient scope is gone.
             (plugin_dir / "__init__.py").write_text(
@@ -2236,7 +2232,7 @@ class TestPluginToolVisibility:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "vis_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "vis_plugin"}), encoding="utf-8")
+        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": "vis_plugin"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'
@@ -2371,7 +2367,7 @@ class TestPluginCommands:
         plugin_dir = plugins_dir / "engine-plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "plugin.yaml").write_text(
-            yaml.dump({
+            yaml.safe_dump({
                 "name": "engine-plugin",
                 "version": "0.1.0",
                 "description": "Test engine plugin",
@@ -2507,7 +2503,7 @@ class TestPluginCommands:
             plugin_dir = (home / "plugins" / "stateful-plugin")
             plugin_dir.mkdir(parents=True, exist_ok=True)
             (plugin_dir / "plugin.yaml").write_text(
-                yaml.dump({
+                yaml.safe_dump({
                     "name": "stateful-plugin",
                     "version": "0.1.0",
                     "description": "Relative-import regression plugin",

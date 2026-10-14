@@ -23,10 +23,8 @@ MP3_FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 64
 OGG = b"OggS\x00\x02" + b"\x00" * 64
 FLAC = b"fLaC" + b"\x00" * 64
 
-
 def _wav_bytes() -> bytes:
     return b"RIFF" + struct.pack("<I", 36) + b"WAVE" + b"\x00" * 64
-
 
 class TestSniffAudioContainer:
     @pytest.mark.parametrize(
@@ -43,13 +41,11 @@ class TestSniffAudioContainer:
         p.write_bytes(data)
         assert _sniff_audio_container(str(p)) == expected
 
-
     def test_unknown_and_missing(self, tmp_path):
         p = tmp_path / "a.bin"
         p.write_bytes(b"\x00\x01\x02\x03" * 8)
         assert _sniff_audio_container(str(p)) == "unknown"
         assert _sniff_audio_container(str(tmp_path / "missing")) == "unknown"
-
 
 class TestRepairOggContainer:
     def test_real_ogg_untouched(self, tmp_path):
@@ -57,7 +53,6 @@ class TestRepairOggContainer:
         p.write_bytes(OGG)
         assert _repair_ogg_container(str(p)) == str(p)
         assert p.read_bytes() == OGG
-
 
     def test_ffmpeg_real_transcode_if_available(self, tmp_path):
         """Live ffmpeg round-trip when the binary exists (skipped otherwise)."""
@@ -81,11 +76,9 @@ class TestRepairOggContainer:
         assert result == str(p)
         assert _sniff_audio_container(str(p)) == "ogg"
 
-
 class TestOpusPlatformSet:
     def test_opus_platforms_cover_voice_bubble_platforms(self):
         # Behavior contract: the platforms whose adapters deliver native
         # voice bubbles only for Ogg/Opus must be recognized.
         for platform in ("telegram", "matrix", "feishu", "whatsapp", "signal"):
             assert platform in OPUS_VOICE_PLATFORMS
-

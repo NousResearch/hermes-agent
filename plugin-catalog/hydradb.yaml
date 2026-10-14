@@ -1,0 +1,22 @@
+name: hydradb
+repo: https://github.com/hydra-db/hydradb-hermes-plugin
+sha: c0390ad9ea1453f0cd38a59d4ea182be536e27c6
+subdir: hydradb_hermes
+description: "HydraDB long-term memory for Hermes: prompt-time recall (prefetch) and non-blocking turn capture (sync_turn). Disclosure — when selected as the memory provider, each turn's user message (as the recall query) and every completed user/assistant turn are sent over HTTPS to the HydraDB API (api.hydradb.com, or HYDRADB_BASE_URL) under HYDRADB_API_KEY."
+maintainer: hydra-db
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+docs_url: https://github.com/hydra-db/hydradb-hermes-plugin#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HYDRADB_API_KEY
+    - HYDRADB_DATABASE
+
+

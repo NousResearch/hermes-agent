@@ -4,7 +4,6 @@ from hermes_cli.config import (
     resolve_ephemeral_system_prompt_from_config,
 )
 
-
 def test_resolve_uses_named_personality_when_set():
     cfg = {
         "display": {"personality": "helpful"},
@@ -14,7 +13,6 @@ def test_resolve_uses_named_personality_when_set():
         },
     }
     assert resolve_ephemeral_system_prompt_from_config(cfg) == "You are helpful."
-
 
 def test_resolve_falls_back_to_manual_system_prompt():
     cfg = {
@@ -26,7 +24,6 @@ def test_resolve_falls_back_to_manual_system_prompt():
     }
     assert resolve_ephemeral_system_prompt_from_config(cfg) == "manual forever"
 
-
 def test_resolve_ignores_unknown_personality_name():
     cfg = {
         "display": {"personality": "missing"},
@@ -36,7 +33,6 @@ def test_resolve_ignores_unknown_personality_name():
         },
     }
     assert resolve_ephemeral_system_prompt_from_config(cfg) == "manual forever"
-
 
 def test_resolve_renders_dict_personality():
     cfg = {
@@ -56,5 +52,3 @@ def test_resolve_renders_dict_personality():
     assert "You are an expert programmer." in resolved
     assert "Tone: technical" in resolved
     assert "Style: concise" in resolved
-
-

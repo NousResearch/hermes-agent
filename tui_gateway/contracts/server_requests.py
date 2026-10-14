@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from tools.tour_presets import TourPreset
+
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
 
@@ -37,26 +39,121 @@ class ClarifyQuestion(Params):
 
 
 class ClarifyRequestParams(ServerRequestParams):
-    """Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.
-    ``answers`` rides only on a reconnect replay (locks the server already accepted)."""
+    """``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped)."""
 
-    question: str | None = None
-    choices: list[str] | None = None
-    multi_select: bool | None = None
-    questions: list[ClarifyQuestion] | None = None
-    answers: dict[str, str] | None = None
+    questions: list[ClarifyQuestion]
+    answers: dict[str, str | None] | None = None
 
 
 class ClarifyResult(Result):
-    """Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through
-    the ``clarify.lock`` RPC); a response with neither is cancel-all."""
+    """``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response
+    without ``answers`` is cancel-all."""
 
-    answer: str | None = None
-    answers: dict[str, str] | None = None
+    answers: dict[str, str | None] | None = None
 
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
-               doc="The clarify tool: ask the user one question or a batch.")
+               doc="The clarify tool: ask the user 1-5 questions.")
+
+
+
+# ── setup_beat (first-run onboarding) ─────────────────────────────────────────────────────────
+
+
+class SetupBeat(WireEnum):
+    name = "name"
+    theme = "theme"
+    layout = "layout"
+    connectors = "connectors"
+    plugins = "plugins"
+    tour = "tour"
+    build = "build"
+
+
+class SetupOption(Params):
+    id: str
+    label: str
+
+
+class SetupNameCard(Params):
+    suggested: str | None = None  # the OS account's name: shown on the card, never sent to the model
+
+
+class SetupThemeCard(Params):
+    picker: str
+
+
+class SetupOptionsCard(Params):
+    options: list[SetupOption]
+
+
+class SetupConnectorsCard(Params):
+    suggested: list[str]
+
+
+class SetupPluginsCard(Params):
+    plugins: list[str]
+
+
+class SetupBeatRequestParams(ServerRequestParams):
+    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and
+    plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the
+    setup_beat call the card belongs to: only that transcript row draws it."""
+
+    beat: SetupBeat
+    question: str | None = None
+    tool_call_id: str | None = None
+    card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
+
+
+class SetupNameAnswer(Result):
+    name: str
+
+
+class SetupThemeAnswer(Result):
+    accent: str | None = None
+    mode: str | None = None
+
+
+class SetupLayoutAnswer(Result):
+    layout: str
+
+
+class SetupConnectorsAnswer(Result):
+    connected: list[str]
+    newly_connected: list[str] = Field(default_factory=list)
+
+
+class SetupPluginsAnswer(Result):
+    installed: list[str]
+    label: str | None = None  # what the card showed, for the transcript; never recorded
+
+
+class SetupTourAnswer(Result):
+    tour: str
+    label: str | None = None
+
+
+class SetupBuildAnswer(Result):
+    build: str
+    label: str | None = None
+
+
+class SetupBeatResult(Result):
+    """``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend
+    rejects any other answer). ``said`` is composer text typed while the name card waited: the name.
+    ``wrote_instead``: the user sent a message instead of answering; the backend ends the turn and the
+    client sends that message as the next one. A response with none of these, or none within 300 s,
+    closes the card unanswered."""
+
+    answer: (SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer
+             | SetupTourAnswer | SetupBuildAnswer | None) = None
+    said: str | None = None
+    wrote_instead: bool = False
+
+
+server_request("setup_beat", params=SetupBeatRequestParams, result=SetupBeatResult,
+               doc="The onboarding chat's card for one beat; blocks setup_beat until answered (300 s).")
 
 
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
@@ -178,6 +275,7 @@ class PreviewActRequestParams(ServerRequestParams):
     to: str | None = None
     amount: int | None = None
     max: int | None = None
+    allow_shortcut: bool | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,
@@ -203,10 +301,57 @@ class TourRequestParams(ServerRequestParams):
     side: str | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
+    preset: TourPreset | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,
                doc="Drive a guided tour highlight in the desktop renderer.")
+
+
+class ThemeMode(WireEnum):
+    light = "light"
+    dark = "dark"
+    system = "system"
+
+
+class ThemePicker(WireEnum):
+    accent = "accent"
+    layout = "layout"
+
+
+class ThemeApplyRequestParams(ServerRequestParams):
+    """``tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``."""
+
+    accent: str | None = None
+    mode: ThemeMode | None = None
+    layout: str | None = None
+
+
+class ThemePickRequestParams(ServerRequestParams):
+    picker: ThemePicker
+
+
+class ThemeValues(Params):
+    """What the renderer applied. ``accent`` is a swatch id, ``custom:#rrggbb``, or null for the theme's own."""
+
+    accent: str | None = None
+    mode: ThemeMode | None = None
+    layout: str | None = None
+
+
+class ThemePickResult(Result):
+    """``picked`` once the user chose (already applied); ``cancelled`` when the card was dismissed. A response
+    with neither is a cancel."""
+
+    picked: ThemeValues | None = None
+    said: str | None = None
+    cancelled: bool | None = None
+
+
+server_request("theme.apply", params=ThemeApplyRequestParams, result=ValueResult,
+               doc="Apply set_theme values in the window showing the session (JSON text answer).")
+server_request("theme.pick", params=ThemePickRequestParams, result=ThemePickResult,
+               doc="Show an accent or layout picker card in the chat and wait for the pick.")
 
 
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────

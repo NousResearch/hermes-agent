@@ -145,7 +145,7 @@ class TestSessionDbInitTimeout:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, _output, final_response, _error = run_job(job)
 
         # Env-resolved bound was passed to Future.result — not the 10s default,
         # and not an unbounded call.
@@ -158,7 +158,7 @@ class TestSessionDbInitTimeout:
     def test_timeout_resolved_from_config_yaml(self, tmp_path, monkeypatch):
         """cron.session_db_timeout_seconds in config.yaml is respected when
         the env var is not set — the canonical config-first resolution path."""
-        import yaml
+        import hermes_yaml as yaml
 
         monkeypatch.delenv("HERMES_CRON_SESSION_DB_TIMEOUT", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -186,7 +186,7 @@ class TestSessionDbInitTimeout:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, _output, _final_response, _error = run_job(job)
 
         # Config value was passed through — not the 10s default.
         assert timeouts == [0.2]
@@ -301,7 +301,7 @@ class TestLateSessionDbClosedAfterTimeout:
                 mock_agent.run_conversation.return_value = {"final_response": "ok"}
                 mock_agent_cls.return_value = mock_agent
 
-                success, output, final_response, error = run_job(job)
+                success, _output, _final_response, _error = run_job(job)
                 # run_job returned promptly after the timeout; session_db is None
                 assert success is True
 
@@ -350,7 +350,7 @@ class TestSessionDbInitAfterEarlyReturns:
                  return_value=(True, '{"wakeAgent": false}'),
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
-            success, output, final_response, error = run_job(job)
+            success, _output, _final_response, _error = run_job(job)
 
         assert success is True
         mock_db_cls.assert_not_called()

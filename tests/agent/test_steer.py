@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 from tools.registry import registry
@@ -388,7 +389,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         assert placeholder["role"] == "assistant"
         assert placeholder["content"] == ""
         assert placeholder["display_kind"] == "hidden"
-        assert placeholder["api_content"] == "[response interrupted]"
+        assert placeholder["api_content"] == _INTERRUPTED_PLACEHOLDER
         # The user correction keeps clean text in content and the interruption
         # context only in its own api_content sidecar.
         assert correction["role"] == "user"
@@ -418,7 +419,7 @@ class TestEmptyHiddenAssistantRehealRegression:
         ]
         healed = repair_empty_non_final_messages(rows)
         assistant = next(m for m in healed if m.get("role") == "assistant")
-        assert assistant["content"] == "[response interrupted]"
+        assert assistant["content"] == _INTERRUPTED_PLACEHOLDER
         # The durable list is not mutated (wire-copy-only design).
         assert rows[1]["content"] == ""
 
@@ -773,7 +774,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
     """Projection-side half of #88955: rows persisted BEFORE the writer-side
     ``api_content`` stamp are ``content=""`` + ``display_kind="hidden"`` with
     no sidecar. The send-time projection must give the WIRE copy the neutral
-    ``[response interrupted]`` payload so legacy sessions converge instead of
+    interrupt-placeholder payload so legacy sessions converge instead of
     re-healing forever — while the durable row stays hidden and empty."""
 
     def _loop_agent(self):
@@ -861,7 +862,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         wire_assistants = [m for m in wire if m.get("role") == "assistant"]
         legacy = wire_assistants[0]
         # Substituted on the wire by the projection (not the sanitizer):
-        assert legacy["content"] == "[response interrupted]"
+        assert legacy["content"] == _INTERRUPTED_PLACEHOLDER
         assert "display_kind" not in legacy
         # #81841: never the interrupt scaffold.
         assert "[This response was interrupted" not in legacy["content"]
@@ -871,7 +872,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         assert "api_content" not in history[1]
 
     def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
-        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
+        from agent.conversation_loop import _clone_message_for_send
         from unittest.mock import patch
 
         from tests.agent.test_run_agent import _mock_response

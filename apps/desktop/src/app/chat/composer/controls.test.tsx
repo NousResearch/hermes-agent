@@ -153,10 +153,31 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Stop', '↵')
   })
 
+  it('answers a waiting card with Send when the draft has text, and offers no Queue', () => {
+    renderControls({ busy: true, busyAction: 'queue', cardWaiting: true, hasComposerPayload: true })
+
+    expect(screen.getByLabelText('Send')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop')).toBeNull()
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+  })
+
+  it('keeps Stop enabled while a card waits and the draft is empty', () => {
+    renderControls({ busy: true, busyAction: 'stop', canSubmit: true, cardWaiting: true, hasComposerPayload: false })
+
+    expect(screen.getByLabelText('Stop').hasAttribute('disabled')).toBe(false)
+  })
+
   it('shows Ctrl+Enter for Queue as the secondary mid-turn action', async () => {
     renderControls({ busy: true, busyAction: 'queue' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
+
+  it('hides Queue while idle even if the composer has a payload', () => {
+    renderControls({ busy: false, busyAction: 'queue', hasComposerPayload: true })
+
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+    expect(screen.getByLabelText('Send')).toBeTruthy()
   })
 })
 

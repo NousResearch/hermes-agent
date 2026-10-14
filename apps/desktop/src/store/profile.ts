@@ -15,7 +15,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
-import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -29,6 +29,7 @@ import {
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
+import { exitProjectScope } from '@/store/project-scope'
 import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
@@ -325,10 +326,20 @@ export const $newChatConnectionId = atom<null | string>(null)
 // source policy; only this pinned intent suppresses the ambient fallback.
 let legacyNewChatProfile: null | string = null
 
+// Bumped by every new-chat owner intent (each one captures its source). Async
+// work that re-homes the draft late compares it to tell a newer intent from
+// its own, even when the newer intent repeats the same route values.
+let newChatIntentRevision = 0
+
+export function currentNewChatIntent(): number {
+  return newChatIntentRevision
+}
+
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
  *  pick, see profilePickConnectionId) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
+  newChatIntentRevision += 1
   legacyNewChatProfile = null
   $newChatConnectionId.set(connectionId)
 }
@@ -417,6 +428,20 @@ export function resolveNewChatOwnerRoute(forProfile?: string): AgentProfileRoute
   }
 }
 
+/**
+ * The owner route for a surface anchored to a profile the ACTIVE source is
+ * rendering (a project tree's "+", #124265). Unlike resolveNewChatOwnerRoute
+ * this never consults the new-chat pin's captured source, which a stale pick
+ * on another connection would otherwise pair with this profile (right profile,
+ * wrong host). null keeps the legacy profile-only path.
+ */
+export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRoute | null {
+  const key = normalizeProfileKey(profile)
+  const connectionId = (profilePickConnectionId(key) ?? '').trim()
+
+  return connectionId ? { connectionId, profile: key } : null
+}
+
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
 // currently-open session (store/projects). The chat controller subscribes and
@@ -488,10 +513,6 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
-
-function registryConnectionKind(connectionId: string): string | undefined {
-  return $connectionsRegistry.get()?.connections.find(entry => entry.id === connectionId)?.kind
-}
 
 export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)
@@ -959,6 +980,7 @@ export function selectProfile(name: string): void {
   captureNewChatSource(profilePickConnectionId(target))
 
   if (switching) {
+    leaveForeignProjectScope(target)
     requestFreshSession()
   }
 
@@ -1029,6 +1051,23 @@ function activateOnCurrentSource(target: string): Promise<void> {
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
+// The hover twin of activateOnCurrentSource: warm the pair the click will dial.
+// The bare name resolves on the legacy door, so hovering a remote source's
+// `default` warmed This device's instead.
+export function prewarmProfilePick(name: string): void {
+  prewarmProfileBackend(name, profilePickConnectionId(normalizeProfileKey(name)))
+}
+
+// A project id names a row in ONE backend's projects.db. A draft headed for
+// another profile (or source) must not resolve its cwd from the scope entered on
+// the current one: the fresh draft runs before the gateway swap refreshes the
+// project tree, so it would start in the previous profile's project (#54990).
+function leaveForeignProjectScope(profile: string, connectionId: null | string = activeGatewayConnectionId()): void {
+  if (profile !== normalizeProfileKey($activeGatewayProfile.get()) || connectionId !== activeGatewayConnectionId()) {
+    exitProjectScope()
+  }
+}
+
 // Pin the next new chat to `name` (legacy profile-only door) so session.create
 // reads the profile the user clicked "+" under, not whatever
 // $activeGatewayProfile holds once an in-flight profile swap settles (#79005).
@@ -1049,6 +1088,7 @@ export function pinNewChatProfile(name: string): string {
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
   const target = pinNewChatProfile(name)
+  leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void activateOnCurrentSource(target).catch((error: unknown) => {
@@ -1076,6 +1116,7 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
   captureNewChatSource(captured.connectionId)
+  leaveForeignProjectScope(captured.profile, captured.connectionId)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {

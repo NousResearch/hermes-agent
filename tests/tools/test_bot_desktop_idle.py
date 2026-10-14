@@ -12,7 +12,7 @@ from tools.bot_desktop import lease, runtime
 def _running(monkeypatch, tmp_path):
     sd = tmp_path / "bd"
     sd.mkdir()
-    (sd / "env").write_text("DISPLAY=:20\n")
+    (sd / "env").write_text("DISPLAY=:20\n", encoding="utf-8")
     monkeypatch.setattr(runtime, "state_dir", lambda: sd)
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242)
     monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 600.0)

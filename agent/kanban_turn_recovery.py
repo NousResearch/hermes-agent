@@ -294,7 +294,8 @@ def _truncate(text: str, limit: int = 300) -> str:
 
 def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
                          task_id: Optional[str] = None,
-                         terminal_tools: Optional[set[str]] = None) -> str:
+                         terminal_tools: Optional[set[str]] = None,
+                         terminal_guidance: Optional[dict[str, str]] = None) -> str:
     """The synthetic user turn sent after a failed worker turn.
 
     Mirrors the stop-nudge contract (agent/kanban_stop.py): plain text is not a
@@ -306,13 +307,17 @@ def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
     if isinstance(result, dict):
         error = _truncate(str(result.get("error") or result.get("final_response") or ""))
     task_id = _resolve_task_id(task_id) or "this task"
-    from agent.kanban_stop import kanban_terminal_tool_names
+    from agent.kanban_stop import kanban_terminal_tool_guidance, kanban_terminal_tool_names
     terminal_tools = sorted(terminal_tools if terminal_tools is not None
                             else kanban_terminal_tool_names())
+    if terminal_guidance is None:
+        terminal_guidance = kanban_terminal_tool_guidance(terminal_tools)
     handoff_instruction = (
-        "3. End with one of these available terminal board tools: "
-        + ", ".join(f"`{name}`" for name in terminal_tools)
-        + ". Choose the hand-off that matches the result and follow that tool's schema."
+        "3. End with an available terminal board tool that matches the result and follow its schema:\n"
+        + "\n".join(
+            f"   - `{name}`: {terminal_guidance.get(name) or 'Use this hand-off when appropriate.'}"
+            for name in terminal_tools
+        )
         if terminal_tools else
         "3. No terminal board hand-off tool is marked as available. Do not invent a tool call; "
         "state that the task cannot be handed off with the current tool surface."
@@ -354,6 +359,7 @@ def recover_failed_kanban_turns(
     claim_check: Optional[Callable[[], bool]] = None,
     task_id: Optional[str] = None,
     terminal_tools: Optional[set[str]] = None,
+    terminal_guidance: Optional[dict[str, str]] = None,
 ) -> int:
     """Retry an authorised kanban worker turn in place; returns attempts made.
 
@@ -399,7 +405,8 @@ def recover_failed_kanban_turns(
             _emit_recovery_skipped(emit, task_id)
             return attempts
         turn_fn(build_recovery_nudge(result, attempt=attempts, max_attempts=max_recovery_attempts(),
-                                    task_id=task_id, terminal_tools=terminal_tools))
+                                    task_id=task_id, terminal_tools=terminal_tools,
+                                    terminal_guidance=terminal_guidance))
 
 
 __all__ = [

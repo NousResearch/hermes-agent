@@ -1127,8 +1127,10 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     try:
         from tools.registry import registry as _tool_registry
         agent.kanban_terminal_tool_names = _tool_registry.kanban_terminal_tool_names(agent.valid_tool_names)
+        agent.kanban_terminal_tool_guidance = _tool_registry.kanban_terminal_tool_guidance(agent.valid_tool_names)
     except Exception:
         agent.kanban_terminal_tool_names = set()
+        agent.kanban_terminal_tool_guidance = {}
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without
     # owning a task.

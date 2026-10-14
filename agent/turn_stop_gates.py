@@ -86,6 +86,7 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return build_kanban_stop_nudge(
             messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0),
             terminal_tools=getattr(agent, "kanban_terminal_tool_names", None),
+            terminal_guidance=getattr(agent, "kanban_terminal_tool_guidance", None),
         )
     except Exception:
         logger.debug("kanban stop-loop check failed", exc_info=True)

@@ -20,16 +20,21 @@ _DEFAULT_MAX_ATTEMPTS = 2
 
 def kanban_terminal_tool_names(tool_names: Iterable[str] | None = None) -> frozenset[str]:
     """Resolve terminal hand-off metadata, optionally restricted to this agent's surface."""
+    return frozenset(kanban_terminal_tool_guidance(tool_names))
+
+
+def kanban_terminal_tool_guidance(tool_names: Iterable[str] | None = None) -> dict[str, str]:
+    """Resolve hand-off guidance for marked tools, restricted to this agent's surface."""
     from tools.registry import registry
 
     allowed = None if tool_names is None else set(tool_names)
-    names = registry.kanban_terminal_tool_names(allowed)
+    guidance = registry.kanban_terminal_tool_guidance(allowed)
     # Tests and lightweight callers may use this guard before model_tools discovery. Importing
     # the built-in module registers its declarative metadata; a supplied surface still filters it.
-    if not names and allowed is None:
+    if not guidance and allowed is None:
         import tools.kanban_tools  # noqa: F401
-        names = registry.kanban_terminal_tool_names()
-    return frozenset(names)
+        guidance = registry.kanban_terminal_tool_guidance()
+    return guidance
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -74,6 +79,7 @@ def build_kanban_stop_nudge(
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
     terminal_tools: Iterable[str] | None = None,
+    terminal_guidance: dict[str, str] | None = None,
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
     the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
@@ -86,10 +92,14 @@ def build_kanban_stop_nudge(
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
     terminal_tools = sorted(terminal_tools if terminal_tools is not None else kanban_terminal_tool_names())
+    if terminal_guidance is None:
+        terminal_guidance = kanban_terminal_tool_guidance(terminal_tools)
     handoff_instruction = (
-        "2. Use one of these available terminal board tools: "
-        + ", ".join(f"`{name}`" for name in terminal_tools)
-        + ". Choose the hand-off that matches the result and follow that tool's schema.\n\n"
+        "2. Use an available terminal board tool that matches the result and follow its schema:\n"
+        + "\n".join(
+            f"   - `{name}`: {terminal_guidance.get(name) or 'Use this hand-off when appropriate.'}"
+            for name in terminal_tools
+        ) + "\n\n"
         if terminal_tools else
         "2. No terminal board hand-off tool is marked as available. Do not invent a tool call; "
         "state that the task cannot be handed off with the current tool surface.\n\n"
@@ -111,5 +121,5 @@ def build_kanban_stop_nudge(
 
 __all__ = [
     "build_kanban_stop_nudge", "kanban_stop_nudge_enabled",
-    "kanban_terminal_tool_names", "session_called_kanban_terminal",
+    "kanban_terminal_tool_guidance", "kanban_terminal_tool_names", "session_called_kanban_terminal",
 ]

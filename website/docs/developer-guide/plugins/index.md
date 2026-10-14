@@ -1508,6 +1508,8 @@ def register(ctx):
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
 
+**Plugin CLI ownership:** if two plugins register the same native CLI command through `ctx.register_cli_command()`, the first registry owner keeps it. A registration from a different plugin ID is skipped with a warning naming the command and both owners, and returns `None` without creating a registration handle. The same plugin ID may replace its own command; disposal and reload retain the normal lifecycle behaviour. Use a distinctive command name. This check applies between SDK registrations, not to collisions with built-in commands or to slash commands.
+
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.

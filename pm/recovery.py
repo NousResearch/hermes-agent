@@ -6,7 +6,7 @@ import os
 import stat
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pm.package import InstallError
@@ -34,7 +34,7 @@ def record_boot_dependency_failure(home: Path, error: Exception, *, fallback: bo
             if not stat.S_ISREG(os.fstat(output.fileno()).st_mode):
                 return
             os.fchmod(output.fileno(), 0o600)
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            timestamp = datetime.now(UTC).isoformat(timespec="seconds")
             state = "fallback" if fallback else "boot-refused"
             output.write(f"{timestamp} state={state} category={category}\n")
     except OSError:

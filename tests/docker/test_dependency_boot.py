@@ -8,7 +8,7 @@ import pytest
 
 
 def _docker(*args: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout, check=False)
 
 
 @pytest.fixture

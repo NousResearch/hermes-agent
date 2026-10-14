@@ -849,8 +849,6 @@ _PRUNE_MIN_CHARS = 200
 # PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
 # even when the marker had survived).
 SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# Small skill_view results stay verbatim; shared by emit site and summarizer scan.
-_SKILL_VIEW_PRUNE_MIN_CHARS = 5000
 # Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
 _MAX_PRUNED_SKILL_MARKERS = 20
 
@@ -874,8 +872,15 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
     return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
 
 
+def _skill_view_failed(content: Any) -> bool:
+    """True for a ``skill_view`` result that loaded nothing (``success: false``), so it carries no instructions to lose."""
+    return isinstance(content, str) and _json_dict(content).get("success") is False
+
+
 def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
-    """Skill names about to be lost in compaction: demoted ``skill_view`` rows and raw, never-demoted bodies."""
+    """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
+    ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
+    from agent.skill_commands import skills_loaded_by_scaffold
     call_id_to_skill: dict[str, str] = {}
     for idx, skill in _skill_view_call_sites(turns):
         for tc in turns[idx].get("tool_calls") or []:
@@ -885,8 +890,11 @@ def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
     names: list[str] = []
     for msg in turns:
         content = msg.get("content")
-        names += _extract_pruned_skill_names(_content_text_for_contains(content))
-        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS:
+        text = _content_text_for_contains(content)
+        names += _extract_pruned_skill_names(text)
+        if msg.get("role") == "user":
+            names += skills_loaded_by_scaffold(text)
+        elif msg.get("role") == "tool" and not _skill_view_failed(content):
             names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
     return [name for name in dict.fromkeys(names) if name]
 
@@ -940,6 +948,13 @@ def _synthetic_user_row(content: str) -> bool:
     return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
 
 
+def _typed_user_text(content: str) -> str:
+    """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged.
+    Its inline skill body is not the user's words — it is carried by a ``[SKILL_PRUNED: ...]`` marker instead."""
+    from agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
+    return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
+
+
 def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
     collected: list[str] = []
@@ -947,7 +962,7 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     for msg in reversed(turns):
         if msg.get("role") != "user":
             continue
-        content = _content_text_for_contains(msg.get("content"))
+        content = _typed_user_text(_content_text_for_contains(msg.get("content")))
         if _synthetic_user_row(content):
             continue
         remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
@@ -1707,8 +1722,8 @@ def _sum_execute_code(name, args, content, content_len, line_count):
 
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
-    # Ghost-skill defense: canonical marker says instructions are gone and how to reload.
-    marker = " " + _skill_pruned_marker(str(skill)) if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS else ""
+    # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
+    marker = "" if skill == "?" or _skill_view_failed(content) else " " + _skill_pruned_marker(str(skill))
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
@@ -4402,7 +4417,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # display_kind notices are operational traffic, not user intent.
             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
                 continue
             text = " ".join(text.split())
@@ -4429,7 +4444,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:

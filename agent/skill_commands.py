@@ -174,6 +174,28 @@ def describe_skill_invocation(content: Any, separator: str = " — ") -> Optiona
     return label if name else None
 
 
+_AUTO_LOAD_HEADER_RE = re.compile(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)' + _AUTO_LOAD_SUFFIX_RE.pattern)
+_BUNDLE_LOADED_RE = re.compile(r"^Skills loaded: (.+)$", re.MULTILINE)
+
+
+def skills_loaded_by_scaffold(content: Any) -> list[str]:
+    """Skill names a slash-skill, bundle/stacked or gateway auto-load turn carries inline; ``[]`` for any
+    other text. Only a complete activation header counts, so typed text that merely starts like one
+    (``[IMPORTANT: The "config" file is broken]``) is not mistaken for a skill load."""
+    if not isinstance(content, str):
+        return []
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        return [m.group(1) for m in _AUTO_LOAD_HEADER_RE.finditer(content)] if _AUTO_LOAD_HEADER_RE.match(content) else []
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return []
+    header = content.split("\n", 1)[0]
+    if _BUNDLE_MARKER in header:
+        loaded = _BUNDLE_LOADED_RE.search(content)
+        return [n.strip() for n in loaded.group(1).split(",") if n.strip()] if loaded else []
+    match = _SKILL_NAME_RE.match(content)
+    return [match.group(1)] if header.endswith(_SINGLE_SKILL_MARKER) and match and match.group(1) else []
+
+
 def _cut_after(message: str, marker: str, stop_marker: str, find) -> Optional[str]:
     """Text between *marker* (located with ``find``) and *stop_marker*, stripped; None if absent/empty."""
     marker_idx = find(marker)

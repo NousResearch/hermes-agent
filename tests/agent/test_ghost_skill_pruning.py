@@ -18,6 +18,7 @@ Test patterns for the marker emit checks adapted from PR #32375
 (@LeonSGP43) with credit.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
@@ -75,12 +76,14 @@ class TestSkillPrunedMarkerEmit:
         assert _skill_pruned_marker("docker-management") in summary
         assert "reload with skill_view(name='docker-management')" in summary
 
-    def test_small_skill_view_summary_not_marked(self):
+    def test_every_loaded_skill_view_is_marked_failed_views_are_not(self):
+        """Small skills lose their body to the stub too, so they get the marker; a failed view loaded nothing."""
         summary = _summarize_tool_result(
             "skill_view", '{"name":"docker-management"}', "x" * 1234
         )
-        assert summary == "[skill_view] name=docker-management (1,234 chars)"
-        assert SKILL_PRUNED_MARKER_PREFIX not in summary
+        assert summary == "[skill_view] name=docker-management (1,234 chars) " + _skill_pruned_marker("docker-management")
+        failed = json.dumps({"success": False, "error": "Skill 'nope' not found. " + "Available: a, b. " * 30})
+        assert SKILL_PRUNED_MARKER_PREFIX not in _summarize_tool_result("skill_view", '{"name":"nope"}', failed)
 
     def test_marker_extractor_round_trips_the_emitted_marker(self):
         """Emit and check sides share one canonical string.
@@ -247,6 +250,37 @@ class TestMarkerSurvivesRealCompress:
             result = c.compress(msgs, force=True)
         summary_text = self._summary_text_of(result)
         assert _skill_pruned_marker("pdf") in summary_text
+
+    def test_slash_invoked_skill_is_marked_and_quoted_as_typed(self):
+        """A /skill turn carries its body inline: compaction lists the skill for reload and quotes only what
+        the user typed, never the skill body as "the user's actual words"."""
+        from agent.skill_commands import _build_skill_message
+        note = ('[IMPORTANT: The user has invoked the "probe-inv" skill, indicating they want '
+                "you to follow its instructions. The full skill content is loaded below.]")
+        body = "RULE: include INV-HERON.\n" + "skill body prose. " * 600
+        invocation = _build_skill_message({"name": "probe-inv", "content": body}, None, note,
+                                          user_instruction="remember PLUM-77")
+        c = _make_compressor(protect_first_n=1, protect_last_n=2, tail_mode="lean")
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "start"},
+            {"role": "user", "content": invocation},
+            {"role": "assistant", "content": "INV-HERON noted. " + "w" * 400},
+            {"role": "user", "content": "continue " + "c" * 400},
+            {"role": "assistant", "content": "more work " + "z" * 500},
+            {"role": "user", "content": "latest ask"},
+            {"role": "assistant", "content": "ack"},
+        ]
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=6),
+            patch("agent.context_compressor.call_llm", return_value=self._mock_response("## Goal\nWork.")),
+        ):
+            result = c.compress(msgs, force=True)
+        summary_text = self._summary_text_of(result)
+        assert _skill_pruned_marker("probe-inv") in summary_text
+        assert "/probe-inv remember PLUM-77" in summary_text
+        assert "skill body prose" not in summary_text
+
 
 class TestReinjectionBoundsAndRedaction:
         # The cap is applied at the collection sites in _generate_summary /

@@ -1,4 +1,5 @@
-"""Copy the model and its selected custom endpoint when creating an independent profile."""
+"""Copy the model and its selected custom endpoint into a new profile, and merge that endpoint
+over same-identity entries the new profile already has."""
 
 from hermes_cli.config import _expand_env_vars, find_provider_entry
 from hermes_cli.config_providers import _normalize_custom_provider_entry
@@ -17,6 +18,7 @@ def _requested_provider(model_cfg) -> str | None:
 
 
 def _resolve(provider: str, cfg: dict):
+    """Runtime named-endpoint lookup on *cfg* without reading any credential."""
     return _get_named_custom_provider(provider, config=cfg, resolve_credentials=False)
 
 
@@ -90,7 +92,9 @@ def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
     claim any of its identities are dropped in both sections: Hermes has several name lookups with
     different skip rules (URL validation, ``enabled``, keyed-first), so only removing every
     same-identity entry guarantees each of them lands on the inherited endpoint. A URL-less tuning
-    seed (``providers.custom``) claims no identity and replaces only its own key."""
+    seed (``providers.custom``) claims no identity and replaces only its own key. Dropped entries
+    include URL-less or disabled ones sharing a name (e.g. ``providers.openrouter`` tuning under a
+    custom endpoint named OpenRouter); this only runs for a new profile without a model."""
     seed_providers = seed.get("providers") or {}
     seed_custom = seed.get("custom_providers") or []
     provider = _requested_provider(seed.get("model"))

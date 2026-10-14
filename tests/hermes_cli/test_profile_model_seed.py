@@ -197,13 +197,13 @@ LAB = {"provider": "custom:lab", "default": "synthetic-model"}
             {"providers": {"stale": {"name": "lab", "base_url": URL + "x"}}},
             {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
         ),
-        # A scheme-less keyed URL still matches at runtime, so it is evicted too.
+        # The same key claims the identity whatever its URL shape.
         (
             {"custom_providers": [{"name": "Lab", "base_url": URL}]},
             {"providers": {"lab": {"base_url": "localhost:9999/v1"}}},
             {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
         ),
-        # A camelCase ``baseUrl`` legacy seed is a live endpoint and still evicts its shadow.
+        # A camelCase ``baseUrl`` seed resolves, so it claims its identities.
         (
             {"custom_providers": [{"name": "Lab", "baseUrl": URL}]},
             {"providers": {"lab": {"base_url": URL + "x"}}},
@@ -217,6 +217,18 @@ LAB = {"provider": "custom:lab", "default": "synthetic-model"}
                 "providers": {},
                 "custom_providers": [{"name": "Lab", "base_url": URL, "enabled": False}],
             },
+        ),
+        # Same-identity destination entries go even when they could not win on their own:
+        # URL-less tuning and disabled entries (the pin step resolves names with other rules).
+        (
+            {"custom_providers": [{"name": "Lab", "base_url": URL}]},
+            {
+                "providers": {
+                    "lab": {"request_timeout_seconds": 9},
+                    "old": {"name": "lab", "base_url": URL + "x", "enabled": False},
+                }
+            },
+            {"providers": {}, "custom_providers": [{"name": "Lab", "base_url": URL}]},
         ),
         # Unrelated destination entries are kept.
         (

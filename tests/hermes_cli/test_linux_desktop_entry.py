@@ -26,6 +26,22 @@ def xdg_home(tmp_path, monkeypatch) -> Path:
     return data_home
 
 
+@pytest.fixture(autouse=True)
+def pinned_graphical_session(tmp_path, monkeypatch) -> None:
+    """Pin the platform the entry is written for: never inherit the developer's session.
+
+    ``window_platform()`` reads the environment, ``config.yaml`` and ``/proc``; leaving any of
+    them live would make the entry under test depend on the machine running the suite. The
+    default here is a headless host (no ``DISPLAY``/``WAYLAND_DISPLAY``), which leaves the
+    window-class entry alone; tests that care set the session they exercise.
+    """
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("ELECTRON_OZONE_PLATFORM_HINT", raising=False)
+    monkeypatch.setattr(lde, "_configured_desktop_settings", lambda: ([], ""))
+    monkeypatch.setattr(lde, "NVIDIA_DRIVER_VERSION_PATH", tmp_path / "proc-nvidia-version")
+
+
 def _make_project(tmp_path: Path) -> Path:
     root = tmp_path / "hermes-agent"
     icon = root / "apps" / "desktop" / "assets" / "icon.png"
@@ -704,13 +720,15 @@ def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, mo
 
     Deleting ``hermes.desktop`` silently kills existing taskbar pins (GNOME drops
     the favourite, Plasma leaves an inert item) and the shell has no mechanism to
-    re-point the association for the user. The pre-rename entry must survive as a
-    ``NoDisplay=true`` alias of the app-id entry: out of the app grid, still
-    launchable, and window-matched through the same ``StartupWMClass`` and
-    ``Exec`` as the app-id entry.
+    re-point the association for the user. On Wayland — where the window carries the
+    app_id and the app-id entry is what matches it — the pre-rename entry must
+    survive as a ``NoDisplay=true`` alias: out of the app grid, still launchable, and
+    window-matched through the same ``StartupWMClass`` and ``Exec`` as the app-id
+    entry.
     """
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
     legacy.parent.mkdir(parents=True)
     legacy.write_text(
@@ -734,6 +752,7 @@ def test_unchanged_entry_still_aliases_a_legacy_entry(tmp_path, xdg_home, monkey
     """An up-to-date app-id entry must not skip converting a legacy file found beside it."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     assert lde.install_desktop_entry(root) is not None
     legacy = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
     legacy.write_text("[Desktop Entry]\nType=Application\nName=Hermes\nExec=hermes desktop\n", encoding="utf-8")
@@ -757,6 +776,136 @@ def test_install_keeps_foreign_files_at_the_legacy_path(tmp_path, xdg_home, monk
     lde.install_desktop_entry(root)
 
     assert foreign.is_file()
+    assert "Name=Someone else" in foreign.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "environ, nvidia, expected",
+    [
+        ({"DISPLAY": ":0"}, False, "x11"),
+        ({"WAYLAND_DISPLAY": "wayland-0"}, False, "wayland"),
+        ({"WAYLAND_DISPLAY": "wayland-0"}, True, "x11"),
+        ({"WAYLAND_DISPLAY": "wayland-0", "ELECTRON_OZONE_PLATFORM_HINT": "wayland"}, True, "wayland"),
+        ({"WAYLAND_DISPLAY": "wayland-0", "ELECTRON_OZONE_PLATFORM_HINT": "x11"}, False, "x11"),
+        ({"WAYLAND_DISPLAY": "wayland-0", "ELECTRON_OZONE_PLATFORM_HINT": "auto"}, True, "x11"),
+        ({}, False, None),  # headless: no window to match, entries stay as they are
+    ],
+)
+def test_window_platform_mirrors_the_launcher_relaunch(
+    tmp_path, monkeypatch, environ, nvidia, expected
+):
+    """The entry we write has to describe the window the launcher will actually open.
+
+    ``entry.ts`` relaunches a Wayland session with ``--ozone-platform=<backend>`` before the app
+    loads, and that backend is X11 while the proprietary NVIDIA driver is loaded. A drift between
+    the two implementations puts the window back on the placeholder dock icon.
+    """
+    nvidia_version = tmp_path / "proc-nvidia-version"
+    if nvidia:
+        nvidia_version.write_text("NVRM version: NVIDIA UNIX x86_64 Kernel Module\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "NVIDIA_DRIVER_VERSION_PATH", nvidia_version)
+
+    assert lde.window_platform(environ) == expected
+
+
+def test_x11_session_installs_the_visible_window_class_entry(tmp_path, xdg_home, monkeypatch):
+    """An X11 window is matched by ``<WM_CLASS>.desktop``, not by the app-id entry.
+
+    Electron reports ``hermes``/``Hermes`` for its X11 toplevel and ignores Chromium's ``--class``
+    switch (#45866), so the app-id entry can never match it. The window-class entry takes over:
+    it stays visible because GNOME drops the taskbar pin of a ``NoDisplay`` entry once the app
+    exits, while the app-id entry hides so the app grid never lists Hermes twice.
+    """
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None
+    app_id_values = _parse(entry.read_text(encoding="utf-8"))
+    assert app_id_values["NoDisplay"] == "true"
+
+    window_entry = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    values = _parse(window_entry.read_text(encoding="utf-8"))
+    assert values["StartupWMClass"] == lde.X11_WM_CLASS
+    assert "NoDisplay" not in values, "a hidden window-class entry loses its taskbar pin"
+    # Same launch command and icon as the app-id entry: one app, two identities.
+    assert values["Exec"] == app_id_values["Exec"]
+    assert values["Icon"] == app_id_values["Icon"]
+
+
+def test_wayland_with_the_proprietary_nvidia_driver_writes_the_x11_entry(
+    tmp_path, xdg_home, monkeypatch
+):
+    """That combination is relaunched onto XWayland, so the window is an X11 one after all."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    nvidia_version = tmp_path / "proc-nvidia-version"
+    nvidia_version.write_text("NVRM version: NVIDIA UNIX x86_64 Kernel Module\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "NVIDIA_DRIVER_VERSION_PATH", nvidia_version)
+
+    lde.install_desktop_entry(root)
+
+    window_entry = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    assert _parse(window_entry.read_text(encoding="utf-8"))["StartupWMClass"] == lde.X11_WM_CLASS
+
+
+def test_explicit_wayland_switch_outranks_the_driver_default(tmp_path, xdg_home, monkeypatch):
+    """An explicit switch reaches the command line, so Electron keeps the native Wayland path."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    nvidia_version = tmp_path / "proc-nvidia-version"
+    nvidia_version.write_text("NVRM version: NVIDIA UNIX x86_64 Kernel Module\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "NVIDIA_DRIVER_VERSION_PATH", nvidia_version)
+    monkeypatch.setattr(
+        lde, "_configured_desktop_settings", lambda: (["--ozone-platform=wayland"], "auto")
+    )
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None
+    assert "NoDisplay" not in _parse(entry.read_text(encoding="utf-8"))
+    assert not (xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME).exists()
+
+
+def test_x11_entry_management_honours_the_opt_out(tmp_path, xdg_home, monkeypatch):
+    """A hand-edited window-class entry is not ours to rewrite while management is off."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(
+        "desktop:\n  manage_launcher_entry: false\n", encoding="utf-8"
+    )
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    monkeypatch.setenv("DISPLAY", ":0")
+    window_entry = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    window_entry.parent.mkdir(parents=True)
+    custom = "[Desktop Entry]\nType=Application\nName=Hermes\nExec=custom-hermes desktop\n"
+    window_entry.write_text(custom, encoding="utf-8")
+
+    lde.install_desktop_entry(root)
+
+    assert window_entry.read_text(encoding="utf-8") == custom
+
+
+def test_x11_session_leaves_a_foreign_window_class_file_alone(tmp_path, xdg_home, monkeypatch):
+    """Another app's file at that path is not ours to rewrite, on X11 either."""
+    _stub_install(tmp_path, monkeypatch)
+    root = _make_project(tmp_path)
+    monkeypatch.setenv("DISPLAY", ":0")
+    foreign = xdg_home / "applications" / lde.LEGACY_DESKTOP_ENTRY_NAME
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text(
+        "[Desktop Entry]\nType=Application\nName=Someone else\nExec=other-app\n",
+        encoding="utf-8",
+    )
+
+    lde.install_desktop_entry(root)
+
     assert "Name=Someone else" in foreign.read_text(encoding="utf-8")
 
 

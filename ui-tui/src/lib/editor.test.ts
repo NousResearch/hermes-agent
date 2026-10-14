@@ -2,9 +2,9 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { resolveEditor } from './editor.js'
+import { openInEditor, resolveEditor } from './editor.js'
 
 const exe = (dir: string, name: string): string => {
   const path = join(dir, name)
@@ -70,5 +70,89 @@ describe('resolveEditor', () => {
 
   it('uses notepad.exe on Windows when no env override', () => {
     expect(resolveEditor({ PATH: dir }, 'win32')).toEqual(['notepad.exe'])
+  })
+})
+
+describe('openInEditor', () => {
+  const originalVisual = process.env.VISUAL
+
+  afterEach(() => {
+    if (originalVisual === undefined) {
+      delete process.env.VISUAL
+    } else {
+      process.env.VISUAL = originalVisual
+    }
+  })
+
+  it('returns an editor save that becomes visible shortly after the editor exits', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'editor-delayed-save-test-'))
+    const editor = join(dir, 'delayed-editor.mjs')
+
+    writeFileSync(
+      editor,
+      [
+        '#!/usr/bin/env node',
+        "import { spawn } from 'node:child_process'",
+        'const target = process.argv[2]',
+        'const writer = spawn(process.execPath, [',
+        "  '-e',",
+        "  `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'edited prompt'), 100)`,",
+        '  target',
+        "], { detached: true, stdio: 'ignore' })",
+        'writer.unref()'
+      ].join('\n')
+    )
+    chmodSync(editor, 0o755)
+    process.env.VISUAL = `${process.execPath} ${editor}`
+
+    await expect(openInEditor('initial draft', '.md')).resolves.toBe('edited prompt')
+  })
+
+  it('returns the last stable value when an editor flushes multiple saves', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'editor-multiple-save-test-'))
+    const editor = join(dir, 'multi-save-editor.mjs')
+
+    writeFileSync(
+      editor,
+      [
+        '#!/usr/bin/env node',
+        "import { spawn } from 'node:child_process'",
+        'const target = process.argv[2]',
+        'const writer = spawn(process.execPath, [',
+        "  '-e',",
+        "  `const fs = require('node:fs'); setTimeout(() => fs.writeFileSync(process.argv[1], 'intermediate'), 50); setTimeout(() => fs.writeFileSync(process.argv[1], 'final prompt'), 150)`,",
+        '  target',
+        "], { detached: true, stdio: 'ignore' })",
+        'writer.unref()'
+      ].join('\n')
+    )
+    chmodSync(editor, 0o755)
+    process.env.VISUAL = `${process.execPath} ${editor}`
+
+    await expect(openInEditor('initial draft', '.md')).resolves.toBe('final prompt')
+  })
+
+  it('returns an unchanged buffer without waiting for the full save timeout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'editor-unchanged-test-'))
+    const editor = join(dir, 'unchanged-editor.mjs')
+
+    writeFileSync(editor, '#!/usr/bin/env node\nprocess.exit(0)\n')
+    chmodSync(editor, 0o755)
+    process.env.VISUAL = `${process.execPath} ${editor}`
+
+    const startedAt = Date.now()
+    await expect(openInEditor('initial draft', '.md')).resolves.toBe('initial draft')
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+  })
+
+  it('returns null when the editor exits unsuccessfully', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'editor-failure-test-'))
+    const editor = join(dir, 'failing-editor.mjs')
+
+    writeFileSync(editor, '#!/usr/bin/env node\nprocess.exit(1)\n')
+    chmodSync(editor, 0o755)
+    process.env.VISUAL = `${process.execPath} ${editor}`
+
+    await expect(openInEditor('initial draft', '.md')).resolves.toBeNull()
   })
 })

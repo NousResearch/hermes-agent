@@ -2092,12 +2092,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         Factored out so the read-back/strip logic is unit-testable."""
         editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
                   or ("notepad" if os.name == "nt" else "nano"))
+        initial_buffer = _t("prompt_compose.editor_header") + "\n\n" + initial_text
         fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(_t("prompt_compose.editor_header") + "\n\n")
-                if initial_text:
-                    fh.write(initial_text)
+                fh.write(initial_buffer)
             try:
                 editor_argv = [*shlex.split(editor), path]
             except ValueError:
@@ -2109,8 +2108,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             # A failed editor may leave seeded or abandoned text in the buffer.
             if status != 0:
                 return ""
-            with open(path, "r", encoding="utf-8-sig") as fh:
-                raw = fh.read()
+            from hermes_cli.cli_prompt_editor import _read_editor_file_when_settled
+            raw = _read_editor_file_when_settled(path, initial_buffer)
         finally:
             with suppress(OSError):
                 os.unlink(path)

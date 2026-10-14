@@ -11,6 +11,45 @@ import { withInkSuspended } from '@hermes/ink'
  * the TUI launch the same editor on a given box.
  */
 const FALLBACKS = ['editor', 'nano', 'pico', 'vi', 'emacs']
+const EDITOR_SAVE_POLL_MS = 50
+const EDITOR_SAVE_STABLE_MS = 200
+const EDITOR_SAVE_UNCHANGED_GRACE_MS = 300
+const EDITOR_SAVE_TIMEOUT_MS = 2_000
+
+const delay = async (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+const readEditorFileWhenSettled = async (file: string, initial: string): Promise<string> => {
+  const startedAt = Date.now()
+  let latest = initial
+  let stableSince = startedAt
+  let observedChange = false
+
+  while (Date.now() - startedAt < EDITOR_SAVE_TIMEOUT_MS) {
+    try {
+      const current = readFileSync(file, 'utf8')
+      const now = Date.now()
+
+      if (current !== latest) {
+        latest = current
+        stableSince = now
+        observedChange = true
+      } else if (observedChange) {
+        if (now - stableSince >= EDITOR_SAVE_STABLE_MS) {
+          return latest
+        }
+      } else if (now - startedAt >= EDITOR_SAVE_UNCHANGED_GRACE_MS) {
+        return latest
+      }
+    } catch {
+      // Atomic-save editors can briefly replace or rename the target. Retry
+      // within the same bounded handoff instead of submitting stale contents.
+    }
+
+    await delay(EDITOR_SAVE_POLL_MS)
+  }
+
+  return latest
+}
 
 const isExecutable = (path: string): boolean => {
   try {
@@ -51,19 +90,24 @@ export const resolveEditor = (
 }
 
 /** Suspend Ink, open ``initial`` in $EDITOR, return the edited text (null if aborted). */
-export async function openInEditor(initial: string, suffix = '.txt'): Promise<null | string> {
+export async function openInEditor(initial: string, suffix = '.txt', basename = 'edit'): Promise<null | string> {
   const dir = mkdtempSync(join(tmpdir(), 'hermes-edit-'))
-  const file = join(dir, `edit${suffix}`)
+  const file = join(dir, `${basename}${suffix}`)
   writeFileSync(file, initial)
   const [cmd, ...args] = resolveEditor()
   let status: null | number = null
+  let edited: null | string = null
 
   await withInkSuspended(async () => {
     status = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
+
+    if (status === 0) {
+      edited = await readEditorFileWhenSettled(file, initial)
+    }
   })
 
   try {
-    return status === 0 ? readFileSync(file, 'utf8') : null
+    return status === 0 ? edited : null
   } finally {
     rmSync(dir, { force: true, recursive: true })
   }

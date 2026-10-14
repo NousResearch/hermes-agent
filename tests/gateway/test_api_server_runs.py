@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.platforms import api_server_runs
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -202,9 +203,96 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
-# ---------------------------------------------------------------------------
-# POST /v1/runs — start a run
-# ---------------------------------------------------------------------------
+def test_approval_response_keeps_run_waiting_when_another_request_remains():
+    adapter = _make_adapter()
+    run_id = "run-multiple-approvals"
+    adapter._run_approval_sessions[run_id] = run_id
+    adapter._run_statuses[run_id] = {
+        "run_id": run_id,
+        "status": "waiting_for_approval",
+        "approval": {"request_id": "approval-old"},
+    }
+    next_approval = {"request_id": "approval-next", "command": "rm -rf build"}
+
+    with (
+        patch.object(approval_mod, "list_gateway_approvals", return_value=[next_approval]),
+        patch(
+            "gateway.platforms.api_server._approval_request_event",
+            return_value={"request_id": "approval-next"},
+        ),
+    ):
+        api_server_runs._mark_run_event(
+            adapter, run_id, "approval.responded", resolved=1, request_id="approval-old"
+        )
+
+    status = adapter._run_statuses[run_id]
+    assert status["status"] == "waiting_for_approval"
+    assert status["last_event"] == "approval.responded"
+    assert status["approval"] == {"request_id": "approval-next"}
+
+
+def test_approval_response_refresh_persists_and_replays_next_request(tmp_path):
+    adapter = _make_adapter()
+    _use_idempotency_db(adapter, tmp_path / "idem.db")
+    run_id = "run-durable-approval"
+    initial = {
+        "run_id": run_id,
+        "status": "waiting_for_approval",
+        "approval": {"request_id": "approval-old"},
+    }
+    adapter._run_statuses[run_id] = initial.copy()
+    adapter._run_approval_sessions[run_id] = run_id
+    adapter._run_idempotency_store.reserve("tenant", "key", "fp", run_id, initial)
+    adapter._run_idempotency_ids.add(run_id)
+
+    with patch.object(
+        approval_mod,
+        "list_gateway_approvals",
+        return_value=[{"request_id": "approval-next", "command": "rm -rf build"}],
+    ):
+        api_server_runs._mark_run_event(
+            adapter, run_id, "approval.responded", resolved=1, request_id="approval-old"
+        )
+
+    assert adapter._run_statuses[run_id]["approval"]["request_id"] == "approval-next"
+    durable = adapter._run_idempotency_store.status_for_run("tenant", run_id)
+    assert durable["status"]["status"] == "waiting_for_approval"
+    assert durable["status"]["approval"]["request_id"] == "approval-next"
+
+    adapter._run_idempotency_store.close()
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+    restarted = RunIdempotencyStore(str(tmp_path / "idem.db"))
+    replayed = restarted.status_for_run("tenant", run_id)
+    assert replayed["status"]["approval"]["request_id"] == "approval-next"
+    restarted.close()
+
+
+@pytest.mark.parametrize("surface_field", ["message_id", "session_id"])
+def test_approval_response_refresh_preserves_surface_field(surface_field):
+    adapter = _make_adapter()
+    run_id = f"run-{surface_field}"
+    adapter._run_approval_sessions[run_id] = run_id
+    adapter._run_statuses[run_id] = {
+        "run_id": run_id,
+        "status": "waiting_for_approval",
+        "approval": {"request_id": "approval-old", surface_field: "surface-value"},
+    }
+
+    with patch.object(
+        approval_mod,
+        "list_gateway_approvals",
+        return_value=[{"request_id": "approval-next", "command": "rm -rf build"}],
+    ):
+        api_server_runs._mark_run_event(
+            adapter, run_id, "approval.responded", resolved=1, request_id="approval-old"
+        )
+
+    approval = adapter._run_statuses[run_id]["approval"]
+    assert approval["request_id"] == "approval-next"
+    assert approval[surface_field] == "surface-value"
+
+
 
 
 class TestStartRun:

@@ -200,6 +200,7 @@ jobs:
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs).native-install-tests }}
     uses: ./.github/workflows/tests.yml
     with:
+      commit: ${{ inputs.commit }}
       unit: false
       e2e: false
       upgrade: true
@@ -250,6 +251,8 @@ jobs:
     # Windows-only PowerShell tests; preserve the fork's real installer coverage.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['installer-tests'] }}
     uses: ./.github/workflows/installer-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   rust-tests:
     name: Rust tests
@@ -460,6 +463,7 @@ jobs:
     if: always() && (fromJSON(needs.detect.outputs.selected_jobs)['review-labels'] || (needs.detect.outputs.event_name == 'pull_request' && needs.supply-chain.outputs.critical_findings == 'true'))
     uses: ./.github/workflows/review-labels.yml
     with:
+      commit: ${{ inputs.commit }}
       ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
       ci_review_files: ${{ needs.detect.outputs.ci_review_files }}
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
@@ -473,6 +477,8 @@ jobs:
     # schedule still covers newly published advisories against main.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['osv-scanner'] }}
     uses: ./.github/workflows/osv-scanner.yml
+    with:
+      commit: ${{ inputs.commit }}
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -591,6 +597,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
       - name: Evaluate image job results
         env:
           NEEDS: ${{ toJSON(needs) }}

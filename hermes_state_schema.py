@@ -289,16 +289,22 @@ class SessionSchemaMixin:
 
     @staticmethod
     def _fts_index_is_misaligned_source(cursor: sqlite3.Cursor) -> bool:
-        """True when ``messages_fts`` is still external-content over the raw
-        ``messages`` table (FTS_STORAGE_VERSION < 3): its index holds a TRUNCATED
-        projection for long tool rows that the checker/'delete' commands re-read
-        as FULL content, a mismatch by construction. Such an index cannot be
-        repaired in place — it must be 'rebuild'-filled from the aligned
-        ``messages_fts_src`` view exactly once."""
+        """Detect a raw external-content source or high-water triggers restored by
+        an old opener onto a v3 store. Both can leave postings inconsistent with
+        ``messages_fts_src``. Replacing triggers alone cannot remove existing
+        ghosts; use the same admitted rebuild for either shape."""
         row = cursor.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
         ).fetchone()
-        return row is not None and "messages_fts_src" not in (row[0] or "")
+        if row is None:
+            return False
+        if "messages_fts_src" not in (row[0] or ""):
+            return True
+        return cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
+            "AND name IN ('messages_fts_insert', 'messages_fts_update', 'messages_fts_delete') "
+            "AND instr(sql, 'fts_tool_full_content_high_water') > 0 LIMIT 1"
+        ).fetchone() is not None
 
     @staticmethod
     def _execute_ddl_skipping_settled_triggers(cursor: sqlite3.Cursor, ddl: str) -> None:
@@ -349,7 +355,8 @@ class SessionSchemaMixin:
 
     def _migrate_misaligned_fts_source(self, cursor: sqlite3.Cursor, *, legacy: bool) -> None:
         """Re-point ``messages_fts`` at the stable ``messages_fts_src`` projection view and
-        rebuild it ONCE (FTS_STORAGE_VERSION 2 -> 3). A v1/v2 base index carries token streams
+        rebuild it ONCE (FTS_STORAGE_VERSION 2 -> 3, or v3 with downgraded
+        high-water triggers). A v1/v2 base index carries token streams
         the raw-``messages`` external-content source cannot read back (truncated long tool
         rows, and tool rows whose full content was indexed under an old high-water mark), so
         in-place continuity is not achievable — the ONLY valid transition is a full rebuild

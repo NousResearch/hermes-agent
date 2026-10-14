@@ -180,6 +180,7 @@ def _sandbox_cua_invocation(argv: list[str], *, interactive: bool,
     env = _bd_runtime._sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
+    sandbox_host.refresh_owner(env, _bd_runtime._profile_name(), published)
     merged_env = {**published, _CUA_TELEMETRY_ENV_VAR: "0", **(extra_env or {})}
     command, args = sandbox_host.exec_invocation(env, _bd_runtime._profile_name(), merged_env, argv,
                                                  interactive=interactive)

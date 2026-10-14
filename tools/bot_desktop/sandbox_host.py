@@ -74,6 +74,28 @@ def _owner_identity(env: Any) -> dict[str, Any]:
     return ident
 
 
+def refresh_owner(env: Any, profile: str, live: dict[str, str]) -> None:
+    """Keep the marker's recorded container in sync with whichever one *env* actually resolves to,
+    independent of the explicit :func:`start` cold-start path that normally writes it.
+
+    A container's reuse key can drift for reasons having nothing to do with the screen itself (the
+    task-id resolution changing, the originally-recorded container being reaped or replaced by
+    something else entirely) -- confirmed live on wian: the marker still named a container that had
+    been gone for hours (``docker inspect``: no such object), while TWO other, mismatched containers
+    sat alive in the meantime. Nothing besides the cold-start path ever re-recorded it, so once a
+    live call resolved to a different container the marker calcified and the #t_2ca05370 reattach
+    hint (which trusts the marker) degraded into a guaranteed miss on every later restart.
+
+    Every caller that resolves an ``env`` for this profile's sandbox -- not just ``start()`` -- must
+    call this once it has confirmed the screen is actually up, so the marker never falls out of
+    sync with reality. A no-op when nothing drifted (no extra write on the common path) or on a
+    non-Docker backend (no ``_container_id`` to track)."""
+    current = getattr(env, "_container_id", None)
+    if not current or _read_marker().get("container") == current:
+        return
+    _record(env, _remote_dir(env, profile), profile, live)
+
+
 _ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
 
 

@@ -1450,7 +1450,7 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
             if st.base_url and not _fell_back_to_openrouter_default(st):
                 key, url = st.api_key, st.base_url
         st.api_key, st.base_url = key, url
-        st.api_mode = determine_api_mode(st.target_provider, st.base_url)
+        st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
     else:
         # A URL-bearing LOCAL direct alias (ollama, vllm — labels that resolve to `custom`)
         # supplies its endpoint HERE as well as in _apply_direct_alias_endpoint: the resolver
@@ -1499,7 +1499,7 @@ def _creds_for_current_provider(st: _Switch) -> None:
     if keep_current_ollama_endpoint:
         st.api_key = st.current_api_key or "no-key-required"
         st.base_url = st.current_base_url
-        st.api_mode = determine_api_mode(st.current_provider, st.base_url)
+        st.api_mode = determine_api_mode(st.current_provider, st.base_url, model=st.new_model)
         st.validation_headers = ollama_headers
     else:
         try:
@@ -1516,7 +1516,7 @@ def _creds_for_current_provider(st: _Switch) -> None:
             and (not st.base_url or _fell_back_to_openrouter_default(st))
         ):
             st.base_url, st.api_key = st.current_base_url, st.current_api_key
-            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
+            st.api_mode = determine_api_mode(st.current_provider, st.base_url, model=st.new_model)
 
 
 def _fell_back_to_openrouter_default(st: _Switch) -> bool:
@@ -1591,7 +1591,7 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None and st.api_mode != "codex_app_server":
         st.api_mode = mandated_mode
-    st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)
+    st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url, model=st.new_model)
     return None
 
 

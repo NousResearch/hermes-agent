@@ -1,3 +1,4 @@
+import { arSessionCommands } from './ar_session_commands'
 import type { TranslationOverrides } from './define-locale'
 
 export const arBoot = {
@@ -66,6 +67,11 @@ export const arBoot = {
       privacy: 'سياسة الخصوصية',
       after: ' الخاصة بنا.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    sessionCommands: arSessionCommands
   },
   updates: {
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
@@ -333,5 +339,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'updates' | 'install' | 'onboarding'
 >

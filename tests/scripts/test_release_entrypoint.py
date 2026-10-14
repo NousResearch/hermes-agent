@@ -144,6 +144,30 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     ]
 
 
+def test_a_commit_only_on_a_release_branch_can_be_cut(source):
+    git(source, "checkout", "--quiet", "-b", "release/0.21.5")
+    git(source, "commit", "--allow-empty", "--quiet", "-m", "hotfix")
+    git(source, "push", "--quiet", "origin", "release/0.21.5")
+    commit = git(source, "rev-parse", "HEAD")
+    git(source, "checkout", "--quiet", "main")
+
+    result = _release(source, commit)
+
+    assert result["tag"] == "rc.1-v0.21.5"
+    assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
+
+
+def test_a_commit_on_neither_main_nor_a_release_branch_is_refused(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    git(source, "checkout", "--quiet", "-b", "feature/x")
+    git(source, "commit", "--allow-empty", "--quiet", "-m", "wip")
+    git(source, "push", "--quiet", "origin", "feature/x")
+
+    with pytest.raises(ReleaseRefused, match="not on the remote's main or a release/"):
+        _release(source, git(source, "rev-parse", "HEAD"), execute=_must_not_execute)
+
+
 def test_release_output_names_the_ci_run_and_the_publish_step():
     from scripts.releases.entrypoint import next_steps
 

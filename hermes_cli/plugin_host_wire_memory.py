@@ -61,9 +61,12 @@ def _encode_memory_observation(
         frozen_payload, _ = _freeze_memory_observation_payload(
             payload, operation_budget=budget
         )
-        payload = _thaw_json_value(frozen_payload)
+        payload = {
+            "__record__": "MemoryObservationPayload",
+            "fields": _thaw_json_value(frozen_payload),
+        }
     except (TypeError, ValueError, OverflowError):
-        payload = _opaque_wire_value(payload)
+        payload = encode(_opaque_wire_value(payload), refs, depth + 1)
 
     return {
         "__record__": "MemoryObservation",
@@ -71,7 +74,7 @@ def _encode_memory_observation(
             "source_kind": encode(bounded_text(source_kind), refs, depth + 1),
             "schema": encode(bounded_text(schema), refs, depth + 1),
             "version": encode(version, refs, depth + 1),
-            "payload": encode(payload, refs, depth + 1),
+            "payload": payload,
             "provider": encode(bounded_text(provider), refs, depth + 1),
         },
     }

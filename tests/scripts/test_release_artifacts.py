@@ -359,6 +359,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             '${{ needs.admit.outputs.tag }}': manifest['tag'],
             '${{ needs.admit.outputs.claim-tag }}': manifest['archive'],
             '${{ needs.admit.outputs.commit }}': manifest['commit'],
+            "${{ fromJSON(needs.admit.outputs.lanes)['desktop-channel'] }}": 'true',
             '${{ needs.validate.outputs.archive-tag }}': manifest['archive'],
             '${{ needs.candidates.outputs.manifest-sha256 }}': pinned,
             '${{ needs.candidate-manifest.outputs.manifest-sha256 }}': pinned,

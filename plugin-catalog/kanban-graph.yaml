@@ -1,0 +1,22 @@
+name: kanban-graph
+repo: https://github.com/Senci/hermes-kanban-graph
+sha: ce091be5624a90b1123e0585d00fe4f05e509c1e
+description: 'Live, read-only dependency graph of the Hermes kanban boards in Hermes Desktop: every board as a band, tasks as cards, dependencies as arrows
+  with implied ones folded away. Click a task to light up its whole lineage with runs, last failure and the running worker''s latest tool calls; deep links
+  open a task directly, and a stdlib CLI renders the same graph as a standalone HTML file. Zero API keys, zero model tokens.'
+maintainer: Senci
+tier: community
+category: desktop
+requires_hermes: '>=0.21.5'
+docs_url: https://github.com/Senci/hermes-kanban-graph
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Senci/hermes-kanban-graph/ce091be5624a90b1123e0585d00fe4f05e509c1e/docs/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Senci/hermes-kanban-graph/ce091be5624a90b1123e0585d00fe4f05e509c1e/docs/assets/overview.png
+  - https://raw.githubusercontent.com/Senci/hermes-kanban-graph/ce091be5624a90b1123e0585d00fe4f05e509c1e/docs/assets/lineage.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1161,7 +1161,7 @@ class _LandedCompressAgent:
 
 def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
     """The bound keeps the setup head + the newest tail, drops the middle, never mutates input."""
-    from gateway.run_turn import bound_model_input_without_hygiene
+    from gateway.hygiene_bound import bound_model_input_without_hygiene
 
     rows = _make_bound_probe_transcript()
     snapshot = [dict(r) for r in rows]

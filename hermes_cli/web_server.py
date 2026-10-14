@@ -87,7 +87,7 @@ def _gateway_owns_cron(name: str, home) -> bool:
         name != "default" and _served_by_running_multiplexer(name))
 
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
+def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
     The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
@@ -176,8 +176,21 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
+def _probe_install_before_state_db() -> None:
+    from hermes_cli.anon_auth import on_local_desktop_backend
+
+    if not on_local_desktop_backend():
+        return
+    try:
+        from hermes_cli.install_state import probe
+
+        probe()
+    except (OSError, ValueError):  # what the probe's own guards leave; onboarding.state probes again
+        _log.warning("first-install check at boot failed", exc_info=True)
+
+
 @asynccontextmanager
-async def _lifespan(app: "FastAPI"):
+async def _lifespan(app: FastAPI):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -196,6 +209,10 @@ async def _lifespan(app: "FastAPI"):
     # connection closed from the main thread mid-probe (pytest's leaked-DB
     # sweep) and segfaulted the interpreter. The worker is time-bounded by
     # SessionDB's lock patience, so the join cannot hang shutdown.
+    # The first-install check reads the default root's state.db: on the desktop's own backend it runs
+    # before this process starts creating or healing that database, and its answer is kept.
+    _probe_install_before_state_db()
+
     eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
         name="statedb-eager-reconcile",
@@ -246,8 +263,8 @@ async def _lifespan(app: "FastAPI"):
     # Desktop-spawned backends fire cron jobs themselves, since the app has no
     # gateway running the scheduler. Server `hermes dashboard` is unaffected —
     # it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
+    cron_stop: threading.Event | None = None
+    cron_thread: threading.Thread | None = None
     desktop_owned = is_desktop_owned_backend()
     if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
@@ -295,13 +312,15 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
-    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
-    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
-    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
-    # first setup.status waits on the record (bounded) instead.
+    # Records who carries inference for setup.status / free_tier.status and broadcasts `setup.ready`
+    # (no identity is created at boot). Off-thread; the desktop's first setup.status waits on the
+    # record (bounded) instead.
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
+    # The desktop's onboarding due answer, worked out after that bootstrap and before it is asked.
+    # Through the server: methods_* functions run with the server's globals (``bind_module``).
+    tui_gateway.server.start_due_boot()
 
     try:
         yield
@@ -341,7 +360,7 @@ async def _lifespan(app: "FastAPI"):
         eager_reconcile_thread.join()
 
 
-def _app_state_default(app: "FastAPI", name: str, factory):
+def _app_state_default(app: FastAPI, name: str, factory):
     """Return ``app.state.<name>``, lazily creating it for non-``with`` TestClient usages.
 
     The lifespan normally initialises these on the running event loop (an
@@ -355,11 +374,11 @@ def _app_state_default(app: "FastAPI", name: str, factory):
         return value
 
 
-def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
+def _get_chat_argv_lock(app: FastAPI) -> asyncio.Lock:
     return _app_state_default(app, "chat_argv_lock", asyncio.Lock)
 
 
-def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
@@ -744,7 +763,7 @@ class DashboardHealth:
 
     def __init__(self, window_seconds: float = _DASHBOARD_HEALTH_WINDOW_SECONDS) -> None:
         self.window_seconds = window_seconds
-        self._error_times: "deque[float]" = deque(maxlen=256)
+        self._error_times: deque[float] = deque(maxlen=256)
         self.last_error_type: Optional[str] = None
         self.last_error_path: Optional[str] = None  # internal-only, never serialized
         self.last_error_at: Optional[float] = None

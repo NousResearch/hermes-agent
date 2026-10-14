@@ -20,6 +20,7 @@ import hermes_constants
 from gateway.config import GatewayConfig, load_gateway_config
 from hermes_cli import gateway_migrate as gm
 from hermes_cli import gateway_multiplex_mode as mode
+from datetime import UTC
 
 
 @pytest.fixture
@@ -202,7 +203,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "stopped",
         "pid": os.getpid(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "orphan reason",
     }), encoding="utf-8")
     assert mode.recorded_standalone_warning_lines() == []
@@ -211,7 +212,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "running",
         "pid": 999999999,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "orphan reason",
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: False)
@@ -232,7 +233,7 @@ def test_recorded_standalone_warning_lines_suppressed_for_dead_or_stale_record(t
     state_file.write_text(json.dumps({
         "gateway_state": "running",
         "pid": os.getpid(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
         "multiplex_standalone_reason": "real standalone reason",
     }), encoding="utf-8")
     monkeypatch.setattr(gw_status, "runtime_status_pid_is_live", lambda r: True)

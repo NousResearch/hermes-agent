@@ -275,7 +275,7 @@ def test_bare_python3_steps_past_the_managed_runtime_to_the_user_hit(tmp_path, m
     managed_bin.mkdir(parents=True)
     user_bin = tmp_path / "user-bin"
     user_bin.mkdir()
-    managed_exe = _bare_exe(managed_bin, "python3")
+    _bare_exe(managed_bin, "python3")
     user_exe = _bare_exe(user_bin, "python3")
     token = set_hermes_home_override(home)
     try:

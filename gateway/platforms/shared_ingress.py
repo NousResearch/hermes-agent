@@ -55,9 +55,9 @@ def shared_listener_base(runner: Any) -> Optional[str]:
 
 
 async def bind_listener(
-    adapter: Any, app: "web.Application", host: Optional[str], port: int, ingress_path: str, *,
+    adapter: Any, app: web.Application, host: Optional[str], port: int, ingress_path: str, *,
     reuse_address: Optional[bool] = None, access_log: Any = ...,
-) -> Optional["web.AppRunner"]:
+) -> Optional[web.AppRunner]:
     """Start *app* on ``host:port`` and return its ``AppRunner`` — or, in shared-listener mode,
     publish *app* for ``/p/<profile>/`` forwarding and return None (nothing bound). ``ingress_path``
     is the adapter's primary callback path, used for the log line and runtime status."""
@@ -77,7 +77,7 @@ async def bind_listener(
     return runner
 
 
-def publish_shared_ingress(adapter: Any, app: "web.Application", ingress_path: str) -> None:
+def publish_shared_ingress(adapter: Any, app: web.Application, ingress_path: str) -> None:
     """Freeze *app* and expose it to the default listener; records the ``/p/<profile>/`` URL."""
     profile = shared_ingress_profile(adapter)
     app.freeze()
@@ -104,7 +104,7 @@ def publish_shared_ingress(adapter: Any, app: "web.Application", ingress_path: s
         write("shared_ingress", ingress_url=adapter._shared_ingress_url)
 
 
-def shared_ingress_apps(runner: Any, profile: Optional[str]) -> list[tuple[Any, "web.Application"]]:
+def shared_ingress_apps(runner: Any, profile: Optional[str]) -> list[tuple[Any, web.Application]]:
     """``(adapter, app)`` for every shared-listener adapter of a NAMED served profile. ``default`` and
     unknown profiles yield nothing: the default's port-binders own their own ports, and a profile
     without a live adapter must never fall back to another profile's."""
@@ -118,8 +118,8 @@ def shared_ingress_apps(runner: Any, profile: Optional[str]) -> list[tuple[Any, 
 
 
 async def dispatch_profile_ingress(
-    runner: Any, profile: Optional[str], tail: str, request: "web.Request", *, scoped: bool = False,
-) -> "web.StreamResponse":
+    runner: Any, profile: Optional[str], tail: str, request: web.Request, *, scoped: bool = False,
+) -> web.StreamResponse:
     """Forward ``/p/<profile>/<tail>`` to the served profile's adapter app that routes ``/<tail>``,
     under that profile's runtime scope (``scoped=True`` when the caller already entered it). 404 when
     no adapter of *profile* serves the path."""

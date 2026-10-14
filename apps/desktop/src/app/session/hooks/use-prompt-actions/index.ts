@@ -24,6 +24,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
@@ -60,12 +61,16 @@ import {
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
+  deepCutConfirmRequest,
   durableRowIdsForRebind,
+  type EditPlan,
   finalizeStoppedMessages,
+  planConfirmedReload,
   planEdit,
-  planReload,
+  planEditAfterConfirm,
   planRestore,
   rebindSurvivorRowIds,
+  retryKeepsDeepConfirm,
   runRewindSubmit,
   type SurvivorUserRowIds
 } from './rewind'
@@ -78,6 +83,7 @@ import {
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
+  isDeepTruncateRefusal,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
@@ -243,6 +249,21 @@ interface PromptActionsOptions {
 interface RestoreMessageTarget {
   text?: string
   userOrdinal?: number | null
+}
+
+const currentMessages = (sessionId: string) => $sessionStates.get()[sessionId]?.messages ?? $messages.get()
+
+const isStaleAfterConfirm = (sessionId: string, planned: ChatMessage[]) =>
+  Boolean($sessionStates.get()[sessionId]?.busy) || currentMessages(sessionId) !== planned
+
+// 4018 whose target sits before the live segment (compressed away): no retry can reach it.
+const isCompressedAwayError = (err: unknown) => {
+  const segmentOrdinal =
+    err instanceof JsonRpcGatewayError && err.code === 4018 && err.data && typeof err.data === 'object'
+      ? (err.data as { segment_ordinal?: unknown }).segment_ordinal
+      : undefined
+
+  return typeof segmentOrdinal === 'number' && segmentOrdinal < 0
 }
 
 const isStaleTargetError = (err: unknown) =>
@@ -967,7 +988,8 @@ export function usePromptActions({
       interruptFirst: boolean,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      confirmDeepTruncate?: boolean
     ) =>
       runRewindSubmit(
         requestGateway,
@@ -985,13 +1007,15 @@ export function usePromptActions({
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        confirmDeepTruncate
       ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
-  const reloadFromMessage = useCallback(
-    async (parentId: string | null) => {
+  // answeredFor is internal (the 4033 re-run); assistant-ui calls onReload(parentId, config).
+  const runReload = useCallback(
+    async (parentId: string | null, answeredFor?: ChatMessage[]): Promise<void> => {
       // Ref, not the closure-captured prop — a truncating resubmit aimed at a
       // stale session deletes the wrong transcript.
       const sessionId = activeSessionIdRef.current
@@ -1003,10 +1027,15 @@ export function usePromptActions({
       // Active sessions publish their transcript into $sessionStates[runtimeId];
       // the global $messages mirror is empty/divergent for them (#68734).
       const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
+      // The user's answer to a 4033 covers only the transcript they answered for: any change asks again.
+      const forceDeep = answeredFor !== undefined && answeredFor === messages
+      const planned = await planConfirmedReload(messages, parentId, forceDeep ? async () => true : confirmDeep)
+      const plan = planned && forceDeep ? { ...planned, confirmDeepTruncate: true } : planned
 
-      const plan = planReload(messages, parentId)
-
-      if (!plan) {
+      // The confirm is a wait of user length: a turn that started or output that landed meanwhile
+      // makes the plan (and the rollback snapshot) stale, so drop it rather than cut a live turn.
+      if (!plan || isStaleAfterConfirm(sessionId, messages)) {
         return
       }
 
@@ -1022,7 +1051,8 @@ export function usePromptActions({
           false,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.confirmDeepTruncate
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1038,11 +1068,22 @@ export function usePromptActions({
           turnStartedAt: null,
           messages
         }))
-        notifyError(err, copy.regenerateFailed)
+
+        if (!isDeepTruncateRefusal(err) || plan.confirmDeepTruncate) {
+          notifyError(err, copy.regenerateFailed)
+        } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this session: a switch during the dialog drops it.
+          await runReloadRef.current(parentId, messages)
+        }
       }
     },
-    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, updateSessionState]
+    [activeSessionIdRef, applySurvivorRowIds, copy.regenerateFailed, submitRewindPrompt, t, updateSessionState]
   )
+
+  const runReloadRef = useRef(runReload)
+  runReloadRef.current = runReload
+  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
   // prompt and run it again from there. Reuses the edit composer's rewind
@@ -1097,7 +1138,8 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          true
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1133,7 +1175,8 @@ export function usePromptActions({
                 false,
                 retryPlan.truncateRowId,
                 retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
+                durableRowIdsForRebind(refreshed),
+                true
               )
 
               applySurvivorRowIds(sessionId, survivorRowIds)
@@ -1174,20 +1217,115 @@ export function usePromptActions({
     ]
   )
 
-  const editMessage = useCallback(
-    async (edited: AppendMessage) => {
+  // Stale target after compression/resume drift (the cached rowId and ordinal address the
+  // pre-compression segment): reload server history, recompute the full edit plan against the
+  // refreshed transcript, and retry the real edit once. Do NOT plain-resubmit without a truncation
+  // address — that drops rewind semantics and silently appends the edit as a new turn (#82462).
+  // Returns 'sent', or the error to surface and whether that submit carried the deep confirm.
+  const retryStaleEdit = useCallback(
+    async (
+      sessionId: string,
+      edited: AppendMessage,
+      plan: EditPlan & { confirmDeepTruncate: boolean },
+      messages: ChatMessage[]
+    ): Promise<'sent' | { surfaced?: unknown; surfacedConfirmed?: boolean; unavailable: boolean }> => {
+      let surfacedConfirmed: boolean | undefined
+
+      try {
+        const storedId = selectedStoredSessionIdRef.current
+
+        if (storedId) {
+          await resumeStoredSession(storedId)
+        }
+
+        const refreshed = $messages.get()
+        const retryPlan = planEdit(refreshed, edited)
+
+        if (!retryPlan || retryPlan.isFailedTurn) {
+          return { unavailable: true }
+        }
+
+        surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
+
+        const survivorRowIds = await submitRewindPrompt(
+          sessionId,
+          retryPlan.text,
+          retryPlan.truncateOrdinal,
+          retryPlan.truncateMessageId,
+          false,
+          retryPlan.truncateRowId,
+          retryPlan.sourceText,
+          durableRowIdsForRebind(refreshed),
+          surfacedConfirmed
+        )
+
+        applySurvivorRowIds(sessionId, survivorRowIds)
+
+        return 'sent'
+      } catch (retryErr) {
+        return {
+          surfaced: retryErr,
+          surfacedConfirmed,
+          unavailable: isCompressedAwayError(retryErr) || isStaleTargetError(retryErr)
+        }
+      }
+    },
+    [applySurvivorRowIds, resumeStoredSession, selectedStoredSessionIdRef, submitRewindPrompt]
+  )
+
+  // Roll an optimistic edit/truncation back to the original history so the UI stays in sync with
+  // what's persisted instead of stranding a partial timeline.
+  const rollBackEdit = useCallback(
+    (sessionId: string, messages: ChatMessage[]) => {
+      setMutableRef(busyRef, false)
+      setBusy(false)
+      setAwaitingResponse(false)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: false,
+        awaitingResponse: false,
+        turnLive: false,
+        turnStartedAt: null,
+        messages
+      }))
+    },
+    [busyRef, updateSessionState]
+  )
+
+  const runEdit = useCallback(
+    async (edited: AppendMessage, answeredFor?: ChatMessage[]): Promise<void> => {
       // Ref, not the closure-captured prop — an edit rewinds and resubmits, so
       // a stale target rewrites the wrong session's history.
       const sessionId = activeSessionIdRef.current
 
       // Same dual-store read as reloadFromMessage (#68734).
-      const messages = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
+      const planning = (sessionId ? $sessionStates.get()[sessionId]?.messages : null) ?? $messages.get()
 
-      const plan = sessionId ? planEdit(messages, edited) : null
+      const confirmDeep = () => confirm(deepCutConfirmRequest(t.assistant.thread))
 
-      if (!sessionId || !plan) {
+      if (!sessionId) {
         return
       }
+
+      const planned = await planEditAfterConfirm({
+        answeredFor,
+        confirmDeep,
+        current: () => currentMessages(sessionId),
+        edited,
+        planning,
+        stillOwned: () => activeSessionIdRef.current === sessionId
+      })
+
+      if (planned === 'moved') {
+        // The edited turn moved while the confirm was open: nothing was sent.
+        notify({ kind: 'warning', message: copy.editFailed })
+      }
+
+      if (!planned || planned === 'moved') {
+        return
+      }
+
+      const { messages, plan } = planned
 
       // Sending an edit is a revert: rewind to this prompt and re-run with the
       // new text (submitRewindPrompt interrupts a live turn first). Same as
@@ -1209,22 +1347,6 @@ export function usePromptActions({
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
-      const isCompressedAwayError = (err: unknown) => {
-        if (!(err instanceof JsonRpcGatewayError) || err.code !== 4018) {
-          return false
-        }
-
-        const data = err.data
-
-        if (!data || typeof data !== 'object') {
-          return false
-        }
-
-        const segmentOrdinal = (data as { segment_ordinal?: unknown }).segment_ordinal
-
-        return typeof segmentOrdinal === 'number' && segmentOrdinal < 0
-      }
-
       try {
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
@@ -1234,70 +1356,46 @@ export function usePromptActions({
           interruptFirst,
           plan.truncateRowId,
           plan.sourceText,
-          durableRowIdsForRebind(messages)
+          durableRowIdsForRebind(messages),
+          plan.confirmDeepTruncate
         )
 
         applySurvivorRowIds(sessionId, survivorRowIds)
       } catch (err) {
         let surfaced: unknown = err
         let unavailable = isCompressedAwayError(err)
+        // Whether the submit that produced *surfaced* carried a deep-cut confirm.
+        let surfacedConfirmed = plan.confirmDeepTruncate
 
-        // Stale target after compression/resume drift (the cached rowId and
-        // ordinal address the pre-compression segment): reload server history,
-        // recompute the full edit plan against the refreshed transcript, and
-        // retry the real edit once. Do NOT plain-resubmit without a truncation
-        // address — that drops rewind semantics and silently appends the edit
-        // as a new turn (#82462).
+        // Stale target after compression/resume drift: reload, re-plan, retry once (#82462).
         if (!plan.isFailedTurn && !unavailable && isStaleTargetError(err)) {
-          try {
-            const storedId = selectedStoredSessionIdRef.current
+          const retried = await retryStaleEdit(sessionId, edited, plan, messages)
 
-            if (storedId) {
-              await resumeStoredSession(storedId)
-            }
+          if (retried === 'sent') {
+            return
+          }
 
-            const refreshed = $messages.get()
-            const retryPlan = planEdit(refreshed, edited)
+          unavailable = retried.unavailable
 
-            if (retryPlan && !retryPlan.isFailedTurn) {
-              const survivorRowIds = await submitRewindPrompt(
-                sessionId,
-                retryPlan.text,
-                retryPlan.truncateOrdinal,
-                retryPlan.truncateMessageId,
-                false,
-                retryPlan.truncateRowId,
-                retryPlan.sourceText,
-                durableRowIdsForRebind(refreshed)
-              )
+          if (retried.surfaced !== undefined) {
+            surfaced = retried.surfaced
+          }
 
-              applySurvivorRowIds(sessionId, survivorRowIds)
-
-              return
-            }
-
-            unavailable = true
-          } catch (retryErr) {
-            surfaced = retryErr
-            unavailable = isCompressedAwayError(retryErr) || isStaleTargetError(retryErr)
+          if (retried.surfacedConfirmed !== undefined) {
+            surfacedConfirmed = retried.surfacedConfirmed
           }
         }
 
-        // Roll the optimistic edit/truncation back to the original history so the
-        // UI stays in sync with what's persisted instead of stranding a partial
-        // timeline.
-        setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
-        updateSessionState(sessionId, state => ({
-          ...state,
-          busy: false,
-          awaitingResponse: false,
-          turnLive: false,
-          turnStartedAt: null,
-          messages
-        }))
-        notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
+        rollBackEdit(sessionId, messages)
+
+        if (!isDeepTruncateRefusal(surfaced) || surfacedConfirmed) {
+          notifyError(surfaced, unavailable ? copy.editTurnUnavailable : copy.editFailed)
+        } else if ((await confirmDeep()) && activeSessionIdRef.current === sessionId) {
+          // Re-run from the top: the session is re-read and re-validated after this wait. The answer
+          // belongs to this session (a switch during the dialog drops it) and to *planning*: after a
+          // refresh the transcript differs, so the re-run asks once more.
+          await runEditRef.current(edited, planning)
+        }
       }
     },
     [
@@ -1308,10 +1406,17 @@ export function usePromptActions({
       copy.editTurnUnavailable,
       resumeStoredSession,
       selectedStoredSessionIdRef,
+      retryStaleEdit,
+      rollBackEdit,
       submitRewindPrompt,
+      t,
       updateSessionState
     ]
   )
+
+  const runEditRef = useRef(runEdit)
+  runEditRef.current = runEdit
+  const editMessage = useCallback((edited: AppendMessage) => runEdit(edited), [runEdit])
 
   const handleThreadMessagesChange = useCallback(
     (nextMessages: readonly ThreadMessage[]) => {

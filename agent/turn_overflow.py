@@ -83,6 +83,7 @@ class _Recovery(OverflowVerdict):
     effective_task_id: Any
     api_call_count: int
     max_compression_attempts: int
+    overflow_reason: Optional[str] = None  # the classifier's reason, recorded on each compression attempt
     action: str = "fallthrough"
     result: Optional[dict[str, Any]] = None
     provider_overflow_recovery_pending: bool = False
@@ -162,6 +163,7 @@ class _Recovery(OverflowVerdict):
         self.messages, self.active_system_prompt = agent._compress_context(
             before, self.system_message, approx_tokens=request_tokens,
             task_id=self.effective_task_id, bypass_cooldown=True, trigger="overflow",
+            overflow_reason=self.overflow_reason,
         )
         if self.messages is before:
             deferred = None
@@ -478,6 +480,7 @@ def recover_from_overflow(
         max_compression_attempts=max_compression_attempts, messages=messages,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         approx_tokens=approx_tokens, compression_attempts=compression_attempts,
+        overflow_reason=getattr(classified.reason, "value", None),
     )
 
     # GitHub Models free tier caps requests at 8K tokens, under the system prompt +

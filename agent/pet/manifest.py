@@ -78,7 +78,7 @@ class ManifestEntry:
     zip_url: str
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ManifestEntry":
+    def from_dict(cls, data: dict) -> ManifestEntry:
         return cls(
             slug=str(data.get("slug", "")).strip(),
             display_name=str(data.get("displayName", "") or data.get("slug", "")),

@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
@@ -25,7 +25,7 @@ def _epoch(year, month, day, hour, minute, second):
 def test_render_numeric_timestamp_preserves_instant_in_system_timezone(epoch):
     # Epoch 1 is still in 1969 west of UTC. Windows rejects a naive
     # astimezone() conversion there, although the Unix timestamp is positive.
-    local = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
+    local = datetime.fromtimestamp(epoch, tz=UTC).astimezone()
     prefix = safe_strftime(local, "%a %Y-%m-%d %H:%M:%S %Z")
 
     assert render_user_content_with_timestamp("hello", epoch) == f"[{prefix}] hello"
@@ -34,7 +34,7 @@ def test_render_numeric_timestamp_preserves_instant_in_system_timezone(epoch):
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("epoch", [0.0, 1.123456, 86_399.0])
 def test_early_naive_iso_preserves_system_local_instant(epoch):
-    local = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
+    local = datetime.fromtimestamp(epoch, tz=UTC).astimezone()
     text = local.replace(tzinfo=None).isoformat()
 
     assert coerce_message_timestamp(text) == pytest.approx(epoch, rel=0, abs=1e-6)
@@ -44,7 +44,7 @@ def test_early_naive_iso_preserves_system_local_instant(epoch):
 @pytest.mark.parametrize("style", ["human", "iso"])
 @pytest.mark.parametrize("epoch", [0.0, 1.0, 86_399.0])
 def test_early_embedded_local_time_preserves_instant(style, epoch):
-    local = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
+    local = datetime.fromtimestamp(epoch, tz=UTC).astimezone()
     stamp = (safe_strftime(local, "%a %Y-%m-%d %H:%M:%S") if style == "human"
              else local.replace(tzinfo=None).isoformat())
     content = f"[{stamp}] hello"
@@ -60,7 +60,7 @@ def test_early_embedded_local_time_preserves_instant(style, epoch):
 def test_early_embedded_local_time_replays_with_injection_on_or_off(style, enabled):
     from gateway.run import _build_gateway_agent_history
 
-    local = datetime.fromtimestamp(1.0, tz=timezone.utc).astimezone()
+    local = datetime.fromtimestamp(1.0, tz=UTC).astimezone()
     stamp = (safe_strftime(local, "%a %Y-%m-%d %H:%M:%S") if style == "human"
              else local.replace(tzinfo=None).isoformat())
     content = f"[{stamp}] hello"
@@ -79,7 +79,7 @@ def test_early_embedded_local_time_replays_with_injection_on_or_off(style, enabl
 def test_early_embedded_local_time_renders_in_observed_context():
     from gateway.run import _build_gateway_agent_history
 
-    local = datetime.fromtimestamp(1.0, tz=timezone.utc).astimezone()
+    local = datetime.fromtimestamp(1.0, tz=UTC).astimezone()
     content = f"[{local.replace(tzinfo=None).isoformat()}] hello"
     history, observed = _build_gateway_agent_history(
         [{"role": "user", "content": content, "observed": True}],
@@ -157,7 +157,7 @@ def test_system_timezone_conversion_starts_from_aware_utc(monkeypatch):
 
     render_user_content_with_timestamp("hello", epoch)
 
-    datetime_spy.fromtimestamp.assert_called_once_with(epoch, tz=timezone.utc)
+    datetime_spy.fromtimestamp.assert_called_once_with(epoch, tz=UTC)
 
 
 def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embedded_time():

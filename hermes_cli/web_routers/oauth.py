@@ -12,7 +12,7 @@ import secrets
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -367,7 +367,7 @@ def _status_card(
 
 def _epoch_ms_to_iso(value: Any) -> Optional[str]:
     """Epoch ms (Qwen CLI ``expiry_date``) -> the aware ISO string the other cards send."""
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat() if value else None
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat() if value else None
 
 
 # Hand-written status cards per provider id: (hauth getter name, raw -> card).
@@ -440,7 +440,7 @@ async def _start_nous_device_code(profile: Optional[str]) -> dict[str, Any]:
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
     ).rstrip("/")
     with _profile_scope(_oauth_profile_name(profile)):
-        guest = anon_auth.current_nous_state() if anon_auth.guest_enabled() else None
+        guest = anon_auth.current_nous_state() if anon_auth.guest_allowed() else None
 
     if not anon_auth.is_guest_state(guest):
         device_data = await _httpx_call(lambda client: _request_device_code(

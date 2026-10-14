@@ -77,8 +77,9 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     for platform, arches in [('windows', ('x64', 'arm64')), ('macos', ('x64', 'arm64')), ('termux', ('aarch64',))]:
         for arch in arches:
             row = {
+                # Exactly the keys record() writes: a row is metadata, not a stamp (no baseVersion).
                 'platform': platform, 'arch': arch, 'tag': tag, 'commit': commit,
-                'baseVersion': tag[1:], 'identity': 'Product',
+                'identity': 'Product',
             }
             if platform == 'windows':
                 row.update(version=WINDOWS_VERSION, executableVersion=WINDOWS_VERSION,
@@ -211,8 +212,13 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     assert puts == ['/hermes-releases/' + name for name in (
         'releases/darwin/stable/stable-mac.yml', 'releases/win32/stable/stable.appinstaller',
         'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease')]
+    # Promotion materializes only feed legs and indexes; packages stay receipt-bound on R2.
     for item in manifest['files']:
-        assert (tmp_path / 'promote' / item['path']).read_bytes() == r2_server.store[f"releases/tag/{manifest['archive']}/{item['path']}"][0]
+        local = tmp_path / 'promote' / item['path']
+        if item['path'].endswith(artifacts.PACKAGE_SUFFIXES):
+            assert not local.exists(), item['path']
+        else:
+            assert local.read_bytes() == r2_server.store[f"releases/tag/{manifest['archive']}/{item['path']}"][0]
     descriptor = ET.fromstring(r2_server.store['releases/win32/stable/stable.appinstaller'][0])
     assert descriptor.attrib == {
         'Uri': base + '/releases/win32/stable/stable.appinstaller',
@@ -231,7 +237,9 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     r2_server.corrupt_put = None
     r2_server.store[pointer] = original
     before = dict(r2_server.store)
-    r2_server.store[f"releases/tag/{manifest['archive']}/Product-win.msixbundle"] = (b'corrupt', '"e"')
+    # Packages are receipt-bound and never re-downloaded here; a corrupt file that
+    # promotion does materialize (a feed leg) is still refused before any write.
+    r2_server.store[f"releases/tag/{manifest['archive']}/arm64-stable-mac.yml"] = (b'corrupt', '"e"')
     r2_server.requests.clear()
     with pytest.raises(ValueError, match='digest mismatch'):
         artifacts.promote(manifest, tmp_path / 'broken', base)
@@ -255,6 +263,23 @@ def test_promote_writes_the_stable_mac_feed_from_the_attempt_archive(tmp_path, m
     assert urls and all(url.startswith(f"/releases/tag/{manifest['archive']}/") for url in urls)
     assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-arm64.zip" in urls
     assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-x64.zip" in urls
+
+    # A release that did not opt into macOS Intel or Termux promotes an
+    # arm64-only Mac feed and leaves the APT channel untouched.
+    default = copy.deepcopy(manifest)
+    default['packages'] = [row for row in default['packages']
+                           if (row['platform'], row['arch']) not in (('macos', 'x64'), ('termux', 'aarch64'))]
+    default['files'] = [f for f in default['files'] if '-mac-x64' not in f['path']
+                        and not f['path'].startswith('x64-') and not f['path'].startswith(('apt/', 'deb/'))]
+    default['smoke_results'] = {**default['smoke_results'], 'smoke-darwin-x64': {'result': 'skipped'}}
+    del r2_server.store['releases/darwin/stable/stable-mac.yml']
+    r2_server.requests.clear()
+    artifacts.promote(default, tmp_path / 'promote-default', base)
+    puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
+    assert puts == ['/hermes-releases/releases/darwin/stable/stable-mac.yml',
+                    '/hermes-releases/releases/win32/stable/stable.appinstaller']
+    feed = hermes_yaml.safe_load(r2_server.store['releases/darwin/stable/stable-mac.yml'][0].decode())
+    assert [entry['url'].rsplit('/', 1)[1] for entry in feed['files']] == ['HermesBundled-1.2.3-mac-arm64.zip']
 
 
 def test_promote_refuses_when_one_macos_arch_is_missing(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
@@ -351,7 +376,7 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             env[key] = expressions.get(value, value)
             assert '${{' not in env[key], (key, value)
         return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=tmp_path,
-                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
     return jobs, run, body_file
 

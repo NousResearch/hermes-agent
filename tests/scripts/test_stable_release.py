@@ -6,12 +6,12 @@ import os
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
 
-from tests.scripts.test_release_r2 import r2_server
+from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
@@ -30,7 +30,7 @@ def candidates(tag, commit, digest, archive=None):
     manifest itself names; the payload `tag` stays plain vX.Y.Z."""
     packages = []
     second = 100 + int(tag.rsplit('.', 1)[1])
-    release_epoch = int((datetime(2026, 8, 29, 1, 0, tzinfo=timezone.utc)
+    release_epoch = int((datetime(2026, 8, 29, 1, 0, tzinfo=UTC)
                          + timedelta(seconds=second)).timestamp())
     native_version = f"2026.5761.{second}.0"
     ref = archive or tag
@@ -69,14 +69,15 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
                 require_success(needs, required)
     summary = tmp_path / "summary.md"
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT),
-           "SKIP_BUNDLES": "false", "SKIP_TESTS": "false"}
+           "SKIP_BUNDLES": "false", "SKIP_TESTS": "false",
+           "INCLUDE_MACOS_INTEL": "false", "INCLUDE_TERMUX": "false"}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
-    empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
+    empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert empty.returncode != 0
     assert "required-job list" in empty.stderr
     env["RELEASE_NEEDS"] = json.dumps({**success, "publication": {"result": "cancelled"}})
-    result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert result.returncode != 0
     assert "publication=cancelled" in result.stderr
 
@@ -86,7 +87,8 @@ def test_gate_requires_every_flag_removed_job_to_have_skipped(tmp_path, skip_bun
     from scripts.releases.stable import SKIPPED_BY, gate_expectations
 
     required = ["admit", "docker", "publish-docker", *SKIPPED_BY]
-    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests)
+    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests,
+                                 include_macos_intel=True, include_termux=True)
     # The flags remove jobs; they never remove admission or the Docker image.
     assert expected["admit"] == expected["docker"] == expected["publish-docker"] == "success"
     assert expected["transitions-win32"] == expected["pm-bundle"] == "skipped"
@@ -94,19 +96,20 @@ def test_gate_requires_every_flag_removed_job_to_have_skipped(tmp_path, skip_bun
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(needs), "PYTHONPATH": str(ROOT),
            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
            "SKIP_BUNDLES": "true" if skip_bundles else "false",
-           "SKIP_TESTS": "true" if skip_tests else "false"}
+           "SKIP_TESTS": "true" if skip_tests else "false",
+           "INCLUDE_MACOS_INTEL": "true", "INCLUDE_TERMUX": "true"}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
     # A removed job that ran anyway blocks the release, and so does an unflagged gate.
     removed = next(name for name, result in expected.items() if result == "skipped")
     env["RELEASE_NEEDS"] = json.dumps({**needs, removed: {"result": "success"}})
-    ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert ran.returncode != 0 and f"{removed}=success (expected skipped)" in ran.stderr
     env["RELEASE_NEEDS"] = json.dumps(needs)
     env["SKIP_BUNDLES"] = env["SKIP_TESTS"] = "false"
-    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode != 0
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode != 0
     del env["SKIP_TESTS"]
-    missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert missing.returncode != 0 and "SKIP_TESTS must be" in missing.stderr
 
 
@@ -292,8 +295,8 @@ def https_origin(tmp_path, monkeypatch):
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
-            .not_valid_after(datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc))
+            .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC))
+            .not_valid_after(datetime.datetime(2099, 1, 1, tzinfo=datetime.UTC))
             .add_extension(x509.SubjectAlternativeName([
                 x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
             ]), critical=False).sign(key, hashes.SHA256()))
@@ -386,6 +389,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         "autopublish": False, "skip_bundles": False, "skip_tests": False,
+        # A claim without the opt-in platform keys reads them as false.
+        "include_macos_intel": False, "include_termux": False,
         "claim_epoch": 1_790_000_000,
     }
     # The metadata binds the attempt its ref names.
@@ -442,6 +447,87 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         check_claim(env)
 
 
+def test_a_claim_cut_before_the_opt_in_platform_flags_still_parses():
+    """rc.1..rc.11 of v0.21.6/v0.21.7 carry no includeMacosIntel/includeTermux keys."""
+    from scripts.releases.stable import _claim_metadata, validate_claim
+
+    commit = "a" * 40
+    old = {"schema": 1, "version": "0.21.7", "attempt": 11, "commit": commit,
+           "autopublish": True, "skipBundles": False, "skipTests": False,
+           "claimEpoch": 1_790_000_000}
+    raw = json.dumps(old, sort_keys=True, separators=(",", ":"))
+    parsed = _claim_metadata(raw, version="0.21.7", attempt=11, commit=commit)
+    assert parsed == {**old, "includeMacosIntel": False, "includeTermux": False}
+    assert old == json.loads(raw)  # the caller's record is not mutated
+    new = {**old, "includeMacosIntel": True, "includeTermux": False}
+    assert validate_claim(new, version="0.21.7", attempt=11, commit=commit) == new
+    # The keys stay optional, never loose: a non-boolean or an unknown key is refused.
+    for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True}):
+        with pytest.raises(ValueError, match="metadata is invalid"):
+            validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
+
+
+def test_a_default_claim_builds_no_macos_intel_or_termux_and_the_flags_restore_them(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    from scripts.releases import stable
+
+    opt_in = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
+              "candidates-termux", "termux-checks"}
+    required = ["admit", "docker", *stable.SKIPPED_BY]
+    default = stable.gate_expectations(required, skip_bundles=False, skip_tests=False)
+    assert {name for name, result in default.items() if result == "skipped"} == opt_in
+    both = stable.gate_expectations(required, skip_bundles=False, skip_tests=False,
+                                    include_macos_intel=True, include_termux=True)
+    assert set(both.values()) == {"success"}
+    intel = stable.gate_expectations(required, skip_bundles=False, skip_tests=False,
+                                     include_macos_intel=True)
+    assert {name for name, result in intel.items() if result == "skipped"} == \
+        {"candidates-termux", "termux-checks"}
+    # The skip flags still remove an opted-in platform's jobs.
+    assert stable.gate_expectations(["candidates-termux"], skip_bundles=True, skip_tests=False,
+                                    include_termux=True) == {"candidates-termux": "skipped"}
+
+    # Only the default groups stage handoffs; the manifest is complete without
+    # the x64 Mac and Termux rows and records the unbuilt smoke as skipped.
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built)
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(
+        include_macos_intel=False, include_termux=False))
+    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS
+             if call != "candidates-darwin-x64"}
+    calls["candidates-darwin-x64"] = {"result": "skipped"}
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    stable.main(["candidate-manifest"], env)
+    stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
+    manifest = json.loads(stored)
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {
+        "macos/arm64", "windows/x64", "windows/arm64"}
+    assert manifest["smoke_results"]["smoke-darwin-x64"] == {"result": "skipped"}
+    stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
+                               RELEASE_EPOCH, archive=ATTEMPT)
+    stable.require_targets_match_claim(manifest, include_macos_intel=False, include_termux=False)
+    with pytest.raises(ValueError, match="lacks macos/x64"):
+        stable.require_targets_match_claim(manifest, include_macos_intel=True, include_termux=False)
+    # A smoke that claims to have passed for a target nobody built is refused.
+    forged = {**manifest, "smoke_results": {**manifest["smoke_results"],
+                                            "smoke-darwin-x64": {"result": "success"}}}
+    with pytest.raises(ValueError, match="did not build"):
+        stable.validate_candidates(forged, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
+                                   RELEASE_EPOCH, archive=ATTEMPT)
+    # A claim that opted in needs the opt-in handoffs: a missing one leaves no manifest.
+    del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(include_termux=True,
+                                                                       include_macos_intel=False))
+    with pytest.raises(Exception, match="handoff-termux"):
+        stable.main(["candidate-manifest"], env)
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+
 def _claim_fixture(tmp_path, *, tag, version, skip_bundles=False, skip_tests=False):
     """A real checkout + bare remote carrying one annotated attempt claim."""
     from scripts.releases.versioning import parse_attempt_ref
@@ -478,6 +564,10 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
 
     commit, tag_object = _claim_fixture(tmp_path, tag="rc.1-v1.2.3", version="1.2.3")
     candidate = candidates("v1.2.3", commit, "c" * 64, archive="rc.1-v1.2.3")
+    # The claim did not opt into macOS Intel, so the accepted manifest has no x64 Mac row.
+    candidate["packages"] = [row for row in candidate["packages"]
+                             if (row["platform"], row["arch"]) != ("macos", "x64")]
+    candidate["smoke_results"]["smoke-darwin-x64"] = {"result": "skipped"}
     calls = []
 
     def record(argv):
@@ -580,12 +670,13 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
         requested_keys.append(key)
         return manifest_bytes
 
-    digest = stable.publish_attempt(
+    digests = stable.publish_attempt(
         _publish_record(commit, tag_object, epoch=epoch),
         repository="example/project", run=run, read_archive=read_archive,
     )
 
-    assert digest == docker_digest
+    assert digests == {"candidate_manifest_sha256": manifest_digest,
+                       "docker_manifest_digest": docker_digest}
     receipt = tag_record(subprocess.check_output(
         ["git", "tag", "-l", "v1.2.3", "--format=%(contents)"],
         text=True, encoding="utf-8"))
@@ -713,11 +804,13 @@ WINDOWS_VERSION = "2026.5761.123.0"
 RELEASE_EPOCH = 1_787_965_323
 
 
-def _fake_stable_context(*, skip_tests=False):
+def _fake_stable_context(*, skip_tests=False, include_macos_intel=True, include_termux=True):
     def context(env):
         return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
                                           "claim_epoch": RELEASE_EPOCH, "skip_bundles": False,
-                                          "skip_tests": skip_tests}
+                                          "skip_tests": skip_tests,
+                                          "include_macos_intel": include_macos_intel,
+                                          "include_termux": include_termux}
     return context
 
 
@@ -883,8 +976,8 @@ def _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, receipt):
     https_origin.store = r2_server.store
     built = tmp_path / "built"
     built.mkdir(exist_ok=True)
-    if receipt == "darwin-arm64":
-        _stage_darwin_handoff(built, "arm64")
+    if receipt in ("darwin-arm64", "darwin-x64"):
+        _stage_darwin_handoff(built, receipt.split("-")[1])
     elif receipt == "win32-bundle":
         _stage_windows_handoff(built, "x64")
         _stage_windows_handoff(built, "arm64")
@@ -935,6 +1028,62 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     windows = json.loads(emitted["windows"])
     assert [row["arch"] for row in windows["include"]] == ["x64", "arm64"]
     assert macos["include"] == []
+
+
+def test_an_intel_receipt_upgrades_only_from_a_baseline_that_built_intel(tmp_path, r2_server, https_origin,
+                                                                         monkeypatch):
+    """Opting macOS Intel back in after a release that left it out has no OLD Intel package."""
+    from scripts.releases import stable
+
+    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-x64")
+    full = _local_baseline(https_origin.base)
+    lean = dict(full, packages=[row for row in full["packages"]
+                                if (row["platform"], row["arch"]) != ("macos", "x64")],
+                smoke_results={**full["smoke_results"], "smoke-darwin-x64": {"result": "skipped"}})
+    monkeypatch.setattr(stable, "output", lambda argv: json.dumps(
+        {"tagName": full["tag"], "isDraft": False, "isPrerelease": False}))
+    for baseline, arches, planned in ((lean, [], "none"), (full, ["x64"], "published")):
+        https_origin.store["baseline.json"] = (json.dumps(baseline).encode(), '"e"')
+        (tmp_path / "output").unlink(missing_ok=True)
+        stable.main(["transitions"], _transitions_env(tmp_path, https_origin.base, "darwin-x64", url, digest))
+        emitted = dict(line.split("=", 1)
+                       for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+        assert emitted["baseline"] == planned
+        assert [row["arch"] for row in json.loads(emitted["macos"])["include"]] == arches
+        assert json.loads(emitted["windows"]) == {"include": []}
+
+
+def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    from scripts.releases import stable
+
+    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-arm64")
+    env = {**_transitions_env(tmp_path, https_origin.base, "darwin-arm64", url, digest),
+           "BASELINE_MANIFEST_URL": ""}
+    stable.main(["transitions"], env)
+    emitted = dict(line.split("=", 1)
+                   for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+    assert emitted["baseline"] == "none"
+    assert json.loads(emitted["macos"]) == json.loads(emitted["windows"]) == {"include": []}
+    env["BASELINE_MANIFEST_URL"] = f"{https_origin.base}/baseline.json"
+    with pytest.raises(ValueError, match="supplied baseline-manifest does not exist"):
+        stable.main(["transitions"], env)
+
+
+def test_gate_excuses_an_upgrade_arm_only_for_its_planners_no_baseline_output():
+    from scripts.releases.stable import PACKAGED_BY, require_gate
+
+    required = [*PACKAGED_BY, *PACKAGED_BY.values()]
+    needs = {name: {"result": "skipped"} for name in PACKAGED_BY}
+    needs.update({name: {"result": "success", "outputs": {"baseline": "none"}}
+                  for name in PACKAGED_BY.values()})
+    require_gate(needs, required, skip_bundles=False, skip_tests=False, include_macos_intel=True)
+    for packaged, planner in PACKAGED_BY.items():
+        for planned in ({"result": "success", "outputs": {"baseline": "published"}},
+                        {"result": "success"}, {"result": "failure", "outputs": {"baseline": "none"}}):
+            with pytest.raises(ValueError, match=packaged):
+                require_gate({**needs, planner: planned}, required, skip_bundles=False, skip_tests=False,
+                             include_macos_intel=True)
 
 
 def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
@@ -1013,3 +1162,15 @@ def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
     stable.require_smokes_match_claim(manifest, skip_tests=True)
     with pytest.raises(ValueError, match="test policy"):
         stable.require_smokes_match_claim(manifest, skip_tests=False)
+
+
+def test_the_final_tag_push_authenticates_with_gh_token_without_persisted_credentials():
+    """The publication checkout persists no credentials; the push brings GH_TOKEN itself."""
+    from scripts.releases.stable import authenticated_push
+    ref = "refs/tags/v1.2.3"
+    argv = authenticated_push(ref, {"GH_TOKEN": "token"})
+    assert argv[0] == "git" and argv[-3:] == ["push", "origin", ref]
+    # Reset inherited helpers first, then hand git the token through gh.
+    assert argv[1:5] == ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"]
+    assert "token" not in " ".join(argv)
+    assert authenticated_push(ref, {}) == ["git", "push", "origin", ref]

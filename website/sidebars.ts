@@ -365,6 +365,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
+                    'user-guide/skills/optional/creative/creative-anatomy',
                     'user-guide/skills/optional/creative/creative-archify',
                     'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
@@ -558,9 +559,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
-                    'user-guide/skills/optional/productivity/productivity-first-task',
                     'user-guide/skills/optional/productivity/productivity-here-now',
-                    'user-guide/skills/optional/productivity/productivity-initiate-setup',
                     'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-property-listings',

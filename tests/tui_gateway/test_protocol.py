@@ -39,8 +39,10 @@ def server():
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests
     import tui_gateway.transport
+    import hermes_constants  # real get_process_hermes_home: a mocked one put state.db under the cwd (repo)
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
+        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test"),
+                                      get_process_hermes_home=hermes_constants.get_process_hermes_home),
         "hermes_cli.env_loader": MagicMock(),
         "hermes_cli.banner": MagicMock(),
         "hermes_state": MagicMock(),
@@ -68,8 +70,6 @@ def server():
     from tui_gateway import server_requests
     server_requests.reset_for_tests()
     mod._live_transports.clear()
-
-
 
 
 @pytest.fixture()
@@ -1175,6 +1175,7 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert successor.returncode == 0, successor.stderr
     assert [entry["session_id"] for entry in active_session_registry_snapshot(home)] == [sibling_sid]

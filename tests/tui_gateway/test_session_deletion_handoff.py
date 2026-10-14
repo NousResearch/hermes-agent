@@ -53,12 +53,12 @@ def test_rpc_commit_survives_backend_exit_and_gateway_owns_durable_handoff(tmp_p
     env = dict(os.environ, HERMES_HOME=str(profile))
     cwd = Path(__file__).resolve().parents[2]
     backend = subprocess.run([sys.executable, "-c", _BACKEND, str(path)], env=env, cwd=cwd,
-                             capture_output=True, text=True, timeout=90)
+                             capture_output=True, text=True, timeout=90, check=False)
     assert backend.returncode == 0, backend.stderr
     ledger = tmp_path / "plugin-owned.sqlite"
     def consume():
         result = subprocess.run([sys.executable, "-c", _CONSUMER, str(path), str(ledger)],
-                                env=env, cwd=cwd, capture_output=True, text=True, timeout=90)
+                                env=env, cwd=cwd, capture_output=True, text=True, timeout=90, check=False)
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
     first = consume()

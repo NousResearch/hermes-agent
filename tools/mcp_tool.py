@@ -45,7 +45,7 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
     try:
         malware_error = await asyncio.wait_for(
             asyncio.to_thread(check_package_for_malware, command, args), timeout=_OSV_MALWARE_CHECK_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("MCP server '%s': OSV malware preflight timed out after %.0fs "
                        "(network slow/unreachable) — proceeding without the check.",
                        server_name, _OSV_MALWARE_CHECK_TIMEOUT_S)
@@ -310,6 +310,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     keepalive/liveness live in the three mixins."""
 
     __slots__ = (
+        "_auth_park",
         "_auth_type",
         "_config",
         "_elicitation",
@@ -391,6 +392,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
         self._park_reason: Optional[str] = None
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
+        # (token storage, credential stamp) while parked on an OAuth failure; see _arm_auth_park.
+        self._auth_park: Optional[tuple] = None
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None

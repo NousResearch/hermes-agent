@@ -215,10 +215,10 @@ def allowlisted_env() -> dict[str, str]:
     return {n: os.environ[n] for n in _PROXY_SUBPROCESS_ENV_ALLOWLIST if n in os.environ}
 
 
-def _run(argv: list[str], *, timeout: int, text: bool = False, **kwargs) -> "subprocess.CompletedProcess":
+def _run(argv: list[str], *, timeout: int, text: bool = False, **kwargs) -> subprocess.CompletedProcess:
     if text:
         kwargs.update(text=True, encoding="utf-8", errors="replace")
-    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
+    return subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def iron_proxy_version(binary: Path) -> str:
@@ -719,7 +719,7 @@ def _interrupt_guard(handler):
             signal.signal(sig, old)
 
 
-def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path) -> "subprocess.Popen":
+def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path) -> subprocess.Popen:
     """Popen with stdout/stderr appended to ``log_path`` (0o600 from the first byte, O_NOFOLLOW so a planted
     symlink e.g. to authorized_keys can't receive output, owner-checked).  Our log fd closes after Popen — the child has its dup."""
     try:
@@ -743,7 +743,7 @@ def _spawn_daemon(bin_path: Path, cfg: Path, env: dict[str, str], log_path: Path
             os.close(log_fd)
 
 
-def _await_listening(proc: "subprocess.Popen", host: str, port: int, *, on_exit) -> bool:
+def _await_listening(proc: subprocess.Popen, host: str, port: int, *, on_exit) -> bool:
     """Poll until ``host:port`` accepts or the grace window lapses (do-while: >=1 check even at 0s); raises ``on_exit()`` if the child dies."""
     deadline = time.time() + _STARTUP_GRACE_SECONDS
     while True:
@@ -784,7 +784,7 @@ def _write_pidfile_safely(pidfile: Path, pid: int) -> None:
             _write_private_file(pidfile.with_suffix(".nonce"), _proxy_nonce.encode("utf-8"))
 
 
-def _kill_and_wait(proc: "subprocess.Popen", *, grace_seconds: int = 2) -> None:
+def _kill_and_wait(proc: subprocess.Popen, *, grace_seconds: int = 2) -> None:
     try:
         proc.terminate()
     except OSError:

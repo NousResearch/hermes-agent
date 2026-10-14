@@ -12,10 +12,10 @@ from pm.package import InstallError
 from tests.pm._fixtures import (
     _run,
     _wheel,
-    build_worker as build_worker,
-    client as client,
-    isolated_python as isolated_python,
-    served as served,
+    build_worker as build_worker,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    client as client,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    served as served,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 

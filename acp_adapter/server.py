@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import contextlib
 import contextvars
 import logging
@@ -415,7 +415,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(UTC).isoformat(),
             field_meta=self._provenance_meta(
                 session_id, current_hermes_session_id or session_id, previous_hermes_session_id
             ),

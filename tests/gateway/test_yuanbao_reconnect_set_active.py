@@ -50,7 +50,7 @@ async def test_do_reconnect_calls_set_active_on_success():
     mock_ws.close = AsyncMock()
 
     with (
-        patch.object(cm, "_cleanup_ws", new_callable=AsyncMock) as mock_cleanup,
+        patch.object(cm, "_cleanup_ws", new_callable=AsyncMock),
         patch(
             "gateway.platforms.yuanbao.SignManager.force_refresh",
             new_callable=AsyncMock,

@@ -402,22 +402,29 @@ def _wait_gone(pids, timeout: float, born: dict | None = None) -> set[int]:
     return live
 
 
-def _ask_to_drain(entry: dict) -> bool:
-    """Ask the gateway over its control socket to finish its in-flight turns and exit; True on its
-    ACK. That is the ``request_restart`` drain the post-update restart uses (SIGUSR1); SIGTERM,
-    ``systemctl stop`` and ``launchctl bootout`` enter ``stop()`` at once and cut a turn off. No
-    planned-stop marker on this path: the gateway's marker watcher takes that same immediate
-    signal-stop path, and could fire before the request lands. The caller records the request
-    (``mark_stop_sent``) BEFORE sending it, so a request that reaches the gateway after this update
-    died still leaves the evidence that keeps the drained gateway's restart debt."""
+def _ask_to_drain(entry: dict) -> dict | None:
+    """Ask the gateway over its control socket to finish its in-flight turns and exit; returns its
+    raw ACK dict, or ``None`` when there was no answer (no home, pre-verb gateway, dead socket).
+    The ACK is the caller's to classify: only ``pausing`` is a drain ACK. ``already_stopping``
+    without ``restart_in_flight`` means the request was refused or missed (#135878) while the
+    gateway keeps running, so reading it as an ACK waits out the whole drain budget on a gateway
+    that will not exit on its own. ``already_stopping`` with ``restart_in_flight`` is a refusal
+    because a restart was already draining — that gateway exits on its own, so the caller keeps
+    the wait. A gateway predating ``restart_in_flight`` answers without the field and is classified
+    as refused-or-missed. That is the ``request_restart`` drain the post-update restart uses
+    (SIGUSR1); SIGTERM, ``systemctl stop`` and ``launchctl bootout`` enter ``stop()`` at once and
+    cut a turn off. No planned-stop marker on this path: the gateway's marker watcher takes that
+    same immediate signal-stop path, and could fire before the request lands. The caller records
+    the request (``mark_stop_sent``) BEFORE sending it, so a request that reaches the gateway after
+    this update died still leaves the evidence that keeps the drained gateway's restart debt."""
     from gateway.control_socket import pause_gateway_for_update
     if not entry.get("home"):
-        return False
+        return None
     try:
         ack = pause_gateway_for_update(Path(entry["home"]))
     except Exception:  # health: allow BLE001 -- no answer is the pre-verb gateway: the fallback stop handles it
-        return False
-    return bool(ack and (ack.get("pausing") or ack.get("already_stopping")))
+        return None
+    return ack
 
 
 def _stop_at_once(entry: dict) -> None:
@@ -450,12 +457,26 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
     budget, waiting = _drain_budget(), []
     for entry in entries:
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain
-        if _ask_to_drain(entry):
+        ack = _ask_to_drain(entry)
+        if ack is not None and ack.get("pausing"):
             waiting.append(entry)
-        else:
-            _stop_at_once(entry)
-            if not entry.get("kind"):
-                waiting.append(entry)  # a SIGTERMed bare gateway is waited for like a drained one
+            continue
+        if ack is not None and not ack.get("pausing") and ack.get("restart_in_flight"):
+            # A restart is genuinely under way inside the gateway: request_restart refused this
+            # request (#135878) and the restart's own drain exits it when finished, so wait for
+            # it like a pausing gateway instead of cutting its in-flight turn off.
+            waiting.append(entry)
+            continue
+        if ack is not None and not ack.get("pausing"):
+            # already_stopping without a restart in flight: the gateway missed the drain request
+            # (#135878, its answer window closed) and keeps running its turns, so it will not
+            # exit within the budget on its own — say so once, then take the immediate stop
+            # instead of waiting it out.
+            print(f"  ⚠ {_names([entry])} answered already_stopping without accepting the drain "
+                  f"(the request never reached it or was dropped); stopping it now")
+        _stop_at_once(entry)
+        if not entry.get("kind"):
+            waiting.append(entry)  # a SIGTERMed bare gateway is waited for like a drained one
     if not waiting:
         return
     print(f"  ⏳ Waiting up to {budget:.0f}s for in-flight turns on {_names(waiting)} to finish before the update...")

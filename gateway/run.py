@@ -3931,13 +3931,6 @@ class GatewayRunner(
     def _running_agent_count(self) -> int:
         return len(self._running_agents)
 
-    def _status_action_label(self) -> str:
-        return "restart" if self._restart_requested else "shutdown"
-
-    def _status_action_gerund(self) -> str:
-        """Localized "restarting" / "shutting down" for the busy/drain notices shown in chat."""
-        return t("gateway.busy.action_restarting") if self._restart_requested else t("gateway.busy.action_shutting_down")
-
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         # ``active_work`` names each unit only while draining — that is when an observer (``hermes
         # update``) needs to know WHAT holds the gateway open; a per-turn write would be wasted I/O.
@@ -5569,6 +5562,11 @@ async def _start_gateway_start_control_socket(runner):
                 _drain = float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
+            # Snapshot BEFORE dispatching this handler's own request: _request runs on the loop
+            # thread, so this read can only see a restart another path already started — read after
+            # the dispatch it would read True for a fresh, accepted drain too. That splits the two
+            # ``already_stopping`` sources (#135878): refused (in flight, it drains itself) vs missed.
+            restart_in_flight = bool(runner._restart_task_started)
             accepted_box: list[bool] = []
             _done = threading.Event()
 
@@ -5583,6 +5581,7 @@ async def _start_gateway_start_control_socket(runner):
             accepted = bool(accepted_box and accepted_box[0])
             return {
                 "pausing": accepted, "already_stopping": not accepted,
+                "restart_in_flight": restart_in_flight,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
         def _rescan_profiles_handler() -> dict:

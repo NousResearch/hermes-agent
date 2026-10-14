@@ -501,6 +501,13 @@ class GatewayBusySessionMixin:
             metadata=self._thread_metadata_for_source(event.source, reply_anchor),
         )
 
+    def _status_action_label(self) -> str:
+        return "restart" if self._restart_requested else "shutdown"
+
+    def _status_action_gerund(self) -> str:
+        """Localized "restarting" / "shutting down" for the busy/drain notices shown in chat."""
+        return t("gateway.busy.action_restarting") if self._restart_requested else t("gateway.busy.action_shutting_down")
+
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
         """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
         adapter = self._delivery_adapter_for(event.source)

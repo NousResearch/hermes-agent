@@ -4,6 +4,11 @@ The updater asks a running gateway to drain and exit cleanly (releasing its
 venv file handles) instead of tree-killing it mid-turn. Fallback contract:
 older gateways without the verb answer nothing, and callers keep the legacy
 marker/force-kill path.
+
+The ACK also carries ``restart_in_flight`` — the restart-task state snapshotted
+BEFORE this request was dispatched (#135878): the updater's ``already_stopping``
+splits into a refusal because a restart is already draining (wait for it) vs a
+request that never landed (stop now).
 """
 
 from __future__ import annotations
@@ -28,6 +33,70 @@ def _make_server(tmp_path, handler):
         home=tmp_path, verb_handlers={"pause-for-update": handler}
     )
     return server
+
+
+class _RestartRecordingRunner:
+    """The subset of the runner the pause handler drives: request_restart flips
+    ``_restart_task_started`` synchronously (as the real one does before returning)
+    and refuses once a restart already started."""
+
+    def __init__(self):
+        self._restart_task_started = False
+        self.request_restart_calls = 0
+
+    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+        self.request_restart_calls += 1
+        if self._restart_task_started:
+            return False
+        self._restart_task_started = True
+        return True
+
+
+def _pause_ack_over_real_socket(runner, tmp_path, monkeypatch):
+    """The pause verb's ACK for ``runner`` over a REAL unix socket + executor thread.
+
+    The production factory derives the socket home from ``HERMES_HOME`` (not a parameter), so the
+    test points the env at ``tmp_path`` — every file this path touches stays in the tmp home.
+    """
+
+    async def scenario():
+        from gateway.run import _start_gateway_start_control_socket
+        server = await _start_gateway_start_control_socket(runner)
+        assert server is not None
+        assert Path(server._home) == tmp_path, "the socket must bind the isolated tmp home"
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, lambda: pause_gateway_for_update(tmp_path, timeout=5.0))
+        finally:
+            await server.stop()
+            import atexit
+            atexit.unregister(server.cleanup_files)
+
+    return asyncio.run(scenario())
+
+
+@pytest.mark.platforms("posix")  # unix socket transport
+def test_fresh_drain_ack_reports_no_restart_in_flight(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ack = _pause_ack_over_real_socket(_RestartRecordingRunner(), tmp_path, monkeypatch)
+    assert ack is not None
+    assert ack["pausing"] is True and ack["already_stopping"] is False
+    # The snapshot precedes this request's own dispatch, so a fresh accepted drain
+    # must not read as a restart already being in flight.
+    assert ack["restart_in_flight"] is False
+
+
+@pytest.mark.platforms("posix")  # unix socket transport
+def test_refused_during_foreign_restart_reports_in_flight(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _RestartRecordingRunner()
+    assert runner.request_restart() is True  # an earlier drain (SIGUSR1, /restart, ...) took it
+    ack = _pause_ack_over_real_socket(runner, tmp_path, monkeypatch)
+    assert ack is not None
+    assert ack["pausing"] is False and ack["already_stopping"] is True
+    # This refusal means "a restart is already draining" — the updater's wait-for-it branch (#135878).
+    assert ack["restart_in_flight"] is True
 
 
 def test_pause_verb_dispatches_and_returns_ack(tmp_path):

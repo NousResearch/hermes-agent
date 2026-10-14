@@ -141,6 +141,7 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     busyRef,
     creatingSessionRef,
     getRoutedStoredSessionId: () => route,
+    routedSessionId: route,
     getRouteToken,
     navigate: to => {
       route = routeSessionId(String(to))

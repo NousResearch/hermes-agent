@@ -1,0 +1,17 @@
+name: stack
+repo: https://github.com/Karb-Interactive/hermes-plugin-stack-memory
+sha: 3b33466a01e9ee0282730d3345937dd8de0bb5bc
+version: "0.1.0"
+description: "Git-backed Markdown memory with background curation and model-based recall. Disclosure — runs a background curation agent with terminal, file-read and patch tools on your configured auxiliary model, fed raw conversation turns; it commits and pushes the memory store to whatever git remotes you configure, and pulls shared submodules at session start; the engine runs via uv run, which fetches pyyaml==6.0.2 from PyPI; an optional dataset file (memory.stack.dataset_enabled, off by default) stores full transcripts locally with no rotation."
+maintainer: vykhovanets
+tier: community
+category: memory
+docs_url: https://github.com/Karb-Interactive/hermes-plugin-stack-memory#readme
+homepage_url: https://github.com/Karb-Interactive/hermes-plugin-stack-memory
+image: https://raw.githubusercontent.com/Karb-Interactive/hermes-plugin-stack-memory/3b33466a01e9ee0282730d3345937dd8de0bb5bc/docs/stack-plugin-flow-banner.webp
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

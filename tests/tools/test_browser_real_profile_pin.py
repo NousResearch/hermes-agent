@@ -39,7 +39,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies")
         assert got == "cookies-Profile 2", "pin must override last_used"
 
     def test_bad_pin_fails_closed(self, tmp_path, monkeypatch):
@@ -65,7 +65,7 @@ class TestRealProfilePin:
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies")
         assert got == "cookies-Profile 4", "no pin = native last_used"
 
     def test_re_sync_respects_pin_when_last_used_flips(self, tmp_path, monkeypatch):
@@ -89,5 +89,5 @@ class TestRealProfilePin:
 
         dst2, err2 = bc.snapshot_real_profile("chrome", src=str(src))
         assert err2 is None and dst2 == dst1
-        got = _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies"))
+        got = _auth_db(home / "browser-profile" / "chrome" / "Default" / "Cookies")
         assert got == "cookies-Profile 2-v2", "auth re-sync must stay on the pin"

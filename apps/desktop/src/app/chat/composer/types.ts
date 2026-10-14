@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
-import type { HermesGateway } from '@/hermes'
+import type { HermesGateway, ResolvedOwner } from '@/hermes'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
@@ -65,7 +65,7 @@ export interface ChatBarProps {
   /** Delivers a hidden note to the model mid-turn with no user turn (gateway session.steer). */
   onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
-  onTranscribeAudio?: (audio: Blob) => Promise<string>
+  onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
 }
 
 export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
@@ -73,5 +73,7 @@ export type VoiceStatus = 'idle' | 'recording' | 'transcribing'
 export interface VoiceActivityState {
   elapsedSeconds: number
   level: number
+  /** Live STT text so far (stt.streaming); '' when none. */
+  partial?: string
   status: VoiceStatus
 }

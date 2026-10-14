@@ -10,11 +10,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "agent/anthropic_credentials.py",
-    "symbol": "run_oauth_setup_token",
-    "kind": "bare_which"
-  },
-  {
     "path": "agent/lsp/cli.py",
     "symbol": "_backend_warnings",
     "kind": "bare_which"
@@ -125,13 +120,26 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_subprocess_compat.py",
-    "symbol": "resolve_node_command",
-    "kind": "bare_which"
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_git_executable",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair (runs from hermes_bootstrap before hermes_platform or app deps import); falls back to PM's staged git"
   },
   {
-    "path": "hermes_cli/auth.py",
-    "symbol": "_external_process_spec",
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_held_open_lsof",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair asks the OS's own lsof (macOS/BSD) whether a dead git's index.lock is still open; absent lsof means unknown and the lock is kept"
+  },
+  {
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_ps_git_holder",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair asks the OS's own ps (macOS/BSD) for lock-keeping gits whose fd is closed; falls back to /bin/ps because the launcher's PATH may hold neither git nor ps; absent ps means unknown and the lock is kept"
+  },
+  {
+    "path": "hermes_cli/_subprocess_compat.py",
+    "symbol": "resolve_node_command",
     "kind": "bare_which"
   },
   {
@@ -255,8 +263,8 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main.py",
-    "symbol": "_exec_in_container",
+    "path": "hermes_cli/main_container.py",
+    "symbol": "exec_in_container",
     "kind": "bare_which"
   },
   {
@@ -285,7 +293,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "hermes_cli/main_desktop_tcc.py",
     "symbol": "_desktop_macos_setup_tcc_identity",
     "kind": "bare_which"
   },
@@ -317,11 +325,6 @@
   {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_tui_node_bin",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/mcp_app_detection.py",
-    "symbol": "_Scan.path_candidates",
     "kind": "bare_which"
   },
   {
@@ -361,7 +364,7 @@
   },
   {
     "path": "hermes_cli/source_build.py",
-    "symbol": "build_update_products",
+    "symbol": "_build_desktop_product",
     "kind": "bare_which"
   },
   {
@@ -393,6 +396,12 @@
     "path": "hermes_cli/update_abort_recovery.py",
     "symbol": "_serve_unit_recovery_available",
     "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_cmd_commit.py",
+    "symbol": "_absolute_git",
+    "kind": "bare_which",
+    "reason": "records, as an absolute path, the git this updater already runs (git_cmd[0] on the PATH expose_pm_git extended) so the launch-time repair can rerun it without importing pm"
   },
   {
     "path": "hermes_cli/update_restart_recovery.py",
@@ -427,6 +436,16 @@
   {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_command_plan",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_host_install_command",
     "kind": "bare_which"
   },
   {
@@ -570,21 +589,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/tirith_security.py",
-    "symbol": "_local_tirith",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "_verify_cosign",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/tirith_security.py",
-    "symbol": "verify_release_provenance",
-    "kind": "bare_which"
-  },
-  {
     "path": "tools/transcription_audio.py",
     "symbol": "_convert_caf_to_wav",
     "kind": "bare_which"
@@ -683,5 +687,11 @@
     "path": "tools/file_operations_lint.py",
     "symbol": "LintMixin._run_managed_node_linter",
     "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/update_pause_record.py",
+    "symbol": "_git_executable",
+    "kind": "bare_which",
+    "reason": "gate reads of the paused gateways' checkout run outside the updater, where install.ps1's PM-staged git is not on PATH; falls back to that staged git (moves to hermes_cli._early_recovery._git_executable when #132361 lands)"
   }
 ]

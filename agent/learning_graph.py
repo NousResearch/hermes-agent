@@ -13,7 +13,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -73,8 +73,8 @@ def _to_int_ts(value: Any) -> Optional[int]:
         try:
             return int(float(s))
         except ValueError:
-            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp())
+            parsed = datetime.fromisoformat(s)
+            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).timestamp())
     except Exception:
         return None
 
@@ -82,6 +82,14 @@ def _to_int_ts(value: Any) -> Optional[int]:
 def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNode]:
     usage = _load_usage()
     nodes: dict[str, SkillNode] = {}
+    # Tag skills mounted from skills.external_dirs so the journey graph can keep them out of
+    # learning milestones (#108032): a mount is configured, not learned. Path-based (the common
+    # symlink into the profile tree resolves to the external root), so a local copy of the same
+    # name still classifies as its own source.
+    try:
+        from agent.skill_utils import is_external_skill_path
+    except Exception:
+        is_external_skill_path = None  # type: ignore[assignment]
     for source, root in skill_roots:
         for skill_md in root.rglob("SKILL.md") if root.exists() else ():
             if _SKIP_PARTS.intersection(skill_md.parts):
@@ -100,8 +108,13 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
                 continue
             rec, cat, parts = usage.get(name, {}), _fm_field(fm, "category"), skill_md.parts  # …/skills/<category>/<skill>/SKILL.md
             usage_ts = next((ts for ts in (_to_int_ts(rec.get(k)) for k in _USAGE_TS_KEYS) if ts is not None), None)
+            # Local variable: never overwrite `source` — the loop variable must keep its
+            # per-root value for the NEXT skill in the same root, or every skill yielded
+            # after the first external mount inherits "external" (ext4 hash order can
+            # interleave a symlinked mount before a local skill in one root).
+            node_source = "external" if (is_external_skill_path is not None and is_external_skill_path(skill_md)) else source
             nodes[name] = SkillNode(
-                name=name, category=str(cat) if cat else parts[-3] if len(parts) >= 3 else "general", source=source,
+                name=name, category=str(cat) if cat else parts[-3] if len(parts) >= 3 else "general", source=node_source,
                 timestamp=usage_ts or _to_int_ts(skill_md.stat().st_mtime),
                 use_count=int(rec.get("use_count", 0) or 0), state=str(rec.get("state", "active") or "active"),
                 created_by=rec.get("created_by"), pinned=bool(rec.get("pinned", False)), related=_related(fm),
@@ -195,9 +208,11 @@ def _has_learning_signal(node: SkillNode) -> bool:
     """Graph-worthy: agent-created, user-taught (/learn), or actually used.
 
     ``created_by="learn"`` is a learning-signal marker only — curator management stays keyed
-    strictly on ``"agent"`` (see ``tools.skill_usage._is_curator_managed_record``).
+    strictly on ``"agent"`` (see ``tools.skill_usage._is_curator_managed_record``). External
+    mounts are never a learning milestone: they were configured by the user, not learned, so
+    even a used external skill stays out of the journey graph (#108032).
     """
-    return node.created_by in {"agent", "learn"} or node.use_count > 0
+    return node.source != "external" and (node.created_by in {"agent", "learn"} or node.use_count > 0)
 
 
 def build_learning_graph() -> dict[str, Any]:

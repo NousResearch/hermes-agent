@@ -1,8 +1,10 @@
 import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
+  noteGatewayReady,
   notifyCronChanged,
   notifyPairingChanged,
   notifyPetChanged,
@@ -22,18 +24,25 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
+function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
+  // Seed the active skin into the desktop theme registry without applying,
+  // so a fresh connect never overrides the user's persisted desktop theme.
+  ingestBackendSkin(ready?.skin, { apply: false })
+  // Backends with the change watcher broadcast pet/cron/sessions change
+  // events; consumers demote their legacy polls to slow backstops.
+  setChangeEventsAvailable(Boolean(ready?.change_events))
+
+  if (activeSource) {
+    noteGatewayReady() // the onboarding due check counts its way-out budget from here
+  }
+}
+
 /** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
-    const ready = (event as GatewayEvent<'gateway.ready'>).payload
-    // Seed the active skin into the desktop theme registry without applying,
-    // so a fresh connect never overrides the user's persisted desktop theme.
-    ingestBackendSkin(ready?.skin, { apply: false })
-    // Backends with the change watcher broadcast pet/cron/sessions change
-    // events; consumers demote their legacy polls to slow backstops.
-    setChangeEventsAvailable(Boolean(ready?.change_events))
+    onGatewayReady((event as GatewayEvent<'gateway.ready'>).payload, fromActiveSource())
 
     return true
   }
@@ -128,9 +137,16 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // conversation and reopening it resumes from the DB.
     const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
 
+    // The compression/reclaim lifecycle invalidates the keyed context
+    // breakdown so the statusbar gauge refetches instead of serving the
+    // pre-compression figure (#94001). The breakdown cache keys on the
+    // STORED id; the reclaim payload carries it alongside the runtime id.
+    const reclaimedStoredId = String((payload as { stored_session_id?: string } | undefined)?.stored_session_id ?? '')
+
     if (reclaimedRuntimeId) {
       // Heal while the cached stored-id mapping is still intact, then drop.
       markRuntimeGone(reclaimedRuntimeId)
+      invalidateContextBreakdown(reclaimedStoredId || reclaimedRuntimeId)
       dropSessionState(reclaimedRuntimeId)
       // A prompt keyed to the dead runtime must not outlive it. The runtime id
       // rotates on every resume (cold/lazy/eager all mint a fresh sid), so the

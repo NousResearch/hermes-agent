@@ -116,6 +116,7 @@ def codex(args: list, prompt: str, timeout: int = 3600) -> str:
     proc = subprocess.run(
         ["codex", "exec", *args, "--skip-git-repo-check", prompt],
         cwd=str(WORKDIR), capture_output=True, text=True, timeout=timeout,
+        check=False,
     )
     return proc.stdout + proc.stderr
 
@@ -129,7 +130,7 @@ def judge(question: str, gold: str, answer: str) -> dict:
         task="compression", max_tokens=300,
     )
     text = resp.choices[0].message.content if hasattr(resp, "choices") else str(resp)
-    m = re.search(r"\{.*\}", text, re.S)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
     try:
         return json.loads(m.group(0))
     except Exception:
@@ -183,7 +184,7 @@ def main():
     print(f"[codex-arm] quiz reply: {len(quiz_text)} chars", flush=True)
     answers = {}
     for m in re.finditer(r"(?m)^\s*\**(\d{1,2})[.)]\**\s+(.+?)(?=^\s*\**\d{1,2}[.)]\**\s|\Z)",
-                         quiz_text, re.S):
+                         quiz_text, re.DOTALL):
         answers[int(m.group(1))] = m.group(2).strip()[:600]
 
     results = []

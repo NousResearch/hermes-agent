@@ -23,6 +23,13 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     if not args or not isinstance(args, dict):
         return args
 
+    if tool_name == "drive_preview":
+        from tools.preview_validation import preview_drag_error
+        # Invalid native input must reach the rejecting adapter unchanged.
+        # Repairing strings first would silently grant them numeric authority.
+        if preview_drag_error(args):
+            return args
+
     schema = registry.get_schema(tool_name)
     parameters = (schema or {}).get("parameters") or {}
     properties = parameters.get("properties")

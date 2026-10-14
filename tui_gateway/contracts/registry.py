@@ -97,6 +97,11 @@ def validate_params(contract: MethodContract | ServerRequestContract, params: di
     the handler, which owns its documented domain codes (``4006`` missing session_id, ``4015`` bad
     url, …) and which clients already branch on; ``check_params_accepted`` closes the loop by
     flagging a handler that SUCCEEDS on params the contract calls invalid."""
+    if contract.name == "preview.act":
+        from tools.preview_validation import preview_drag_error
+        error = preview_drag_error({key: value for key, value in params.items() if key != "session_id"})
+        if error:
+            return None, error
     try:
         contract.params.model_validate(params)
     except ValidationError as exc:

@@ -107,7 +107,9 @@ function nextId(prefix: string): string {
 function askPopout<T>(
   request: BridgeRequest,
   timeoutMs: number,
-  pick: (response: BridgeResponse) => T | undefined
+  pick: (response: BridgeResponse) => T | undefined,
+  signal?: AbortSignal,
+  failed?: (reason: string) => T
 ): Promise<T | null> {
   const bus = getBus()
 
@@ -115,13 +117,40 @@ function askPopout<T>(
     return Promise.resolve(null)
   }
 
+  if (signal?.aborted) {
+    return Promise.resolve(failed?.('Preview interaction cancelled.') ?? null)
+  }
+
   return new Promise(resolve => {
     let stop: (() => void) | undefined
+    let settled = false
 
-    const timer = window.setTimeout(() => {
+    const finish = (value: T | null) => {
+      if (settled) {return}
+      settled = true
+      window.clearTimeout(timer)
       stop?.()
-      resolve(null)
-    }, timeoutMs)
+      signal?.removeEventListener('abort', abort)
+      window.removeEventListener('pagehide', teardown)
+      resolve(value)
+    }
+
+    const cancel = (reason: string) => {
+      // Settle even if the relay itself is already torn down.
+      try {
+        bus.post({ id: request.id, kind: 'cancel', ...('tabIds' in request ? { tabIds: request.tabIds } : {}) })
+      } catch {
+        // The transport can disappear during teardown; uncertainty is terminal.
+      }
+
+      finish(failed?.(reason) ?? null)
+    }
+
+    const abort = () => cancel('Preview interaction cancelled; remote delivery may have occurred.')
+    const teardown = () => cancel('Preview window closed; remote delivery may have occurred.')
+    const timer = window.setTimeout(() => cancel('Preview response timed out; delivery is uncertain. Do not replay automatically.'), timeoutMs)
+    signal?.addEventListener('abort', abort, { once: true })
+    window.addEventListener('pagehide', teardown, { once: true })
 
     stop = bus.subscribe(data => {
       if (!data || typeof data !== 'object') {
@@ -140,27 +169,29 @@ function askPopout<T>(
         return
       }
 
-      window.clearTimeout(timer)
-      stop?.()
-
       if (response.kind === 'error') {
-        resolve(null)
+        finish(failed?.(response.error ?? 'Preview relay failed.') ?? null)
 
         return
       }
 
-      resolve(pick(response as BridgeResponse) ?? null)
+      finish(pick(response as BridgeResponse) ?? null)
     })
 
-    bus.post(request)
+    try {
+      bus.post(request)
+    } catch {
+      cancel('Preview relay failed; delivery is uncertain. Do not replay automatically.')
+    }
   })
 }
 
 /** Ask the browser pop-out to run drive_preview for `owner` (the requesting
  *  session's stored id). Null when no pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewAct(payload: ActPayload, owner?: PreviewOwner): Promise<PreviewActResult | null> {
+export function requestPopoutPreviewAct(payload: ActPayload, owner?: PreviewOwner, signal?: AbortSignal): Promise<PreviewActResult | null> {
   return askPopout({ id: nextId('act'), kind: 'act', payload, ...scopeFor(owner) }, ACT_TIMEOUT_MS, response =>
-    response.kind === 'act' ? response.result : undefined
+    response.kind === 'act' ? response.result : undefined,
+    signal, error => ({ error, success: false })
   )
 }
 
@@ -190,12 +221,26 @@ export function installPopoutPreviewResponder(): () => void {
     return () => {}
   }
 
+  const controllers = new Map<string, AbortController>()
+
   const stop = bus.subscribe(data => {
     if (!data || typeof data !== 'object') {
       return
     }
 
-    const request = data as Partial<BridgeRequest> & { id?: unknown; kind?: unknown }
+    const request = data as { id?: unknown; kind?: string; payload?: unknown; tabIds?: string[] }
+
+    // Another session's request: stay silent (an answer — even an error —
+    // would win the race against a pop-out that does show that session's tab).
+    if (Array.isArray(request.tabIds) && !request.tabIds.includes(windowBrowserTabId() ?? '')) {
+      return
+    }
+
+    if (typeof request.id === 'string' && request.kind === 'cancel') {
+      controllers.get(request.id)?.abort()
+
+      return
+    }
 
     if (
       typeof request.id !== 'string' ||
@@ -205,18 +250,16 @@ export function installPopoutPreviewResponder(): () => void {
       return
     }
 
-    // Another session's request: stay silent (an answer — even an error —
-    // would win the race against a pop-out that does show that session's tab).
-    if (Array.isArray(request.tabIds) && !request.tabIds.includes(windowBrowserTabId() ?? '')) {
-      return
-    }
-
     const id = request.id
+
+    if (controllers.has(id)) {return}
+    const controller = new AbortController()
+    controllers.set(id, controller)
 
     void (async () => {
       try {
         if (request.kind === 'act') {
-          const result = await actOnActivePreview(request.payload as ActPayload)
+          const result = await actOnActivePreview(request.payload as ActPayload, controller.signal)
           bus.post({ id, kind: 'act', result } satisfies BridgeResponse)
 
           return
@@ -230,9 +273,20 @@ export function installPopoutPreviewResponder(): () => void {
           kind: 'error',
           error: error instanceof Error ? error.message : String(error)
         } satisfies BridgeResponse)
+      } finally {
+        controllers.delete(id)
       }
     })()
   })
 
-  return stop
+  const teardown = () => {
+    stop()
+
+    for (const controller of controllers.values()) {controller.abort()}
+    window.removeEventListener('pagehide', teardown)
+  }
+
+  window.addEventListener('pagehide', teardown, { once: true })
+
+  return teardown
 }

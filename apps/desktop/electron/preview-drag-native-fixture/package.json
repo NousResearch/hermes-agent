@@ -1,0 +1,6 @@
+{
+  "name": "preview-drag-native-fixture",
+  "private": true,
+  "type": "module",
+  "main": "../preview-drag-native.test.mjs"
+}

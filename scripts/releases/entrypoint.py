@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from scripts.releases import optional_platforms, stable
+from scripts.releases import lanes as lane_set, stable
 from scripts.releases.draft_warning import draft_body
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
@@ -224,18 +224,16 @@ def _abandon_confirmed(outstanding: tuple[str, int, str], confirm_abandon: Calla
 
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
-            skip_bundles: bool = False, skip_tests: bool = False,
-            include_macos_intel: bool = False, include_termux: bool = False,
+            lanes: frozenset[str] = lane_set.DEFAULT,
             published: tuple[str, str | None] = (SEED, None),
             run_wait: float = 0, sleep=time.sleep,
             confirm_abandon: Callable[[str], bool] | None = None, inspect=None) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
-    None before the first publication. ``skip_bundles``, ``skip_tests``,
-    ``include_macos_intel`` and ``include_termux`` are written into the claim,
-    which is the one record every later job reads. macOS Intel and Termux are
-    not built unless their include flag is set.
+    None before the first publication. ``lanes`` (what to build and test, see
+    scripts/releases/lanes.py) is written into the claim, which is the one
+    record every later job reads.
     ``run_wait`` is how many seconds to keep looking for the dispatched run;
     GitHub lists it a moment after the dispatch returns.
     ``confirm_abandon`` is asked about an outstanding attempt's ref; only a
@@ -293,10 +291,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "attempt": attempt,
         "commit": commit,
         "autopublish": autopublish,
-        "skipBundles": skip_bundles,
-        "skipTests": skip_tests,
-        "includeMacosIntel": include_macos_intel,
-        "includeTermux": include_termux,
+        "lanes": sorted(lanes),
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(
@@ -350,8 +345,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     return {"version": version, "tag": tag, "commit": commit, "url": url, "repository": repository,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
             "run_url": run_url, "autopublish": autopublish,
-            "skip_bundles": skip_bundles, "skip_tests": skip_tests,
-            "include_macos_intel": include_macos_intel, "include_termux": include_termux}
+            "lanes": lanes}
 
 
 RUN_POLL_SECONDS = 2
@@ -520,17 +514,19 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
         "Release CI: " + (result.get("run_url")
                           or f"the run is not listed yet. Find {tag} at {actions_url}"),
     ]
-    if result["skip_bundles"]:
-        lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
-                     "ship; the desktop, Termux and Store channels stay on the previous release.")
-    else:
-        left_out = optional_platforms.excluded(result)
-        if left_out:
-            effects = "; ".join(p.left_out for p in left_out)
-            lines.append(f"Not built: {' and '.join(p.label for p in left_out)} (opt in with "
-                         f"{' / '.join(p.option for p in left_out)}). {effects[0].upper()}{effects[1:]}.")
-    if result["skip_tests"]:
-        warning = "Tests are skipped, since you passed --skip-tests"
+    lanes = result["lanes"]
+    left_out = [name for name in lane_set.LEFT_OUT if name not in lanes]
+    if left_out:
+        effects = "; ".join(lane_set.LEFT_OUT[name] for name in left_out)
+        lines.append(f"Not built: {', '.join(left_out)}. {effects[0].upper()}{effects[1:]}.")
+    if lane_set.has_bundles(lanes) and not lane_set.advances_desktop(lanes):
+        lines.append("This is a partial desktop release: its packages are verified, but the desktop "
+                     "update channel and feeds stay on the previous release (they move only when "
+                     "windows and macos-arm64 are both built).")
+    untested = [name for name in lane_set.NAMES if name not in lanes and name not in lane_set.LEFT_OUT
+                and not (name == "termux-checks" and "termux" not in lanes)]
+    if untested:
+        warning = f"Not tested: {', '.join(untested)}"
         lines.append(f"\033[1m{warning}\033[0m" if bold else warning)
     lines.append(f"Draft release: {result['url']}")
     if result["autopublish"]:
@@ -566,6 +562,11 @@ def cmd_release(args) -> None:
     """The ``release`` subcommand: claim, draft, dispatch."""
     from scripts import release as release_script
 
+    try:
+        lanes = lane_set.select(only=lane_set.parse_list(args.only), with_=lane_set.parse_list(args.with_lanes) or (),
+                                without=lane_set.parse_list(args.without_lanes) or ())
+    except ValueError as error:
+        raise SystemExit(f"release: {error}") from error
     repo = release_script.REPO_ROOT
     remote = release_script.resolve_push_remote(args.remote)
     repository = release_script.remote_github_repo(remote)
@@ -583,8 +584,7 @@ def cmd_release(args) -> None:
     result = release(
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
-        skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
-        include_macos_intel=args.include_macos_intel, include_termux=args.include_termux,
+        lanes=lanes,
         published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
         confirm_abandon=_abandon_prompt(), inspect=lambda command: _inspect(repo, command),
     )

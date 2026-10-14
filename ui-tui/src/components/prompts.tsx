@@ -27,7 +27,13 @@ type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
-    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+    const choices = req.choices.filter((choice): choice is ApprovalChoice =>
+      APPROVAL_OPTS.includes(choice as ApprovalChoice)
+    )
+
+    if (choices.length) {
+      return choices
+    }
   }
 
   if (req.smartDenied) {
@@ -73,8 +79,8 @@ export function approvalAction(
     return { kind: 'choose', choice: opts[n - 1]! }
   }
 
-  if (key.return) {
-    return { kind: 'choose', choice: opts[sel]! }
+  if (key.return && opts[sel]) {
+    return { kind: 'choose', choice: opts[sel] }
   }
 
   if (key.upArrow && sel > 0) {

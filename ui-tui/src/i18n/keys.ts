@@ -1,7 +1,7 @@
 // Flatten a catalog into its sorted dotted leaf keys. Shared by the
 // `_keys.tui.json` emitter and its test.
 
-import { isRecord } from './merge.js'
+import { isRecord } from '@hermes/shared/i18n'
 
 export function flattenKeys(tree: unknown, prefix = ''): string[] {
   if (!isRecord(tree)) {

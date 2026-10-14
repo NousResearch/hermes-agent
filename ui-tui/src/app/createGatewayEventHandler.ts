@@ -716,6 +716,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         setCatalog({
+          descriptionKeys: r.description_keys ?? {},
           canon: (r.canon ?? {}) as Record<string, string>,
           categories: r.categories ?? [],
           pairs: r.pairs as [string, string][],
@@ -1231,7 +1232,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.generating':
         if (ev.payload?.name) {
-          turnController.pushTrail(`drafting ${ev.payload.name}…`)
+          turnController.pushTrail({ kind: 'draft', name: ev.payload.name })
         }
 
         return

@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ko: Translations = {
+export const ko: TranslationOverlay = {
   common: {
     save: "저장",
     saving: "저장 중...",
@@ -144,8 +144,7 @@ export const ko: Translations = {
     untitledSession: "제목 없는 세션",
     deleteSession: "세션 삭제",
     confirmDeleteTitle: "세션을 삭제하시겠습니까?",
-    confirmDeleteMessage:
-      "이 작업은 대화와 모든 메시지를 영구적으로 제거합니다. 되돌릴 수 없습니다.",
+    confirmDeleteMessage: "이 작업은 대화와 모든 메시지를 영구적으로 제거합니다. 되돌릴 수 없습니다.",
     sessionDeleted: "세션이 삭제되었습니다",
     failedToDelete: "세션 삭제에 실패했습니다",
     deleteEmpty: "빈 세션 삭제",
@@ -230,8 +229,7 @@ export const ko: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "이 작업은 일정에서 작업을 제거합니다. 되돌릴 수 없습니다.",
+    confirmDeleteMessage: "이 작업은 일정에서 작업을 제거합니다. 되돌릴 수 없습니다.",
     confirmDeleteTitle: "예약된 작업을 삭제하시겠습니까?",
     newJob: "새 Cron 작업",
     nameOptional: "이름 (선택 사항)",
@@ -296,9 +294,9 @@ export const ko: Translations = {
     name: "이름",
     namePlaceholder: "예: coder, writer 등.",
     nameRequired: "이름은 필수입니다",
-    nameRule:
-      "소문자, 숫자, _ 및 - 만 사용 가능합니다. 문자나 숫자로 시작해야 하며 최대 64자입니다.",
-    invalidName: "잘못된 프로필 이름입니다",    cloneFrom: "프로필에서 복제",
+    nameRule: "소문자, 숫자, _ 및 - 만 사용 가능합니다. 문자나 숫자로 시작해야 하며 최대 64자입니다.",
+    invalidName: "잘못된 프로필 이름입니다",
+    cloneFrom: "프로필에서 복제",
     cloneFromNone: "없음 (빈 상태)",
     allProfiles: "프로필",
     noProfiles: "프로필을 찾을 수 없습니다.",
@@ -329,11 +327,9 @@ export const ko: Translations = {
     disableRuntime: "비활성화",
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
-    toggleTakesEffectAfterRestart:
-      "저장됨 — 변경 사항을 적용하려면 게이트웨이를 다시 시작하세요.",
+    toggleTakesEffectAfterRestart: "저장됨 — 변경 사항을 적용하려면 게이트웨이를 다시 시작하세요.",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
-    headline:
-      "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
+    headline: "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
     identifierLabel: "Git URL 또는 owner/repo",
     inactive: "비활성",
     installBtn: "설치",
@@ -394,7 +390,8 @@ export const ko: Translations = {
     importConfig: "JSON에서 설정 가져오기",
     resetDefaults: "기본값으로 재설정",
     resetScopeTooltip: "{scope}을(를) 기본값으로 재설정",
-    confirmResetScope: "모든 {scope} 설정을 기본값으로 재설정하시겠습니까? 이 작업은 양식만 업데이트하며, 저장을 누르기 전까지는 변경 사항이 config.yaml에 기록되지 않습니다.",
+    confirmResetScope:
+      "모든 {scope} 설정을 기본값으로 재설정하시겠습니까? 이 작업은 양식만 업데이트하며, 저장을 누르기 전까지는 변경 사항이 config.yaml에 기록되지 않습니다.",
     resetScopeToast: "{scope}이(가) 기본값으로 재설정되었습니다 — 검토 후 저장하여 적용하세요",
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
@@ -428,8 +425,7 @@ export const ko: Translations = {
 
   env: {
     changesNote: "변경 사항은 즉시 디스크에 저장됩니다. 활성 세션은 자동으로 새 키를 가져옵니다.",
-    confirmClearMessage:
-      "이 변수에 대해 저장된 값이 .env 파일에서 제거됩니다. UI에서는 이 작업을 되돌릴 수 없습니다.",
+    confirmClearMessage: "이 변수에 대해 저장된 값이 .env 파일에서 제거됩니다. UI에서는 이 작업을 되돌릴 수 없습니다.",
     confirmClearTitle: "이 키를 지우시겠습니까?",
     description: "다음 위치에 저장된 API 키와 비밀을 관리합니다",
     hideAdvanced: "고급 숨기기",
@@ -447,7 +443,8 @@ export const ko: Translations = {
     showValue: "실제 값 표시",
     hideValue: "값 숨기기",
     customTitle: "사용자 지정 키",
-    customHint: "Hermes가 인식하지 못하는, .env에 저장된 임의의 환경 변수입니다. 스킬, MCP 서버 또는 자체 도구를 위한 환경 변수를 주입하는 데 사용하세요.",
+    customHint:
+      "Hermes가 인식하지 못하는, .env에 저장된 임의의 환경 변수입니다. 스킬, MCP 서버 또는 자체 도구를 위한 환경 변수를 주입하는 데 사용하세요.",
     customConfigured: "사용자 지정 키 {count}개 설정됨",
     addCustomKey: "사용자 지정 키 추가",
     customKeyName: "변수 이름",
@@ -515,8 +512,7 @@ export const ko: Translations = {
       title: "Hermes Achievements",
       subtitle:
         "실제 세션 기록에서 획득하는 Hermes 컬렉터블 배지입니다. 알려져 있지만 아직 달성되지 않은 업적은 Discovered로 표시되며, Secret 업적은 일치하는 동작이 처음 나타날 때까지 숨겨집니다.",
-      scan_subtitle:
-        "Hermes 세션 기록을 스캔하고 있습니다. 기록이 많으면 첫 스캔에 5~10초가 걸릴 수 있습니다.",
+      scan_subtitle: "Hermes 세션 기록을 스캔하고 있습니다. 기록이 많으면 첫 스캔에 5~10초가 걸릴 수 있습니다.",
     },
     actions: {
       rescan: "다시 스캔",
@@ -550,13 +546,11 @@ export const ko: Translations = {
     },
     scan: {
       building_headline: "업적 프로필을 구성하고 있습니다…",
-      building_detail:
-        "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다.",
+      building_detail: "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다.",
       starting_headline: "업적 스캔을 시작합니다…",
       progress_detail:
         "{total}개 중 {scanned}개의 세션을 스캔했습니다 · {pct}%. 더 많은 기록이 들어오면 배지가 해제됩니다.",
-      idle_detail:
-        "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다. 배지가 해제되면 여기에 표시됩니다.",
+      idle_detail: "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다. 배지가 해제되면 여기에 표시됩니다.",
     },
     guide: {
       tiers_header: "등급",
@@ -567,8 +561,7 @@ export const ko: Translations = {
       scan_status_body:
         "Hermes는 로컬 기록을 한 번 스캔한 뒤 카드를 자동으로 표시합니다. 몇 초 걸리더라도 멈춘 것이 아닙니다.",
       what_scanned_header: "스캔 대상",
-      what_scanned_body:
-        "세션, 도구 호출, 모델 메타데이터, 오류, 업적 및 로컬 해제 상태입니다.",
+      what_scanned_body: "세션, 도구 호출, 모델 메타데이터, 오류, 업적 및 로컬 해제 상태입니다.",
     },
     card: {
       share_title: "이 업적 공유",
@@ -608,11 +601,9 @@ export const ko: Translations = {
       copy_button: "이미지 복사",
       copied: "복사됨 ✓",
       download_button: "PNG 다운로드",
-      hint:
-        "X에 공유를 누르면 새 탭에서 미리 작성된 게시물이 열립니다. 1200×630 배지를 첨부하려면 먼저 이미지 복사를 누르세요 — X 작성기에서 바로 붙여넣을 수 있습니다. PNG 다운로드는 파일을 저장하여 어디서나 사용할 수 있게 합니다.",
-      clipboard_unsupported:
-        "이 브라우저에서는 클립보드 이미지 복사를 지원하지 않습니다 — 대신 다운로드를 이용하세요.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "X에 공유를 누르면 새 탭에서 미리 작성된 게시물이 열립니다. 1200×630 배지를 첨부하려면 먼저 이미지 복사를 누르세요 — X 작성기에서 바로 붙여넣을 수 있습니다. PNG 다운로드는 파일을 저장하여 어디서나 사용할 수 있게 합니다.",
+      clipboard_unsupported: "이 브라우저에서는 클립보드 이미지 복사를 지원하지 않습니다 — 대신 다운로드를 이용하세요.",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -627,12 +618,6 @@ export const ko: Translations = {
       "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다 — 프로젝트, 저장소, 도메인마다 하나씩. 한 보드의 워커는 다른 보드의 작업을 절대 보지 않습니다.",
     slug: "슬러그",
     slugHint: "— 소문자, 하이픈, 예: atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "표시 이름",
     displayNameHint: "(선택)",
     description: "설명",
@@ -675,8 +660,7 @@ export const ko: Translations = {
     runHistory: "실행 기록",
     workerLog: "워커 로그",
     loadingLog: "로그를 불러오는 중…",
-    noWorkerLog:
-      "— 아직 워커 로그가 없습니다 (작업이 시작되지 않았거나 로그가 순환되었습니다) —",
+    noWorkerLog: "— 아직 워커 로그가 없습니다 (작업이 시작되지 않았거나 로그가 순환되었습니다) —",
     noDescription: "— 설명 없음 —",
     noComments: "— 댓글 없음 —",
     edit: "편집",
@@ -707,8 +691,7 @@ export const ko: Translations = {
     reassign: "재지정",
     renderingError: "Kanban 탭에서 렌더링 오류가 발생했습니다",
     reloadView: "뷰 다시 불러오기",
-    wsAuthFailed:
-      "WebSocket 인증 실패 — 페이지를 다시 불러와 세션 토큰을 갱신하십시오.",
+    wsAuthFailed: "WebSocket 인증 실패 — 페이지를 다시 불러와 세션 토큰을 갱신하십시오.",
     markDone: "{n}개의 작업을 완료로 표시하시겠습니까?",
     markArchived: "{n}개의 작업을 보관하시겠습니까?",
     warning: "경고",
@@ -759,27 +742,20 @@ export const ko: Translations = {
       done: "완료됨",
       archived: "보관됨",
     },
-    confirmDone:
-      "이 작업을 완료로 표시하시겠습니까? 워커의 점유가 해제되고 종속된 하위 작업이 ready 상태가 됩니다.",
-    confirmArchive:
-      "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
-    confirmBlocked:
-      "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
-    completionSummary:
-      "{label}의 완료 요약입니다. 이는 작업 결과로 저장됩니다.",
-    completionSummaryRequired:
-      "작업을 완료로 표시하기 전에 완료 요약이 필요합니다.",
+    confirmDone: "이 작업을 완료로 표시하시겠습니까? 워커의 점유가 해제되고 종속된 하위 작업이 ready 상태가 됩니다.",
+    confirmArchive: "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
+    confirmBlocked: "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
+    completionSummary: "{label}의 완료 요약입니다. 이는 작업 결과로 저장됩니다.",
+    completionSummaryRequired: "작업을 완료로 표시하기 전에 완료 요약이 필요합니다.",
     triagePlaceholder: "대략적인 아이디어 — AI가 사양을 작성합니다…",
     taskTitlePlaceholder: "새 작업 제목…",
     specifier: "스페시파이어",
     assigneePlaceholder: "담당자",
     priority: "우선순위",
-    skillsPlaceholder:
-      "스킬 (선택, 쉼표로 구분): translation, github-code-review",
+    skillsPlaceholder: "스킬 (선택, 쉼표로 구분): translation, github-code-review",
     noParent: "— 상위 작업 없음 —",
     workspacePathDir: "작업 공간 경로 (필수, 예: ~/projects/my-app)",
-    workspacePathOptional:
-      "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
+    workspacePathOptional: "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
   },

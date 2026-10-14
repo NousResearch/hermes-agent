@@ -1,13 +1,15 @@
 """Language identity for the bundled locales — endonym and script direction — plus the picker list.
 
-One Python table; ``apps/shared/src/i18n.ts`` ``LOCALE_ENDONYMS`` / ``RTL_LOCALES`` must agree for the
-ids both sides bundle (the desktop lane's test checks the relationship). Pack-only languages take
+``locales/registry.json`` owns bundled identities for Python and TypeScript. Pack-only languages take
 their endonym/rtl from the pack registration (``PluginContext.register_locale(endonym=..., rtl=...)``)
 and fall back to the bare id.
 """
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -18,25 +20,14 @@ class LanguageOption(TypedDict):
     source: str
 
 
-# id -> (endonym, rtl). Keep sorted by id; ``en`` is listed first by ``language_options`` regardless.
+# 内置语言的身份与别名来自共享注册表；插件语言仍由上游分层注册机制发现。
+_registry_dir = Path(os.environ.get("HERMES_BUNDLED_LOCALES", ""))  # health: allow HX005 -- bundled asset root is process-scoped, not profile configuration
+if not (_registry_dir / "registry.json").is_file():
+    _registry_dir = Path(__file__).resolve().parent.parent / "locales"
+LOCALE_REGISTRY = json.loads((_registry_dir / "registry.json").read_text(encoding="utf-8-sig"))
 BUNDLED_LANGUAGE_INFO: dict[str, tuple[str, bool]] = {
-    "af": ("Afrikaans", False),
-    "ar": ("العربية", True),
-    "de": ("Deutsch", False),
-    "en": ("English", False),
-    "es": ("Español", False),
-    "fr": ("Français", False),
-    "ga": ("Gaeilge", False),
-    "hu": ("Magyar", False),
-    "it": ("Italiano", False),
-    "ja": ("日本語", False),
-    "ko": ("한국어", False),
-    "pt": ("Português", False),
-    "ru": ("Русский", False),
-    "tr": ("Türkçe", False),
-    "uk": ("Українська", False),
-    "zh": ("简体中文", False),
-    "zh-hant": ("繁體中文", False),
+    lang: (meta["name"], meta.get("direction") == "rtl")
+    for lang, meta in LOCALE_REGISTRY["locales"].items()
 }
 
 BUNDLED_SOURCE = "bundled"

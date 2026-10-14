@@ -24,44 +24,16 @@ from pathlib import Path
 from typing import Any
 
 from agent import i18n_layers
-from agent.i18n_languages import language_options
+from agent.i18n_languages import LOCALE_REGISTRY, language_options
 
 logger = logging.getLogger(__name__)
 
 # Bundled catalogs (compat: tests and the parity check iterate this). ``supported_languages()`` is the
 # live set including overlay and pack languages.
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
-)
-DEFAULT_LANGUAGE = "en"
-
-# Natural aliases so "chinese" / "zh-CN" / "jp" hit the right catalog instead of
-# silently falling back to English. Bare "chinese" defaults to Simplified;
-# Taiwan/HK/Macau tags route to the distinct Traditional catalog. pt-br shares
-# the pt catalog unless a pack supplies a real pt-br one (a supplied id always wins over an alias).
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "english": "en", "en-us": "en", "en-gb": "en",
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
-    "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
-    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
-    "afrikaans": "af", "af-za": "af",
-    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
-    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
-    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
-    "russian": "ru", "русский": "ru", "ru-ru": "ru",
-    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
-    "arabic": "ar", "العربية": "ar",
-    "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
-}
+SUPPORTED_LANGUAGES: tuple[str, ...] = tuple(LOCALE_REGISTRY["locales"])
+DEFAULT_LANGUAGE = LOCALE_REGISTRY["default"]
+_LANGUAGE_ALIASES: dict[str, str] = LOCALE_REGISTRY["aliases"]
+_COMPATIBILITY_ALIASES: dict[str, str] = LOCALE_REGISTRY["compatibilityAliases"]
 
 # (home, lang) -> merged catalog (packs over overlay over bundled). home -> supported tuple.
 _catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
@@ -109,17 +81,20 @@ def supported_languages(home: str | None = None) -> tuple[str, ...]:
 def resolve_language_id(value: Any, home: str | None = None) -> str | None:
     """Canonical supported id for a user-supplied value (code, alias, regional tag), or ``None`` when no
     layer supplies it — the validation ``hermes config set display.language`` runs."""
-    key = i18n_layers.normalize_language_id(value)
+    key = "-".join(i18n_layers.normalize_language_id(value).split())
     if not key:
         return None
     supported = supported_languages(home)
+    if key in _COMPATIBILITY_ALIASES:
+        return _COMPATIBILITY_ALIASES[key]
     if key in supported:
         return key
     alias = _LANGUAGE_ALIASES.get(key)
     if alias in supported:
         return alias
     base = key.split("-", 1)[0]  # strip region suffix
-    return base if base in supported else None
+    has_sibling = any(lang != base and lang.startswith(f"{base}-") for lang in supported)
+    return base if base in supported and not has_sibling else None
 
 
 def _normalize_lang(value: Any, home: str | None = None) -> str:

@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useState,
-  useCallback,
-  useRef,
-} from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
@@ -44,8 +38,7 @@ const toSegmentOptions = <T extends string>(values: readonly T[]) =>
 const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
 
-const segmentedClass =
-  "w-fit max-w-full flex-wrap justify-start self-start";
+const segmentedClass = "w-fit max-w-full flex-wrap justify-start self-start";
 
 type LogFile = (typeof FILES)[number];
 
@@ -57,12 +50,9 @@ export default function LogsPage() {
   // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
   const [searchParams] = useSearchParams();
   const requestedFile = searchParams.get("file");
-  const [file, setFile] = useState<LogFile>(() =>
-    isLogFile(requestedFile) ? requestedFile : "agent",
-  );
+  const [file, setFile] = useState<LogFile>(() => (isLogFile(requestedFile) ? requestedFile : "agent"));
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
-  const [component, setComponent] =
-    useState<(typeof COMPONENTS)[number]>("all");
+  const [component, setComponent] = useState<(typeof COMPONENTS)[number]>("all");
   const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
@@ -85,7 +75,7 @@ export default function LogsPage() {
           }
         }, 50);
       })
-      .catch((err) => setError(errorMessage(err)))
+      .catch((err) => setError(errorMessage(err, t.common)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
 
@@ -93,8 +83,7 @@ export default function LogsPage() {
     setAfterTitle(
       <span className="flex items-center gap-1.5">
         <Badge tone="secondary" className="text-xs">
-          {formatFilterLabel(file)} · {formatFilterLabel(level)} ·{" "}
-          {formatFilterLabel(component)}
+          {formatFilterLabel(file)} · {formatFilterLabel(level)} · {formatFilterLabel(component)}
         </Badge>
         <Button
           type="button"
@@ -115,11 +104,7 @@ export default function LogsPage() {
           <Label htmlFor="logs-auto-refresh" className="text-xs cursor-pointer">
             {t.logs.autoRefresh}
           </Label>
-          <Switch
-            checked={autoRefresh}
-            onCheckedChange={setAutoRefresh}
-            id="logs-auto-refresh"
-          />
+          <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} id="logs-auto-refresh" />
           {autoRefresh && (
             <Badge tone="success" className="text-xs">
               <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
@@ -166,21 +151,11 @@ export default function LogsPage() {
         className="flex min-w-0 max-w-full flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6 sm:gap-y-3"
       >
         <FilterGroup label={t.logs.file} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={file}
-            onChange={setFile}
-            options={toSegmentOptions(FILES)}
-          />
+          <Segmented className={segmentedClass} value={file} onChange={setFile} options={toSegmentOptions(FILES)} />
         </FilterGroup>
 
         <FilterGroup label={t.logs.level} className={filterGroupClass}>
-          <Segmented
-            className={segmentedClass}
-            value={level}
-            onChange={setLevel}
-            options={toSegmentOptions(LEVELS)}
-          />
+          <Segmented className={segmentedClass} value={level} onChange={setLevel} options={toSegmentOptions(LEVELS)} />
         </FilterGroup>
 
         <FilterGroup label={t.logs.component} className={filterGroupClass}>
@@ -196,9 +171,7 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={String(lineCount)}
-            onChange={(v) =>
-              setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
-            }
+            onChange={(v) => setLineCount(Number(v) as (typeof LINE_COUNTS)[number])}
             options={LINE_COUNTS.map((n) => ({
               value: String(n),
               label: String(n),
@@ -226,17 +199,12 @@ export default function LogsPage() {
             className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
           >
             {lines.length === 0 && !loading && (
-              <p className="text-muted-foreground text-center py-8">
-                {t.logs.noLogLines}
-              </p>
+              <p className="text-muted-foreground text-center py-8">{t.logs.noLogLines}</p>
             )}
             {lines.map((line, i) => {
               const cls = classifyLine(line);
               return (
-                <div
-                  key={i}
-                  className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}
-                >
+                <div key={i} className={`${LINE_COLORS[cls]} hover:bg-secondary/20 px-1 -mx-1`}>
                   {line}
                 </div>
               );

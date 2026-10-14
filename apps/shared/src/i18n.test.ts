@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { applyDocumentLocale } from './document-locale.js'
 import {
   adaptStringOverrides,
-  applyDocumentLocale,
   flattenMessageKeys,
   formatPositional,
   LOCALE_ENDONYMS,

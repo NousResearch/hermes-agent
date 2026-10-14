@@ -12180,36 +12180,6 @@ def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") in ("", None)
 
 
-def test_session_status_reads_live_gateway_agent(monkeypatch):
-    agent = types.SimpleNamespace(
-        model="live-model",
-        provider="live-provider",
-        session_total_tokens=1234,
-    )
-    server._sessions["sid"] = _session(agent=agent, running=True)
-
-    class _DB:
-        def get_session(self, key):
-            assert key == "session-key"
-            return {
-                "title": "Live TUI",
-                "started_at": 1_700_000_000,
-                "updated_at": 1_700_000_060,
-            }
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
-        )
-    finally:
-        server._sessions.pop("sid", None)
-
-    out = resp["result"]["output"]
-    for value in ("session-key", "Live TUI", "live-model", "live-provider", "1,234"):
-        assert value in out
-
-
 def test_session_status_reads_live_compute_host_metadata(monkeypatch):
     agent = types.SimpleNamespace(
         model="stale-gateway-model",

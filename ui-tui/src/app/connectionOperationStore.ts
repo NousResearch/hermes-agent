@@ -5,7 +5,7 @@ import type {
 } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
-import { t } from '../i18n/runtime.js'
+import { t as tr } from '../i18n/index.js'
 
 import { patchOverlayState } from './overlayStore.js'
 
@@ -45,10 +45,10 @@ export const isDismissedOperation = (opId: string): boolean => dismissedOperatio
 
 const outcomeWord = (target: ConnectionOperationTarget): string => {
   if (target.state === 'connected') {
-    return 'connected'
+    return tr('chatBits.branding.connected')
   }
 
-  return target.state === 'skipped' ? 'skipped' : 'not connected'
+  return target.state === 'skipped' ? tr('connection.skipped') : tr('connection.notConnected')
 }
 
 // The card is gone once a row connects, so the account name the agent chose is told here.
@@ -56,7 +56,7 @@ const settledLines = (target: ConnectionOperationTarget): string[] => {
   const outcome = `${target.name}${target.alias ? ` (${target.alias})` : ''}: ${outcomeWord(target)}`
 
   return target.state === 'connected' && target.alias
-    ? [outcome, t('connection.namedAccount', target.name, target.alias)]
+    ? [outcome, tr('connection.namedAccount', target.name, target.alias)]
     : [outcome]
 }
 

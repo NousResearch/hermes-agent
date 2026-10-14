@@ -1,3 +1,4 @@
+import { en } from '@/i18n/en'
 /**
  * User-facing copy for the dashboard chat (PTY) connection lifecycle.
  *
@@ -10,32 +11,44 @@
 export type PtyBannerAction = 'reload' | 'check-server' | null
 
 export interface PtyBanner {
+  kind:
+    | 'sessionTokenUnavailable'
+    | 'authFailed'
+    | 'originRefused'
+    | 'websocketUnavailable'
+    | 'localClientRefused'
+    | 'reconnectGaveUp'
   text: string
   action: PtyBannerAction
 }
 
 /** Chat tab opened without the injected login token (loopback mode only). */
 export const PTY_TOKEN_MISSING_BANNER: PtyBanner = {
-  text: "Chat can't connect because this page was opened without a login token. Reload the page, or start it again with `hermes dashboard` in a terminal.",
+  kind: 'sessionTokenUnavailable',
+  text: en.chatSidebar.sessionTokenUnavailable,
   action: 'reload'
 }
 
 /** Rejection close codes the server sends before any PTY exists. `reason` is logged, not shown. */
 const REJECTION_BANNERS: Record<number, PtyBanner> = {
   4401: {
-    text: "This chat tab's login expired (the dashboard server was restarted). Reload the page to reconnect.",
+    kind: 'authFailed',
+    text: en.chatSidebar.authFailed,
     action: 'reload'
   },
   4403: {
-    text: 'The dashboard refused this chat connection because the page address does not match the server it was opened from. Open the dashboard from the address `hermes dashboard` printed.',
+    kind: 'originRefused',
+    text: en.chatSidebar.originRefused,
     action: null
   },
   4404: {
-    text: 'This Hermes server does not offer the terminal chat. Update Hermes (`hermes update`) and reload the page.',
+    kind: 'websocketUnavailable',
+    text: en.chatSidebar.websocketUnavailable,
     action: 'reload'
   },
   4408: {
-    text: 'This Hermes server only accepts chat from the machine it runs on. Open the dashboard on that machine, or start it with a public bind.',
+    kind: 'localClientRefused',
+    text: en.chatSidebar.localClientRefused,
     action: null
   }
 }
@@ -49,7 +62,8 @@ export const PTY_RECONNECTING_BANNER = 'Chat connection interrupted. Reconnectin
 
 /** Shown after the last automatic attempt failed (overlay + banner). */
 export const PTY_GAVE_UP_BANNER: PtyBanner = {
-  text: 'Lost connection to the Hermes dashboard server. If you stopped `hermes dashboard`, start it again; otherwise click Reconnect now.',
+  kind: 'reconnectGaveUp',
+  text: en.chatSidebar.reconnectGaveUp,
   action: 'check-server'
 }
 

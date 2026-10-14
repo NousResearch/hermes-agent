@@ -59,11 +59,11 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { applyDocumentLocale } from './document-locale'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'
 export {
-  applyDocumentLocale,
   type EndonymLocale,
   isRecord,
   LOCALE_ENDONYMS,

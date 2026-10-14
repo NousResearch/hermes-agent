@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const hu: Translations = {
+export const hu: TranslationOverlay = {
   common: {
     save: "Mentés",
     saving: "Mentés...",
@@ -144,8 +144,7 @@ export const hu: Translations = {
     untitledSession: "Névtelen munkamenet",
     deleteSession: "Munkamenet törlése",
     confirmDeleteTitle: "Törli a munkamenetet?",
-    confirmDeleteMessage:
-      "Ez véglegesen eltávolítja a beszélgetést és minden üzenetét. A művelet nem vonható vissza.",
+    confirmDeleteMessage: "Ez véglegesen eltávolítja a beszélgetést és minden üzenetét. A művelet nem vonható vissza.",
     sessionDeleted: "Munkamenet törölve",
     failedToDelete: "Nem sikerült törölni a munkamenetet",
     deleteEmpty: "Üresek törlése",
@@ -230,8 +229,7 @@ export const hu: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Ez eltávolítja a feladatot az ütemezésből. A művelet nem vonható vissza.",
+    confirmDeleteMessage: "Ez eltávolítja a feladatot az ütemezésből. A művelet nem vonható vissza.",
     confirmDeleteTitle: "Törli az ütemezett feladatot?",
     newJob: "Új Cron-feladat",
     nameOptional: "Név (opcionális)",
@@ -260,8 +258,7 @@ export const hu: Translations = {
       onceAt: "Futtatás ekkor",
       customLabel: "Cron kifejezés",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Öt mezős cron kifejezés (perc, óra, nap, hónap, hét napja).",
+      customHint: "Öt mezős cron kifejezés (perc, óra, nap, hónap, hét napja).",
       preview: "Elküldve mint",
       previewEmpty: "(hiányos)",
     },
@@ -299,7 +296,8 @@ export const hu: Translations = {
     nameRequired: "A név kötelező",
     nameRule:
       "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
-    invalidName: "Érvénytelen profilnév",    cloneFrom: "Konfiguráció klónozása ebből a profilból",
+    invalidName: "Érvénytelen profilnév",
+    cloneFrom: "Konfiguráció klónozása ebből a profilból",
     cloneFromNone: "Nincs (üres)",
     allProfiles: "Profilok",
     noProfiles: "Nem található profil.",
@@ -330,11 +328,9 @@ export const hu: Translations = {
     disableRuntime: "Letiltás",
     enableAfterInstall: "Engedélyezés a telepítés után",
     enableRuntime: "Engedélyezés",
-    toggleTakesEffectAfterRestart:
-      "Mentve — indítsa újra az átjárót a módosítás alkalmazásához.",
+    toggleTakesEffectAfterRestart: "Mentve — indítsa újra az átjárót a módosítás alkalmazásához.",
     forceReinstall: "Kényszerített újratelepítés (a meglévő mappa előbb törlődik)",
-    headline:
-      "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
+    headline: "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
     identifierLabel: "Git URL vagy owner/repo",
     inactive: "inaktív",
     installBtn: "Telepítés",
@@ -354,7 +350,8 @@ export const hu: Translations = {
     removeConfirm: "Eltávolítja ezt a bővítményt a ~/.hermes/plugins/ mappából?",
     removeHint: "Csak a felhasználó által a ~/.hermes/plugins alá telepített bővítmények távolíthatók el.",
     rescanHeading: "SPA-bővítményregiszter",
-    rescanHint: "Olvassa újra a fájlokat a lemezen történő hozzáadás után, hogy az oldalsáv felvegye az új manifesteket.",
+    rescanHint:
+      "Olvassa újra a fájlokat a lemezen történő hozzáadás után, hogy az oldalsáv felvegye az új manifesteket.",
     runtimeHeading: "Átjáró-futási idő (YAML-bővítmények)",
     saveProviders: "Szolgáltatóbeállítások mentése",
     savedProviders: "Szolgáltatóbeállítások mentve.",
@@ -395,7 +392,8 @@ export const hu: Translations = {
     importConfig: "Konfiguráció importálása JSON-ból",
     resetDefaults: "Visszaállítás alapértelmezettre",
     resetScopeTooltip: "{scope} visszaállítása alapértelmezettre",
-    confirmResetScope: "Visszaállítja az összes {scope} beállítást alapértelmezettre? Ez csak az űrlapot frissíti — a változások nem íródnak be a config.yaml fájlba, amíg meg nem nyomja a Mentés gombot.",
+    confirmResetScope:
+      "Visszaállítja az összes {scope} beállítást alapértelmezettre? Ez csak az űrlapot frissíti — a változások nem íródnak be a config.yaml fájlba, amíg meg nem nyomja a Mentés gombot.",
     resetScopeToast: "{scope} visszaállítva alapértelmezettre — ellenőrizze és mentse a megőrzéshez",
     rawYaml: "Nyers YAML-konfiguráció",
     searchResults: "Keresési eredmények",
@@ -428,9 +426,9 @@ export const hu: Translations = {
   },
 
   env: {
-    changesNote: "A változások azonnal mentésre kerülnek a lemezre. Az aktív munkamenetek automatikusan átveszik az új kulcsokat.",
-    confirmClearMessage:
-      "A változó tárolt értéke törlődik a .env fájlból. Ez a felületről nem vonható vissza.",
+    changesNote:
+      "A változások azonnal mentésre kerülnek a lemezre. Az aktív munkamenetek automatikusan átveszik az új kulcsokat.",
+    confirmClearMessage: "A változó tárolt értéke törlődik a .env fájlból. Ez a felületről nem vonható vissza.",
     confirmClearTitle: "Törli ezt a kulcsot?",
     description: "API-kulcsok és titkok kezelése a következő helyen:",
     hideAdvanced: "Speciális elrejtése",
@@ -448,7 +446,8 @@ export const hu: Translations = {
     showValue: "Tényleges érték megjelenítése",
     hideValue: "Érték elrejtése",
     customTitle: "Egyéni kulcsok",
-    customHint: "A .env fájlban tárolt tetszőleges környezeti változók, amelyeket a Hermes nem ismer fel. Használd ezeket környezeti változók beillesztésére képességekhez, MCP-kiszolgálókhoz vagy saját eszközeidhez.",
+    customHint:
+      "A .env fájlban tárolt tetszőleges környezeti változók, amelyeket a Hermes nem ismer fel. Használd ezeket környezeti változók beillesztésére képességekhez, MCP-kiszolgálókhoz vagy saját eszközeidhez.",
     customConfigured: "{count} egyéni kulcs beállítva",
     addCustomKey: "Egyéni kulcs hozzáadása",
     customKeyName: "Változó neve",
@@ -464,7 +463,8 @@ export const hu: Translations = {
       "{connected} / {total} OAuth-szolgáltató csatlakoztatva. Használja a Bejelentkezés gombot az irányítópult által támogatott folyamatokhoz; a CLI-parancsok továbbra is elérhetők külső vagy tartalék beállításhoz.",
     connected: "Csatlakoztatva",
     expired: "Lejárt",
-    notConnected: "Nincs csatlakoztatva. Használja a Bejelentkezés gombot, ha elérhető, vagy futtassa a {command} parancsot egy terminálban.",
+    notConnected:
+      "Nincs csatlakoztatva. Használja a Bejelentkezés gombot, ha elérhető, vagy futtassa a {command} parancsot egy terminálban.",
     runInTerminal: "egy terminálban.",
     noProviders: "Nem észlelhető OAuth-képes szolgáltató.",
     login: "Bejelentkezés",
@@ -551,8 +551,7 @@ export const hu: Translations = {
     },
     scan: {
       building_headline: "Teljesítményprofil építése…",
-      building_detail:
-        "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása.",
+      building_detail: "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása.",
       starting_headline: "Teljesítmény-vizsgálat indítása…",
       progress_detail:
         "{scanned} / {total} munkamenet vizsgálva · {pct}%. A jelvények a további előzmények beolvasásával oldódnak fel.",
@@ -609,11 +608,10 @@ export const hu: Translations = {
       copy_button: "Kép másolása",
       copied: "Másolva ✓",
       download_button: "PNG letöltése",
-      hint:
-        "A „Megosztás az X-en” új lapon nyit meg egy előre kitöltött bejegyzést. Először kattints a „Kép másolása” gombra, ha az 1200×630-as jelvényt is csatolnád — az X engedi, hogy közvetlenül beillesszd a bejegyzésszerkesztőbe. A „PNG letöltése” bárhol felhasználható fájlként menti.",
+      hint: "A „Megosztás az X-en” új lapon nyit meg egy előre kitöltött bejegyzést. Először kattints a „Kép másolása” gombra, ha az 1200×630-as jelvényt is csatolnád — az X engedi, hogy közvetlenül beillesszd a bejegyzésszerkesztőbe. A „PNG letöltése” bárhol felhasználható fájlként menti.",
       clipboard_unsupported:
         "A kép vágólapra másolása nem támogatott ebben a böngészőben — használd inkább a Letöltést.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -628,12 +626,6 @@ export const hu: Translations = {
       "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
     slug: "Slug",
     slugHint: "— kisbetűk, kötőjelek, pl. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Megjelenítendő név",
     displayNameHint: "(opcionális)",
     description: "Leírás",
@@ -676,8 +668,7 @@ export const hu: Translations = {
     runHistory: "Futási előzmények",
     workerLog: "Worker napló",
     loadingLog: "Napló betöltése…",
-    noWorkerLog:
-      "— még nincs worker napló (a feladat nem indult el, vagy a napló rotálódott) —",
+    noWorkerLog: "— még nincs worker napló (a feladat nem indult el, vagy a napló rotálódott) —",
     noDescription: "— nincs leírás —",
     noComments: "— nincsenek hozzászólások —",
     edit: "szerkesztés",
@@ -708,8 +699,7 @@ export const hu: Translations = {
     reassign: "Újrakiosztás",
     renderingError: "A Kanban fülön renderelési hiba lépett fel",
     reloadView: "Nézet újratöltése",
-    wsAuthFailed:
-      "WebSocket-hitelesítés sikertelen — töltsd újra az oldalt a munkamenet-token frissítéséhez.",
+    wsAuthFailed: "WebSocket-hitelesítés sikertelen — töltsd újra az oldalt a munkamenet-token frissítéséhez.",
     markDone: "Megjelölöd {n} feladatot késznek?",
     markArchived: "Archiválsz {n} feladatot?",
     warning: "Figyelmeztetés",
@@ -762,25 +752,19 @@ export const hu: Translations = {
     },
     confirmDone:
       "Megjelölöd ezt a feladatot késznek? A worker foglalása felszabadul, és a függő gyermekek ready állapotba kerülnek.",
-    confirmArchive:
-      "Archiválod ezt a feladatot? Eltűnik az alapértelmezett tábla nézetből.",
-    confirmBlocked:
-      "Megjelölöd ezt a feladatot blokkoltként? A worker foglalása felszabadul.",
-    completionSummary:
-      "Befejezési összefoglaló a következőhöz: {label}. Ez a feladat eredményeként kerül tárolásra.",
-    completionSummaryRequired:
-      "A feladat késznek jelölése előtt kötelező megadni a befejezési összefoglalót.",
+    confirmArchive: "Archiválod ezt a feladatot? Eltűnik az alapértelmezett tábla nézetből.",
+    confirmBlocked: "Megjelölöd ezt a feladatot blokkoltként? A worker foglalása felszabadul.",
+    completionSummary: "Befejezési összefoglaló a következőhöz: {label}. Ez a feladat eredményeként kerül tárolásra.",
+    completionSummaryRequired: "A feladat késznek jelölése előtt kötelező megadni a befejezési összefoglalót.",
     triagePlaceholder: "Nyers ötlet — az AI specifikálja…",
     taskTitlePlaceholder: "Új feladat címe…",
     specifier: "specifier",
     assigneePlaceholder: "felelős",
     priority: "Prioritás",
-    skillsPlaceholder:
-      "készségek (opcionális, vesszővel elválasztva): translation, github-code-review",
+    skillsPlaceholder: "készségek (opcionális, vesszővel elválasztva): translation, github-code-review",
     noParent: "— nincs szülő —",
     workspacePathDir: "munkaterület útvonala (kötelező, pl. ~/projects/my-app)",
-    workspacePathOptional:
-      "munkaterület útvonala (opcionális, üresen a felelősből származtatva)",
+    workspacePathOptional: "munkaterület útvonala (opcionális, üresen a felelősből származtatva)",
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
     logAt: ")",
   },

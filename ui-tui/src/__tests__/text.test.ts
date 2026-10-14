@@ -1,3 +1,9 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import { describe, expect, it } from 'vitest'
 
 import { t } from '../i18n/runtime.js'
@@ -8,6 +14,7 @@ import {
   edgePreview,
   estimateRows,
   isToolTrailResultLine,
+  isTransientToolProgress,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
@@ -21,6 +28,16 @@ describe('isToolTrailResultLine', () => {
     expect(isToolTrailResultLine('foo ✓')).toBe(true)
     expect(isToolTrailResultLine('foo ✗')).toBe(true)
     expect(isToolTrailResultLine('drafting x…')).toBe(false)
+  })
+})
+
+describe('isTransientToolProgress', () => {
+  it('classifies transient progress by state while preserving arbitrary tool output', () => {
+    expect(isTransientToolProgress({ kind: 'draft', name: 'terminal' })).toBe(true)
+    expect(isTransientToolProgress({ kind: 'analyze' })).toBe(true)
+    expect(isTransientToolProgress('drafting terminal…')).toBe(false)
+    expect(isTransientToolProgress('正在分析工具输出…')).toBe(false)
+    expect(isTransientToolProgress('Terminal ✓')).toBe(false)
   })
 })
 
@@ -145,6 +162,14 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain(t('libText.text.omittedLinesChars', t('libText.text.showingLiveTail'), '2', '4'))
     expect(out).not.toContain('a\nb')
   })
+
+  it('localizes framework-owned truncation metadata', () => {
+    activateZh()
+    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })
+
+    expect(out).toContain('已省略 6 字符')
+    expect(out).toContain('ghij')
+  })
 })
 
 describe('edgePreview', () => {
@@ -172,6 +197,11 @@ describe('pasteTokenLabel', () => {
     expect(label.startsWith('[[ ')).toBe(true)
     expect(label).toContain(t('libText.text.pasteLinesChip', '250'))
     expect(label.endsWith(' ]]')).toBe(true)
+  })
+
+  it('localizes the long-paste line count', () => {
+    activateZh()
+    expect(pasteTokenLabel('内容', 250)).toContain('[250 行]')
   })
 })
 

@@ -1,11 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-  useCallback,
-  useRef,
-} from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
   AlertTriangle,
@@ -32,17 +25,8 @@ import {
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
-import {
-  importSummary,
-  parseImportSessions,
-} from "@/lib/session-import";
-import type {
-  SessionInfo,
-  SessionMessage,
-  SessionSearchResult,
-  SessionStoreStats,
-  StatusResponse,
-} from "@/lib/api";
+import { importSummary, parseImportSessions, SessionImportParseError } from "@/lib/session-import";
+import type { SessionInfo, SessionMessage, SessionSearchResult, SessionStoreStats, StatusResponse } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import {
@@ -109,19 +93,13 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
-      {parts}
-    </p>
+    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">{parts}</p>
   );
 }
 
-function ToolCallBlock({
-  toolCall,
-}: {
-  toolCall: { id: string; function: { name: string; arguments: string } };
-}) {
+function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name: string; arguments: string } } }) {
   const [open, setOpen] = useState(false);
-  const { t } = useI18n();
+  const { format, t } = useI18n();
 
   let args = toolCall.function.arguments;
   try {
@@ -134,18 +112,15 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-label={format(t.sessions.toolCallAria, {
+          action: open ? t.common.collapse : t.common.expand,
+          name: toolCall.function.name,
+        })}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
-        {open ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
-        <span className="font-mono-ui font-medium">
-          {toolCall.function.name}
-        </span>
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span className="font-mono-ui font-medium">{toolCall.function.name}</span>
         <span className="text-warning/50 ml-auto">{toolCall.id}</span>
       </ListItem>
       {open && (
@@ -185,8 +160,7 @@ const COMPACTION_PREFIXES = [
 // assistant reply as its own readable bubble — otherwise the merged
 // row reads as a single opaque "Context compaction" block and the
 // user can't see the reply (#29824).
-const COMPACTION_END_MARKER =
-  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
+const COMPACTION_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
 
 interface CompactionSplit {
   /** Summary text (header + body, without the end marker). */
@@ -204,26 +178,14 @@ function splitCompactionContent(content: string): CompactionSplit | null {
   }
   return {
     summary: content.slice(0, markerIdx),
-    remainder: content
-      .slice(markerIdx + COMPACTION_END_MARKER.length)
-      .replace(/^\s+/, ""),
+    remainder: content.slice(markerIdx + COMPACTION_END_MARKER.length).replace(/^\s+/, ""),
   };
 }
 
+function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: string }) {
+  const { locale, t } = useI18n();
 
-function MessageBubble({
-  msg,
-  highlight,
-}: {
-  msg: SessionMessage;
-  highlight?: string;
-}) {
-  const { t } = useI18n();
-
-  const ROLE_STYLES: Record<
-    string,
-    { bg: string; text: string; label: string }
-  > = {
+  const ROLE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
     user: {
       bg: "bg-primary/10",
       text: "text-primary",
@@ -250,7 +212,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: t.sessions.roles.compaction,
     },
   };
 
@@ -261,18 +223,12 @@ function MessageBubble({
   // + <original assistant reply>``. We split it back into two visual
   // rows here so the operator's actual answer survives as a readable
   // bubble next to the (clearly-labelled) handoff metadata (#29824).
-  const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
-      : null;
+  const compactionSplit = typeof msg.content === "string" ? splitCompactionContent(msg.content) : null;
 
   if (compactionSplit && compactionSplit.remainder) {
     return (
       <>
-        <MessageBubble
-          msg={{ ...msg, content: compactionSplit.summary }}
-          highlight={highlight}
-        />
+        <MessageBubble msg={{ ...msg, content: compactionSplit.summary }} highlight={highlight} />
         <MessageBubble
           msg={{
             ...msg,
@@ -290,9 +246,7 @@ function MessageBubble({
   }
 
   const isCompaction = compactionSplit !== null;
-  const style = isCompaction
-    ? ROLE_STYLES.compaction
-    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  const style = isCompaction ? ROLE_STYLES.compaction : (ROLE_STYLES[msg.role] ?? ROLE_STYLES.system);
   const label = isCompaction
     ? ROLE_STYLES.compaction.label
     : msg.tool_name
@@ -308,14 +262,10 @@ function MessageBubble({
   })();
 
   // Split search query into terms for inline highlighting
-  const highlightTerms =
-    isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined;
+  const highlightTerms = isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined;
 
   return (
-    <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
-      data-search-hit={isHit || undefined}
-    >
+    <div className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`} data-search-hit={isHit || undefined}>
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {isHit && (
@@ -323,11 +273,7 @@ function MessageBubble({
             {t.common.match}
           </Badge>
         )}
-        {msg.timestamp && (
-          <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp)}
-          </span>
-        )}
+        {msg.timestamp && <span className="text-xs text-text-tertiary">{timeAgo(msg.timestamp, locale)}</span>}
       </div>
       {msg.content &&
         (msg.role === "system" ? (
@@ -354,13 +300,7 @@ function MessageBubble({
 }
 
 /** Message list with auto-scroll to first search hit. */
-function MessageList({
-  messages,
-  highlight,
-}: {
-  messages: SessionMessage[];
-  highlight?: string;
-}) {
+function MessageList({ messages, highlight }: { messages: SessionMessage[]; highlight?: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -376,10 +316,7 @@ function MessageList({
   }, [messages, highlight]);
 
   return (
-    <div
-      ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
-    >
+    <div ref={containerRef} className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
       ))}
@@ -405,7 +342,7 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -417,7 +354,10 @@ function SessionRow({
         if (!cancelled) setMessages(resp.messages);
       })
       .catch((err) => {
-        if (!cancelled) setError(errorMessage(err));
+        if (!cancelled) setError(String(err));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err, t.common));
       });
     return () => {
       cancelled = true;
@@ -426,7 +366,7 @@ function SessionRow({
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
-    ? SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null)
+    ? (SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null))
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
@@ -450,7 +390,7 @@ function SessionRow({
     <>
       <Badge tone="outline" className="text-xs">
         <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
+        {session.source ? sourceLabel(session.source, t.sessions) : t.sessions.sourceLocal}
       </Badge>
 
       {resumeInChatEnabled && (
@@ -473,15 +413,11 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={t.sessions.rename}
+        title={t.sessions.rename}
         onClick={(e) => {
           e.stopPropagation();
-          setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
-          );
+          setRenameValue(session.title && session.title !== "Untitled" ? session.title : "");
           setRenaming(true);
         }}
       >
@@ -492,8 +428,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={t.sessions.export}
+        title={t.sessions.exportJson}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -541,19 +477,13 @@ function SessionRow({
   };
 
   return (
-    <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
-    >
+    <div className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}>
       <div
         className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
         <span className="flex shrink-0 items-center pt-0.5">
-          <Checkbox
-            checked={isSelected}
-            onClick={handleSelectClick}
-            aria-label={t.sessions.selectSession}
-          />
+          <Checkbox checked={isSelected} onClick={handleSelectClick} aria-label={t.sessions.selectSession} />
         </span>
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
           <SourceIcon className="h-4 w-4" />
@@ -563,10 +493,7 @@ function SessionRow({
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-2">
                 {renaming ? (
-                  <div
-                    className="flex min-w-0 flex-1 items-center gap-1.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <Input
                       autoFocus
                       value={renameValue}
@@ -575,7 +502,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={t.sessions.titlePlaceholder}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -583,23 +510,19 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={t.sessions.saveTitle}
+                      title={t.sessions.saveTitle}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
-                      {renameSaving ? (
-                        <Spinner className="text-sm" />
-                      ) : (
-                        <Check />
-                      )}
+                      {renameSaving ? <Spinner className="text-sm" /> : <Check />}
                     </Button>
                     <Button
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={t.sessions.cancelRename}
+                      title={t.sessions.cancelRename}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -645,19 +568,15 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="shrink-0">{timeAgo(session.last_active, locale)}</span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
 
-            <div className="hidden shrink-0 items-center gap-2 sm:flex">
-              {actionButtons}
-            </div>
+            <div className="hidden shrink-0 items-center gap-2 sm:flex">{actionButtons}</div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {actionButtons}
-          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:hidden">{actionButtons}</div>
         </div>
       </div>
 
@@ -668,17 +587,11 @@ function SessionRow({
               <Spinner className="text-xl text-primary" />
             </div>
           )}
-          {error && (
-            <p className="text-sm text-destructive py-4 text-center">{error}</p>
-          )}
+          {error && <p className="text-sm text-destructive py-4 text-center">{error}</p>}
           {messages && messages.length === 0 && (
-            <p className="text-sm text-muted-foreground py-4 text-center">
-              {t.sessions.noMessages}
-            </p>
+            <p className="text-sm text-muted-foreground py-4 text-center">{t.sessions.noMessages}</p>
           )}
-          {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
-          )}
+          {messages && messages.length > 0 && <MessageList messages={messages} highlight={searchQuery} />}
         </div>
       )}
     </div>
@@ -689,13 +602,7 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
-function SessionsPagination({
-  className,
-  compact = false,
-  onPageChange,
-  page,
-  total,
-}: SessionsPaginationProps) {
+function SessionsPagination({ className, compact = false, onPageChange, page, total }: SessionsPaginationProps) {
   const { t } = useI18n();
   const pageCount = Math.ceil(total / PAGE_SIZE);
 
@@ -705,8 +612,7 @@ function SessionsPagination({
     >
       {!compact && (
         <span className="text-xs text-muted-foreground">
-          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-          {t.common.of} {total}
+          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} {t.common.of} {total}
         </span>
       )}
 
@@ -744,9 +650,7 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<
-    SessionSearchResult[] | null
-  >(null);
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -754,14 +658,12 @@ export default function SessionsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
-  const [sessionCategory, setSessionCategory] =
-    useState<SessionFilterCategory>("chats");
-  const [sourceSelectionsByCategory, setSourceSelectionsByCategory] =
-    useState<SourceSelectionsByCategory>({
-      chats: null,
-      automation: null,
-      all: null,
-    });
+  const [sessionCategory, setSessionCategory] = useState<SessionFilterCategory>("chats");
+  const [sourceSelectionsByCategory, setSourceSelectionsByCategory] = useState<SourceSelectionsByCategory>({
+    chats: null,
+    automation: null,
+    all: null,
+  });
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionsRequestRef = useRef(0);
@@ -795,24 +697,21 @@ export default function SessionsPage() {
   const [pruning, setPruning] = useState(false);
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { format, locale, t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
   const selectedSources = sourceSelectionsByCategory[sessionCategory];
 
   const pinnedSourceSelections = useMemo(
-    () =>
-      Object.values(sourceSelectionsByCategory).flatMap(
-        (selection) => selection ?? [],
-      ),
+    () => Object.values(sourceSelectionsByCategory).flatMap((selection) => selection ?? []),
     [sourceSelectionsByCategory],
   );
 
   const allSourceOptions = useMemo(() => {
     const entries = Object.entries(stats?.by_source ?? {}).sort(
       ([aSource, aCount], [bSource, bCount]) =>
-        bCount - aCount || sourceLabel(aSource).localeCompare(sourceLabel(bSource)),
+        bCount - aCount || sourceLabel(aSource, t.sessions).localeCompare(sourceLabel(bSource, t.sessions)),
     );
     const seen = new Set(entries.map(([source]) => source));
     for (const source of pinnedSourceSelections) {
@@ -822,88 +721,71 @@ export default function SessionsPage() {
       }
     }
     return entries;
-  }, [pinnedSourceSelections, stats]);
+  }, [pinnedSourceSelections, stats, t.sessions]);
 
-  const allSourceNames = useMemo(
-    () => allSourceOptions.map(([source]) => source),
-    [allSourceOptions],
-  );
+  const allSourceNames = useMemo(() => allSourceOptions.map(([source]) => source), [allSourceOptions]);
 
   const sessionQueryOptions = useMemo(() => {
     if (selectedSources !== null) {
       if (selectedSources.length === 0) {
-        return allSourceNames.length > 0
-          ? { excludeSources: allSourceNames }
-          : { source: NO_MATCHING_SESSION_SOURCE };
+        return allSourceNames.length > 0 ? { excludeSources: allSourceNames } : { source: NO_MATCHING_SESSION_SOURCE };
       }
       if (selectedSources.length === 1) {
         return { source: selectedSources[0] };
       }
       const selected = new Set(selectedSources);
-      const excludedSources = allSourceNames.filter(
-        (source) => !selected.has(source),
-      );
+      const excludedSources = allSourceNames.filter((source) => !selected.has(source));
       return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
     }
     if (sessionCategory === "chats") {
       return { excludeSources: AUTOMATION_SESSION_SOURCES };
     }
     if (sessionCategory === "automation") {
-      const excludedSources = allSourceNames.filter(
-        (source) => !isAutomationSource(source),
-      );
-      return excludedSources.length > 0
-        ? { excludeSources: excludedSources }
-        : { sources: AUTOMATION_SESSION_SOURCES };
+      const excludedSources = allSourceNames.filter((source) => !isAutomationSource(source));
+      return excludedSources.length > 0 ? { excludeSources: excludedSources } : { sources: AUTOMATION_SESSION_SOURCES };
     }
     return {};
   }, [selectedSources, sessionCategory, allSourceNames]);
 
   const categoryDefaultSources = useMemo(() => {
-    return allSourceNames.filter((source) =>
-      sourceBelongsToCategory(source, sessionCategory),
-    );
+    return allSourceNames.filter((source) => sourceBelongsToCategory(source, sessionCategory));
   }, [sessionCategory, allSourceNames]);
 
   const sourceOptions = useMemo(() => {
     const selected = new Set(selectedSources ?? []);
     return allSourceOptions.filter(
-      ([source]) =>
-        sourceBelongsToCategory(source, sessionCategory) || selected.has(source),
+      ([source]) => sourceBelongsToCategory(source, sessionCategory) || selected.has(source),
     );
   }, [allSourceOptions, selectedSources, sessionCategory]);
 
   const effectiveSelectedSources = selectedSources ?? categoryDefaultSources;
 
-  const selectedSourceSet = useMemo(
-    () => new Set(effectiveSelectedSources),
-    [effectiveSelectedSources],
-  );
+  const selectedSourceSet = useMemo(() => new Set(effectiveSelectedSources), [effectiveSelectedSources]);
 
   const defaultSourceFilterLabel = useMemo(() => {
-    if (sessionCategory === "chats") return "Any chat source";
-    if (sessionCategory === "automation") return "Any automation source";
+    if (sessionCategory === "chats") return t.sessions.anyChatSource;
+    if (sessionCategory === "automation") return t.sessions.anyAutomationSource;
     return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
+  }, [sessionCategory, t.sessions]);
 
   const sourceMenuTitle = useMemo(() => {
-    if (sessionCategory === "chats") return "Chat sources";
-    if (sessionCategory === "automation") return "Automation sources";
+    if (sessionCategory === "chats") return t.sessions.chatSources;
+    if (sessionCategory === "automation") return t.sessions.automationSources;
     return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
+  }, [sessionCategory, t.sessions]);
 
   const sourceFilterLabel = useMemo(() => {
     if (selectedSources === null) {
       return defaultSourceFilterLabel;
     }
     if (selectedSources.length === 0) {
-      return "No sources";
+      return t.sessions.noSources;
     }
     if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
+      return sourceLabel(selectedSources[0], t.sessions);
     }
-    return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
+    return format(t.sessions.sourceCount, { count: selectedSources.length });
+  }, [defaultSourceFilterLabel, format, selectedSources, t.sessions]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -934,19 +816,14 @@ export default function SessionsPage() {
 
   useEffect(() => {
     setEnd(
-      <Button
-        outlined
-        size="sm"
-        onClick={() => setPruneOpen(true)}
-        prefix={<Archive />}
-      >
-        Prune old sessions
+      <Button outlined size="sm" onClick={() => setPruneOpen(true)} prefix={<Archive />}>
+        {t.sessions.pruneOld}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd]);
+  }, [setEnd, t.sessions.pruneOld]);
 
   useEffect(() => {
     if (!sourceMenuOpen) return;
@@ -963,29 +840,30 @@ export default function SessionsPage() {
     };
   }, [sourceMenuOpen]);
 
-  const loadSessions = useCallback((p: number, silent = false) => {
-    // ``silent`` skips the loading spinner so background refreshes
-    // (triggered when the overview poll detects a new session from
-    // another process) don't flicker the whole page or drop the user's
-    // scroll position.
-    const requestId = silent
-      ? sessionsRequestRef.current
-      : sessionsRequestRef.current + 1;
-    if (!silent) sessionsRequestRef.current = requestId;
-    if (!silent) setLoading(true);
-    api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
-      .then((resp) => {
-        if (requestId !== sessionsRequestRef.current) return;
-        setSessions(resp.sessions);
-        setTotal(resp.total);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (requestId !== sessionsRequestRef.current) return;
-        if (!silent) setLoading(false);
-      });
-  }, [sessionQueryOptions]);
+  const loadSessions = useCallback(
+    (p: number, silent = false) => {
+      // ``silent`` skips the loading spinner so background refreshes
+      // (triggered when the overview poll detects a new session from
+      // another process) don't flicker the whole page or drop the user's
+      // scroll position.
+      const requestId = silent ? sessionsRequestRef.current : sessionsRequestRef.current + 1;
+      if (!silent) sessionsRequestRef.current = requestId;
+      if (!silent) setLoading(true);
+      api
+        .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
+        .then((resp) => {
+          if (requestId !== sessionsRequestRef.current) return;
+          setSessions(resp.sessions);
+          setTotal(resp.total);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (requestId !== sessionsRequestRef.current) return;
+          if (!silent) setLoading(false);
+        });
+    },
+    [sessionQueryOptions],
+  );
 
   const loadStats = useCallback(() => {
     api
@@ -1003,26 +881,30 @@ export default function SessionsPage() {
         const text = await file.text();
         const importedSessions = parseImportSessions(text);
         const result = await api.importSessions(importedSessions);
-        showToast(`Import complete: ${importSummary(result)}`, "success");
+        const summary = importSummary(result, {
+          imported: t.sessions.importCount,
+          skipped: t.sessions.importSkippedCount,
+          detached: t.sessions.importDetachedCount,
+        });
+        showToast(t.sessions.importComplete.replace("{summary}", summary), "success");
         clearSelection();
         loadSessions(page, true);
         loadStats();
         refreshEmptyCount();
       } catch (error) {
-        showToast(`Import failed: ${errorMessage(error)}`, "error");
+        const message =
+          error instanceof SessionImportParseError
+            ? error.code === "empty"
+              ? t.sessions.importFileEmpty
+              : t.sessions.importInvalidFormat
+            : t.sessions.importFailed;
+        showToast(message, "error");
       } finally {
         setImportingSessions(false);
         if (importInputRef.current) importInputRef.current.value = "";
       }
     },
-    [
-      clearSelection,
-      loadSessions,
-      loadStats,
-      page,
-      refreshEmptyCount,
-      showToast,
-    ],
+    [clearSelection, loadSessions, loadStats, page, refreshEmptyCount, showToast, t],
   );
 
   useEffect(() => {
@@ -1257,43 +1139,39 @@ export default function SessionsPage() {
    *  be the currently rendered list (post-search), since indices are
    *  resolved against what the user is actually looking at.
    */
-  const handleSelectClick = useCallback(
-    (event: React.MouseEvent, index: number, visibleList: SessionInfo[]) => {
-      const id = visibleList[index]?.id;
-      if (!id) return;
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        const wasSelected = next.has(id);
-        const willSelect = !wasSelected;
+  const handleSelectClick = useCallback((event: React.MouseEvent, index: number, visibleList: SessionInfo[]) => {
+    const id = visibleList[index]?.id;
+    if (!id) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const wasSelected = next.has(id);
+      const willSelect = !wasSelected;
 
-        const anchor = lastClickedIndexRef.current;
-        // Shift-click extends the selection from the anchor to here.
-        // Skip if there's no anchor or the anchor is outside the
-        // visible list — in those cases fall through to a plain toggle
-        // (the click also resets the anchor below).
-        if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
-          const [lo, hi] =
-            anchor <= index ? [anchor, index] : [index, anchor];
-          for (let i = lo; i <= hi; i++) {
-            const rowId = visibleList[i]?.id;
-            if (!rowId) continue;
-            if (willSelect) next.add(rowId);
-            else next.delete(rowId);
-          }
-        } else if (willSelect) {
-          next.add(id);
-        } else {
-          next.delete(id);
+      const anchor = lastClickedIndexRef.current;
+      // Shift-click extends the selection from the anchor to here.
+      // Skip if there's no anchor or the anchor is outside the
+      // visible list — in those cases fall through to a plain toggle
+      // (the click also resets the anchor below).
+      if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
+        const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
+        for (let i = lo; i <= hi; i++) {
+          const rowId = visibleList[i]?.id;
+          if (!rowId) continue;
+          if (willSelect) next.add(rowId);
+          else next.delete(rowId);
         }
-        return next;
-      });
-      // Always update the anchor to the most recent click — even when
-      // it was a shift-click that extended a range, the user's next
-      // shift-click should anchor from here, not from two steps back.
-      lastClickedIndexRef.current = index;
-    },
-    [],
-  );
+      } else if (willSelect) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+    // Always update the anchor to the most recent click — even when
+    // it was a shift-click that extended a range, the user's next
+    // shift-click should anchor from here, not from two steps back.
+    lastClickedIndexRef.current = index;
+  }, []);
 
   const selectAllOnPage = useCallback((visibleList: SessionInfo[]) => {
     setSelectedIds((prev) => {
@@ -1314,10 +1192,7 @@ export default function SessionsPage() {
       // The selection comes from one listed page, so its rows share one
       // owning profile; a mixed selection falls back to the management profile.
       const owners = new Set(ids.map(rowProfile));
-      const resp = await api.bulkDeleteSessions(
-        ids,
-        owners.size === 1 ? [...owners][0] : undefined,
-      );
+      const resp = await api.bulkDeleteSessions(ids, owners.size === 1 ? [...owners][0] : undefined);
       const skippedCount = resp.skipped_active?.length ?? 0;
       if (skippedCount) {
         showToast(
@@ -1327,13 +1202,7 @@ export default function SessionsPage() {
           "error",
         );
       } else {
-        showToast(
-          t.sessions.selectedSessionsDeleted.replace(
-            "{count}",
-            String(resp.deleted),
-          ),
-          "success",
-        );
+        showToast(t.sessions.selectedSessionsDeleted.replace("{count}", String(resp.deleted)), "success");
       }
       setDeleteSelectedOpen(false);
       // Drop deleted rows out of the visible list immediately rather
@@ -1365,6 +1234,7 @@ export default function SessionsPage() {
     showToast,
     t.sessions.failedToDeleteSelected,
     t.sessions.selectedSessionsDeleted,
+    t.sessions.selectedSessionsSkippedActive,
   ]);
 
   const handleDeleteEmpty = useCallback(async () => {
@@ -1376,13 +1246,7 @@ export default function SessionsPage() {
       // session entered/left the "empty" set between the count fetch and
       // the delete — e.g. an active session just ended without sending
       // any messages).
-      showToast(
-        t.sessions.emptySessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
+      showToast(t.sessions.emptySessionsDeleted.replace("{count}", String(resp.deleted)), "success");
       setDeleteEmptyOpen(false);
       // Reload the current page so any newly-vanished empty sessions
       // drop out of the visible list, and re-fetch the empty count so
@@ -1408,19 +1272,15 @@ export default function SessionsPage() {
       const targetProfile = profile ?? rowProfile(id);
       try {
         await api.renameSession(id, title, targetProfile);
-        setSessions((prev) =>
-          prev.map((s) => (s.id === id ? { ...s, title } : s)),
-        );
-        setOverviewSessions((prev) =>
-          prev.map((s) => (s.id === id ? { ...s, title } : s)),
-        );
-        showToast("Session renamed", "success");
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title } : s)));
+        setOverviewSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title } : s)));
+        showToast(t.sessions.renamed, "success");
         loadStats();
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(t.sessions.renameFailed, "error");
       }
     },
-    [rowProfile, showToast, loadStats],
+    [loadStats, rowProfile, showToast, t.sessions.renameFailed, t.sessions.renamed],
   );
 
   const handleExport = useCallback(
@@ -1430,8 +1290,7 @@ export default function SessionsPage() {
           credentials: "include",
           headers: {
             "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
+              (window as unknown as { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__ ?? "",
           },
         });
         if (!res.ok) {
@@ -1445,36 +1304,40 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast("Failed to export session", "error");
+        showToast(t.sessions.exportFailed, "error");
       }
     },
-    [rowProfile, showToast],
+    [rowProfile, showToast, t.sessions.exportFailed],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
+      showToast(t.sessions.invalidPruneDays, "error");
       return;
     }
     setPruning(true);
     try {
       const resp = await api.pruneSessions(days);
-      showToast(formatSessionPruneResult(resp), "success");
+      showToast(
+        formatSessionPruneResult(resp, {
+          removed: (count) => format(t.sessions.pruned, { count }),
+          skippedOpen: (count) => format(t.sessions.pruneSkippedOpen, { count }),
+        }),
+        "success",
+      );
       setPruneOpen(false);
       loadSessions(0);
       setPage(0);
       loadStats();
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(t.sessions.pruneFailed, "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [format, loadSessions, loadStats, pruneDays, showToast, t.sessions]);
 
-  const pendingSession = sessionDelete.pendingId
-    ? sessions.find((s) => s.id === sessionDelete.pendingId)
-    : null;
+  const pendingSession = sessionDelete.pendingId ? sessions.find((s) => s.id === sessionDelete.pendingId) : null;
 
   // Build snippet map from search results (session_id → snippet)
   const snippetMap = new Map<string, string>();
@@ -1487,16 +1350,11 @@ export default function SessionsPage() {
 
   const filtered = searchResults ?? sessions;
 
-  const platformEntries = status
-    ? Object.entries(status.gateway_platforms ?? {})
-    : [];
-  const recentSessions = overviewSessions
-    .filter((s) => !s.is_active)
-    .slice(0, 5);
+  const platformEntries = status ? Object.entries(status.gateway_platforms ?? {}) : [];
+  const recentSessions = overviewSessions.filter((s) => !s.is_active).slice(0, 5);
 
   const isSearching = Boolean(search.trim());
-  const showOverviewTab =
-    platformEntries.length > 0 || recentSessions.length > 0;
+  const showOverviewTab = platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !isSearching && total > PAGE_SIZE;
 
@@ -1512,10 +1370,7 @@ export default function SessionsPage() {
       ([, info]) => info.state === "fatal" || info.state === "disconnected",
     );
     for (const [name, info] of failedPlatformEntries) {
-      const stateLabel =
-        info.state === "fatal"
-          ? t.status.platformError
-          : t.status.platformDisconnected;
+      const stateLabel = info.state === "fatal" ? t.status.platformError : t.status.platformDisconnected;
       alerts.push({
         message: `${name.charAt(0).toUpperCase() + name.slice(1)} ${stateLabel}`,
         detail: info.error_message ?? undefined,
@@ -1561,10 +1416,7 @@ export default function SessionsPage() {
         onCancel={() => setDeleteEmptyOpen(false)}
         onConfirm={handleDeleteEmpty}
         title={t.sessions.deleteEmptyConfirmTitle}
-        description={t.sessions.deleteEmptyConfirmMessage.replace(
-          "{count}",
-          String(emptyCount),
-        )}
+        description={t.sessions.deleteEmptyConfirmMessage.replace("{count}", String(emptyCount))}
         loading={deletingEmpty}
       />
 
@@ -1572,14 +1424,8 @@ export default function SessionsPage() {
         open={deleteSelectedOpen}
         onCancel={() => setDeleteSelectedOpen(false)}
         onConfirm={handleDeleteSelected}
-        title={t.sessions.deleteSelectedConfirmTitle.replace(
-          "{count}",
-          String(selectedIds.size),
-        )}
-        description={t.sessions.deleteSelectedConfirmMessage.replace(
-          "{count}",
-          String(selectedIds.size),
-        )}
+        title={t.sessions.deleteSelectedConfirmTitle.replace("{count}", String(selectedIds.size))}
+        description={t.sessions.deleteSelectedConfirmMessage.replace("{count}", String(selectedIds.size))}
         loading={deletingSelected}
       />
 
@@ -1591,18 +1437,12 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
-            <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
-            </DialogDescription>
+            <DialogTitle>{t.sessions.pruneOld}</DialogTitle>
+            <DialogDescription>{t.sessions.pruneDescription}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="prune-days"
-              className="text-xs font-medium text-muted-foreground"
-            >
-              Older than (days)
+            <label htmlFor="prune-days" className="text-xs font-medium text-muted-foreground">
+              {t.sessions.olderThanDays}
             </label>
             <Input
               id="prune-days"
@@ -1617,21 +1457,12 @@ export default function SessionsPage() {
             />
           </div>
           <DialogFooter>
-            <Button
-              outlined
-              onClick={() => setPruneOpen(false)}
-              disabled={pruning}
-            >
+            <Button outlined onClick={() => setPruneOpen(false)} disabled={pruning}>
               {t.common.cancel}
             </Button>
-            <Button
-              destructive
-              onClick={() => void handlePrune()}
-              disabled={pruning}
-              className="gap-1.5"
-            >
+            <Button destructive onClick={() => void handlePrune()} disabled={pruning} className="gap-1.5">
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.sessions.prune}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1640,35 +1471,27 @@ export default function SessionsPage() {
       {stats && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.total}
-            </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.total}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.total}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none text-success">
-              {stats.active_store}
-            </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-lg font-semibold tabular-nums leading-none text-success">{stats.active_store}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.activeInStore}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.archived}
-            </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.archived}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.archived}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.messages}
-            </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.messages}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.messages}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
               <span className="text-lg font-semibold tabular-nums leading-none">
                 {Object.keys(stats.by_source).length}
               </span>
-              <span className="text-xs text-muted-foreground">Sources</span>
+              <span className="text-xs text-muted-foreground">{t.sessions.sources}</span>
             </div>
           )}
         </div>
@@ -1681,14 +1504,8 @@ export default function SessionsPage() {
             <div className="flex flex-col gap-2 min-w-0">
               {alerts.map((alert, i) => (
                 <div key={i}>
-                  <p className="text-sm font-medium text-destructive">
-                    {alert.message}
-                  </p>
-                  {alert.detail && (
-                    <p className="text-xs text-destructive/70 mt-0.5">
-                      {alert.detail}
-                    </p>
-                  )}
+                  <p className="text-sm font-medium text-destructive">{alert.message}</p>
+                  {alert.detail && <p className="text-xs text-destructive/70 mt-0.5">{alert.detail}</p>}
                 </div>
               ))}
             </div>
@@ -1711,9 +1528,7 @@ export default function SessionsPage() {
               )}
 
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">
-                {activeAction === "restart"
-                  ? t.status.restartGateway
-                  : t.status.updateHermes}
+                {activeAction === "restart" ? t.status.restartGateway : t.status.updateHermes}
               </span>
 
               <Badge
@@ -1780,11 +1595,7 @@ export default function SessionsPage() {
                 outlined
                 size="sm"
                 prefix={<ListFilter />}
-                suffix={
-                  <ChevronDown
-                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
-                  />
-                }
+                suffix={<ChevronDown className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`} />}
                 className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
                 aria-label={t.sessions.sourceFilter}
                 aria-expanded={sourceMenuOpen}
@@ -1794,35 +1605,23 @@ export default function SessionsPage() {
               </Button>
 
               {sourceMenuOpen && (
-                <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
-                >
+                <div className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg">
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {sourceMenuTitle}
-                    </span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{sourceMenuTitle}</span>
                     {selectedSources !== null && (
-                      <Button
-                        ghost
-                        size="xs"
-                        onClick={clearSourceFilters}
-                        className="shrink-0"
-                      >
+                      <Button ghost size="xs" onClick={clearSourceFilters} className="shrink-0">
                         {t.common.clear}
                       </Button>
                     )}
                   </div>
                   <div className="max-h-64 overflow-y-auto p-1">
                     {sourceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">
-                        {sourceMenuTitle}
-                      </div>
+                      <div className="px-2 py-2 text-xs text-muted-foreground">{sourceMenuTitle}</div>
                     ) : (
                       sourceOptions.map(([source, count]) => {
                         const selected = selectedSourceSet.has(source);
                         const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
-                        const sourceColor =
-                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
+                        const sourceColor = SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
 
                         return (
                           <div
@@ -1835,7 +1634,7 @@ export default function SessionsPage() {
                                 event.stopPropagation();
                                 toggleSourceFilter(source);
                               }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source, t.sessions)}`}
                             />
                             <button
                               type="button"
@@ -1843,12 +1642,8 @@ export default function SessionsPage() {
                               onClick={() => toggleSourceFilter(source)}
                             >
                               <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
-                              </span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {count}
-                              </span>
+                              <span className="min-w-0 flex-1 truncate">{sourceLabel(source, t.sessions)}</span>
+                              <span className="shrink-0 tabular-nums text-muted-foreground">{count}</span>
                             </button>
                           </div>
                         );
@@ -1923,13 +1718,11 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={t.sessions.importSessions}
+                title={t.sessions.importSessionsTitle}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
-                <span className="font-mondwest normal-case text-xs">
-                  Import sessions
-                </span>
+                <span className="font-mondwest normal-case text-xs">{t.sessions.importSessions}</span>
               </Button>
             )}
           </div>
@@ -1950,16 +1743,10 @@ export default function SessionsPage() {
         <div
           className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2"
           role="region"
-          aria-label={t.sessions.selectedCount.replace(
-            "{count}",
-            String(selectedIds.size),
-          )}
+          aria-label={t.sessions.selectedCount.replace("{count}", String(selectedIds.size))}
         >
           <span className="font-mondwest normal-case text-xs text-primary tabular-nums">
-            {t.sessions.selectedCount.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
+            {t.sessions.selectedCount.replace("{count}", String(selectedIds.size))}
           </span>
           {filtered.some((s) => !selectedIds.has(s.id)) && (
             <Button
@@ -1969,9 +1756,7 @@ export default function SessionsPage() {
               aria-label={t.sessions.selectAllOnPage}
               title={t.sessions.selectAllOnPage}
             >
-              <span className="font-mondwest normal-case text-xs">
-                {t.sessions.selectAllOnPage}
-              </span>
+              <span className="font-mondwest normal-case text-xs">{t.sessions.selectAllOnPage}</span>
             </Button>
           )}
           <Button
@@ -1981,9 +1766,7 @@ export default function SessionsPage() {
             aria-label={t.sessions.clearSelection}
             title={t.sessions.clearSelection}
           >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.clearSelection}
-            </span>
+            <span className="font-mondwest normal-case text-xs">{t.sessions.clearSelection}</span>
           </Button>
           <Button
             outlined
@@ -1991,21 +1774,12 @@ export default function SessionsPage() {
             size="sm"
             className="ml-auto"
             onClick={() => setDeleteSelectedOpen(true)}
-            aria-label={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            title={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
+            aria-label={t.sessions.deleteSelected.replace("{count}", String(selectedIds.size))}
+            title={t.sessions.deleteSelected.replace("{count}", String(selectedIds.size))}
             prefix={<Trash2 />}
           >
             <span className="font-mondwest normal-case text-xs">
-              {t.sessions.deleteSelected.replace(
-                "{count}",
-                String(selectedIds.size),
-              )}
+              {t.sessions.deleteSelected.replace("{count}", String(selectedIds.size))}
             </span>
           </Button>
         </div>
@@ -2023,9 +1797,7 @@ export default function SessionsPage() {
                   : t.sessions.noSessions}
             </p>
             {!search && sessionCategory === "chats" && selectedSources === null && (
-              <p className="text-xs mt-1 text-text-tertiary">
-                {t.sessions.startConversation}
-              </p>
+              <p className="text-xs mt-1 text-text-tertiary">{t.sessions.startConversation}</p>
             )}
           </div>
         ) : (
@@ -2039,12 +1811,8 @@ export default function SessionsPage() {
                   searchQuery={search || undefined}
                   isExpanded={expandedId === s.id}
                   isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
-                  }
+                  onToggle={() => setExpandedId((prev) => (prev === s.id ? null : s.id))}
+                  onSelectClick={(event) => handleSelectClick(event, index, filtered)}
                   onDelete={() => sessionDelete.requestDelete(s.id)}
                   onRename={handleRename}
                   onExport={handleExport}
@@ -2053,29 +1821,19 @@ export default function SessionsPage() {
               ))}
             </div>
 
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
-              />
-            )}
+            {showPagination && <SessionsPagination page={page} total={total} onPageChange={goToPage} />}
           </>
         )
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
-          {platformEntries.length > 0 && status && (
-            <PlatformsCard platforms={platformEntries} />
-          )}
+          {platformEntries.length > 0 && status && <PlatformsCard platforms={platformEntries} />}
 
           {recentSessions.length > 0 && (
             <Card className="min-w-0 max-w-full overflow-hidden">
               <CardHeader className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
+                  <CardTitle className="min-w-0 truncate text-base">{t.status.recentSessions}</CardTitle>
                 </div>
               </CardHeader>
 
@@ -2089,23 +1847,16 @@ export default function SessionsPage() {
                       <span
                         className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
                       >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
-                            : t.common.untitled)}
+                        {s.title ?? (s.preview ? s.preview.slice(0, 60) : t.common.untitled)}
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
                         {s.model && (
                           <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
-                            ·{" "}
+                            <span className="font-mono-ui">{s.model.split("/").pop()}</span> ·{" "}
                           </>
                         )}
-                        {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        {s.message_count} {t.common.msgs} · {timeAgo(s.last_active, locale)}
                       </span>
 
                       {s.preview && s.title && (
@@ -2115,12 +1866,9 @@ export default function SessionsPage() {
                       )}
                     </div>
 
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
+                    <Badge tone="outline" className="shrink-0 self-start text-xs sm:self-center">
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
+                      {s.source ? sourceLabel(s.source, t.sessions) : t.sessions.sourceLocal}
                     </Badge>
                   </div>
                 ))}

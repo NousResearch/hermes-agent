@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
+import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
@@ -46,13 +47,7 @@ export interface SkillEditorDialogProps {
   onSaved: (name: string) => void;
 }
 
-export function SkillEditorDialog({
-  open,
-  editName,
-  profile,
-  onClose,
-  onSaved,
-}: SkillEditorDialogProps) {
+export function SkillEditorDialog({ open, editName, profile, onClose, onSaved }: SkillEditorDialogProps) {
   // The body is remounted via `key` every time the dialog opens or the
   // target skill changes, so all form state initializes through useState
   // initializers — no reset-on-open effect (react-hooks/set-state-in-effect).
@@ -73,12 +68,8 @@ export function SkillEditorDialog({
   );
 }
 
-function EditorBody({
-  editName,
-  profile,
-  onClose,
-  onSaved,
-}: Omit<SkillEditorDialogProps, "open">) {
+function EditorBody({ editName, profile, onClose, onSaved }: Omit<SkillEditorDialogProps, "open">) {
+  const { format, t } = useI18n();
   const isEdit = editName !== null;
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
@@ -93,7 +84,7 @@ function EditorBody({
     api
       .getSkillContent(editName, profile || undefined)
       .then((res) => !cancelled && setContent(res.content))
-      .catch((e) => !cancelled && setError(errorMessage(e)))
+      .catch((e) => !cancelled && setError(errorMessage(e, t.common)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -103,11 +94,11 @@ function EditorBody({
   const handleSave = async () => {
     setError(null);
     if (!isEdit && !name.trim()) {
-      setError("Skill name is required.");
+      setError(t.skillEditor.nameRequired);
       return;
     }
     if (!content.trim()) {
-      setError("SKILL.md content is required.");
+      setError(t.skillEditor.contentRequired);
       return;
     }
     setSaving(true);
@@ -129,7 +120,7 @@ function EditorBody({
       }
       onClose();
     } catch (e) {
-      setError(errorMessage(e));
+      setError(errorMessage(e, t.common));
     } finally {
       setSaving(false);
     }
@@ -139,20 +130,16 @@ function EditorBody({
     <>
       <DialogHeader>
         <DialogTitle>
-          {isEdit ? `Edit skill: ${editName}` : "New skill"}
+          {isEdit ? format(t.skillEditor.editTitle, { name: editName }) : t.skillEditor.newTitle}
         </DialogTitle>
-        <DialogDescription>
-          {isEdit
-            ? "Rewrite this skill's SKILL.md. Frontmatter (name, description) is validated on save."
-            : "Author a custom skill — YAML frontmatter plus markdown instructions. It becomes available to the agent and attachable to cron jobs."}
-        </DialogDescription>
+        <DialogDescription>{isEdit ? t.skillEditor.editDescription : t.skillEditor.newDescription}</DialogDescription>
       </DialogHeader>
 
       <div className="grid gap-3">
         {!isEdit && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-name">Name</Label>
+              <Label htmlFor="skill-editor-name">{t.skillEditor.name}</Label>
               <Input
                 id="skill-editor-name"
                 autoFocus
@@ -162,7 +149,7 @@ function EditorBody({
               />
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="skill-editor-category">Category (optional)</Label>
+              <Label htmlFor="skill-editor-category">{t.skillEditor.categoryOptional}</Label>
               <Input
                 id="skill-editor-category"
                 placeholder="devops"
@@ -190,15 +177,11 @@ function EditorBody({
           )}
         </div>
 
-        {error && (
-          <p className="whitespace-pre-wrap text-xs text-destructive">
-            {error}
-          </p>
-        )}
+        {error && <p className="whitespace-pre-wrap text-xs text-destructive">{error}</p>}
 
         <div className="flex items-center justify-end gap-2">
           <Button ghost size="sm" onClick={onClose} disabled={saving}>
-            Cancel
+            {t.skillEditor.cancel}
           </Button>
           <Button
             size="sm"
@@ -207,7 +190,7 @@ function EditorBody({
             disabled={saving || loading}
             prefix={saving ? <Spinner /> : undefined}
           >
-            {saving ? "Saving…" : isEdit ? "Save changes" : "Create skill"}
+            {saving ? t.skillEditor.saving : isEdit ? t.skillEditor.saveChanges : t.skillEditor.createSkill}
           </Button>
         </div>
       </div>

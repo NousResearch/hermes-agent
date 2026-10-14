@@ -43,3 +43,27 @@ desktop has no build/runtime dependency on this frontend. Details: `apps/desktop
 - Tests: Python in `tests/hermes_cli/` (routers, pty bridge); JS in the `web/` vitest suite. Python
   tests must not assert about `package.json` / `.tsx` sources (root testing rules). Root TypeScript
   style rules apply.
+
+## Localization framework (Dashboard + Ink TUI)
+
+
+- English is the complete source catalog and only final fallback. Every non-English pack
+  overlays English independently; Simplified Chinese is the first complete non-English
+  implementation, not a privileged runtime branch.
+- `locales/registry.json` is the single authority for locale identities, endonyms, picker
+  labels, ordinary aliases and protocol compatibility aliases. Python, Ink and Dashboard
+  consume it directly; do not recreate locale lists or normalization tables elsewhere.
+- Product language choices expose `zh` (Simplified Chinese) and `zh-hant` (Traditional
+  Chinese) as independent languages. Region-tagged inputs such as `zh-TW`, `zh-HK` and
+  `zh-MO` are boundary-only compatibility values that normalize immediately to `zh-hant`.
+- Stable translation keys belong at presentation boundaries. Components, commands, schema
+  renderers and bundled Dashboard extensions must not branch on a named locale or use
+  translated labels as control-flow identifiers.
+- This rollout covers Dashboard/Web UI, Ink TUI, its Dashboard embedding, and bundled
+  Dashboard extensions. Classic CLI, Electron Desktop chat, website and messaging-platform
+  presentation need deliberate follow-up work rather than incidental changes here.
+- A display-language refresh must not rebuild the agent or reload MCP/tool schemas. Tool
+  reload remains an explicit user action so per-conversation prompt caching stays stable.
+- Acceptance tests assert behavior: complete English, complete declared packs, direct English
+  fallback for partial packs, cross-runtime normalization parity, and no feature-code edits
+  required when registering a new locale. Never freeze locale counts.

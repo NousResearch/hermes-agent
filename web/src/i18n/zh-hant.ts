@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const zhHant: Translations = {
+export const zhHant: TranslationOverlay = {
   common: {
     save: "儲存",
     saving: "儲存中...",
@@ -43,10 +43,8 @@ export const zhHant: Translations = {
     expand: "展開",
     general: "一般",
     messaging: "訊息平台",
-    pluginLoadFailed:
-      "無法載入此外掛的指令碼。請檢查網路請求（dashboard-plugins/…）以及伺服器上的外掛路徑。",
-    pluginNotRegistered:
-      "外掛指令碼未呼叫 register()，或執行時發生錯誤。請開啟瀏覽器主控台查看詳細資訊。",
+    pluginLoadFailed: "無法載入此外掛的指令碼。請檢查網路請求（dashboard-plugins/…）以及伺服器上的外掛路徑。",
+    pluginNotRegistered: "外掛指令碼未呼叫 register()，或執行時發生錯誤。請開啟瀏覽器主控台查看詳細資訊。",
   },
 
   app: {
@@ -144,8 +142,7 @@ export const zhHant: Translations = {
     untitledSession: "未命名工作階段",
     deleteSession: "刪除工作階段",
     confirmDeleteTitle: "刪除工作階段？",
-    confirmDeleteMessage:
-      "此操作將永久移除對話及其所有訊息，無法復原。",
+    confirmDeleteMessage: "此操作將永久移除對話及其所有訊息，無法復原。",
     sessionDeleted: "工作階段已刪除",
     failedToDelete: "刪除工作階段失敗",
     deleteEmpty: "刪除空工作階段",
@@ -160,8 +157,7 @@ export const zhHant: Translations = {
     selectedCount: "已選擇 {count} 個",
     deleteSelected: "刪除 {count} 個",
     deleteSelectedConfirmTitle: "刪除 {count} 個工作階段？",
-    deleteSelectedConfirmMessage:
-      "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
+    deleteSelectedConfirmMessage: "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
     selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
@@ -230,8 +226,7 @@ export const zhHant: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "將從排程移除此任務，此操作無法復原。",
+    confirmDeleteMessage: "將從排程移除此任務，此操作無法復原。",
     confirmDeleteTitle: "刪除排程任務？",
     newJob: "新增排程任務",
     nameOptional: "名稱（選填）",
@@ -296,9 +291,9 @@ export const zhHant: Translations = {
     name: "名稱",
     namePlaceholder: "例如：coder、writer 等",
     nameRequired: "名稱為必填",
-    nameRule:
-      "僅允許小寫字母、數字、底線及連字號；首字必須為字母或數字；最多 64 個字元。",
-    invalidName: "設定檔名稱無效",    cloneFrom: "從設定檔複製",
+    nameRule: "僅允許小寫字母、數字、底線及連字號；首字必須為字母或數字；最多 64 個字元。",
+    invalidName: "設定檔名稱無效",
+    cloneFrom: "從設定檔複製",
     cloneFromNone: "無（空白）",
     allProfiles: "設定檔",
     noProfiles: "找不到設定檔。",
@@ -316,8 +311,7 @@ export const zhHant: Translations = {
     commandCopied: "已複製到剪貼簿",
     copyFailed: "複製失敗",
     confirmDeleteTitle: "刪除設定檔？",
-    confirmDeleteMessage:
-      "將永久刪除設定檔「{name}」 — 包括設定、金鑰、記憶、工作階段、技能、排程任務。無法復原。",
+    confirmDeleteMessage: "將永久刪除設定檔「{name}」 — 包括設定、金鑰、記憶、工作階段、技能、排程任務。無法復原。",
     created: "已建立",
     deleted: "已刪除",
     renamed: "已重新命名",
@@ -329,11 +323,9 @@ export const zhHant: Translations = {
     disableRuntime: "停用",
     enableAfterInstall: "安裝後啟用",
     enableRuntime: "啟用",
-    toggleTakesEffectAfterRestart:
-      "已儲存 — 重新啟動閘道以套用變更。",
+    toggleTakesEffectAfterRestart: "已儲存 — 重新啟動閘道以套用變更。",
     forceReinstall: "強制重新安裝（先刪除既有資料夾）",
-    headline:
-      "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",
+    headline: "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",
     identifierLabel: "Git 網址或 owner/repo",
     inactive: "未啟用",
     installBtn: "安裝",
@@ -347,8 +339,7 @@ export const zhHant: Translations = {
     pluginListHeading: "已安裝的外掛",
     providerDefaults: "內建 / 預設",
     providersHeading: "執行階段提供者外掛",
-    providersHint:
-      "會寫入 config.yaml：memory.provider（留空為內建）與 context.engine。下一個工作階段生效。",
+    providersHint: "會寫入 config.yaml：memory.provider（留空為內建）與 context.engine。下一個工作階段生效。",
     refreshDashboard: "重新掃描儀表板擴充功能",
     removeConfirm: "從 ~/.hermes/plugins/ 移除此外掛？",
     removeHint: "僅可移除位於 ~/.hermes/plugins 下使用者安裝的外掛。",
@@ -399,7 +390,7 @@ export const zhHant: Translations = {
     rawYaml: "原始 YAML 設定",
     searchResults: "搜尋結果",
     fields: "個欄位",
-    noFieldsMatch: '沒有符合「{query}」的欄位',
+    noFieldsMatch: "沒有符合「{query}」的欄位",
     configSaved: "設定已儲存",
     yamlConfigSaved: "YAML 設定已儲存",
     failedToSave: "儲存失敗",
@@ -428,8 +419,7 @@ export const zhHant: Translations = {
 
   env: {
     changesNote: "變更會立即儲存到磁碟。使用中的工作階段將自動取得新金鑰。",
-    confirmClearMessage:
-      "此變數已儲存的值將從 .env 檔案中移除。無法從介面復原。",
+    confirmClearMessage: "此變數已儲存的值將從 .env 檔案中移除。無法從介面復原。",
     confirmClearTitle: "清除此金鑰？",
     description: "管理儲存於下列位置的 API 金鑰與密鑰",
     hideAdvanced: "隱藏進階選項",
@@ -515,8 +505,7 @@ export const zhHant: Translations = {
       title: "Hermes Achievements",
       subtitle:
         "從真實工作階段歷史中獲得的 Hermes 可收集徽章。已知尚未達成的成就會顯示為「已發現」；秘密成就在首次出現相符行為之前保持隱藏。",
-      scan_subtitle:
-        "正在掃描 Hermes 工作階段歷史。在歷史紀錄較多時，首次掃描可能需要 5–10 秒。",
+      scan_subtitle: "正在掃描 Hermes 工作階段歷史。在歷史紀錄較多時，首次掃描可能需要 5–10 秒。",
     },
     actions: {
       rescan: "重新掃描",
@@ -550,25 +539,19 @@ export const zhHant: Translations = {
     },
     scan: {
       building_headline: "正在建立成就檔案…",
-      building_detail:
-        "正在讀取工作階段、工具呼叫、模型中繼資料以及解鎖狀態。",
+      building_detail: "正在讀取工作階段、工具呼叫、模型中繼資料以及解鎖狀態。",
       starting_headline: "正在開始成就掃描…",
-      progress_detail:
-        "已掃描 {scanned} / {total} 個工作階段 · {pct}%。隨著更多歷史串入，徽章會陸續解鎖。",
-      idle_detail:
-        "正在讀取工作階段、工具呼叫、模型中繼資料以及解鎖狀態。徽章解鎖後會顯示在這裡。",
+      progress_detail: "已掃描 {scanned} / {total} 個工作階段 · {pct}%。隨著更多歷史串入，徽章會陸續解鎖。",
+      idle_detail: "正在讀取工作階段、工具呼叫、模型中繼資料以及解鎖狀態。徽章解鎖後會顯示在這裡。",
     },
     guide: {
       tiers_header: "等級",
       secret_header: "秘密成就",
-      secret_body:
-        "秘密成就會隱藏其確切觸發條件。一旦 Hermes 偵測到相關訊號，卡片便會變為「已發現」並顯示其需求。",
+      secret_body: "秘密成就會隱藏其確切觸發條件。一旦 Hermes 偵測到相關訊號，卡片便會變為「已發現」並顯示其需求。",
       scan_status_header: "掃描狀態",
-      scan_status_body:
-        "Hermes 正在對本機歷史進行一次掃描，之後卡片會自動出現。即使需要幾秒鐘，也並未卡住。",
+      scan_status_body: "Hermes 正在對本機歷史進行一次掃描，之後卡片會自動出現。即使需要幾秒鐘，也並未卡住。",
       what_scanned_header: "掃描內容",
-      what_scanned_body:
-        "工作階段、工具呼叫、模型中繼資料、錯誤、成就以及本機解鎖狀態。",
+      what_scanned_body: "工作階段、工具呼叫、模型中繼資料、錯誤、成就以及本機解鎖狀態。",
     },
     card: {
       share_title: "分享此成就",
@@ -608,18 +591,15 @@ export const zhHant: Translations = {
       copy_button: "複製圖片",
       copied: "已複製 ✓",
       download_button: "下載 PNG",
-      hint:
-        "「在 X 上分享」會在新分頁中開啟預先填寫的貼文。若想附上 1200×630 的徽章，請先點擊「複製圖片」—— X 允許你直接貼到推文編輯器中。「下載 PNG」會將檔案儲存下來，可在任何地方使用。",
-      clipboard_unsupported:
-        "此瀏覽器不支援剪貼簿圖片複製 —— 請改用「下載」。",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "「在 X 上分享」會在新分頁中開啟預先填寫的貼文。若想附上 1200×630 的徽章，請先點擊「複製圖片」—— X 允許你直接貼到推文編輯器中。「下載 PNG」會將檔案儲存下來，可在任何地方使用。",
+      clipboard_unsupported: "此瀏覽器不支援剪貼簿圖片複製 —— 請改用「下載」。",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
     loading: "正在載入看板…",
     loadFailed: "載入看板失敗：",
-    loadFailedHint:
-      "後端會在首次讀取時自動建立 kanban.db。如果問題持續，請檢查儀表板日誌。",
+    loadFailedHint: "後端會在首次讀取時自動建立 kanban.db。如果問題持續，請檢查儀表板日誌。",
     board: "看板",
     newBoard: "+ 新增看板",
     newBoardTitle: "新增看板",
@@ -627,12 +607,6 @@ export const zhHant: Translations = {
       "看板可將不相關的工作流分開——每個專案、程式碼庫或網域一個看板。一個看板上的工作者不會看到另一個看板的任務。",
     slug: "識別碼",
     slugHint: "— 小寫字母、連字號，例如 atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "顯示名稱",
     displayNameHint: "（選填）",
     description: "描述",
@@ -675,8 +649,7 @@ export const zhHant: Translations = {
     runHistory: "執行紀錄",
     workerLog: "工作者日誌",
     loadingLog: "正在載入日誌…",
-    noWorkerLog:
-      "— 尚無工作者日誌（任務尚未啟動或日誌已被輪替）—",
+    noWorkerLog: "— 尚無工作者日誌（任務尚未啟動或日誌已被輪替）—",
     noDescription: "— 沒有描述 —",
     noComments: "— 沒有留言 —",
     edit: "編輯",
@@ -707,8 +680,7 @@ export const zhHant: Translations = {
     reassign: "重新指派",
     renderingError: "看板分頁發生繪製錯誤",
     reloadView: "重新載入檢視",
-    wsAuthFailed:
-      "WebSocket 驗證失敗 — 請重新載入頁面以更新工作階段權杖。",
+    wsAuthFailed: "WebSocket 驗證失敗 — 請重新載入頁面以更新工作階段權杖。",
     markDone: "將 {n} 個任務標記為完成？",
     markArchived: "封存 {n} 個任務？",
     warning: "警告",
@@ -759,27 +731,20 @@ export const zhHant: Translations = {
       done: "已完成",
       archived: "已封存",
     },
-    confirmDone:
-      "將此任務標記為完成？工作者的領取將被釋放，下層相依任務將變為就緒。",
-    confirmArchive:
-      "封存此任務？它將從預設看板檢視中消失。",
-    confirmBlocked:
-      "將此任務標記為已封鎖？工作者的領取將被釋放。",
-    completionSummary:
-      "{label} 的完成摘要。這將作為任務結果儲存。",
-    completionSummaryRequired:
-      "在將任務標記為完成之前，必須提供完成摘要。",
+    confirmDone: "將此任務標記為完成？工作者的領取將被釋放，下層相依任務將變為就緒。",
+    confirmArchive: "封存此任務？它將從預設看板檢視中消失。",
+    confirmBlocked: "將此任務標記為已封鎖？工作者的領取將被釋放。",
+    completionSummary: "{label} 的完成摘要。這將作為任務結果儲存。",
+    completionSummaryRequired: "在將任務標記為完成之前，必須提供完成摘要。",
     triagePlaceholder: "粗略的想法 — AI 將完善規格…",
     taskTitlePlaceholder: "新任務標題…",
     specifier: "規格制定者",
     assigneePlaceholder: "負責人",
     priority: "優先順序",
-    skillsPlaceholder:
-      "技能（選填，以逗號分隔）：translation、github-code-review",
+    skillsPlaceholder: "技能（選填，以逗號分隔）：translation、github-code-review",
     noParent: "— 無上層任務 —",
     workspacePathDir: "工作區路徑（必填，例如 ~/projects/my-app）",
-    workspacePathOptional:
-      "工作區路徑（選填，留空則依負責人推導）",
+    workspacePathOptional: "工作區路徑（選填，留空則依負責人推導）",
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
   },

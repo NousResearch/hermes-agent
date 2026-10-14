@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const fr: Translations = {
+export const fr: TranslationOverlay = {
   common: {
     save: "Enregistrer",
     saving: "Enregistrement...",
@@ -230,8 +230,7 @@ export const fr: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Cela supprime la tâche du planning. Cette action est irréversible.",
+    confirmDeleteMessage: "Cela supprime la tâche du planning. Cette action est irréversible.",
     confirmDeleteTitle: "Supprimer la tâche planifiée ?",
     newJob: "Nouvelle tâche cron",
     nameOptional: "Nom (facultatif)",
@@ -260,8 +259,7 @@ export const fr: Translations = {
       onceAt: "Exécuter le",
       customLabel: "Expression cron",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "Expression cron à cinq champs (minute, heure, jour, mois, jour de la semaine).",
+      customHint: "Expression cron à cinq champs (minute, heure, jour, mois, jour de la semaine).",
       preview: "Envoyé sous la forme",
       previewEmpty: "(incomplet)",
     },
@@ -331,11 +329,9 @@ export const fr: Translations = {
     disableRuntime: "Désactiver",
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
-    toggleTakesEffectAfterRestart:
-      "Enregistré — redémarrez la passerelle pour appliquer la modification.",
+    toggleTakesEffectAfterRestart: "Enregistré — redémarrez la passerelle pour appliquer la modification.",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
-    headline:
-      "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
+    headline: "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inactif",
     installBtn: "Installer",
@@ -355,7 +351,8 @@ export const fr: Translations = {
     removeConfirm: "Retirer ce plugin de ~/.hermes/plugins/ ?",
     removeHint: "Seuls les plugins installés par l'utilisateur sous ~/.hermes/plugins peuvent être supprimés.",
     rescanHeading: "Registre des plugins SPA",
-    rescanHint: "Re-scannez après avoir ajouté des fichiers sur le disque pour que la barre latérale prenne en compte les nouveaux manifestes.",
+    rescanHint:
+      "Re-scannez après avoir ajouté des fichiers sur le disque pour que la barre latérale prenne en compte les nouveaux manifestes.",
     runtimeHeading: "Exécution de la passerelle (plugins YAML)",
     saveProviders: "Enregistrer les paramètres de fournisseur",
     savedProviders: "Paramètres de fournisseur enregistrés.",
@@ -396,7 +393,8 @@ export const fr: Translations = {
     importConfig: "Importer la configuration depuis JSON",
     resetDefaults: "Réinitialiser aux valeurs par défaut",
     resetScopeTooltip: "Réinitialiser {scope} aux valeurs par défaut",
-    confirmResetScope: "Réinitialiser tous les paramètres de {scope} aux valeurs par défaut ? Cela ne met à jour que le formulaire — les modifications ne sont écrites dans config.yaml qu'après avoir appuyé sur Enregistrer.",
+    confirmResetScope:
+      "Réinitialiser tous les paramètres de {scope} aux valeurs par défaut ? Cela ne met à jour que le formulaire — les modifications ne sont écrites dans config.yaml qu'après avoir appuyé sur Enregistrer.",
     resetScopeToast: "{scope} réinitialisé aux valeurs par défaut — vérifiez et enregistrez pour conserver",
     rawYaml: "Configuration YAML brute",
     searchResults: "Résultats de recherche",
@@ -429,7 +427,8 @@ export const fr: Translations = {
   },
 
   env: {
-    changesNote: "Les modifications sont enregistrées sur le disque immédiatement. Les sessions actives récupèrent les nouvelles clés automatiquement.",
+    changesNote:
+      "Les modifications sont enregistrées sur le disque immédiatement. Les sessions actives récupèrent les nouvelles clés automatiquement.",
     confirmClearMessage:
       "La valeur stockée pour cette variable sera supprimée de votre fichier .env. Cette action ne peut pas être annulée depuis l'interface.",
     confirmClearTitle: "Effacer cette clé ?",
@@ -449,13 +448,15 @@ export const fr: Translations = {
     showValue: "Afficher la valeur réelle",
     hideValue: "Masquer la valeur",
     customTitle: "Clés personnalisées",
-    customHint: "Variables d'environnement arbitraires stockées dans votre .env que Hermes ne reconnaît pas. Utilisez-les pour injecter des variables d'environnement pour des compétences, des serveurs MCP ou vos propres outils.",
+    customHint:
+      "Variables d'environnement arbitraires stockées dans votre .env que Hermes ne reconnaît pas. Utilisez-les pour injecter des variables d'environnement pour des compétences, des serveurs MCP ou vos propres outils.",
     customConfigured: "{count} clé(s) personnalisée(s) définie(s)",
     addCustomKey: "Ajouter une clé personnalisée",
     customKeyName: "Nom de la variable",
     customKeyNamePlaceholder: "p. ex. MY_SERVICE_API_KEY",
     add: "Ajouter",
-    invalidKeyName: "Utilisez uniquement des lettres, des chiffres et des traits de soulignement (doit commencer par une lettre ou un trait de soulignement).",
+    invalidKeyName:
+      "Utilisez uniquement des lettres, des chiffres et des traits de soulignement (doit commencer par une lettre ou un trait de soulignement).",
   },
 
   oauth: {
@@ -609,11 +610,10 @@ export const fr: Translations = {
       copy_button: "Copier l'image",
       copied: "Copié ✓",
       download_button: "Télécharger le PNG",
-      hint:
-        "Partager sur X ouvre une publication préremplie dans un nouvel onglet. Cliquez d'abord sur Copier l'image si vous voulez joindre le badge 1200×630 — X vous laisse le coller directement dans l'éditeur de tweet. Télécharger le PNG enregistre le fichier pour l'utiliser n'importe où.",
+      hint: "Partager sur X ouvre une publication préremplie dans un nouvel onglet. Cliquez d'abord sur Copier l'image si vous voulez joindre le badge 1200×630 — X vous laisse le coller directement dans l'éditeur de tweet. Télécharger le PNG enregistre le fichier pour l'utiliser n'importe où.",
       clipboard_unsupported:
         "La copie d'image dans le presse-papiers n'est pas prise en charge par ce navigateur — utilisez Télécharger à la place.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -628,12 +628,6 @@ export const fr: Translations = {
       "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slug: "Slug",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nom affiché",
     displayNameHint: "(facultatif)",
     description: "Description",
@@ -676,8 +670,7 @@ export const fr: Translations = {
     runHistory: "Historique d'exécution",
     workerLog: "Log du worker",
     loadingLog: "Chargement du log…",
-    noWorkerLog:
-      "— pas encore de log du worker (la tâche n'a pas démarré ou le log a été effacé par rotation) —",
+    noWorkerLog: "— pas encore de log du worker (la tâche n'a pas démarré ou le log a été effacé par rotation) —",
     noDescription: "— aucune description —",
     noComments: "— aucun commentaire —",
     edit: "modifier",
@@ -708,8 +701,7 @@ export const fr: Translations = {
     reassign: "Réassigner",
     renderingError: "L'onglet Kanban a rencontré une erreur de rendu",
     reloadView: "Recharger la vue",
-    wsAuthFailed:
-      "Échec d'authentification WebSocket — rechargez la page pour rafraîchir le jeton de session.",
+    wsAuthFailed: "Échec d'authentification WebSocket — rechargez la page pour rafraîchir le jeton de session.",
     markDone: "Marquer {n} tâche(s) comme terminée(s) ?",
     markArchived: "Archiver {n} tâche(s) ?",
     warning: "Avertissement",
@@ -762,25 +754,19 @@ export const fr: Translations = {
     },
     confirmDone:
       "Marquer cette tâche comme terminée ? La revendication du worker est libérée et les enfants dépendants deviennent prêts.",
-    confirmArchive:
-      "Archiver cette tâche ? Elle disparaîtra de la vue par défaut du tableau.",
-    confirmBlocked:
-      "Marquer cette tâche comme bloquée ? La revendication du worker est libérée.",
-    completionSummary:
-      "Résumé d'achèvement pour {label}. Stocké comme result de la tâche.",
-    completionSummaryRequired:
-      "Un résumé d'achèvement est requis avant de marquer une tâche comme terminée.",
+    confirmArchive: "Archiver cette tâche ? Elle disparaîtra de la vue par défaut du tableau.",
+    confirmBlocked: "Marquer cette tâche comme bloquée ? La revendication du worker est libérée.",
+    completionSummary: "Résumé d'achèvement pour {label}. Stocké comme result de la tâche.",
+    completionSummaryRequired: "Un résumé d'achèvement est requis avant de marquer une tâche comme terminée.",
     triagePlaceholder: "Idée approximative — l'IA la spécifiera…",
     taskTitlePlaceholder: "Titre de la nouvelle tâche…",
     specifier: "specifier",
     assigneePlaceholder: "assigné",
     priority: "Priorité",
-    skillsPlaceholder:
-      "compétences (facultatif, séparées par virgules): translation, github-code-review",
+    skillsPlaceholder: "compétences (facultatif, séparées par virgules): translation, github-code-review",
     noParent: "— aucun parent —",
     workspacePathDir: "chemin du workspace (requis, par ex. ~/projects/my-app)",
-    workspacePathOptional:
-      "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
+    workspacePathOptional: "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
   },

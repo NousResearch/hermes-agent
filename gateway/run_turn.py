@@ -739,7 +739,9 @@ class GatewayTurnMixin:
 
         # Hard safety valve: force compression at an extreme message count regardless of tokens,
         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
-        _needs_compress = _approx_tokens >= _compress_token_threshold or _msg_count >= hs.hard_msg_limit
+        _token_valve = _approx_tokens >= _compress_token_threshold
+        _msg_valve = _msg_count >= hs.hard_msg_limit
+        _needs_compress = _token_valve or _msg_valve
 
         if _needs_compress:
             # DB-backed cooldown (shared with context_compressor.py): survives gateway restarts, so a
@@ -770,10 +772,20 @@ class GatewayTurnMixin:
             _needs_compress = False
 
         if _needs_compress:
+            # Attribute which valve fired: the threshold copy below is always printed, so a
+            # message-limit trigger (e.g. a stale hygiene_hard_message_limit carried from an
+            # older default) reads as a token-threshold hit and sends debugging down the
+            # wrong path — the tokens were nowhere near the threshold.
+            _hyg_triggers = " + ".join(
+                reason for valve, reason in (
+                    (_token_valve, "token threshold"),
+                    (_msg_valve, "hard message limit"),
+                ) if valve
+            )
             logger.info(
                 "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                "(threshold: %s%% of %s = %s tokens)",
-                _msg_count, f"{_approx_tokens:,}", _token_source,
+                "(trigger: %s; threshold: %s%% of %s = %s tokens)",
+                _msg_count, f"{_approx_tokens:,}", _token_source, _hyg_triggers,
                 int(hs.threshold_pct * 100), f"{_hyg_context_length:,}", f"{_compress_token_threshold:,}",
             )
         return self._HygienePlan(_needs_compress, _approx_tokens, _msg_count, _warn_token_threshold)

@@ -6,6 +6,9 @@ are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.
 from __future__ import annotations
 
 from pm import install_hint
+from gateway.platforms.typing_scope import set_typing_paused
+from gateway.run_stream_config import GatewayStreamConfigMixin
+
 import logging
 from typing import TYPE_CHECKING
 import asyncio
@@ -165,7 +168,7 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
+class GatewayTurnMixin(GatewayStreamConfigMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
     def _resolve_session_agent_runtime(
@@ -2667,43 +2670,6 @@ class GatewayTurnMixin:
             url = ((_load_gateway_config().get("gateway") or {}).get("proxy_url") or "").strip()
         return url.rstrip("/") if url else None
 
-    def _build_stream_consumer_config(
-        self, source: SessionSource, scfg: Any, adapter: Any, *, on_missing_cursor: str,
-    ) -> tuple[Any, Optional[Callable[[], None]]]:
-        """Build the shared ``StreamConsumerConfig`` and optional Telegram pause-typing closure.
-        For non-editing adapters ``on_missing_cursor="fallback"`` streams with an empty cursor;
-        ``"raise"`` raises ``RuntimeError`` so the caller skips streaming entirely."""
-        from gateway.stream_consumer import StreamConsumerConfig
-        _pause_typing_before_finalize = None
-        if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
-            def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
-                _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never
-        # be updated — unless they have a native-streaming transport (WeCom msgtype "stream").
-        _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        _adapter_supports_native_stream = bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
-        if not _adapter_supports_edit and not _adapter_supports_native_stream and on_missing_cursor == "raise":
-            raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor if _adapter_supports_edit else ""
-        # Some Matrix clients render the cursor as tofu: stream text, no cursor.
-        if source.platform == Platform.MATRIX:
-            _effective_cursor = ""
-        # Fresh-final applies to Telegram only (others edit in place cheaply).
-        # Fresh-final applies to Telegram only — other platforms either edit in place cheaply (Discord,
-        # Slack) or don't have the timestamp-on-edit / edit-timestamp-stays-stale problem. (Ported from
-        # openclaw/openclaw#72038.)
-        _fresh_final_secs = (
-            float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
-            if source.platform == Platform.TELEGRAM else 0.0
-        )
-        _consumer_cfg = StreamConsumerConfig(
-            edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor,
-            fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
-            chat_type=getattr(source, "chat_type", "") or "",
-        )
-        return _consumer_cfg, _pause_typing_before_finalize
-
     def _run_still_current_fn(self, session_key: Optional[str], run_generation: Optional[int]) -> Callable[[], bool]:
         """Predicate: does this run's generation still own ``session_key``? (always True when untracked)."""
         def _run_still_current() -> bool:
@@ -3910,6 +3876,7 @@ class GatewayTurnMixin:
         # Restart the typing indicator; the outer typing task may be stale.
         if _clear_adapter:
             with suppress(Exception):
+                set_typing_paused(_clear_adapter, source.chat_id, paused=False, metadata=_status_thread_metadata)
                 await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
         # Re-baseline the cached agent's message_count before recursing, else the coherence guard

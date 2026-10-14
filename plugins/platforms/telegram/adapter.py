@@ -180,6 +180,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.topic_activity import TelegramTopicActivityMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -511,7 +512,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramTopicActivityMixin, TelegramHeldInboundMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -3585,6 +3586,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         long-polls live on until they rotted into CLOSE-WAIT while the adapter still reported connected
         (#111727). ``_keep_typing`` already refreshes every 2s, so one in-flight re-arm per chat, at most
         one per ``typing_retrigger_min_interval_seconds``, covers the gap a landed message leaves."""
+        self._topic_activity_state().forget(chat_id, metadata)
         if (metadata or {}).get("notify") or not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
         # __dict__.setdefault: tests build adapters via object.__new__() (no __init__).
@@ -4070,6 +4072,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return (chat_type or "").lower() in {"dm", "private"}
 
     async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        return await self._topic_activity_state().stream(self, chat_id, draft_id, content, metadata)
+
+    async def _send_draft_frame(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
         if not self._bot:
@@ -4757,7 +4762,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await self._edit_md_quiet(query, edit_text)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
-            self.resume_typing_for_chat(str(cb["chat_id"]))
+            self.resume_typing_for_chat(str(cb["chat_id"]), metadata={"thread_id": cb.get("thread_id")})
 
     async def _handle_slash_confirm_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``sc:<choice>:<confirm_id>`` — resolve a slash-command confirmation."""
@@ -5556,34 +5561,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         budget = getattr(self, "_telegram_chat_outbound_slot_secs", _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS)
         slot_until[str(normalize_telegram_chat_id(chat_id))] = (
             asyncio.get_running_loop().time() + max(0.0, budget))
-
-    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
-        if not self._bot or self._typing_in_cooldown(chat_id):
-            return
-        _is_dm_topic: bool = False
-        message_thread_id: Optional[int] = None
-
-        async def _action(**kw) -> None:
-            await self._bot.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
-            self._telegram_typing_cooldown_until.pop(str(chat_id), None)
-        try:
-            _is_dm_topic = self._dm_topic_fallback(metadata)
-            message_thread_id = self._message_thread_id_for_typing(self._metadata_thread_id(metadata))
-            await _action(message_thread_id=message_thread_id)
-        except Exception as e:
-            # DM topic lanes: Telegram may reject message_thread_id — retry without it so the indicator at
-            # least appears in the main DM view.
-            if _is_dm_topic and message_thread_id is not None:
-                try:
-                    await _action()
-                    return
-                except Exception as fallback_exc:
-                    if self._is_transient_typing_error(fallback_exc):
-                        self._record_typing_cooldown(chat_id, fallback_exc)
-            elif self._is_transient_typing_error(e):
-                self._record_typing_cooldown(chat_id, e)
-            logger.debug("[%s] Failed to send Telegram typing indicator: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Get information about a Telegram chat."""

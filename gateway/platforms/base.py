@@ -18,6 +18,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from gateway.platforms.typing_scope import TypingPauseMixin
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -1911,7 +1912,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(TypingPauseMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2025,7 +2026,7 @@ class BasePlatformAdapter(ABC):
         # See #60671.
         self._streaming_tts_completed_turns: set[str] = set()
         # Chats whose typing indicator is paused (approval waits); _keep_typing skips them.
-        self._typing_paused: set = set()
+        self._typing_paused: set[str | tuple[str, str]] = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
         self._status_text: dict[str, str] = {}
 
@@ -3401,12 +3402,14 @@ class BasePlatformAdapter(ABC):
         state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
         timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
+        from gateway.platforms.typing_scope import typing_scope
+        scope = typing_scope(self.platform, chat_id, metadata)
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                if chat_id not in self._typing_paused and scope not in self._typing_paused:
                     try:
                         await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
                                                timeout=_send_typing_timeout)
@@ -3431,7 +3434,7 @@ class BasePlatformAdapter(ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.discard(scope)
             # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
@@ -3439,7 +3442,9 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, typing_task: asyncio.Task | None = None, *, metadata=None,
         timeout: float = 0.5, stop_attempts: int = 2) -> None:
         """Stop the refresh task and platform typing state as one operation."""
-        self._typing_paused.add(chat_id)
+        from gateway.platforms.typing_scope import typing_scope
+        scope = typing_scope(self.platform, chat_id, metadata)
+        self._typing_paused.add(scope)
         try:
             if typing_task is not None and not typing_task.done():
                 typing_task.cancel()
@@ -3451,20 +3456,12 @@ class BasePlatformAdapter(ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.discard(chat_id)
+            self._typing_paused.discard(scope)
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""
         with contextlib.suppress(Exception):
             await self._stop_typing_with_metadata(chat_id, metadata)
-
-    def pause_typing_for_chat(self, chat_id: str) -> None:
-        """Pause typing for a chat (approval waits); GIL-safe from the sync agent thread."""
-        self._typing_paused.add(chat_id)
-
-    def resume_typing_for_chat(self, chat_id: str) -> None:
-        """Resume typing indicator for a chat after approval resolves."""
-        self._typing_paused.discard(chat_id)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
         """Signal the active session loop to stop and clear typing immediately."""

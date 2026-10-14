@@ -5,6 +5,8 @@ the one-off commands.  run.py helpers are imported lazily."""
 
 from __future__ import annotations
 
+from gateway.platforms.typing_scope import set_typing_paused
+
 import asyncio
 import contextlib
 import dataclasses
@@ -266,7 +268,7 @@ class GatewaySlashCommandsMixin(
         source = event.source
         adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
         if adapter:
-            adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
+            set_typing_paused(adapter, source.chat_id, paused=False, metadata={"thread_id": source.thread_id})  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
             return confirmation_text
         if adapter:

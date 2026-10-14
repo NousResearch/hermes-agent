@@ -1549,8 +1549,13 @@ class GatewayStartupMixin:
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
     )
     _POST_RECONNECT_WATCHERS = (
-        "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
+        "_handoff_watcher", "_async_delegation_watcher", "_background_typing_watcher",
+        "_loop_wakeup_watcher", "_profile_reconcile_watcher",
     )
+
+    async def _background_typing_watcher(self) -> None:
+        from gateway.background_typing import background_typing_loop
+        await background_typing_loop(self)
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""

@@ -1436,6 +1436,36 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 
 Unknown values log a warning and fall back to `important`.
 
+## Typing while work is active
+
+Hermes refreshes Telegram's `typing…` indicator during a foreground turn, including
+model calls and tools. Queued follow-up turns resume the refresh after the previous
+stream finishes. Pausing for an approval or question affects only that Telegram
+topic, not other topics in the same chat.
+
+In private-chat topics, Telegram clients may show native typing only under All
+Messages. Hermes also refreshes a topic-local, ephemeral **Thinking…** draft every
+10 seconds while work is active. This works with answer streaming disabled too.
+When an answer is streaming, activity refreshes preserve that draft's text instead
+of replacing it with a blank placeholder. Final messages clear the preview; without
+a final message (for example, cancellation), Telegram expires it after about 30
+seconds. No progress message is added to history. Set
+`platforms.telegram.extra.topic_activity_preview: false` to disable this preview
+without disabling native typing. Older Bot API servers that reject empty drafts
+fall back to native typing, with a cooldown between preview attempts.
+
+After a foreground turn returns, running background delegations and terminal jobs
+with `notify_on_complete: true` continue to refresh typing in their owning topic.
+Long-lived servers without completion notification do not keep the bot typing.
+Background refreshes stop when work exits or its owning conversation is closed;
+multiple jobs in the same topic share one refresh per watcher tick. The existing
+`platforms.telegram.typing_indicator: false` setting disables these refreshes too.
+
+Telegram keeps each chat action for at most five seconds and clears it when a bot
+message arrives. Network failures, rate limits, or client behavior can cause gaps;
+absence of typing is not proof that work has stopped. Typing means execution is
+active, not that useful progress is guaranteed.
+
 ## Status messages edited in place
 
 The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing context…", "Calling tool…") through `send_or_update_status()`, which keeps a `{(chat_id, status_key) → message_id}` cache and **edits the existing bubble** on subsequent emits instead of appending a new one each time. Distinct `status_key` values get their own messages; distinct chats never collide. If the edit fails (e.g. the user deleted the message, or it's older than Telegram allows for edits), the cache entry is dropped and the next emit posts a fresh message and re-caches its ID. No config required — this is the default Telegram behavior. Other adapters that don't implement `send_or_update_status` fall through to plain `send()` unchanged.

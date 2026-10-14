@@ -3,8 +3,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 import os
@@ -1014,9 +1015,9 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     assert adapter._should_observe_unmentioned_group_message(human) is False
 
 
-def _replying_to(message, *, user_id, message_id=10):
+def _replying_to(message, *, user_id=None, message_id=10):
     message.reply_to_message = SimpleNamespace(
-        from_user=SimpleNamespace(id=user_id), message_id=message_id, text="earlier", caption=None)
+        from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None)
     return message
 
 
@@ -1025,6 +1026,7 @@ def _replying_to(message, *, user_id, message_id=10):
     (_group_message("sure, saturday", reply_to_bot=True), True),
     (_group_message("hermes, add milk to the list"), True),
     (_group_message("", caption="/status"), True),
+    (_group_message(" /status"), True),
     (_dm_message("hello"), True),
     (_replying_to(_group_message("yes, saturday"), user_id=222), False),
     (_group_message("@alice are we buying the fridge?", entities=[_mention_entity("@alice are we buying the fridge?", "@alice")]), False),
@@ -1032,10 +1034,11 @@ def _replying_to(message, *, user_id, message_id=10):
     (_group_message("are we buying the fridge on saturday?"), None),
     (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
     (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
+    (_replying_to(_group_message("agreed?")), None),
 ], ids=[
-    "mention", "reply-to-bot", "wake-word", "caption-command", "dm",
+    "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
     "reply-to-other-member", "opens-with-other-mention", "chatter",
-    "question", "mentions-other-mid-question", "forum-topic-root",
+    "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
 ])
 def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
     adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])
@@ -1043,11 +1046,27 @@ def test_reply_expected_follows_who_the_group_message_addresses(message, expecte
     assert adapter._build_message_event(message, MessageType.TEXT).reply_expected is expected
 
 
-def test_photo_batch_keeps_the_reply_expectation_of_an_addressed_photo():
+@pytest.mark.asyncio
+async def test_photo_batch_addressed_to_the_bot_keeps_the_silence_notice():
     adapter = _make_adapter(require_mention=False)
     pending = {}
     for caption in ("just a photo", "/status"):
         event = adapter._build_message_event(_group_message("", caption=caption), MessageType.PHOTO)
         adapter._merge_into_pending(pending, "album", event)
-
     assert pending["album"].reply_expected is True
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="album", stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, reply_expected=False,
+        source=pending["album"].source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id=None, run_generation=1,
+    )
+    result = {"final_response": "[SILENT]", "failed": False}
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+    turn_ctx.reply_expected = pending["album"].reply_expected
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]

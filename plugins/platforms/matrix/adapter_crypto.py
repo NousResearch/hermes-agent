@@ -1,4 +1,5 @@
-"""Matrix E2EE crypto state-store shim handed to mautrix's OlmMachine."""
+"""Matrix E2EE shims handed to mautrix: the OlmMachine state store and Megolm
+ciphertext padding tolerance (libolm rejects padded base64 with BAD_SIGNATURE)."""
 
 from __future__ import annotations
 
@@ -49,3 +50,26 @@ class _CryptoStateStore:
 
     async def find_shared_rooms(self, user_id: str) -> list:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
+
+
+def with_megolm_padding_tolerance(machine):
+    """Bind a padding-tolerant decrypt_megolm_event onto an OlmMachine instance.
+
+    libolm only accepts Matrix's unpadded base64, so clients that emit padded
+    Megolm ciphertext (eM Client) fail decryption with BAD_SIGNATURE even though
+    the spec recommends accepting both representations. Dropping the trailing
+    padding cannot forge a message: libolm still verifies the signature and MAC
+    over the decoded bytes (#138108). Decorated per instance rather than via a
+    subclass because mautrix is a Linux-only optional import that tests swap
+    for plain mocks."""
+    original = machine.decrypt_megolm_event
+
+    async def decrypt_megolm_event(evt, *args, **kwargs):
+        content = getattr(evt, "content", None)
+        ciphertext = getattr(content, "ciphertext", None)
+        if isinstance(ciphertext, str) and ciphertext.endswith("="):
+            content.ciphertext = ciphertext.rstrip("=")
+        return await original(evt, *args, **kwargs)
+
+    machine.decrypt_megolm_event = decrypt_megolm_event
+    return machine

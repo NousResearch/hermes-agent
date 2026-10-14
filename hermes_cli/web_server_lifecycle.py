@@ -190,7 +190,7 @@ def _eager_reconcile_own_session_db() -> None:
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
-            "reads will retry the heal per poll", exc,
+            "reads will report the store unavailable until owner recovery", exc,
         )
 
 
@@ -517,3 +517,57 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
         _log.info("Dashboard trusted proxies: %s", ", ".join(trusted))
 
     return trusted
+
+
+def build_listener_server(served_app, host: str, port: int, *, auth_required: bool,
+                          ws_ping: Optional[tuple[float, float]] = None,
+                          timeout_graceful_shutdown: Optional[float] = 3, lifespan: str = "auto"):
+    """uvicorn ``Config`` + ``Server`` for a dashboard or gateway-session listener (FastAPI-free, so
+    the gateway can build its session listener without importing the dashboard app).
+
+    WS keepalive ping runs ON the agent event loop; a GIL-holding worker call can starve it for
+    minutes, so uvicorn misses the pong and drops a healthy local socket (#53773/#48445/#50005).
+    The ping only detects half-open connections (proxy 524, dropped tunnels), impossible on
+    loopback where a dead client sends a real FIN/RST -> WebSocketDisconnect. So: no ping on
+    loopback; non-loopback sits behind a Cloudflare Tunnel (~100s idle) and keeps a config-driven
+    cadence (dashboard.ws_ping_interval/_timeout, #79635) defaulting to 20/20. *ws_ping* overrides
+    both (SSH-isolated Desktop backends).
+    """
+    import uvicorn
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES, _LOOPBACK_HOST_VALUES
+
+    try:
+        dash_cfg = load_config().get("dashboard") or {}
+    except Exception:  # health: allow BLE001 -- same fail-open read as web_server._build_uvicorn_server: a broken config.yaml must not stop the listener
+        dash_cfg = {}
+
+    def _ws_ping_setting(key: str, default: float = 20.0) -> float:
+        try:
+            return float(dash_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    if ws_ping is None:
+        ws_ping = (None, None) if host in _LOOPBACK_HOST_VALUES else (
+            _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    config = uvicorn.Config(
+        served_app, host=host, port=port, log_level="warning",
+        # Off by default so _ws_client_is_allowed sees the real peer, not
+        # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
+        # X-Forwarded-Proto for cookie Secure flags.
+        proxy_headers=auth_required,
+        # Loopback-only unless the operator trusts a bounded upstream proxy, so
+        # spoofed X-Forwarded-* from arbitrary callers is never honoured.
+        forwarded_allow_ips=_dashboard_forwarded_allow_ips(dash_cfg),
+        ws_ping_interval=ws_ping[0],
+        ws_ping_timeout=ws_ping[1],
+        ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
+        lifespan=lifespan,
+    )
+    return config, uvicorn.Server(config)

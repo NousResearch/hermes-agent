@@ -60,11 +60,11 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them. ACP rows are editor-driven
-// conversations: every editor wake mints an auto-titled row, so they would
-// bury local chats — and they were never ended before #118216, which also
-// kept prune/archive away from them.
+// conversations (Orca, Zed): they are real chats the person had, so they stay
+// in recents. They were excluded while every editor wake minted an auto-titled
+// row and none of them was ever ended before #118216; both are fixed, and a
+// hidden conversation the person cannot reopen is the worse trade.
 const SIDEBAR_EXCLUDED_SOURCES = [
-  'acp',
   'cron',
   'kanban',
   'oneshot',

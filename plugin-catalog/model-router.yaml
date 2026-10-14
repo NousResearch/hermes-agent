@@ -35,3 +35,4 @@ capabilities:
     - tool_execution
     - llm_request
   requires_env: []
+requires_hermes: ">=0.21.6"

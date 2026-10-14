@@ -13,6 +13,7 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
+import { recordPendingColdResumeModelChoice } from '@/lib/pending-cold-resume-model'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -20,6 +21,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffortWire,
+  $selectedStoredSessionId,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
@@ -316,6 +318,22 @@ export function useModelControls({
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
       if (!liveSessionId) {
+        // #138492: when the composer targets a stored conversation whose
+        // runtime is not yet bound, session.create never runs for it — the
+        // resume path consumes this pick instead once the runtime exists.
+        const storedSessionId = touchesPrimary ? $selectedStoredSessionId.get() : null
+
+        if (storedSessionId) {
+          recordPendingColdResumeModelChoice({
+            storedSessionId,
+            provider: selection.provider,
+            model: selection.model,
+            prevModel,
+            prevProvider,
+            prevSource
+          })
+        }
+
         return true
       }
 

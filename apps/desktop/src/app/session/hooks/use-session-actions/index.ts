@@ -32,6 +32,7 @@ import {
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { applyPendingColdResumeModelChoice } from '@/lib/pending-cold-resume-model'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
@@ -2351,6 +2352,11 @@ export function useSessionActions({
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
+
+        // #138492: a manual pick made while this runtime was still unbound is
+        // applied now that the runtime exists — the gateway publishes a fresh
+        // session.info on the switch, which re-syncs every surface.
+        void applyPendingColdResumeModelChoice(storedSessionId, resumed.session_id, requestGateway)
 
         // Preserve the turn-elapsed timer across cold resume: the gateway
         // reports when the in-flight turn started so the desktop can restore

@@ -4,12 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import {
+  _resetPendingColdResumeModelChoiceForTests,
+  takePendingColdResumeModelChoice
+} from '@/lib/pending-cold-resume-model'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
   $currentReasoningEffortWire,
+  $selectedStoredSessionId,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
@@ -92,9 +97,11 @@ describe('useModelControls', () => {
     notifyError.mockReset()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
+    _resetPendingColdResumeModelChoiceForTests()
     SessionStates.$sessionStates.set({})
   })
 
@@ -103,9 +110,11 @@ describe('useModelControls', () => {
     vi.restoreAllMocks()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
+    _resetPendingColdResumeModelChoiceForTests()
     SessionStates.$sessionStates.set({})
   })
 
@@ -129,6 +138,44 @@ describe('useModelControls', () => {
     })
     expect(queryClient.getQueryData(modelOptionsQueryKey('beta'))).toBeUndefined()
     expect(queryClient.getQueryData(modelOptionsQueryKey('beta', null, 'source-b'))).toBeUndefined()
+  })
+
+  it('records a pick made for a stored conversation whose runtime is not yet bound (#138492)', async () => {
+    // The composer targets an existing stored conversation, but its runtime is
+    // still unbound: the pick paints and reports success, and must be consumed
+    // by the resume path — session.create never runs for this conversation.
+    setCurrentModel('gpt-6.1-sol')
+    setCurrentProvider('openai-codex')
+    setCurrentModelSource('manual')
+    $selectedStoredSessionId.set('stored-1')
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    await expect(result.current.selectModel({ model: 'claude-opus-5-5', provider: 'anthropic' })).resolves.toBe(true)
+
+    expect(takePendingColdResumeModelChoice('stored-1')).toMatchObject({
+      storedSessionId: 'stored-1',
+      provider: 'anthropic',
+      model: 'claude-opus-5-5',
+      prevModel: 'gpt-6.1-sol',
+      prevProvider: 'openai-codex'
+    })
+    // No live session existed, so no config.set went out from the picker itself.
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('keeps a draft pick out of the cold-resume slot when no stored conversation is selected', async () => {
+    $selectedStoredSessionId.set(null)
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    await expect(result.current.selectModel({ model: 'claude-opus-5-5', provider: 'anthropic' })).resolves.toBe(true)
+
+    // A fresh draft's pick stays plain composer state for session.create.
+    expect(takePendingColdResumeModelChoice('stored-1')).toBeNull()
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('does not clobber the active session footer state with global model info', async () => {

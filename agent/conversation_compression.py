@@ -3621,11 +3621,6 @@ def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbat
     return held_archive_watermark(agent._session_db, agent.session_id, watermark, messages, verbatim_tail)
 
 
-def _held_watermark(agent: Any, watermark: Optional[int], messages: list, verbatim_tail: Optional[list]) -> Optional[int]:
-    """The in-place commit's cap; see :func:`held_archive_watermark`."""
-    return held_archive_watermark(agent._session_db, agent.session_id, watermark, messages, verbatim_tail)
-
-
 _ATTEMPT_TELEMETRY_FIELDS = (
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
 )

@@ -600,7 +600,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
                                    events.append(("feed", record["version"]))))
     monkeypatch.setattr(
         docker, "promote_stable",
-        lambda claim_tag, digest: events.append(("aliases", claim_tag)))
+        lambda claim_tag, digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
     seen_env = []
     monkeypatch.setattr(
         store, "check_from_env",
@@ -613,7 +613,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     )
 
     assert steps == [{"advance": "0.21.5"}]
-    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5"), ("store",)]
+    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5", "v0.21.5"), ("store",)]
     assert seen_env[0]["MS_STORE_PRODUCT_ID"] == "9NTEST"
 
 
@@ -653,8 +653,8 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
     alias = [None]
     events = []
 
-    def promote(claim_tag, digest):
-        events.append(("aliases", claim_tag))
+    def promote(claim_tag, digest, release_tag):
+        events.append(("aliases", claim_tag, release_tag))
         alias[0] = digest
 
     monkeypatch.setattr(channel_releases, "advance_stable",
@@ -671,12 +671,12 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
     steps = sequencer.reconcile(env, run=run, read_archive=no_archive)
 
     assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
-    assert events == [("aliases", "rc.1-v0.21.5")]
+    assert events == [("aliases", "rc.1-v0.21.5", "v0.21.5")]
     assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
     # The R2 head still names 0.21.4, but the stable alias carries the 0.21.5
     # receipt digest, so the next pass has nothing left to advance.
     assert sequencer.reconcile(env, run=run, read_archive=no_archive) == []
-    assert events == [("aliases", "rc.1-v0.21.5")]
+    assert events == [("aliases", "rc.1-v0.21.5", "v0.21.5")]
 
 
 def test_the_sequencer_narrates_every_phase_on_stderr_and_keeps_stdout_json(capsys):

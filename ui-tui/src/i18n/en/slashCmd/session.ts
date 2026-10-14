@@ -39,6 +39,8 @@ export const slashCmdSessionEn = {
     },
     model: {
       cancel: 'Cancel',
+      confirmStale: 'Model not switched: the session changed before the confirmation landed; run /model again.',
+      confirmTitle: (model: string) => `Confirm model switch to ${model}`,
       expensiveDetail: 'This model has unusually high known pricing.',
       expensiveTitle: 'Expensive model selection',
       invalidResponse: 'error: invalid response: model switch',

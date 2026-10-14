@@ -19,10 +19,10 @@ def _requested_provider(model_cfg) -> str | None:
 
 # Fields name lookups match on. Runtime sees them ``${VAR}``-expanded (load_config expands the
 # whole file), so matching expands only these; copied entries stay raw and secrets stay refs.
-_ROUTING_FIELDS = ("name", "provider_key", "base_url", "baseUrl", "url", "api")
+_ROUTING_FIELDS = ("name", "provider_key", "base_url", "baseUrl", "url", "api", "enabled")
 
 
-def _routed(entry):
+def _expand_routing_fields(entry):
     if not isinstance(entry, dict):
         return entry
     return {k: _expand_env_vars(v) if k in _ROUTING_FIELDS else v for k, v in entry.items()}
@@ -34,17 +34,16 @@ def _routing_view(cfg: dict) -> dict:
     view = dict(cfg)
     providers = cfg.get("providers")
     if isinstance(providers, dict):
-        view["providers"] = {k: _routed(v) for k, v in providers.items()}
+        view["providers"] = {k: _expand_routing_fields(v) for k, v in providers.items()}
     custom = cfg.get("custom_providers")
     if isinstance(custom, list):
-        view["custom_providers"] = [_routed(e) for e in custom]
+        view["custom_providers"] = [_expand_routing_fields(e) for e in custom]
     return view
 
 
-def _resolve(provider: str, cfg: dict):
-    """Runtime named-endpoint lookup on *cfg* (routing fields expanded) without reading any
-    credential."""
-    return _get_named_custom_provider(provider, config=_routing_view(cfg), resolve_credentials=False)
+def _resolve(provider: str, view: dict):
+    """Runtime named-endpoint lookup on a routing *view* without reading any credential."""
+    return _get_named_custom_provider(provider, config=view, resolve_credentials=False)
 
 
 def _source_of(cfg: dict, resolved: dict):
@@ -81,7 +80,9 @@ def launch_model_seed(source_cfg: dict) -> dict:
     requested = _normalize_custom_provider_name(provider)
     providers = source_cfg.get("providers")
     providers = providers if isinstance(providers, dict) else {}
-    selected = _resolve(provider, source_cfg)
+    # Resolve and locate on ONE view so the found key/index addresses the raw entry.
+    view = _routing_view(source_cfg)
+    selected = _resolve(provider, view)
     if selected is None:
         exact = providers.get(provider)
         # Bare ``custom`` runs as provider ``custom`` and reads ``providers.custom`` tuning too.
@@ -92,7 +93,7 @@ def launch_model_seed(source_cfg: dict) -> dict:
         ):
             seed["providers"] = {provider: exact}
         return seed
-    found = _source_of(_routing_view(source_cfg), selected)
+    found = _source_of(view, selected)
     if found is not None:
         section, where = found
         seed[section] = (
@@ -107,7 +108,7 @@ def _aliases(entry, key: str = "") -> frozenset[str]:
     """Every identity name-based lookups (runtime, ``/model`` pinning, pickers) accept for *entry*."""
     if not isinstance(entry, dict):
         return frozenset()
-    entry = _routed(entry)
+    entry = _expand_routing_fields(entry)
     key = key or str(entry.get("provider_key") or "")
     return custom_provider_aliases(str(entry.get("name") or key), key)
 
@@ -125,7 +126,7 @@ def merge_endpoint_seed(dst_cfg: dict, seed: dict) -> dict:
     seed_custom = seed.get("custom_providers") or []
     provider = _requested_provider(seed.get("model"))
     claimed: frozenset[str] = frozenset()
-    if provider and _resolve(provider, seed) is not None:
+    if provider and _resolve(provider, _routing_view(seed)) is not None:
         claimed = frozenset().union(
             *(_aliases(e, str(k)) for k, e in seed_providers.items()),
             *(_aliases(e) for e in seed_custom),

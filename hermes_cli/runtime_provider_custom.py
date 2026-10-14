@@ -194,8 +194,8 @@ def _get_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]] = None,
     resolve_credentials: bool = True,
 ) -> Optional[dict[str, Any]]:
-    """Resolve a named endpoint. Creation-time config copying supplies raw config and skips
-    credential reads; ordinary runtime callers keep their existing scoped resolution."""
+    """Resolve a named endpoint. Creation-time config copying supplies its own config snapshot
+    and skips credential reads; ordinary runtime callers keep their existing scoped resolution."""
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None

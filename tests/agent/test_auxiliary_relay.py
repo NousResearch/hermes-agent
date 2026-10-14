@@ -728,3 +728,104 @@ def test_codex_shim_relay_uses_chat_codec_not_responses(relay_turn):
         lease.release_managed_execution(consumer)
     assert result.choices[0].message.content == "ok"
     assert seen_bodies and seen_bodies[0]["messages"] == [{"role": "user", "content": "q"}]
+
+
+@pytest.mark.asyncio
+async def test_codex_shim_async_relay_uses_chat_codec_not_responses(relay_turn):
+    """Async twin of the sync regression: ``_relay_async_completion`` must pass the
+    mapped chat api_mode to Relay too, or an async Codex shim aux call dies in the
+    Responses codec with ``missing input`` exactly like the sync path did."""
+    _relay, turn = relay_turn
+    lease = turn.lease.host
+    consumer = "test.codex-shim-async-chat-codec"
+    from agent.auxiliary_client import CodexAuxiliaryClient
+
+    lease.retain_managed_execution(consumer)
+    seen_bodies = []
+    completed = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+        model="gpt-6.1-sol",
+    )
+
+    class _ShimCompletions:
+        async def create(self, **kwargs):
+            seen_bodies.append(kwargs)
+            return completed
+
+    shim_client = CodexAuxiliaryClient.__new__(CodexAuxiliaryClient)
+    shim_client._real_client = None
+    shim_client.api_key = "test-token"
+    shim_client.base_url = "https://chatgpt.com/backend-api/codex/"
+    shim_client.chat = SimpleNamespace(completions=_ShimCompletions())
+
+    @auxiliary_client._relay_auxiliary_call_async
+    async def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openai-codex", "gpt-6.1-sol", "codex_responses"
+        )
+        return await auxiliary_client._relay_async_completion(
+            shim_client,
+            {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "q"}]},
+            provider="openai-codex",
+            api_mode="codex_responses",
+        )
+
+    try:
+        # Without the fix this raises RuntimeError: invalid argument: OpenAI
+        # Responses request is missing input (Responses codec on a chat body).
+        result = await run("moa_reference")
+    finally:
+        lease.release_managed_execution(consumer)
+    assert result.choices[0].message.content == "ok"
+    assert seen_bodies and seen_bodies[0]["messages"] == [{"role": "user", "content": "q"}]
+
+
+def test_codex_shim_stream_relay_uses_chat_codec_not_responses(relay_turn):
+    """Streaming twin: ``_relay_sync_stream`` must pass the mapped chat api_mode to
+    Relay as well. The MoA aggregator's streaming path goes through here when the
+    resolved client is not the Codex shim itself (which bypasses Relay entirely),
+    so a future omission at this call site would break shim-shaped streams."""
+    _relay, turn = relay_turn
+    lease = turn.lease.host
+    consumer = "test.codex-shim-stream-chat-codec"
+    from agent.auxiliary_client import CodexAuxiliaryClient
+
+    lease.retain_managed_execution(consumer)
+    seen_bodies = []
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"), finish_reason=None)]),
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")]),
+    ]
+
+    class _ShimStream:
+        def create(self, **kwargs):
+            seen_bodies.append(kwargs)
+            return iter(chunks)
+
+    shim_client = CodexAuxiliaryClient.__new__(CodexAuxiliaryClient)
+    shim_client._real_client = None
+    shim_client.api_key = "test-token"
+    shim_client.base_url = "https://chatgpt.com/backend-api/codex/"
+    shim_client.chat = SimpleNamespace(completions=_ShimStream())
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "openai-codex", "gpt-6.1-sol", "codex_responses"
+        )
+        return auxiliary_client._relay_sync_stream(
+            shim_client,
+            {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "q"}], "stream": True},
+            provider="openai-codex",
+            api_mode="codex_responses",
+        )
+
+    try:
+        # Without the fix this raises RuntimeError: invalid argument: OpenAI
+        # Responses request is missing input (Responses codec on a chat body).
+        stream = run("moa_reference")
+        received = list(stream)
+    finally:
+        lease.release_managed_execution(consumer)
+    assert received == chunks
+    assert seen_bodies and seen_bodies[0]["messages"] == [{"role": "user", "content": "q"}]

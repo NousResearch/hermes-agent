@@ -1257,13 +1257,14 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
+from plugins.platforms.discord.adapter_handoff import DiscordHandoffMixin
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+class DiscordAdapter(DiscordMediaMixin, DiscordHandoffMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
                      BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -5611,59 +5612,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
-
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
-        """Create a handoff thread under a text channel; returns the thread id or ``None``.
-        Falls back to seed-message + ``message.create_thread``; DMs/voice/threads can't host threads."""
-        if not self._client or not DISCORD_AVAILABLE:
-            return None
-        try:
-            parent_id = int(parent_chat_id)
-        except (TypeError, ValueError):
-            return None
-        try:
-            parent = self._client.get_channel(parent_id)
-            if parent is None:
-                parent = await self._client.fetch_channel(parent_id)
-        except Exception as exc:
-            logger.warning(
-                "[%s] Handoff thread: cannot resolve parent %s: %s", self.name, parent_chat_id, exc,
-            )
-            return None
-        # DMs, voice channels, and existing threads can't host child threads.
-        if isinstance(parent, getattr(discord, "DMChannel", ())):
-            logger.info(
-                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
-                self.name, parent_chat_id,
-            )
-            return None
-        thread_name = (name or "handoff").strip()[:80] or "handoff"
-        reason = "Hermes session handoff"
-        try:
-            create = getattr(parent, "create_thread", None)
-            if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
-                return str(thread.id)
-        except Exception as direct_error:
-            logger.debug(
-                "[%s] Handoff thread: direct create failed (%s); trying seed-message fallback",
-                self.name, direct_error,
-            )
-        try:
-            send = getattr(parent, "send", None)
-            if send is None:
-                return None
-            seed_msg = await send(t("platform.discord.thread.handoff_seed", name=thread_name))
-            thread = await seed_msg.create_thread(
-                name=thread_name, auto_archive_duration=1440, reason=reason,
-            )
-            return str(thread.id)
-        except Exception as fallback_error:
-            logger.warning(
-                "[%s] Handoff thread: both create paths failed for parent %s: %s",
-                self.name, parent_chat_id, fallback_error,
-            )
-            return None
 
     def _self_contained_prompt_content(
         self, header: str, body: str, *, code_block: bool = False, tail: str = ""

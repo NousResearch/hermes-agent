@@ -463,6 +463,13 @@ alias; a declared conversation header selects its session before live-tip resolu
 when the API identity is incomplete (including API paths without a bound request
 session) or the caller is another platform. API calls
 have no chat sender or triggering message, so those fields are not synthesized.
+`features.runs_idempotency.tool_call_uid: true` advertises durable native tool occurrence metadata.
+For persisted model tool calls, `com.nousresearch.hermes/tool_call_uid` is the existing session-storage
+occurrence UID, captured before execution. Retries, restored history, and compression copies retain it;
+separate intentional calls receive distinct UIDs even when arguments or provider IDs match.
+Programmatic calls without a persisted occurrence omit this field. Nested calls cannot inherit it.
+Consumers requiring durable mutation identity must check this capability and require the field;
+provider IDs, JSON-RPC IDs, and argument hashes are not substitutes.
 Independent runs sharing a connection retain their own values. Model arguments
 remain unchanged.
 

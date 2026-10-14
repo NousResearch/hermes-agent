@@ -401,6 +401,9 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
         context = {field: _VAR_MAP[f"HERMES_SESSION_{suffix}"].get() for field, suffix in fields.items()}
         context["request_session_id"] = _SESSION_REQUEST_ID.get()
         if context["platform"] == "api_server" and all(isinstance(value, str) and value for value in context.values()):
+            from agent.tool_call_context import CURRENT_TOOL_CALL_UID
+            if uid := CURRENT_TOOL_CALL_UID.get():
+                context["tool_call_uid"] = uid
             call_options["meta"] = {f"com.nousresearch.hermes/{field}": value for field, value in context.items()}
     _call_coro = server.session.call_tool(tool_name, arguments=args, **call_options)
     _watch_children = getattr(server, "_watch_stdio_children", None)

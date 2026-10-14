@@ -245,6 +245,7 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
         "supported": True,
         "durable": self._run_idempotency_store.durable,
         "request_session_id": True,
+        "tool_call_uid": True,
         "retention_seconds": store_type.RETENTION_SECONDS}
 
 

@@ -838,7 +838,9 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
-    with _approval_observability(ids):
+    from agent.tool_call_context import dispatch_occurrence
+
+    with dispatch_occurrence(function_name, ids.tool_call_id), _approval_observability(ids):
         if skip_tool_execution_middleware:
             return _dispatch(function_args)
         from hermes_cli.middleware import run_tool_execution_middleware

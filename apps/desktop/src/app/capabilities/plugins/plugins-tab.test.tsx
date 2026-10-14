@@ -271,6 +271,56 @@ describe('PluginsTab', () => {
     expect($pluginInstallRequest.get()).toBeNull()
   })
 
+  // #135315: the embedded catalog's own links (card title, repo / docs / stars)
+  // cannot go through window.open — the main-process handler cannot prove which
+  // frame asked. Main injects the bridge into this frame; the message's origin
+  // is the whole trust decision, so it must be the hub origin.
+  it('opens a bridged picker link through the audited external opener', async () => {
+    const openExternal = vi.fn(async () => undefined)
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { openExternal }
+
+    render(<PluginsTab profile={null} />)
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'hermes-hub-open', url: 'https://github.com/NousResearch/hermes-agent' },
+        origin: 'https://hermes-agent.nousresearch.com'
+      })
+    )
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith('https://github.com/NousResearch/hermes-agent')
+    })
+
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('ignores a bridged open from a foreign origin or on a non-openable scheme', () => {
+    const openExternal = vi.fn(async () => undefined)
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { openExternal }
+
+    render(<PluginsTab profile={null} />)
+
+    const attempts: Array<[string, string]> = [
+      ['https://evil.example.com', 'https://evil.example.com/pwn'],
+      ['https://hermes-agent.nousresearch.com', 'javascript:alert(1)'],
+      ['https://hermes-agent.nousresearch.com', 'file:///etc/passwd'],
+      ['https://hermes-agent.nousresearch.com', 'hermes://plugin/install?catalog=x']
+    ]
+
+    for (const [origin, url] of attempts) {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'hermes-hub-open', url }, origin }))
+    }
+
+    expect(openExternal).not.toHaveBeenCalled()
+    // A bridged payload is never mistaken for a pick either.
+    expect($pluginInstallRequest.get()).toBeNull()
+
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
   it('toggles by canonical key through plugins.manage', async () => {
     $agentPlugins.set([
       {
@@ -814,5 +864,30 @@ describe('PluginsTab catalog UX', () => {
       dispose()
       dropPlugin('weather')
     }
+  })
+
+  // #135315: without clipboard-write the catalog's "Copy install command"
+  // control is denied by the permissions policy, and its links reach the OS
+  // browser through the injected open-bridge (see the bridged-open tests above)
+  // rather than window.open — which is why the frame keeps the minimum sandbox
+  // instead of allow-popups.
+  it('pins the catalog frame to its picker URL and clipboard posture (#135315)', () => {
+    const { container } = render(<PluginsTab profile={null} />)
+
+    const frame = container.querySelector('iframe[src*="embed=picker"]')
+
+    // The plugins catalog path must be the picker URL: main's
+    // isHermesHubPickerUrl allowlist pinning pairs with it.
+    expect(frame?.getAttribute('src')).toContain('/docs/plugins?embed=picker')
+    // Scripts + same-origin (the hub's own routing) ONLY. Deliberately no
+    // allow-popups: the frame's links reach the OS browser through the injected
+    // open-bridge, which needs no popup permission — allowing popups would just
+    // move the block from the renderer to a window-open handler that cannot
+    // prove the opener's origin.
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+    // The "Copy install command" control writes to the clipboard; the session
+    // permission handlers grant clipboard-sanitized-write only to the hub
+    // origins.
+    expect(frame?.getAttribute('allow')).toBe('clipboard-write')
   })
 })

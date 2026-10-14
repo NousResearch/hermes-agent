@@ -321,7 +321,14 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { claimHostSpawnGate } from './host-spawn-gate'
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
+import {
+  HERMES_HUB_FALLBACK_ORIGIN,
+  HERMES_HUB_ORIGIN,
+  isBridgedPickerNavigation,
+  isHermesHubClipboardWrite,
+  isHermesHubPickerUrl
+} from './hub-iframe-policy'
+import { HUB_PICKER_OPEN_BRIDGE_SOURCE } from './hub-picker-bridge'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -7209,26 +7216,14 @@ function focusedFrameOrigin(
   return null
 }
 
-/** The picker embed URL the hub iframe starts on (both deployments). */
-function isHermesHubPickerUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
-
-    return isHubOrigin && isPickerPath
-  } catch {
-    return false
-  }
-}
-
 /** Look up a subframe by its process/routing id; never throws. */
 function findFrameByIdentifier(
   webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
   frameProcessId: number,
   frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
+): { executeJavaScript?: (code: string, userGesture?: boolean) => Promise<unknown>; origin?: string; reload?: () => void } | null {
   const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
+    executeJavaScript?: (code: string, userGesture?: boolean) => Promise<unknown>
     processId?: number
     routingId?: number
     frameProcessId?: number
@@ -13569,6 +13564,44 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
       // A destroyed frame is gone; nothing to restore.
     }
   })
+  // The picker's own links (card titles, repo / docs / stars / pin links) reach
+  // the OS browser through the injected open-bridge, NOT through the
+  // window-open handler above (#135315). That handler cannot prove which frame
+  // asked: Electron 40's HandlerDetails carries no frame at all, and
+  // `getFocusedFrame()` is null for a cross-origin guest even with the window
+  // focused and the click a real trusted gesture (measured against the live
+  // catalog page 2026-10-14) — so its hub delegation is dead for every embed,
+  // and `sandbox="... allow-popups ..."` only moves the block from the renderer
+  // to that denial. Widening the gate is not an option either: the delegated
+  // target allowlist is scheme-only (isHermesHubExternalUrl), so "a hub frame
+  // exists somewhere in this window" would let a sandboxed artifact sharing the
+  // webContents force the OS browser open (GHSA-9f4c-93c8-jc8g). Identity is
+  // established HERE instead — the process/routing id Chromium reports for the
+  // committed navigation plus that LIVE frame's origin — and the injected shim
+  // posts its URLs to the renderer, which acts on them only when the origin
+  // Chromium sets on the message is the hub origin. See hub-picker-bridge.ts.
+  win.webContents.on(
+    'did-frame-navigate',
+    (event, url, _httpResponseCode, _httpStatusText, isMainFrame, frameProcessId, frameRoutingId) => {
+      if (isMainFrame) {
+        return
+      }
+
+      const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
+
+      if (!frame || !isBridgedPickerNavigation(url, safeFrameOrigin(frame))) {
+        return
+      }
+
+      // Re-injected on every committed navigation onto a picker URL, so a
+      // reload or a re-route can never leave the frame without its bridge.
+      const injected = frame.executeJavaScript?.(HUB_PICKER_OPEN_BRIDGE_SOURCE, true)
+
+      void injected?.catch(() => {
+        // A destroyed frame is gone; the next committed navigation re-injects.
+      })
+    }
+  )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

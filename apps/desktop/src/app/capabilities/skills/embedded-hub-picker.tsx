@@ -4,6 +4,7 @@ import { memo, type PointerEvent as ReactPointerEvent, useEffect, useRef, useSta
 import { Button } from '@/components/ui/button'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { bridgedHubOpenUrl } from '@/lib/hub-picker-bridge'
 import { Loader2 } from '@/lib/icons'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -138,6 +139,18 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
         return
       }
 
+      // A link inside the picker posts its URL here instead of calling
+      // window.open — the main process injects the bridge into this frame after
+      // verifying its origin, and the origin check just above is the entire
+      // trust decision (#135315). See electron/hub-picker-bridge.ts.
+      const bridgedUrl = bridgedHubOpenUrl(event.data)
+
+      if (bridgedUrl) {
+        void window.hermesDesktop?.openExternal?.(bridgedUrl)
+
+        return
+      }
+
       const data = event.data as SkillPickMessage | null
 
       if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
@@ -231,6 +244,17 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
+              // The hub's external links reach the OS browser through the
+              // picker open-bridge, not through window.open (#135315): main
+              // injects a bridge into this frame only after verifying the
+              // frame's own origin off the committed navigation, and the
+              // renderer acts on its message only when Chromium sets the origin
+              // to the hub. So this frame needs no allow-popups — that would
+              // only move the block from the renderer to a handler that cannot
+              // prove the opener — while clipboard-write is what unblocks the
+              // Copy controls. The will-frame-navigate guard in main keeps this
+              // frame pinned to the picker URL.
+              allow="clipboard-write"
               sandbox="allow-scripts allow-same-origin"
               src={HUB_PICKER_URL}
               style={{

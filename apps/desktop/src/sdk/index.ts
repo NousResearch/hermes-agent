@@ -1932,6 +1932,11 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** Open a URL with the OS default handler — the same door core UI uses for a
+ *  user-clicked link. A plugin surface that embeds a web page (the hub
+ *  pickers) gets the click inside that page, not in the app's own DOM, so the
+ *  URL arrives by message and needs this door to reach the browser. */
+export { openExternalLink } from '@/lib/external-link'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface

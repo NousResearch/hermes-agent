@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, Codicon, host, Input, useI18n } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, openExternalLink, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -24,6 +24,14 @@ const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
 const FALLBACK_HUB_PICKER_URL = FALLBACK_HUB_ORIGIN + '/hermes-agent/docs/skills?embed=picker'
+
+// The injected open-bridge (electron/hub-picker-bridge.ts): a link inside the
+// embedded hub cannot reach the browser itself — the main-process window-open
+// handler has no way to prove which frame asked (#135315), so main injects a
+// shim into this frame and the URL arrives as a message, checked here against
+// the same origin + contentWindow the pick handler uses.
+const HUB_OPEN_MESSAGE = 'hermes-hub-open'
+const HUB_OPEN_SCHEMES = /^(https?:|mailto:)/i
 // A WAF-blocked or unreachable docs host must not delay the fallback longer
 // than this — the probe only decides which origin to embed, never blocks it.
 const HUB_PROBE_TIMEOUT_MS = 8_000
@@ -109,6 +117,17 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
       }
 
       const data = event.data
+
+      if (
+        data &&
+        data.type === HUB_OPEN_MESSAGE &&
+        typeof data.url === 'string' &&
+        HUB_OPEN_SCHEMES.test(data.url)
+      ) {
+        openExternalLink(data.url)
+
+        return
+      }
 
       if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
         return
@@ -227,13 +246,16 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             }}
           >
             <iframe
-              // The hub page needs three capabilities beyond the bare sandbox
-              // posture (#91612): same-origin so its own routing and storage
-              // work, popups so its external links (docs, GitHub, Discord)
-              // reach the OS browser — pinned by the main-process
-              // window-open-policy delegation, never a popup window — and
-              // clipboard-write for the Copy controls, granted only to the
-              // hub origins by the session permission handlers. The
+              // The hub page needs same-origin so its own routing and storage
+              // work (#91612) and clipboard-write for its Copy controls,
+              // granted only to the hub origins by the session permission
+              // handlers. Its external links (docs, GitHub, Discord) do NOT
+              // come from here: the main-process window-open delegation cannot
+              // see an embedded frame (#135315), so those arrive through the
+              // injected open-bridge instead (HUB_OPEN_MESSAGE above).
+              // `allow-popups` is left as it was — with the delegation unable
+              // to fire for an embed it is inert, and this change is not the
+              // place to change the sandbox. The
               // will-frame-navigate guard in main keeps this frame pinned to
               // the picker URL.
               allow="clipboard-write"

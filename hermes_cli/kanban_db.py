@@ -3929,12 +3929,38 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
+    _ctx_unattended_approval_boundary(lines)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
     _ctx_role_history(lines, conn, task, now)
     _ctx_comments(lines, list_comments(conn, task_id), now)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _ctx_unattended_approval_boundary(lines: list[str]) -> None:
+    """Describe the approval boundary inherited by every ``chat -q`` worker."""
+    from tools.approval_context import _get_approval_mode, _get_single_query_approval_mode
+
+    lines.append("## Unattended approval boundary")
+    lines.append("This worker runs in single-query (`-q`) mode; no user can approve requests while it runs.")
+    if _get_approval_mode() == "off":
+        lines.append(
+            "Normal approval prompts are disabled by `approvals.mode: off`; configured deny rules and hard "
+            "safety blocks still apply."
+        )
+    elif _get_single_query_approval_mode() == "deny":
+        lines.append(
+            "`approvals.single_query_mode: deny` blocks dangerous terminal commands that are not permanently "
+            "allowed and `execute_code` requests that require approval. Do not accept a brief that requires either "
+            "capability."
+        )
+    else:
+        lines.append(
+            "`approvals.single_query_mode: approve` trusts this worker for approval-required terminal commands "
+            "and `execute_code`; configured deny rules and hard safety blocks still apply."
+        )
+    lines.append("")
 
 
 def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:

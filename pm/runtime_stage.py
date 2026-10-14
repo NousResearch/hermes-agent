@@ -37,7 +37,9 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # User installs replay the committed runtime lock; freshness belongs
+            # in CI, where contributors can regenerate a stale pm/uv.lock.
+            environment.sync(snapshot, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

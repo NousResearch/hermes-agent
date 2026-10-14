@@ -69,3 +69,13 @@ def test_no_workflow_runs_from_a_tag_push():
         if not isinstance(push, dict) or not ({"branches", "branches-ignore"} & set(push)) or {"tags", "tags-ignore"} & set(push):
             violations.append(filename)
     assert not violations, "tag-triggered workflows: " + ", ".join(violations)
+
+
+def test_uv_lock_workflow_checks_pm_runtime_lock():
+    workflow = _loaded()["uv-lockfile-check.yml"]
+    check = workflow["jobs"]["check"]
+    verify = next(step for step in check["steps"] if step.get("id") == "verify")
+    script = verify["run"]
+
+    assert 'for source in . pm' in script
+    assert 'python -m pm.build_env --source "$source" --check-lock' in script

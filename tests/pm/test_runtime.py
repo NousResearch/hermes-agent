@@ -193,3 +193,33 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1
+
+
+def test_stage_runtime_replays_committed_lock_without_freshness_check(tmp_path, monkeypatch):
+    """#125071: install-time staging trusts the committed lock; CI owns freshness."""
+    from pm import runtime_stage
+    from pm.environment import PythonEnvironment
+
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(PythonEnvironment, "create", lambda self: None)
+
+    def record_sync(self, source, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(PythonEnvironment, "sync", record_sync)
+    monkeypatch.setattr(
+        runtime_stage.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0] if args else [], 0, "", ""),
+    )
+
+    runtime_stage.stage_runtime(
+        tmp_path / "uv",
+        tmp_path / "python",
+        tmp_path / "runtime",
+        cache=tmp_path / "cache",
+    )
+
+    assert recorded.get("locked") in (None, False)
+    assert recorded["no_default_groups"] is True
+    assert recorded["no_install_project"] is True

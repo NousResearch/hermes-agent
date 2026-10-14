@@ -263,6 +263,34 @@ def _telegram_fallback_ips(config: GatewayConfig) -> None:
         config.platforms.setdefault(Platform.TELEGRAM, PlatformConfig()).extra["fallback_ips"] = _csv_list(ips)
 
 
+def _telegram_accounts(config: GatewayConfig) -> None:
+    """``TELEGRAM_BOT_TOKEN_<ACCOUNT>`` declares an additional bot account (#8287).
+
+    The unsuffixed ``TELEGRAM_BOT_TOKEN`` stays the default account, so single-bot
+    setups are byte-identical to before. Candidate names are enumerated from the
+    process env (dotenv loads ``.env`` there) and each value is read back through
+    ``getenv`` so a profile-scoped secret wins when a scope is active. Env vars
+    carry only the credential; behavioural per-account settings (allowlists, home
+    channels, display names) live in ``platforms.telegram.accounts`` in config.yaml.
+    """
+    prefix = "TELEGRAM_BOT_TOKEN_"
+    for env_name in sorted(os.environ):
+        if not env_name.startswith(prefix):
+            continue
+        account = env_name[len(prefix):].strip().lower()
+        token = getenv(env_name)
+        if not account or not token:
+            continue
+        tg_cfg = _enable_from_env(config, Platform.TELEGRAM)
+        accounts = tg_cfg.extra.setdefault("accounts", {})
+        if not isinstance(accounts, dict):
+            accounts = {}
+            tg_cfg.extra["accounts"] = accounts
+        block = accounts.setdefault(account, {})
+        if isinstance(block, dict):
+            block["token"] = token
+
+
 def _whatsapp(config: GatewayConfig) -> None:
     """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
     WHATSAPP_ENABLED=true follows the credential contract — it never beats an explicit YAML disable
@@ -512,6 +540,7 @@ _ENV_STEPS: tuple = (
     _Cred(Platform.TELEGRAM, ("TELEGRAM_BOT_TOKEN",), token="TELEGRAM_BOT_TOKEN"),
     _ReplyMode(Platform.TELEGRAM, "TELEGRAM_REPLY_TO_MODE"),
     _telegram_fallback_ips,
+    _telegram_accounts,
     _Home(Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL"),
     _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
     _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL"),

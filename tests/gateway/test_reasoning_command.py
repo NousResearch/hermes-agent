@@ -213,3 +213,14 @@ class TestLoadShowReasoningCoercion:
             'display:\n  show_reasoning: true\n',
         ) is True
 
+
+class TestGatewayReasoningDelivery:
+    def test_internal_reasoning_is_not_prepended_to_channel_response(self):
+        runner = _make_runner()
+        runner._show_reasoning = True
+        source = _make_event("hello").source
+
+        assert runner._hmwa_prepend_reasoning(
+            {"last_reasoning": "private scratch"}, "user-facing answer", source, False
+        ) == "user-facing answer"
+

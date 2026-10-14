@@ -20,9 +20,28 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+# Turn-route middleware runs once before Hermes constructs a provider client or
+# agent; it is separate from request middleware for an already selected route.
+TURN_ROUTE_MIDDLEWARE = "turn_route"
+PUBLIC_TURN_RUNTIME_KEYS = ("provider", "requested_provider", "api_mode")
+
+
+def public_turn_route(model: str, runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the redacted route DTO exposed to turn-route middleware."""
+    return {
+        "model": model,
+        "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
+        "runtime": {
+            key: runtime.get(key)
+            for key in PUBLIC_TURN_RUNTIME_KEYS
+            if runtime.get(key) not in (None, "")
+        },
+    }
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    TURN_ROUTE_MIDDLEWARE,
 }
 
 
@@ -76,7 +95,7 @@ def _apply_request_chain(
         current = _safe_copy(next_payload)
         entry = {
             key: value
-            for key in ("source", "reason", "name")
+            for key in ("plugin", "source", "reason", "name")
             if isinstance(value := result.get(key), str) and value
         }
         trace.append(entry or {"source": "plugin"})
@@ -97,6 +116,69 @@ def apply_llm_request_middleware(request: dict[str, Any], **context: Any) -> Req
         LLM_REQUEST_MIDDLEWARE, "request", [], original_request,
         request=_safe_copy(original_request), original_request=original_request, **context,
     )
+
+
+def apply_turn_route_middleware(route: Dict[str, Any], **context: Any) -> RequestMiddlewareResult:
+    """Apply pre-agent turn routing middleware to a public, credential-free route."""
+    from hermes_cli.plugins import has_middleware
+
+    if not has_middleware(TURN_ROUTE_MIDDLEWARE):
+        return RequestMiddlewareResult(payload=route, original_payload=route)
+    original_redacted_route = _safe_copy(route)
+    current_route = _safe_copy(original_redacted_route)
+    trace: List[Dict[str, Any]] = []
+    from hermes_cli.plugins import invoke_middleware
+
+    for result in invoke_middleware(
+        TURN_ROUTE_MIDDLEWARE,
+        route=current_route,
+        original_redacted_route=original_redacted_route,
+        **middleware_payload(**context),
+    ):
+        if not isinstance(result, dict) or not isinstance(result.get("route"), dict):
+            continue
+        current_route = _safe_copy(result["route"])
+        entry = {
+            key: value
+            for key in ("plugin", "source", "reason", "name")
+            if isinstance(value := result.get(key), str) and value
+        }
+        trace.append(entry or {"source": "plugin"})
+    return RequestMiddlewareResult(
+        payload=current_route,
+        original_payload=original_redacted_route,
+        changed=current_route != original_redacted_route,
+        trace=trace,
+    )
+
+
+def normalize_turn_route_selection(current: Dict[str, Any], payload: Any) -> tuple[str, str] | None:
+    """Resolve the public model/provider fields once for every turn-routing host."""
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("model")
+    nested = payload.get("runtime")
+    nested = nested if isinstance(nested, dict) else {}
+    current_runtime = current.get("runtime") or {}
+    current_requested = current_runtime.get("requested_provider") or current_runtime.get("provider")
+    current_canonical = current_runtime.get("provider")
+    top_requested = payload.get("requested_provider")
+    nested_requested = nested.get("requested_provider")
+    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
+    canonical = payload.get("provider") or nested.get("provider")
+    provider = requested if requested and requested != current_requested else (
+        canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested)
+    )
+    if isinstance(model, str) and model.strip() and isinstance(provider, str) and provider.strip():
+        return model.strip(), provider.strip()
+    return None
+
+
+def turn_route_credentials_usable(runtime: Dict[str, Any]) -> bool:
+    """Reject an OpenRouter route when resolution found neither a key nor a pool."""
+    if runtime.get("provider") != "openrouter":
+        return True
+    return bool(runtime.get("api_key") or runtime.get("credential_pool"))
 
 
 def apply_tool_request_middleware(

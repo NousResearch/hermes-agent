@@ -35,6 +35,9 @@ class TestCliTurnRoutePool:
             acp_args=[],
             _credential_pool=fake_pool,
             service_tier=None,
+            # Turn routing now resolves reasoning policy from the route's model; the stub
+            # carries the attribute the real HermesCLI always has.
+            reasoning_config=None,
         )
 
         from cli import HermesCLI
@@ -73,7 +76,7 @@ class TestGatewayTurnRoutePool:
         }
 
         bound = GatewayRunner._resolve_turn_agent_config.__get__(runner)
-        route = bound("test message", "gpt-5.4", runtime_kwargs)
+        route = bound("test message", "gpt-5.4", runtime_kwargs, internal=True)
 
         assert route["runtime"]["credential_pool"] is fake_pool
         assert route["runtime"]["requested_provider"] == "openai-codex"

@@ -137,8 +137,11 @@ class VisionMessagePrepMixin:
             from hermes_cli.config import load_config
             from agent.image_routing import _lookup_supports_vision
             provider = (getattr(self, "provider", "") or "").strip()
+            requested_provider = (getattr(self, "requested_provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, load_config()) is True
+            return _lookup_supports_vision(
+                provider, model, load_config(), requested_provider=requested_provider,
+            ) is True
         except Exception:
             return False
 

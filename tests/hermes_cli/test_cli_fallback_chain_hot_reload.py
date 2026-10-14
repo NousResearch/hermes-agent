@@ -31,7 +31,7 @@ def _chat_turn(monkeypatch, shell, config_text: str) -> None:
                         lambda message: {"signature": shell._active_agent_route_signature, "model": None, "runtime": None})
     monkeypatch.setattr(shell, "_init_agent", lambda **kw: True)
 
-    def stop(message, images):
+    def stop(message, images, *, turn_route):
         raise _StopAfterSync()
 
     monkeypatch.setattr(shell, "_chat_route_images", stop)

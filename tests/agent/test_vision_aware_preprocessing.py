@@ -179,3 +179,27 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+    def test_requested_custom_provider_wins_over_configured_default(self):
+        agent = _make_agent()
+        object.__setattr__(agent, "provider", "custom")
+        object.__setattr__(agent, "requested_provider", "custom:beta")
+        object.__setattr__(agent, "model", "target-model")
+        cfg = {
+            "model": {"provider": "custom:alpha", "default": "source-model"},
+            "custom_providers": [
+                {
+                    "name": "alpha",
+                    "models": {"source-model": {"supports_vision": False}},
+                },
+                {
+                    "name": "beta",
+                    "models": {"target-model": {"supports_vision": True}},
+                },
+            ],
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert agent._model_supports_vision() is True
+            output = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert output[0]["content"][1]["type"] == "image_url"
+

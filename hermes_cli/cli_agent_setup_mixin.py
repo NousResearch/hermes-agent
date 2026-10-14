@@ -4,12 +4,57 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import hmac
+import logging
+import secrets
 import sys
 
 from rich.markup import escape as _escape
 
 from agent.i18n import t
 from utils import base_url_host_matches
+
+# Same record name as cli.py's module logger; getLogger never triggers the cli.py import cycle.
+logger = logging.getLogger("cli")
+
+
+_ROUTE_CREDENTIAL_SALT = secrets.token_bytes(32)
+
+
+def _cli_turn_route_key(session_id) -> str | None:
+    """Return the durable middleware identity shared by CLI turns and controls."""
+    return f"cli:{session_id}" if session_id else None
+
+
+def _compression_root(session_db, session_id):
+    """Walk parent links created by compression rotation back to the conversation's first row.
+
+    Branches and other parent links are new conversations and stop the walk. Fails open."""
+    try:
+        return session_db._session_turn_lease_key(session_id)
+    except Exception as exc:
+        # Deliberate fail-open: routing identity degrades to the raw session row; the turn
+        # must still run. Traceback at debug keeps DB faults diagnosable without noise.
+        logger.debug("compression-root walk failed open: %s", exc, exc_info=True)
+        return session_id
+
+
+def _cli_route_key(cli) -> str | None:
+    """Durable routing key of the logical CLI conversation, shared by commands and turns.
+
+    The identity is captured once and kept when compression rotation moves ``session_id`` to a
+    child row; ``_reset_cli_route_identity`` starts a new one (/new, /resume, /branch)."""
+    identity = getattr(cli, "_route_conversation_id", None)
+    if not identity:
+        session_id = getattr(cli, "session_id", None)
+        identity = _compression_root(getattr(cli, "_session_db", None), session_id) if session_id else None
+        cli._route_conversation_id = identity
+    return _cli_turn_route_key(identity)
+
+
+def _reset_cli_route_identity(cli) -> None:
+    """Forget the logical conversation identity; the next use derives it from ``session_id``."""
+    cli._route_conversation_id = None
 
 
 def _single_query_clarify_callback(questions: list) -> dict:
@@ -43,11 +88,42 @@ def _current_runtime(cli) -> dict:
         "credential_pool": getattr(cli, "_credential_pool", None)}
 
 
+def _same_api_key(new, old) -> bool:
+    """Whether two api_key values name one credential source.
+
+    Equivalent ``CommandTokenSource`` wrappers are rebuilt by the resolver on every call, so
+    object identity would retire an unchanged agent; compare their ``cache_identity`` instead."""
+    if callable(new) and callable(old):
+        new_id, old_id = getattr(new, "cache_identity", None), getattr(old, "cache_identity", None)
+        if isinstance(new_id, str) and new_id and isinstance(old_id, str) and old_id:
+            return new_id == old_id
+    return new == old
+
+
 def _route_signature(model, runtime: dict) -> tuple:
-    """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
+    """Host-private client reuse identity; never include it in middleware DTOs or traces."""
+    api_key = runtime.get("api_key")
+    # Bearer-token callbacks refresh per request and may be recreated by the
+    # resolver each turn. Do not invoke them or key reuse on callable identity.
+    if callable(api_key):
+        # CommandTokenSource captures its command at construction. Re-created equivalent
+        # providers remain reusable, while replacing the command retires the old client.
+        cache_identity = getattr(api_key, "cache_identity", None)
+        if isinstance(cache_identity, str) and cache_identity:
+            credential = (
+                "callable-source",
+                hmac.digest(_ROUTE_CREDENTIAL_SALT, cache_identity.encode("utf-8"), "sha256"),
+            )
+        else:
+            credential = ("per-request",)
+    else:
+        credential = (
+            "static",
+            hmac.digest(_ROUTE_CREDENTIAL_SALT, (api_key or "").encode("utf-8"), "sha256"),
+        )
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()), credential)
 
 
 def _cooldown_cause(entry) -> str:
@@ -292,7 +368,7 @@ class CLIAgentSetupMixin:
         if not isinstance(base_url, str) or not base_url:
             print(f"\n{t('cli.startup.empty_base_url')}")
             return False
-        credentials_changed = api_key != self.api_key or base_url != self.base_url
+        credentials_changed = not _same_api_key(api_key, self.api_key) or base_url != self.base_url
         routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
@@ -510,6 +586,76 @@ class CLIAgentSetupMixin:
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
+        from tools.process_registry_notifications import TimelineNotification
+        if not getattr(self, "_skip_turn_routing", False) and not isinstance(user_message, TimelineNotification):
+            try:
+                from hermes_cli.middleware import (
+                    apply_turn_route_middleware, normalize_turn_route_selection,
+                    public_turn_route, turn_route_credentials_usable,
+                )
+                cli_session_id = getattr(self, "session_id", None)
+                result = apply_turn_route_middleware(
+                    public_turn_route(route["model"], runtime),
+                    user_message=user_message,
+                    session_id=cli_session_id,
+                    # Derive a distinct durable route key for CLI middleware. This keeps the
+                    # physical/session identity fields separate while preserving CLI route state
+                    # across turns without pretending it is a gateway session key.
+                    session_key=_cli_route_key(self),
+                    source="cli",
+                    is_user_turn=True,
+                    is_first_turn=not bool(getattr(self, "conversation_history", None)),
+                    internal=False,
+                    tool_continuation=False,
+                )
+                # An unchanged route is still a decision; observers need its reason.
+                if not result.changed:
+                    route["middleware_trace"] = list(result.trace or [])
+                elif (selection := normalize_turn_route_selection(route, result.payload)):
+                    selected_model, selected_provider = selection
+                    current_requested = runtime.get("requested_provider") or runtime.get("provider")
+                    if selected_provider != current_requested or selected_model != self.model:
+                        from hermes_cli.runtime_provider import resolve_runtime_provider
+                        resolver_kwargs = {"requested": selected_provider, "target_model": selected_model}
+                        if selected_provider == current_requested or selected_provider == "custom":
+                            # Preserve the active invocation/session endpoint for model-only choices.
+                            resolver_kwargs.update(
+                                explicit_api_key=getattr(self, "_explicit_api_key", None) or runtime.get("api_key"),
+                                explicit_base_url=getattr(self, "_explicit_base_url", None) or runtime.get("base_url"),
+                            )
+                        resolved = resolve_runtime_provider(**resolver_kwargs)
+                        if not turn_route_credentials_usable(resolved):
+                            logger.warning("Turn-route selected OpenRouter without credentials; using the configured route")
+                            resolved = None
+                        if resolved is None:
+                            selected_model = self.model
+                            selected_provider = current_requested
+                        else:
+                            runtime = {
+                                "api_key": resolved.get("api_key"), "base_url": resolved.get("base_url"),
+                                "provider": resolved.get("provider", selected_provider),
+                                "requested_provider": selected_provider,
+                                "api_mode": resolved.get("api_mode", self.api_mode),
+                                "command": resolved.get("command"), "args": list(resolved.get("args") or []),
+                                "credential_pool": resolved.get("credential_pool"),
+                            }
+                    runtime["requested_provider"] = selected_provider
+                    route["model"] = selected_model
+                    route["runtime"] = runtime
+                    route["middleware_trace"] = result.trace
+                if result.changed and "middleware_trace" not in route:
+                    # A rejected route falls back like a failed middleware; say so instead of silently.
+                    logger.warning("Turn-route middleware returned an unusable route; using the configured route")
+            except Exception as exc:
+                logger.warning("Turn-route middleware failed open: %s", exc, exc_info=True)
+        # Reasoning policy is model-owned. Keep an explicit CLI --reasoning choice,
+        # otherwise resolve the per-model/global policy for the route selected for this turn.
+        if route["model"] == self.model or getattr(self, "_explicit_reasoning_config", None) is not None:
+            runtime["reasoning_config"] = getattr(self, "reasoning_config", None)
+        else:
+            from cli import CLI_CONFIG
+            from hermes_constants import resolve_reasoning_config
+            runtime["reasoning_config"] = resolve_reasoning_config(CLI_CONFIG, route["model"])
         overrides = None
         tier = getattr(self, "service_tier", None)
         if tier in STATIC_TIERS:
@@ -519,6 +665,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
         route["request_overrides"] = overrides
+        route["signature"] = _route_signature(route["model"], route["runtime"])
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -656,7 +803,7 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=runtime.get("reasoning_config", self.reasoning_config), service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,

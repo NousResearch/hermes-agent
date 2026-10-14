@@ -103,6 +103,68 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
+
+@pytest.mark.asyncio
+async def test_proxy_path_expands_deferred_context_reference_before_forwarding():
+    """Proxy forwarding must retain the pre-reply body expansion contract."""
+    runner = _make_runner()
+    runner._get_proxy_url = lambda: "http://proxy.local:8642"  # type: ignore[method-assign]
+    runner._expand_inbound_context_references = AsyncMock(  # type: ignore[method-assign]
+        return_value="read @file:notes.txt\n\n--- Attached Context ---\nLOCAL-FILE-MARKER"
+    )
+    runner._run_agent_via_proxy = AsyncMock(return_value={"final_response": "ok"})  # type: ignore[method-assign]
+    source = _make_source()
+    raw_message = '[Replying to: "quoted"]\n\nread @file:notes.txt'
+
+    result = await runner._run_agent_inner(
+        message=raw_message, context_prompt="ctx", history=[], source=source,
+        session_id="session", session_key="durable",
+        context_reference_message="read @file:notes.txt",
+    )
+
+    assert result == {"final_response": "ok"}
+    runner._expand_inbound_context_references.assert_awaited_once_with(
+        source, "durable", "read @file:notes.txt",
+    )
+    proxy_call = runner._run_agent_via_proxy.await_args
+    assert proxy_call is not None
+    forwarded = proxy_call.kwargs["message"]
+    assert forwarded == (
+        '[Replying to: "quoted"]\n\nread @file:notes.txt\n\n'
+        "--- Attached Context ---\nLOCAL-FILE-MARKER"
+    )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caption", ["Caption", ""])
+async def test_proxy_path_consumes_deferred_photo_before_forwarding(caption):
+    """Proxy turns bypass TurnRunner, so buffered photos must become text descriptions here."""
+    runner = _make_runner()
+    runner._get_proxy_url = lambda: "http://proxy.local:8642"  # type: ignore[method-assign]
+    runner._decide_image_input_mode = lambda **kwargs: "text"  # type: ignore[method-assign]
+    runner._resolve_session_agent_runtime = lambda **kwargs: (  # type: ignore[method-assign]
+        "review-model", {"provider": "custom"},
+    )
+    runner._enrich_message_with_vision = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda message, paths: f"IMAGE-DESCRIPTION\n\n{message}".rstrip(),
+    )
+    runner._run_agent_via_proxy = AsyncMock(return_value={"final_response": "ok"})  # type: ignore[method-assign]
+    source = _make_source()
+
+    message = await runner._enrich_inbound_images(
+        source, "durable", caption, ["inert-photo.png"], defer_image_routing=True,
+    )
+    await runner._run_agent_inner(
+        message=message, context_prompt="", history=[], source=source,
+        session_id="session", session_key="durable",
+    )
+
+    forwarded = runner._run_agent_via_proxy.await_args.kwargs["message"]
+    assert forwarded.startswith("IMAGE-DESCRIPTION")
+    assert forwarded.endswith(caption)
+    runner._enrich_message_with_vision.assert_awaited_once_with(caption, ["inert-photo.png"])
+    assert runner._consume_pending_native_image_paths("durable") == []
+
+
 class _SelectiveScope(dict):
     """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
     def get(self, name, default=None):
@@ -126,13 +188,13 @@ class TestProxyKeyScopeFailure:
         runner._run_still_current_fn = lambda *a, **k: True
 
         ss.set_multiplex_active(True)
-        token = ss.set_secret_scope(_SelectiveScope())
+        scope_handle = ss.set_secret_scope(_SelectiveScope())
         try:
             with _patch_aiohttp(MagicMock()):
                 with pytest.raises(RuntimeError, match="resolver boom"):
                     await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
         finally:
-            ss.reset_secret_scope(token)
+            ss.reset_secret_scope(scope_handle)
             ss.set_multiplex_active(False)
 
 

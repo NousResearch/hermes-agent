@@ -597,23 +597,48 @@ class PluginDispatchMixin:
 
         Request middleware passes ``_payload_key``: a dict returned under it becomes the payload the
         next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
-        of ``original_<key>`` so an in-place edit cannot leak.
+        of ``original_<key>`` so an in-place edit cannot leak. ``turn_route`` middleware composes the
+        same way: each callback gets a private draft of the latest successful route and only a
+        returned decision is promoted, so a callback that mutates its draft and raises cannot leak
+        that failed decision into the caller or into later callbacks.
         """
         from hermes_cli.middleware import _safe_copy
 
         results: list[Any] = []
+        current_route = _safe_copy(kwargs.get("route")) if kind == "turn_route" else None
         for cb in self._middleware.get(kind, []):
             call_kwargs = kwargs
             if _payload_key:
                 original_key = "original_" + _payload_key
                 call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
                                original_key: _safe_copy(kwargs[original_key])}
+            if kind == "turn_route":
+                # Each callback gets a private draft. Promote only a successful returned
+                # decision so later callbacks refine the last successful route while a
+                # callback that mutates and raises cannot leak its draft.
+                call_kwargs = dict(call_kwargs)
+                call_kwargs["route"] = _safe_copy(current_route)
+                if "original_redacted_route" in call_kwargs:
+                    call_kwargs["original_redacted_route"] = _safe_copy(
+                        call_kwargs["original_redacted_route"]
+                    )
             try:
                 ret = cb(**call_kwargs)
                 if ret is not None:
+                    if kind == "turn_route" and isinstance(ret, dict):
+                        plugin_name = getattr(cb, "_hermes_plugin_name", None)
+                        if isinstance(plugin_name, str) and plugin_name:
+                            ret = dict(ret)
+                            ret["plugin"] = plugin_name
                     results.append(ret)
                     if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):
                         kwargs[_payload_key] = ret[_payload_key]
+                    if (
+                        kind == "turn_route"
+                        and isinstance(ret, dict)
+                        and isinstance(ret.get("route"), dict)
+                    ):
+                        current_route = _safe_copy(ret["route"])
             except (Exception, SystemExit) as exc:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")

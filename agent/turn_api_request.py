@@ -51,6 +51,9 @@ def _fire_pre_api_request_hook(
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("pre_api_request"):
+            # This turn's route decision rides on the agent; request-stage entries follow it.
+            _route_trace = getattr(agent, "_turn_route_middleware_trace", None)
+            _route_trace = list(_route_trace) if isinstance(_route_trace, list) else []
             request_messages = api_kwargs.get("messages")
             if not isinstance(request_messages, list):
                 request_messages = api_kwargs.get("input")
@@ -83,7 +86,7 @@ def _fire_pre_api_request_hook(
                 request_char_count=total_chars,
                 max_tokens=agent.max_tokens,
                 started_at=api_start_time,
-                middleware_trace=list(_llm_middleware_trace),
+                middleware_trace=_route_trace + list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
             )
     except Exception:

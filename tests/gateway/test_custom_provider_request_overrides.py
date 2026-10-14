@@ -129,6 +129,7 @@ def test_turn_route_preserves_provider_request_overrides_without_fast_mode():
         "hi",
         "gpt-5.4",
         runtime_kwargs,
+        internal=True,
     )
 
     assert route["request_overrides"] == {
@@ -161,6 +162,7 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
             "hi",
             "gpt-5.4",
             runtime_kwargs,
+            internal=True,
         )
 
     assert route["request_overrides"] == {

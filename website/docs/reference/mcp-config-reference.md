@@ -57,6 +57,7 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `protocol` | string | both | Protocol-era negotiation: `auto` (default — legacy `initialize` handshake first, falling back to the 2026-07-28 `server/discover` stateless probe when the server rejects the handshake as modern-only), `stateless` (probe `server/discover` first; one legacy retry), or `legacy` (handshake only, no fallback) |
+| `forward_session_context` | bool | both | Opt in to runtime-generated API execution identity in `tools/call` request metadata (default: `false`). See below. |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
@@ -441,3 +442,25 @@ const link = `hermes://mcp/install?name=example&config=${btoa(JSON.stringify(con
 ```
 
 Opening the link never installs anything by itself: the desktop app shows a confirmation dialog with the server name and the full pretty-printed config (with an extra caution for `command`-based servers, which run a local process), and the user must explicitly confirm. Existing server names are never overwritten — the user is asked to rename or cancel.
+
+## Forward API execution identity to a tool server
+
+Set `forward_session_context: true` only for a server that needs to correlate tool
+requests with their originating API execution. Hermes adds this request metadata:
+
+```json
+{"_meta":{"com.nousresearch.hermes/platform":"api_server","com.nousresearch.hermes/session_key":"run_...","com.nousresearch.hermes/session_id":"..."}}
+```
+
+The values come from the calling task, not model arguments, ambient environment
+variables, or the shared MCP connection. For `POST /v1/runs`, `session_key` is the
+native run ID and `session_id` is its conversation session. No metadata is sent
+when the API identity is incomplete or the caller is another platform. API calls
+have no chat sender or triggering message, so those fields are not synthesized.
+Independent runs sharing a connection retain their own values. Model arguments
+remain unchanged.
+
+This is correlation metadata, not authentication. The server must still authenticate
+the caller and authorize access to the named execution. Forwarding is disabled unless
+explicitly enabled for that server. Profiles with different forwarding settings do
+not share connections.

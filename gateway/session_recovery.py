@@ -95,9 +95,9 @@ class SessionRecoveryMixin:
 
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
-        from gateway.session import build_session_key
+        from gateway.session import build_session_key, key_source_for
         return build_session_key(
-            key_source if key_source is not None else source,
+            key_source if key_source is not None else key_source_for(source),
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source))
@@ -157,24 +157,41 @@ class SessionRecoveryMixin:
         if had_activity is None:
             had_activity = bool(row.get("message_count") or 0) or last_activity is not None
         from gateway.session_identity import transport_profile_of
+        key_source = self._key_peer_source(session_key, source)
         return SessionEntry(
             session_key=session_key, session_id=str(row["id"]), created_at=created_at,
             updated_at=updated_at, origin=source, display_name=source.chat_name,
             platform=source.platform, chat_type=source.chat_type,
-            reset_had_activity=bool(had_activity), transport_profile=transport_profile_of(source))
+            reset_had_activity=bool(had_activity), transport_profile=transport_profile_of(source),
+            key_source=None if key_source is source else key_source)
+
+    def _key_peer_source(self, session_key: str, source: SessionSource) -> SessionSource:
+        """The source naming *session_key*'s durable peer (``sessions.source``/chat columns). For a
+        session group (#79198) that is the key source, from the live *source* or the entry's
+        persisted ``key_source`` (after a restart), so every chat in the group finds the same row."""
+        from gateway.session import SessionSource, key_source_for
+        key_source = key_source_for(source)
+        if key_source is source:
+            entry = (getattr(self, "_entries", None) or {}).get(session_key)
+            persisted = getattr(entry, "key_source", None)
+            key_source = persisted if isinstance(persisted, SessionSource) else source
+        return key_source
 
     def _find_gateway_session_row(
         self, *, session_key: str, source: SessionSource, allow_peer_fallback: bool,
         raise_on_lookup_error: bool = False) -> Optional[dict[str, Any]]:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
-        session; the caller performs one explicit exact lookup of the old unscoped key instead."""
+        session; the caller performs one explicit exact lookup of the old unscoped key instead.
+        A session-group key is exact-key only: no chat tuple may revive another chat's session."""
+        peer = self._key_peer_source(session_key, source)
+        allow_peer_fallback = allow_peer_fallback and peer is source
         return self._peer_row(
-            self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
-            user_id=source.user_id,
-            chat_id=source.chat_id if allow_peer_fallback else None,
-            chat_type=source.chat_type if allow_peer_fallback else None,
-            thread_id=source.thread_id, raise_on_lookup_error=raise_on_lookup_error)
+            self._db_for_key(session_key), source=peer.platform.value, session_key=session_key,
+            user_id=peer.user_id,
+            chat_id=peer.chat_id if allow_peer_fallback else None,
+            chat_type=peer.chat_type if allow_peer_fallback else None,
+            thread_id=peer.thread_id, raise_on_lookup_error=raise_on_lookup_error)
 
     @staticmethod
     def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
@@ -337,9 +354,10 @@ class SessionRecoveryMixin:
         if not callable(recorder):
             return
         from gateway.session_identity import transport_profile_of
+        key_source = self._key_peer_source(session_key, source)
         peer = dict(
-            source=source.platform.value, user_id=source.user_id, session_key=session_key,
-            chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
+            source=key_source.platform.value, user_id=key_source.user_id, session_key=session_key,
+            chat_id=key_source.chat_id, chat_type=key_source.chat_type, thread_id=key_source.thread_id)
         try:
             recorder(
                 session_id, **peer, display_name=display_name or source.chat_name,

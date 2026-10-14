@@ -7,6 +7,7 @@ import logging
 import os
 import json
 import threading
+import weakref
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
@@ -540,6 +541,9 @@ class SessionEntry:
     # Gateway ``/yolo`` bypass for this lane, mirrored from ``tools.approval``'s in-memory set so a restart
     # keeps it; cleared with it at every conversation boundary (``_clear_session_boundary_security_state``).
     yolo: bool = False
+    # Session groups (#79198): the source the key was built from when it differs from ``origin``.
+    # Restart recovery and peer rows use it, so either chat in the group finds the same row.
+    key_source: Optional[SessionSource] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -577,12 +581,16 @@ class SessionEntry:
             result["transport_profile"] = self.transport_profile
         if self.origin:
             result["origin"] = self.origin.to_dict()
+        if self.key_source:
+            result["key_source"] = self.key_source.to_dict()
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionEntry":
         origin = data.get("origin")
         origin = SessionSource.from_dict(origin) if isinstance(origin, dict) else None
+        key_source = data.get("key_source")
+        key_source = SessionSource.from_dict(key_source) if isinstance(key_source, dict) else None
         platform = None
         if data.get("platform"):
             try:
@@ -617,7 +625,7 @@ class SessionEntry:
             model_override=sanitize_model_override(data.get("model_override")),
             prompt_pin=sanitize_prompt_pin(data.get("prompt_pin")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
-            **plain,
+            key_source=key_source, **plain,
         )
 
 
@@ -724,6 +732,30 @@ def build_session_key(
     thread_part = [thread_id] if thread_id else []
     parts += user_part + thread_part if is_dm else thread_part + user_part
     return ":".join(str(part) for part in parts)
+
+
+def session_group_source(source: SessionSource) -> Optional[SessionSource]:
+    """Session-group seam (#79198): the source whose session *source* joins, or ``None`` for its
+    own session (the default). The key is built from the returned source's chat fields under
+    *source*'s profile namespace; delivery, authorization and the persisted origin stay on
+    *source*. Only called through :func:`key_source_for`."""
+    return None
+
+
+def key_source_for(source: SessionSource) -> SessionSource:
+    """The source *source*'s session key is built from. A group key is honoured only for a source
+    a live adapter of the same platform built (``_transport_adapter_ref`` is never serialized), so
+    a deserialized or forged source always keeps its own key."""
+    adapter_ref = getattr(source, "_transport_adapter_ref", None)
+    adapter = adapter_ref() if isinstance(adapter_ref, weakref.ReferenceType) else None
+    if adapter is None or getattr(adapter, "platform", None) != source.platform:
+        return source
+    group_source = session_group_source(source)
+    if group_source is None:
+        return source
+    if not isinstance(group_source, SessionSource):
+        raise TypeError("session_group_source must return a SessionSource or None")
+    return group_source
 
 
 class _SessionFlight:
@@ -1042,9 +1074,11 @@ class SessionStore(
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
         session_id = _new_session_id(now)
+        key_source = key_source_for(source)
         candidate = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
-            origin=source, display_name=source.chat_name, platform=source.platform,
+            origin=source, key_source=None if key_source is source else key_source,
+            display_name=source.chat_name, platform=source.platform,
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
@@ -1161,7 +1195,7 @@ class SessionStore(
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
-            transport_profile=old_entry.transport_profile, **fields,
+            transport_profile=old_entry.transport_profile, key_source=old_entry.key_source, **fields,
         )
         self._entries[session_key] = new_entry
         self._save()

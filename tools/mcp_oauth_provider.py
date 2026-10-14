@@ -170,10 +170,22 @@ class HermesProviderMixin:
         # responses may be long-lived SSE streams (for example GET /v2/mcp),
         # and response.aread() would wait for that stream to end while holding
         # the OAuth state semaphore.
+        #
+        # Two discovery layouts qualify. RFC 8414 inserts the well-known segment BEFORE
+        # the issuer path ("/.well-known/oauth-authorization-server/tenant"), which is
+        # recognised by prefix. OIDC Discovery appends it AFTER ("/tenant/.well-known/
+        # openid-configuration"), which Entra is the only publisher of here; that form is
+        # accepted ONLY at the advertised authorization server's own path, so an unrelated
+        # "/proxy/.well-known/..." on the resource host is still left untouched.
         req = getattr(response, "request", None)
         request_path = urlsplit(str(req.url)).path if req is not None else ""
-        if not any(request_path == base or request_path.startswith(f"{base}/")
-                   for base in _ASM_DISCOVERY_PATHS):
+        context = getattr(self, "context", None)
+        advertised = getattr(context, "auth_server_url", None) if context is not None else None
+        advertised_path = urlsplit(advertised).path.rstrip("/") if advertised else ""
+        suffix_paths = {f"{advertised_path}{base}" for base in _ASM_DISCOVERY_PATHS} if advertised_path else set()
+        if not (any(request_path == base or request_path.startswith(f"{base}/")
+                    for base in _ASM_DISCOVERY_PATHS)
+                or request_path in suffix_paths):
             return response
 
         from mcp.shared.auth import OAuthMetadata
@@ -182,10 +194,11 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not (metadata_issued_by_origin(metadata, self.context.auth_server_url, response)
+                or metadata_issuer_template_matches(metadata, self.context.auth_server_url, response)):
             return response
         self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s stands in for the "
             "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
@@ -549,6 +562,65 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def metadata_issuer_template_matches(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because its
+    ``issuer`` is the advertised server with a single templated tenant segment.
+
+    Microsoft Entra ID's multi-tenant endpoints publish an OIDC discovery document whose ``issuer``
+    carries an unsubstituted placeholder — ``https://login.microsoftonline.com/{tenantid}/v2.0`` for
+    the advertised ``https://login.microsoftonline.com/common/v2.0`` — because the concrete tenant is
+    only known once the user authenticates. The SDK's exact-string check rejects it and parks the
+    connection on an issuer mismatch, which makes every multi-tenant Entra authorization server
+    unusable (Business Central's MCP server advertises exactly this pair).
+
+    The issuer check stops a party controlling a path or a sibling host from making the client accept
+    a different authorization server's endpoints (RFC 8414 §3.3, RFC 9728 §3.3). This shape keeps that
+    boundary: *response* must be the document fetched directly (no redirect) from a discovery URL
+    derived from the advertised identifier — a location only the origin's operator controls — the
+    issuer must share the advertised origin exactly, and the two paths must be identical except for
+    ONE segment that is a whole-segment placeholder (``{...}``). A placeholder therefore cannot widen
+    the origin, add or drop segments, or stand in for more than the tenant discriminator.
+    """
+    from urllib.parse import unquote, urlsplit
+    if not auth_server_url:
+        return False
+    adv = urlsplit(auth_server_url)
+    iss = urlsplit(str(metadata.issuer))
+    if (adv.username is not None or adv.query or adv.fragment
+            or iss.username is not None or iss.query or iss.fragment
+            or response.status_code != 200):
+        return False
+    if (iss.scheme, iss.netloc) != (adv.scheme, adv.netloc):
+        return False
+    origin = f"{adv.scheme}://{adv.netloc}"
+    adv_path = adv.path.rstrip("/")
+    if not adv_path or ".." in adv_path.split("/"):
+        return False
+    # Only a document served from a discovery URL derived from the advertised identifier qualifies.
+    derived = {f"{origin}/.well-known{p}{adv_path}" for p in _ASM_DISCOVERY_PATHS} | {
+        f"{origin}{adv_path}/.well-known{p}" for p in _ASM_DISCOVERY_PATHS}
+    if str(response.url) not in {u.replace("/.well-known/.well-known/", "/.well-known/") for u in derived}:
+        return False
+    adv_parts = adv_path.strip("/").split("/")
+    iss_parts = iss.path.rstrip("/").strip("/").split("/")
+    if len(adv_parts) != len(iss_parts):
+        return False
+    templated = 0
+    for advertised_segment, issuer_segment in zip(adv_parts, iss_parts):
+        if advertised_segment == issuer_segment:
+            continue
+        # The issuer reaches here as str(AnyHttpUrl), which percent-encodes the placeholder
+        # braces ("{tenantid}" -> "%7Btenantid%7D"), so compare the decoded segment.
+        decoded = unquote(issuer_segment)
+        if decoded == advertised_segment:
+            continue
+        if decoded.startswith("{") and decoded.endswith("}") and len(decoded) > 2 and "/" not in decoded:
+            templated += 1
+            continue
+        return False
+    return templated == 1
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

@@ -162,6 +162,13 @@ extends the wait budget, not the cancellation or permission policy. Configure
 any server-internal analysis deadline separately and leave time for its result
 to reach the client. Other harnesses ignore this extension.
 
+An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
+whose budget exceeds the shared concurrent-batch deadline becomes a sequential
+barrier, whether called directly or through tool search. It gets its own budget
+without extending unrelated tools in the same model response. Existing shorter
+MCP calls retain their normal parallel-admission policy; interruption and
+approval handling are unchanged.
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)

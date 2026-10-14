@@ -189,6 +189,16 @@ def _probe_install_before_state_db() -> None:
         _log.warning("first-install check at boot failed", exc_info=True)
 
 
+def _register_configured_shell_hooks() -> None:
+    """Register the launch profile's declarative hooks before dashboard sessions start."""
+    try:
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        _log.warning("shell-hook registration failed at dashboard startup", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     app.state.event_channels = {}  # dict[str, set]
@@ -223,6 +233,8 @@ async def _lifespan(app: FastAPI):
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
     # the Desktop's 10s ready-probe timed out (GH-73083).
     _warm_gateway_module()
+
+    _register_configured_shell_hooks()
 
     # Snapshot the checkout revision so lazy-import paths (model picker) can
     # refuse with "restart required" after `hermes update` replaced the code

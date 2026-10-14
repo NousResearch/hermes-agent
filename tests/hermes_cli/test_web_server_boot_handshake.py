@@ -80,6 +80,38 @@ def test_lifespan_enters_and_exits_as_an_async_context_manager(monkeypatch):
     asyncio.run(_run())
 
 
+def test_lifespan_registers_configured_shell_hooks(monkeypatch):
+    """Dashboard-hosted sessions receive hooks declared for the server profile (#138350)."""
+    registered: list[bool] = []
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(web_server_mod, "_eager_reconcile_own_session_db", lambda: None)
+    monkeypatch.setattr(web_server_mod, "_register_configured_shell_hooks", lambda: registered.append(True))
+
+    async def _run() -> None:
+        async with web_server_mod._lifespan(web_server_mod.app):
+            assert registered == [True]
+
+    asyncio.run(_run())
+
+
+def test_register_configured_shell_hooks_uses_launch_config(monkeypatch):
+    """The dashboard keeps the normal non-interactive hook-consent policy (#138350)."""
+    from agent import shell_hooks
+
+    config = {"hooks": {"on_session_start": [{"command": "hook-command"}]}}
+    calls: list[tuple[object, bool]] = []
+    monkeypatch.setattr(web_server_mod, "load_config", lambda: config)
+    monkeypatch.setattr(
+        shell_hooks,
+        "register_from_config",
+        lambda actual_config, accept_hooks=False: calls.append((actual_config, accept_hooks)),
+    )
+
+    web_server_mod._register_configured_shell_hooks()
+
+    assert calls == [(config, False)]
+
+
 def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):
     from fastapi.testclient import TestClient
     from tui_gateway import methods_groups

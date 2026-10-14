@@ -390,6 +390,8 @@ export const arChat = {
     audioReadFailed: 'فشلت قراءة الصوت',
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
+    sendFailedTitle: 'لم يتم إرسال الرسالة',
+    sendFailedBody: 'عادت رسالتك إلى مربع الكتابة. أعد إرسالها بعد استعادة الاتصال.',
     promptFailed: 'فشل إرسال الرسالة',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',

@@ -17,6 +17,7 @@ import {
   takeSessionDraft
 } from '@/store/composer'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import * as notificationsModule from '@/store/notifications'
 import { $newChatRoute } from '@/store/profile'
 import {
   $activeSessionId,
@@ -79,6 +80,10 @@ vi.mock('@/store/gateway', async original => ({
   retainGatewayForAgent: vi.fn(async () => () => {}),
   retainGatewayForSessionTurn: vi.fn(async () => () => {})
 }))
+vi.mock('@/store/notifications', async original => ({
+  ...(await original<Record<string, unknown>>())
+}))
+const notifyMock = vi.spyOn(notificationsModule, 'notify')
 vi.mock('@/store/profile', async original => ({
   ...(await original<Record<string, unknown>>()),
   ensureGatewayAgent: vi.fn(async () => undefined),
@@ -97,6 +102,7 @@ const getRouteToken = () => `${route ? sessionRoute(route) : NEW_CHAT_ROUTE}::`
 
 interface HarnessProps {
   pendingScope?: string
+  resumeStoredSession?: () => Promise<void>
   suspend?: Promise<void>
   onSubmit?: ChatBarProps['onSubmit']
 }
@@ -109,7 +115,7 @@ function PendingNavigation({ suspend }: Pick<HarnessProps, 'suspend'>) {
   return null
 }
 
-function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
+function Harness({ pendingScope, resumeStoredSession, suspend, onSubmit }: HarnessProps) {
   const active = useStore($activeSessionId)
   const selected = useStore($selectedStoredSessionId)
   const attachments = useStore(mainComposerScope.$attachments)
@@ -161,9 +167,9 @@ function Harness({ pendingScope, suspend, onSubmit }: HarnessProps) {
     openMemoryGraph: () => {},
     refreshSessions: async () => {},
     requestGateway: request,
-    resumeStoredSession: async () => {
+    resumeStoredSession: resumeStoredSession ?? (async () => {
       throw new Error('unexpected resume')
-    },
+    }),
     startFreshSessionDraft: () => {},
     sttEnabled: false
   })
@@ -593,4 +599,70 @@ it('a new identical message never adopts an unconfirmed send; the restored draft
   await act(async () => handles.submit.submitDraft())
   await waitFor(() => expect(ids()).toHaveLength(4))
   expect(ids()[3]).toBe(ids()[2])
+})
+
+it('surfaces a visible failure when a first send cannot resume its session (#138047)', async () => {
+  // The reported vanish: a first prompt clears the composer, no session row
+  // appears, no turn runs, and nothing tells the user it failed — so they walk
+  // away assuming it was sent. The live defect is a resume that THROWS inside
+  // the submit pipeline: abortForSessionSwitch drops the optimistic bubble and
+  // returns false, the composer restores the draft, but no failure is shown.
+  stashSessionDraft('stored-A', 'my first question', [])
+  $newChatRoute.set({ connectionId: 'connection-resume-throws', profile: 'default' })
+
+  // Route names a durable conversation whose binding is incomplete, so the
+  // pipeline runs the full resume path — exactly the reporter's window
+  // (local backend ECONNREFUSED, remote gateway ticket refresh timed out).
+  route = 'stored-A'
+  setSelectedStoredSessionId('stored-A')
+  setActiveSessionId(null)
+
+  const resumeStoredSession = vi.fn(async () => {
+    throw new Error('connect ECONNREFUSED 127.0.0.1:64921')
+  })
+
+  setSessions([
+    {
+      id: 'stored-A',
+      profile: 'default',
+      source: 'desktop',
+      message_count: 1,
+      ended_at: null,
+      input_tokens: 0,
+      output_tokens: 0,
+      is_active: true,
+      last_active: 1,
+      started_at: 1,
+      model: null,
+      preview: null,
+      title: null,
+      tool_call_count: 0
+    }
+  ])
+
+  const rendered = render(
+    <Suspense fallback={<div>Pending navigation</div>}>
+      <Harness resumeStoredSession={resumeStoredSession} />
+    </Suspense>
+  )
+
+  act(() => {
+    handles.cache.ensureSessionState('rt-A', 'stored-A')
+  })
+
+  await act(async () => {
+    handles.submit.submitDraft()
+  })
+
+  // The words must survive.
+  expect(editorText()).toBe('my first question')
+
+  // The reporter's expected contract: "show a visible failure or retry state."
+  // On main the draft comes back with zero feedback — the prompt just sits in
+  // the composer looking like an ordinary edit. A failure MUST be announced.
+  expect(notifyMock).toHaveBeenCalled()
+  const failure = notifyMock.mock.calls.some(([input]) => input?.kind === 'error')
+  expect(failure).toBe(true)
+
+  rendered.unmount()
 })

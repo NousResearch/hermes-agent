@@ -595,6 +595,34 @@ class TestRestartMacosLaunchdGateways:
         assert restarted == ["ai.hermes.gateway"]
         assert failed == ["ai.hermes.gateway-zombie"]
 
+    def test_current_profiles_unverified_restart_is_kickstarted_in_its_own_domain(
+        self, monkeypatch, tmp_path
+    ):
+        """#94540: the current profile gets the same forced-kickstart recovery
+        a sibling already gets when the first supervision wait times out — and
+        in the domain THIS profile was located in, the same contract siblings
+        already hold (test_current_delegates_and_siblings_kickstart_in_own_domains)."""
+        current = "ai.hermes.gateway"
+        rec = _fleet(
+            monkeypatch, tmp_path, current=current, labels=[current],
+            located={current: (f"user/{UID}", 100)},
+            current_supervised=False,
+        )
+        # _fleet's fake_wait/fake_kickstart are shared with the sibling loop, but no
+        # sibling exists here — every recorded call must belong to the current profile.
+        monkeypatch.setattr(gw, "_resolved_launchd_domain", f"user/{UID}")
+        restarted: list[str] = []
+        failed: list[str] = []
+
+        _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
+
+        assert rec.current_restarts == [current]
+        assert rec.current_verifies == [current]
+        assert rec.kickstarts == [f"user/{UID}/{current}"]
+        assert rec.waits == [f"user/{UID}/{current}"]
+        assert restarted == [current]
+        assert failed == []
+
 
 def _write_launchd_plist(agents_dir: Path, label: str, *, argv=(), hermes_home=None, raw=None):
     """One gateway LaunchAgent plist under a fake account's LaunchAgents dir."""
